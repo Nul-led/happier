@@ -127,12 +127,16 @@ export function hasCurrentConversationTransportCaller(input: Readonly<{
   providerPluginId: string;
   transportOrigin: ConversationReconciliationConnectionStateV1['transportOrigin'];
 }>): boolean {
-  return isSelfStampedPluginCaller(input.caller)
-    && input.caller.pluginId === input.providerPluginId
+  const caller = input.caller;
+  if (!isSelfStampedPluginCaller(caller)) return false;
+  const materialization = caller.materialization;
+  const transportMaterialization = input.transportOrigin.materializationRef;
+  if (!materialization || !transportMaterialization) return false;
+  return caller.pluginId === input.providerPluginId
     && arePluginMachineMaterializationRefsEqual(
-      input.caller.materialization,
-      input.transportOrigin.materializationRef,
-    );
+        materialization,
+        transportMaterialization,
+      );
 }
 
 /**

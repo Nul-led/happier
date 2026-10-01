@@ -66,6 +66,9 @@ export function spawn(cmd, args, options = {}) {
   queueMicrotask(() => child.emit('close', 0, null));
   return child;
 }
+export function spawnSync() {
+  return { status: 1, signal: null, stdout: '', stderr: '' };
+}
 `),
     './utils/cli/prereqs.mjs': toDataUrl(`
 export async function assertCliPrereqs() {}
@@ -144,6 +147,9 @@ export function spawn(cmd, args, options = {}) {
   child.kill = () => true;
   queueMicrotask(() => child.emit('close', 0, null));
   return child;
+}
+export function spawnSync() {
+  return { status: 1, signal: null, stdout: '', stderr: '' };
 }
 `),
     './utils/cli/prereqs.mjs': toDataUrl(`

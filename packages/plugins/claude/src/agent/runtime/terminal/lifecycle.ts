@@ -1,5 +1,5 @@
 export type ClaudeTerminalLifecycleObservation =
-    | Readonly<{ type: 'prompt_submitted'; agentId: string; turnId: string | null; source: 'hook' | 'transcript'; promptText?: string; observedAtMs?: number; providerEvidence?: 'queued_command' }>
+    | Readonly<{ type: 'prompt_submitted'; agentId: string; turnId: string | null; source: 'hook' | 'transcript'; promptText?: string; acceptanceEvidenceId?: string; observedAtMs?: number; providerEvidence?: 'queued_command' }>
     | Readonly<{ type: 'completion_candidate'; agentId: string; turnId: string | null; source: 'hook' | 'transcript' }>
     | Readonly<{ type: 'completion_candidate_invalidated'; agentId: string; turnId: string | null; reason: 'stop_hook_feedback' }>
     | Readonly<{ type: 'compaction_started'; agentId: string; turnId?: string | null; source: 'hook' | 'transcript' }>
@@ -18,6 +18,7 @@ export type ClaudeTerminalHookEvent = Readonly<{
     detail?: string;
     evidence?: unknown;
     promptText?: string;
+    acceptanceEvidenceId?: string;
     observedAtMs?: number;
     /**
      * Sidechain (subagent) attribution from the raw Claude Code hook record (`agent_id`).
@@ -32,6 +33,7 @@ export type ClaudeTerminalTranscriptEvent =
         agentId: string;
         kind: 'user_prompt';
         text: string;
+        acceptanceEvidenceId?: string;
         turnId?: string | null;
         observedAtMs?: number;
     }>
@@ -39,6 +41,7 @@ export type ClaudeTerminalTranscriptEvent =
         agentId: string;
         kind: 'queued_command';
         text: string;
+        acceptanceEvidenceId?: string;
         turnId?: string | null;
         observedAtMs?: number;
     }>
@@ -68,6 +71,7 @@ export type ClaudeTerminalTranscriptEvent =
         agentId: string;
         kind: 'text';
         text: string;
+        acceptanceEvidenceId?: string;
         turnId?: string | null;
         observedAtMs?: number;
     }>;
@@ -92,6 +96,7 @@ export function mapClaudeHookEventToTerminalLifecycleObservation(
             agentId: event.agentId,
             turnId,
             source: 'hook',
+            ...(event.acceptanceEvidenceId ? { acceptanceEvidenceId: event.acceptanceEvidenceId } : {}),
             ...(event.promptText ? { promptText: event.promptText } : {}),
             ...(typeof event.observedAtMs === 'number' ? { observedAtMs: event.observedAtMs } : {}),
         };
@@ -161,6 +166,7 @@ export function mapClaudeTranscriptEventToTerminalLifecycleObservation(
             turnId,
             source: 'transcript',
             promptText: event.text,
+            ...(event.acceptanceEvidenceId ? { acceptanceEvidenceId: event.acceptanceEvidenceId } : {}),
             ...(typeof event.observedAtMs === 'number' ? { observedAtMs: event.observedAtMs } : {}),
         };
     }
@@ -172,6 +178,7 @@ export function mapClaudeTranscriptEventToTerminalLifecycleObservation(
             turnId,
             source: 'transcript',
             promptText: event.text,
+            ...(event.acceptanceEvidenceId ? { acceptanceEvidenceId: event.acceptanceEvidenceId } : {}),
             providerEvidence: 'queued_command',
             ...(typeof event.observedAtMs === 'number' ? { observedAtMs: event.observedAtMs } : {}),
         };
@@ -234,6 +241,7 @@ export function mapClaudeTranscriptEventToTerminalLifecycleObservation(
         turnId,
         source: 'transcript',
         promptText: event.text,
+        ...(event.acceptanceEvidenceId ? { acceptanceEvidenceId: event.acceptanceEvidenceId } : {}),
         ...(typeof event.observedAtMs === 'number' ? { observedAtMs: event.observedAtMs } : {}),
     };
 }

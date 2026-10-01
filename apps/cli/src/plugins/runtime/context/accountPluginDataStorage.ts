@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 
 import {
+    PluginAvailabilityActionHttpPathsV1,
     convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
     createAccountScopedCryptoMaterialSnapshotV1,
     PluginAccountKvRowError,
@@ -57,6 +58,7 @@ import {
     normalizePluginAccountCollectionContractV1,
     preparePluginCollectionLogicalMutationRequestV1,
     resolveEffectivePluginCollectionLimitsV1,
+    resolvePluginCollectionMigrationChainV1,
     resolvePluginCollectionIdentityTagV1,
     openPluginAccountStoragePrivatePayloadV1,
     normalizeStrictJsonValue,
@@ -81,12 +83,14 @@ import {
 } from '@happier-dev/protocol';
 import {
     isPluginError,
-    normalizePluginAccountCollectionMigrationRuntimeProjection,
-    projectPluginAccountCollectionDeclaration,
     PluginError,
     type JsonValue,
     type PluginAccountCollectionMigrationRuntimeProjection,
 } from '@happier-dev/plugin-sdk';
+import {
+    normalizePluginAccountCollectionMigrationRuntimeProjection,
+    projectPluginAccountCollectionDeclaration,
+} from '@happier-dev/plugin-sdk/host/registration';
 import type {
     PluginAccountCollectionDefinition,
     PluginAccountCollectionForDefinition,
@@ -117,6 +121,7 @@ import {
 import { requireAccountSettingsEncryptionCredentials } from '@/settings/accountSettings/accountSettingsEncryptionMaterial';
 import { resolveAccountSettingsHttpBaseUrl } from '@/settings/accountSettings/resolveAccountSettingsHttpBaseUrl';
 import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
+import type { CanonicalPluginManifest } from '@/plugins/manifest/types';
 
 import type { StablePluginAccountStorageHost } from './storage';
 import {
@@ -166,12 +171,20 @@ export type AccountPluginDataStorageHostDependencies = Readonly<{
         subscription: PluginAccountCollectionWatchSubscription,
         listener: (hint: PluginAccountCollectionWatchInvalidation) => void,
     ) => () => void;
+    /**
+     * The admitted manifest of a plugin the daemon, not a portable Account
+     * release, selects (bundled first-party, trusted development, drop-in)
+     * and that declares Account-scoped contributions. Only such a plugin
+     * claims a release-less Account intent with it; a managed portable
+     * install is selected by the present user through its release.
+     */
+    resolveReleaseLessDeclaration?: (pluginId: string) => CanonicalPluginManifest | null;
 }>;
 
 type BoundAccountDataLifecycle = Readonly<{
     pluginId: string;
     signal: AbortSignal;
-    isGenerationCurrent(): boolean | Promise<boolean>;
+    isOccurrenceCurrent(): boolean | Promise<boolean>;
     /** Captured from the canonical active-Account publication owner at admission. */
     accountLifetimeToken: number;
 }>;
@@ -212,7 +225,7 @@ export type AccountPluginDataStorageHost = StablePluginAccountStorageHost & Read
         declarations: readonly PluginAccountCollectionContributionV1[];
         runtime: PluginAccountCollectionMigrationRuntimeProjection;
         signal: AbortSignal;
-        isGenerationCurrent(): boolean | Promise<boolean>;
+        isOccurrenceCurrent(): boolean | Promise<boolean>;
     }>): CollectionMigrationCandidateHandle;
 }>;
 
@@ -225,6 +238,11 @@ const COLLECTION_CANCELLED_CODE = 'plugin_collection_cancelled';
 const GENERATION_STALE_CODE = 'plugin_generation_stale';
 const ACCOUNT_KV_CONFLICT_CODE = 'plugin_account_kv_conflict';
 const ACCOUNT_KV_INVALID_CODE = 'plugin_account_kv_invalid';
+const COLLECTION_WRITERS_CLAIM_HTTP_PATH = PluginAvailabilityActionHttpPathsV1[
+    'account.plugins.availability.collectionWriters.claim'
+];
+/** A present-user release selection outranks the claim; that is a settled answer. */
+const COLLECTION_WRITERS_CLAIM_SETTLED_REFUSAL = 'plugin_intent_release_selected';
 
 type CandidatePreparationStageRequest = ReturnType<
     typeof PluginCollectionCandidatePreparationStageRequestV1Schema.parse
@@ -330,38 +348,6 @@ function parseCandidatePreparationError(value: unknown): PluginError | null {
     );
 }
 
-function resolveCandidateMigrationChain(input: Readonly<{
-    sourceSchemaVersion: number;
-    targetSchemaVersion: number;
-    migrations: PluginAccountCollectionMigrationRuntimeProjection[string];
-}>): readonly PluginAccountCollectionMigrationRuntimeProjection[string][number][] {
-    if (input.sourceSchemaVersion > input.targetSchemaVersion) {
-        throw dataError(
-            COLLECTION_INVALID_VALUE_CODE,
-            'Collection candidate migration cannot target an older schema version',
-        );
-    }
-    const chain: PluginAccountCollectionMigrationRuntimeProjection[string][number][] = [];
-    let version = input.sourceSchemaVersion;
-    while (version < input.targetSchemaVersion) {
-        const next = input.migrations.filter((migration) => (
-            migration.fromSchemaVersion === version
-            && migration.toSchemaVersion > version
-            && migration.toSchemaVersion <= input.targetSchemaVersion
-        ));
-        if (next.length !== 1) {
-            throw dataError(
-                COLLECTION_INVALID_VALUE_CODE,
-                'Collection candidate migration callbacks do not form one exact source-to-target chain',
-            );
-        }
-        const migration = next[0]!;
-        chain.push(migration);
-        version = migration.toSchemaVersion;
-    }
-    return Object.freeze(chain);
-}
-
 function resolveMaterial(credentials: Credentials): AccountScopedCryptoMaterial {
     return credentials.encryption.type === 'legacy'
         ? { type: 'legacy', secret: credentials.encryption.secret }
@@ -396,7 +382,7 @@ function checkBoundCurrent(
     if (getActiveAccountSettingsSnapshotLifetimeToken() !== lifecycle.accountLifetimeToken) {
         throw dataError(ACCOUNT_DATA_UNAVAILABLE_CODE, 'Account Data is unavailable for the current Account');
     }
-    const current = lifecycle.isGenerationCurrent();
+    const current = lifecycle.isOccurrenceCurrent();
     if (typeof current === 'boolean') {
         if (!current) {
             throw dataError(GENERATION_STALE_CODE, 'Plugin Account Collection invocation generation is stale');
@@ -676,6 +662,9 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
     const randomBytes = params.randomBytes ?? ((length: number) => new Uint8Array(nodeRandomBytes(length)));
     const resolveServerFeaturesSnapshot = params.resolveServerFeaturesSnapshot;
     const subscribeChanges = params.subscribeChanges ?? subscribePluginAccountCollectionWatchInvalidation;
+    const resolveReleaseLessDeclaration = params.resolveReleaseLessDeclaration ?? (() => null);
+    /** One settled-or-pending claim per (Account scope, plugin) for this host's declarations. */
+    const writerClaimsByScope = new Map<string, Promise<void>>();
 
     const readKnownCollectionLimits = (): PluginDataCollectionsCapabilities | undefined => {
         try {
@@ -814,26 +803,67 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                 throw dataError(ACCOUNT_DATA_UNAVAILABLE_CODE, `${input.unavailableMessage} failed`, true);
             }
         };
+        /**
+         * The release-less Availability claim for a daemon-selected plugin,
+         * carrying its admitted manifest. It is best effort: the server's
+         * Collection, webhook, and Event admission stay the only authorities,
+         * so a failed claim leaves an operation to report the server's typed
+         * answer and is retried by the next operation.
+         */
+        const ensureWriterClaim = async (
+            credentials: StoredCredentials,
+            operationSignal?: AbortSignal,
+        ): Promise<void> => {
+            const manifest = resolveReleaseLessDeclaration(lifecycle.pluginId);
+            const scopeKey = currentAccountScopeKey();
+            if (!manifest || scopeKey === null) return;
+            const key = `${scopeKey}\u0000${lifecycle.pluginId}`;
+            let claim = writerClaimsByScope.get(key);
+            if (!claim) {
+                claim = post({
+                    path: COLLECTION_WRITERS_CLAIM_HTTP_PATH,
+                    body: { manifest },
+                    credentials,
+                    ...(operationSignal ? { operationSignal } : {}),
+                    parseError: (value) => {
+                        const code = asJsonObject(value as JsonValue)?.error;
+                        return typeof code === 'string'
+                            ? dataError(code, 'Account Collection writer claim was refused')
+                            : null;
+                    },
+                    unavailableMessage: 'Account Collection writer claim',
+                }).then(() => undefined, (error: unknown) => {
+                    if (isPluginError(error) && error.code === COLLECTION_WRITERS_CLAIM_SETTLED_REFUSAL) return;
+                    writerClaimsByScope.delete(key);
+                });
+                writerClaimsByScope.set(key, claim);
+            }
+            await claim;
+        };
         const request = async (input: Readonly<{
             path: string;
             body: unknown;
             kind: 'read' | 'mutation';
             credentials: StoredCredentials;
             operationSignal?: AbortSignal;
-        }>): Promise<unknown> => await post({
+        }>): Promise<unknown> => {
+            await ensureWriterClaim(input.credentials, input.operationSignal);
+            return await post({
             path: input.path,
             body: input.body,
             kind: input.kind,
             credentials: input.credentials,
             ...(input.operationSignal ? { operationSignal: input.operationSignal } : {}),
-            parseError: (value) => parseCollectionError(value, input.kind),
-            unavailableMessage: 'Account Collection transport is unavailable',
-        });
+                parseError: (value) => parseCollectionError(value, input.kind),
+                unavailableMessage: 'Account Collection transport is unavailable',
+            });
+        };
         return Object.freeze({
             assertCurrentAccount,
             signalFor,
             currentCredentials,
             currentEncryption,
+            ensureWriterClaim,
             post,
             request,
         });
@@ -854,7 +884,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
             const lifecycle: BoundAccountDataLifecycle = {
                 pluginId: binding.target.pluginId,
                 signal: input.signal,
-                isGenerationCurrent: input.isCurrent,
+                isOccurrenceCurrent: input.isCurrent,
                 accountLifetimeToken: getActiveAccountSettingsSnapshotLifetimeToken(),
             };
             const requestContext = createBoundRequestContext(lifecycle);
@@ -987,7 +1017,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
             const lifecycle: BoundAccountDataLifecycle = {
                 pluginId: binding.target.pluginId,
                 signal: composeOperationSignal(input.signal, abort.signal),
-                isGenerationCurrent: input.isGenerationCurrent,
+                isOccurrenceCurrent: input.isOccurrenceCurrent,
                 accountLifetimeToken: getActiveAccountSettingsSnapshotLifetimeToken(),
             };
             const requestContext = createBoundRequestContext(lifecycle);
@@ -1065,11 +1095,19 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
             };
 
             const prepareCandidate = async (): Promise<void> => {
-                const chain = resolveCandidateMigrationChain({
+                const declarations = resolvePluginCollectionMigrationChainV1({
                     sourceSchemaVersion: source.contract.schemaVersion,
                     targetSchemaVersion: target.contract.schemaVersion,
-                    migrations: targetMigrations,
+                    readableSchemaVersions: target.contract.readableSchemaVersions,
+                    migrations: target.contract.migrations,
                 });
+                if (declarations === null || targetMigrations.length !== target.contract.migrations.length) {
+                    throw dataError(
+                        COLLECTION_INVALID_VALUE_CODE,
+                        'Collection candidate migration callbacks do not match the exact source-to-target chain',
+                    );
+                }
+                const chain = targetMigrations.slice(targetMigrations.length - declarations.length);
                 let cursor: string | undefined;
                 for (;;) {
                     await assertBoundCurrent(lifecycle);
@@ -1245,7 +1283,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
             const lifecycle: BoundAccountDataLifecycle = {
                 pluginId: binding.pluginId,
                 signal: binding.signal,
-                isGenerationCurrent: binding.isGenerationCurrent,
+                isOccurrenceCurrent: binding.isOccurrenceCurrent,
                 accountLifetimeToken: getActiveAccountSettingsSnapshotLifetimeToken(),
             };
             const kvScopeIdentity = Object.freeze({});
@@ -1279,8 +1317,17 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                 signalFor,
                 currentCredentials,
                 currentEncryption,
+                ensureWriterClaim,
                 request,
             } = createBoundRequestContext(lifecycle);
+            // Activation claims too, so Plugin UI reads that reach Data directly
+            // and server-side webhook/Event admission do not wait for this
+            // plugin's first daemon Collection operation.
+            if (resolveReleaseLessDeclaration(binding.pluginId) !== null) {
+                void currentCredentials()
+                    .then((credentials) => ensureWriterClaim(credentials))
+                    .catch(() => undefined);
+            }
 
             type AccountKvSnapshot = Readonly<{
                 row: PluginAccountStorageRowV1;

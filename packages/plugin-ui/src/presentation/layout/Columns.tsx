@@ -54,10 +54,11 @@ const stylesheet = {
     container: {
         width: '100%',
     },
+    // Cells in one row share its height; a cell's content decides whether it fills it (a card does).
     row: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        alignItems: 'flex-start',
+        alignItems: 'stretch',
     },
     column: {
         minWidth: 0,

@@ -7,7 +7,7 @@ import {
 
 import type { InvokeContributedAction } from '../services/actions';
 import type {
-    RevalidatePluginActionCallerImmutableGeneration,
+    RevalidatePluginActionCallerOccurrence,
     RevalidatePluginActionCallerMaterialization,
 } from '../services/actionCaller';
 
@@ -19,15 +19,15 @@ import type {
 export function createHostContributedActionInvoker(params: Readonly<{
     invokeContributedAction: InvokeContributedAction;
     revalidatePluginActionCallerMaterialization: RevalidatePluginActionCallerMaterialization;
-    revalidatePluginActionCallerImmutableGeneration: RevalidatePluginActionCallerImmutableGeneration;
+    revalidatePluginActionCallerOccurrence: RevalidatePluginActionCallerOccurrence;
 }>): NonNullable<ActionExecutorDeps['invokeContributedAction']> {
     return async ({ action, input, context, signal }) => {
         const caller = context.actionCaller;
         if (
             caller?.kind !== 'plugin'
             || !caller.contributionLocalId
-            || !caller.immutableGenerationId
-            || !caller.materialization
+            || !caller.occurrenceId
+            || !caller.sourceCustody
         ) {
             return {
                 ok: false,
@@ -36,7 +36,7 @@ export function createHostContributedActionInvoker(params: Readonly<{
             };
         }
         const callerMaterialization = caller.materialization;
-        const callerImmutableGenerationId = caller.immutableGenerationId;
+        const callerOccurrenceId = caller.occurrenceId;
         const parsedInput = input === undefined
             ? undefined
             : StrictJsonValueSchema.safeParse(input);
@@ -49,12 +49,13 @@ export function createHostContributedActionInvoker(params: Readonly<{
         }
         const isCallerCurrent = async (): Promise<boolean> => {
             try {
-                if (!await params.revalidatePluginActionCallerMaterialization(
-                    callerMaterialization,
-                )) return false;
-                return await params.revalidatePluginActionCallerImmutableGeneration({
+                if (callerMaterialization !== undefined
+                    && !await params.revalidatePluginActionCallerMaterialization(
+                        callerMaterialization,
+                    )) return false;
+                return await params.revalidatePluginActionCallerOccurrence({
                         pluginId: caller.pluginId,
-                        immutableGenerationId: callerImmutableGenerationId,
+                        occurrenceId: callerOccurrenceId,
                     });
             } catch {
                 return false;
@@ -84,7 +85,8 @@ export function createHostContributedActionInvoker(params: Readonly<{
                         }),
                     ),
                 },
-                immutableGenerationId: callerImmutableGenerationId,
+                occurrenceId: callerOccurrenceId,
+                sourceCustody: caller.sourceCustody,
                 materialization: callerMaterialization,
             },
             signal: signal ?? context.signal ?? new AbortController().signal,

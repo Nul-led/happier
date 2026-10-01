@@ -2,7 +2,7 @@
  * GENERATED FILE CONTRACT (A.16y.4-agent-runtime-codegen-and-prompt-assets-cleanup)
  *
  * This file is emitted by:
- * - `scripts/migrations/extensions/generateBundledPluginEntries.ts`
+ * - `apps/cli/scripts/build-owned/generateBundledPluginEntries.ts`
  */
 
 import type { PluginPromptAssetAdapterDescriptor } from '../pluginPromptAssetAdapterDescriptor';

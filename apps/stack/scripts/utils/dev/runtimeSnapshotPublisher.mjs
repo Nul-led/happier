@@ -1,6 +1,11 @@
 import { fileURLToPath } from 'node:url';
 
 import { appendBoundedTail, formatFailureDiagnostic, spawnProc } from '../proc/proc.mjs';
+import { resolveRuntimeComponentSourcePaths } from '../../build/runtime_artifact_identity.mjs';
+import {
+  readDevReloadWatchChangeSignature,
+  readDevReloadWatchChangeSignatureAsync,
+} from './watchSignature.mjs';
 
 const RUNTIME_COMPONENTS = ['web', 'server', 'daemon'];
 const RUNTIME_COMPONENT_SET = new Set(RUNTIME_COMPONENTS);
@@ -200,20 +205,11 @@ export function wrapReloadExecutorWithRuntimeSnapshotPublication({
   if (!normalizedComponent || !executor || typeof executor.restart !== 'function') return executor;
   const build = typeof executor.build === 'function' ? executor.build : null;
   const restart = executor.restart;
-  const requestPublication = () => {
-    if (typeof publisher?.markRefreshed !== 'function') return;
-    try {
-      void Promise.resolve(publisher.markRefreshed([normalizedComponent])).catch((error) => {
-        logger.error?.(
-          `[local] runtime publication request failed after ${normalizedComponent} refresh: ${errorMessage(error)}`,
-        );
-      });
-    } catch (error) {
-      logger.error?.(
-        `[local] runtime publication request failed after ${normalizedComponent} refresh: ${errorMessage(error)}`,
-      );
-    }
-  };
+  const requestPublication = () => requestRuntimeSnapshotPublication({
+    component: normalizedComponent,
+    publisher,
+    logger,
+  });
   return {
     ...executor,
     ...(build ? {
@@ -229,6 +225,90 @@ export function wrapReloadExecutorWithRuntimeSnapshotPublication({
       return result;
     },
   };
+}
+
+function requestRuntimeSnapshotPublication({ component, publisher, logger = console } = {}) {
+  if (typeof publisher?.markRefreshed !== 'function') return false;
+  try {
+    void Promise.resolve(publisher.markRefreshed([component])).catch((error) => {
+      logger.error?.(
+        `[local] runtime publication request failed after ${component} refresh: ${errorMessage(error)}`,
+      );
+    });
+    return true;
+  } catch (error) {
+    logger.error?.(
+      `[local] runtime publication request failed after ${component} refresh: ${errorMessage(error)}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Keep runtime publication subscribed when a live component is hosted by a
+ * remote dev target. The remote target owns service activation; this executor
+ * owns only the repository snapshot request for the same admitted source
+ * generation.
+ */
+export function createRuntimeSnapshotPublicationReloadExecutor({
+  component,
+  publisher,
+  logger = console,
+} = {}) {
+  const normalizedComponent = normalizeComponents([component])[0];
+  if (!normalizedComponent || typeof publisher?.markRefreshed !== 'function') return null;
+  return {
+    target: normalizedComponent,
+    async build() {
+      return {
+        publicationRequested: requestRuntimeSnapshotPublication({
+          component: normalizedComponent,
+          publisher,
+          logger,
+        }),
+      };
+    },
+    async restart() {
+      return { restarted: false, reason: 'publication-only' };
+    },
+  };
+}
+
+export function createRuntimeSnapshotPublicationReloadDescriptors({
+  repoDir,
+} = {}, {
+  resolveRuntimeComponentSourcePathsImpl = resolveRuntimeComponentSourcePaths,
+} = {}) {
+  const sourceMetadata = { repoDir: String(repoDir ?? '').trim() };
+  return ['server', 'daemon'].map((component) => {
+    const paths = resolveRuntimeComponentSourcePathsImpl({ component, sourceMetadata });
+    return {
+      id: `runtime-publication:${component}`,
+      target: component,
+      paths,
+      readSignature: () => readDevReloadWatchChangeSignature(paths),
+      readSignatureAsync: () => readDevReloadWatchChangeSignatureAsync(paths),
+    };
+  }).filter((descriptor) => descriptor.paths.length > 0);
+}
+
+export function resolveRemoteRuntimePublicationComponents({
+  previousState,
+  nextState,
+} = {}) {
+  if (nextState?.status !== 'running') return [];
+  const serviceToComponent = [
+    ['expo', 'web'],
+    ['server', 'server'],
+    ['daemon', 'daemon'],
+  ];
+  return serviceToComponent
+    .filter(([service]) => (
+      nextState?.services?.[service] === true
+      && nextState?.serviceStatus?.[service] === 'running'
+      && previousState?.serviceStatus?.[service] !== 'running'
+    ))
+    .map(([, component]) => component);
 }
 
 /**
@@ -332,12 +412,20 @@ export function createBackgroundRuntimeSnapshotPublisher({
       // prevents one component's unavailable inputs from withholding a healthy
       // neighbor. Serial execution avoids a second scheduler.
       for (const component of requestedComponents) {
+        // A watcher notification that arrived after this cycle started but
+        // before this component's identity was read is already represented by
+        // the work below. Consume that duplicate demand here; a change that
+        // arrives during resolution or publication remains dirty and gets the
+        // one trailing recomputation.
+        dirtyComponents.delete(component);
         let resolved;
         try {
           resolved = await resolveForPublication([component]);
         } catch (error) {
           if (closed || isShuttingDown?.()) return lastResult;
-          dirtyComponents.add(component);
+          // A same-component demand that arrived while resolution ran remains
+          // dirty. Do not make the failure itself dirty: an unrelated component
+          // refresh must not retry this component.
           setComponentsPhase([component], 'failed', errorMessage(error));
           await reportStatus();
           logger.error?.(
@@ -375,8 +463,10 @@ export function createBackgroundRuntimeSnapshotPublisher({
           if (closed || isShuttingDown?.()) return lastResult;
           const retryInputChange = isRuntimePublicationInputChangeError(error)
             && !consumedInputChangeRetries.has(component);
-          dirtyComponents.add(component);
+          // A caller demand received during publication is already dirty. Only
+          // the publisher's explicit input-change contract creates its own retry.
           if (retryInputChange) {
+            dirtyComponents.add(component);
             consumedInputChangeRetries.add(component);
             publishAgain = true;
           }
@@ -394,7 +484,7 @@ export function createBackgroundRuntimeSnapshotPublisher({
         }
       }
 
-      if (!publishAgain || closed || isShuttingDown?.()) return lastResult;
+      if (!publishAgain || dirtyComponents.size === 0 || closed || isShuttingDown?.()) return lastResult;
     }
   };
 

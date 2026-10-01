@@ -1,16 +1,23 @@
 import { describe, expect, it } from 'vitest';
 
 import { evaluatePluginFinalPolicy } from '@happier-dev/protocol';
+import { createPluginRuntimeOccurrenceId } from '../runtimeSlots';
 
 import {
   resolvePluginFinalPolicyAuthorizationFacts,
   resolveRequiredPluginNetworkOrigins,
 } from './facts';
 
+const currentOccurrenceId = createPluginRuntimeOccurrenceId('occurrence-7');
 const current = Object.freeze({
-  immutableGenerationId: 'generation-7',
-  desiredImmutableGenerationId: 'generation-7',
-  appliedImmutableGenerationId: 'generation-7',
+  occurrenceId: currentOccurrenceId,
+  sourceCustody: Object.freeze({
+    kind: 'managed' as const,
+    immutableGenerationId: 'generation-7',
+    installSource: 'npm' as const,
+  }),
+  desiredOccurrenceId: currentOccurrenceId,
+  appliedOccurrenceId: currentOccurrenceId,
   applied: true,
   selectedAccess: Object.freeze([]),
 });
@@ -31,20 +38,21 @@ describe('resolvePluginFinalPolicyAuthorizationFacts', () => {
   });
 
   it('keeps a retained target generation distinct from durable desired and applied facts', () => {
+    const desiredOccurrenceId = createPluginRuntimeOccurrenceId('occurrence-8');
     const authorization = resolvePluginFinalPolicyAuthorizationFacts({
       pluginId: 'acme.plugin',
       current: {
         ...current,
-        desiredImmutableGenerationId: 'generation-8',
-        appliedImmutableGenerationId: 'generation-7',
+        desiredOccurrenceId,
+        appliedOccurrenceId: currentOccurrenceId,
       },
       targetGenerationMode: 'retained',
     });
 
     expect(authorization.generation).toEqual({
-      targetGeneration: 'generation-7',
-      desiredGeneration: 'generation-8',
-      appliedGeneration: 'generation-7',
+      targetGeneration: currentOccurrenceId,
+      desiredGeneration: desiredOccurrenceId,
+      appliedGeneration: currentOccurrenceId,
       targetGenerationMode: 'retained',
     });
     expect(evaluatePluginFinalPolicy({

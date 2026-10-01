@@ -191,7 +191,10 @@ function readPresentationState(
   entry: AzurePullRequestEntry,
 ): TriageSourceEntrySnapshotV1['state']['presentation'] {
   if (entry.state === 'notSet' || entry.state === 'all') return 'unknown';
-  return entry.state === 'completed' || entry.state === 'abandoned' ? 'closed' : 'active';
+  // Completed merged the pull request; abandoned closed it without merging
+  // (`CONTRACT.md` §4, r0.42).
+  if (entry.state === 'completed') return 'resolved';
+  return entry.state === 'abandoned' ? 'closed' : 'active';
 }
 
 /**

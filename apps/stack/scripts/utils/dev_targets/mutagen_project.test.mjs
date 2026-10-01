@@ -43,6 +43,14 @@ test('renderMutagenProject creates one-way source replicas while retaining targe
     'one-way replicas must not watch target-local build and cache writes',
   );
   assert.match(rendered, /vcs: true/);
+  assert.ok(
+    rendered.includes('- ".happier-plugin-ui-staging"'),
+    'the canonical plugin UI staging parent must remain target-local during remote builds',
+  );
+  assert.ok(
+    !rendered.includes('- ".happier-plugin-ui-build-*"'),
+    'the retired plugin UI operation-root pattern must not remain a replica exclusion',
+  );
   for (const ignored of [
     'node_modules',
     'dist',
@@ -56,7 +64,7 @@ test('renderMutagenProject creates one-way source replicas while retaining targe
     '.*.__sync_backup__.*',
     '.tmp.*',
     '.backup.*',
-    '.happier-plugin-ui-build-*',
+    '.happier-plugin-ui-staging',
     '.happier-first-party-runner-matrix-*',
     'packages/plugin-sdk/.example-builds',
     '.claude-lane-reports',
@@ -64,6 +72,7 @@ test('renderMutagenProject creates one-way source replicas while retaining targe
     '.tmp',
     '.playwright-cli',
     'packages/brand/brand',
+    'packages/plugins/*/.happier-plugin',
     '.project',
     '.happier',
     'coverage',
@@ -95,10 +104,15 @@ test('renderMutagenProject creates one-way source replicas while retaining targe
     '*.tsbuildinfo',
     '.cxx',
     'apps/ui/ios/build',
+    'apps/ui/src-tauri/binaries',
+    'apps/ui/src-tauri/systemTasks',
+    'apps/ui/src-tauri/ssh',
+    'apps/ui/src-tauri/integrations',
     'apps/ui/android/app/build',
     'apps/ui/android/build',
     'apps/ui/android/.gradle',
     'packages/*/android/build',
+    'apps/cli/logs',
     'apps/cli/tmp',
     'apps/cli/tools/unpacked',
     'apps/cli/*:*',
@@ -129,13 +143,17 @@ test('renderMutagenProject creates one-way source replicas while retaining targe
   }
 
   for (const replicaOwnedProjection of [
+    'apps/ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.js',
+  ]) {
+    assert.ok(rendered.includes(`- "${replicaOwnedProjection}"`));
+  }
+  for (const retiredProjection of [
     'apps/cli/src/plugins/projection/registry/sources/generatedBundledPluginArtifacts.ts',
-    'apps/ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.ts',
     'apps/ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.web.ts',
     'apps/ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.ios.ts',
     'apps/ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.android.ts',
   ]) {
-    assert.ok(rendered.includes(`- "${replicaOwnedProjection}"`));
+    assert.ok(!rendered.includes(`- "${retiredProjection}"`));
   }
   assert.ok(
     !rendered.includes('- "apps/cli/src/plugins/projection/registry/sources/generatedBundledPluginManifests.ts"'),

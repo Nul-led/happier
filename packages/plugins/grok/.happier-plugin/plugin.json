@@ -324,6 +324,18 @@
   },
   "id": "happier.agent.grok",
   "runtime": {
+    "agentFactories": [
+      {
+        "loadMode": "immutable-js",
+        "localAgentId": "grok",
+        "locator": {
+          "export": "createGrokAgentRuntime",
+          "module": "./agent/runtime/factory",
+          "runtimeApiVersion": 1
+        },
+        "normalizedModulePath": ".happier-plugin/agent/runtime/factory.js"
+      }
+    ],
     "apiVersion": 1
   },
   "schemaVersion": 2,

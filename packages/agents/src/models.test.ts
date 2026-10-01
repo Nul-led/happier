@@ -90,6 +90,10 @@ describe('agent model config', () => {
     });
     expect(claude.staticModels?.map((model) => model.id)).toEqual(claude.allowedModes);
     expect(gemini.staticModels?.map((model) => model.id)).toEqual(gemini.allowedModes);
+    expect(claudeModels.slice(0, 2)).toMatchObject([
+      { id: 'claude-fable-5-1', name: 'Fable 5.1', contextWindowTokens: 1_000_000 },
+      { id: 'claude-opus-5-5', name: 'Opus 5.5', contextWindowTokens: 1_000_000 },
+    ]);
     expect(claudeModels.find((model) => model.id === 'claude-fable-5')).toMatchObject({
       id: 'claude-fable-5',
       name: 'Fable 5',

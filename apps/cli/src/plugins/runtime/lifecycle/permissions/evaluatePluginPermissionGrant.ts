@@ -1,6 +1,5 @@
 import {
-  PluginPermissionSubjectV1Schema,
-  type PluginInstallReviewPrincipalDigest,
+  pluginPermissionSubjectsEqualV1,
   type PluginPermissionCapabilityV1,
   type PluginPermissionGrantAuthoritySourceV1,
   type PluginPermissionGrantTargetScopeV1,
@@ -37,28 +36,6 @@ function authoritySourceMatches(
     && granted.installationId === current.installationId;
 }
 
-function subjectMatches(
-  leftInput: PluginPermissionSubjectV1,
-  rightInput: PluginPermissionSubjectV1,
-): boolean {
-  const left = PluginPermissionSubjectV1Schema.parse(leftInput);
-  const right = PluginPermissionSubjectV1Schema.parse(rightInput);
-  if (left.kind !== right.kind) return false;
-  if (left.kind === 'general' && right.kind === 'general') return true;
-  if (left.kind !== 'credential_access_disclosure' || right.kind !== 'credential_access_disclosure') {
-    return false;
-  }
-  return left.contribution.pluginId === right.contribution.pluginId
-    && left.contribution.localId === right.contribution.localId
-    && left.credentialSlotId === right.credentialSlotId
-    && left.purpose === right.purpose
-    && left.accessDeclarationDigest === right.accessDeclarationDigest
-    && left.selectedAuthorityDigest === right.selectedAuthorityDigest
-    && left.selectedRawAccessDigest === right.selectedRawAccessDigest
-    && left.installedGenerationId === right.installedGenerationId
-    && left.installReviewPrincipalDigest === right.installReviewPrincipalDigest;
-}
-
 /** The single CLI-side exact evaluator for persisted plugin permission grants. */
 export function evaluatePluginPermissionGrant(params: Readonly<{
   grant: PluginPermissionGrantV1;
@@ -68,7 +45,6 @@ export function evaluatePluginPermissionGrant(params: Readonly<{
   subject: PluginPermissionSubjectV1;
   /** Exact machine installation asking now; a missing authority is never authorized. */
   currentAuthoritySource: PluginPermissionGrantAuthoritySourceV1 | null;
-  currentInstallReviewPrincipalDigest?: PluginInstallReviewPrincipalDigest;
 }>): boolean {
   if (
     params.grant.status !== 'active'
@@ -76,11 +52,9 @@ export function evaluatePluginPermissionGrant(params: Readonly<{
     || params.grant.capability !== params.capability
     || !targetScopeMatches(params.grant.targetScope, params.targetScope)
     || !authoritySourceMatches(params.grant.authoritySource, params.currentAuthoritySource)
-    || !subjectMatches(params.grant.subject, params.subject)
+    || !pluginPermissionSubjectsEqualV1(params.grant.subject, params.subject)
   ) {
     return false;
   }
-  if (params.grant.subject.kind === 'general') return true;
-  return params.currentInstallReviewPrincipalDigest !== undefined
-    && params.grant.subject.installReviewPrincipalDigest === params.currentInstallReviewPrincipalDigest;
+  return true;
 }

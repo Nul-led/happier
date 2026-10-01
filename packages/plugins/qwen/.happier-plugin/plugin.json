@@ -7,6 +7,7 @@
         "capabilities": {
           "sessions": {
             "cancel": true,
+            "configuration": true,
             "delivery": [
               "newTurn",
               "followUp"
@@ -21,8 +22,11 @@
               "resume"
             ]
           },
+          "surfaces": [
+            "externalSessions"
+          ],
           "tools": {
-            "delivery": "shell_bridge"
+            "delivery": "native_mcp"
           }
         },
         "catalog": {
@@ -63,7 +67,73 @@
         "id": "qwen",
         "primary": "sessions",
         "runtime": {
-          "kind": "custom"
+          "definition": {
+            "mcp": {
+              "policy": "pass_through"
+            },
+            "modelConfigOptionId": "model",
+            "permissionModeArgv": {
+              "flag": "--approval-mode",
+              "map": {
+                "default": null,
+                "plan": "plan",
+                "read-only": "plan",
+                "safe-yolo": "auto-edit",
+                "yolo": "yolo"
+              }
+            },
+            "permissionModeMapping": {
+              "default": null,
+              "plan": "plan",
+              "read-only": "plan",
+              "safe-yolo": "auto-edit",
+              "yolo": "yolo"
+            }
+          },
+          "kind": "acp",
+          "transport": {
+            "args": [
+              "--acp"
+            ],
+            "executable": {
+              "id": "qwen-cli",
+              "kind": "systemTool"
+            },
+            "kind": "stdio"
+          }
+        },
+        "surfaces": {
+          "externalSession": {
+            "sources": [
+              {
+                "instances": [
+                  {
+                    "constants": {},
+                    "kind": "default"
+                  }
+                ],
+                "key": {
+                  "segments": [
+                    {
+                      "kind": "literal",
+                      "value": "qwenAcpSessionList"
+                    }
+                  ]
+                },
+                "resumeOnly": true,
+                "schema": {
+                  "fields": [
+                    {
+                      "kind": "literal",
+                      "name": "kind",
+                      "value": "qwenAcpSessionList"
+                    }
+                  ]
+                },
+                "sourceKind": "qwenAcpSessionList"
+              }
+            ]
+          }
         },
         "title": "Qwen Code"
       }

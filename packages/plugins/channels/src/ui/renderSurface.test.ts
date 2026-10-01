@@ -73,7 +73,20 @@ function providerContributor() {
   return {
     pluginId: 'com.example.conversation-provider',
     contributionId: 'conversation-setup',
-    immutableGenerationId: 'provider-generation-a',
+    occurrenceId: 'provider-occurrence-a',
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: 'provider-generation-a',
+      installSource: 'npm',
+    },
+  } as const;
+}
+
+function providerPortableContributor() {
+  return {
+    pluginId: 'com.example.conversation-provider',
+    contributionId: 'conversation-setup',
+    sourceCustody: { kind: 'managed', immutableGenerationId: 'provider-generation-a', installSource: 'npm' },
   } as const;
 }
 
@@ -509,7 +522,8 @@ function createChannelsSurfaceContext(
     targetedContributions: {
       target: {
         pluginId: 'happier.channels',
-        immutableGenerationId: 'channels-target-generation-a',
+        occurrenceId: 'channels-target-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' },
       },
       points: [{
         pointId: CONVERSATION_PROVIDERS_CONTRIBUTION_POINT_ID_V1,
@@ -531,6 +545,24 @@ function createChannelsSurfaceContext(
   });
 }
 
+/**
+ * The Channels page mount: the one owner of conversation bindings. Its
+ * location is the open binding id (`subPath`).
+ */
+function createChannelsPageSurfaceContext(
+  accountEncryptionMode?: 'plain' | 'e2ee',
+) {
+  return {
+    ...createChannelsSurfaceContext(accountEncryptionMode),
+    mount: {
+      kind: 'destination',
+      destination: { pluginId: 'happier.channels', localId: 'conversations' },
+      container: 'appPage',
+    },
+    target: { kind: 'app' },
+  } as const satisfies ReturnType<typeof createChannelsSurfaceContext>;
+}
+
 /** A reachable Account state: nothing on this machine contributes a provider. */
 function createChannelsSurfaceContextWithoutProviders() {
   return createSurfaceContextFixture({
@@ -542,7 +574,8 @@ function createChannelsSurfaceContextWithoutProviders() {
     targetedContributions: {
       target: {
         pluginId: 'happier.channels',
-        immutableGenerationId: 'channels-target-generation-a',
+        occurrenceId: 'channels-target-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' },
       },
       points: [{
         pointId: CONVERSATION_PROVIDERS_CONTRIBUTION_POINT_ID_V1,
@@ -562,7 +595,8 @@ function createChannelsSurfaceContextWithForeignProvider() {
     targetedContributions: {
       target: {
         pluginId: 'happier.channels',
-        immutableGenerationId: 'channels-target-generation-a',
+        occurrenceId: 'channels-target-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' },
       },
       points: [{
         pointId: CONVERSATION_PROVIDERS_CONTRIBUTION_POINT_ID_V1,
@@ -572,7 +606,12 @@ function createChannelsSurfaceContextWithForeignProvider() {
             contributor: {
               pluginId: 'com.example.alt-conversation-provider',
               contributionId: 'conversation-setup',
-              immutableGenerationId: 'other-provider-generation-a',
+              occurrenceId: 'other-provider-occurrence-a',
+              sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'other-provider-generation-a',
+                installSource: 'npm',
+              },
             },
             protocol: providerProtocol(),
             operations: [{
@@ -583,7 +622,12 @@ function createChannelsSurfaceContextWithForeignProvider() {
               contributor: {
                 pluginId: 'com.example.alt-conversation-provider',
                 contributionId: 'conversation-setup',
-                immutableGenerationId: 'other-provider-generation-a',
+                occurrenceId: 'other-provider-occurrence-a',
+                sourceCustody: {
+                  kind: 'managed',
+                  immutableGenerationId: 'other-provider-generation-a',
+                  installSource: 'npm',
+                },
               },
               role: 'setup',
               action: {
@@ -633,8 +677,9 @@ const emptyDataClient: PluginUiDataClient = {
 function createChannelsSemanticAdapter(
   dataClient: PluginUiDataClient = emptyDataClient,
   presentationHost?: PluginUiPresentationHost,
+  adapterOptions?: Parameters<typeof createPluginUiRnwSemanticSurfaceAdapter>[0],
 ): PluginUiSemanticSurfaceAdapter<typeof renderSurface> {
-  const rnwAdapter = createPluginUiRnwSemanticSurfaceAdapter();
+  const rnwAdapter = createPluginUiRnwSemanticSurfaceAdapter(adapterOptions);
   return {
     async mount(input) {
       return await rnwAdapter.mount({
@@ -818,7 +863,6 @@ function offlineConnectionRow(): OfflineChannelStateRow {
       providerPluginId: offlineMaterialization.pluginId,
       providerContributionSelection: {
         contributionId: 'test-provider',
-        immutableGenerationId: 'provider-generation-1',
       },
       providerSetupInput: { source: 'test' },
       credentialRef: null,
@@ -1091,10 +1135,10 @@ describe('Channels mounted provider setup recovery', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1106,10 +1150,10 @@ describe('Channels mounted provider setup recovery', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupRemediationOperation.point,
-        contributor: providerSetupRemediationOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1188,10 +1232,10 @@ describe('Channels mounted provider setup recovery', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1239,10 +1283,10 @@ describe('Channels mounted provider setup recovery', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1254,10 +1298,10 @@ describe('Channels mounted provider setup recovery', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupRemediationOperation.point,
-        contributor: providerSetupRemediationOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1317,10 +1361,10 @@ describe('Channels mounted provider setup recovery', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1393,10 +1437,10 @@ describe('Channels mounted provider setup recovery', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: credentialRef },
       presentation: {
@@ -1511,10 +1555,10 @@ describe('Channels mounted provider setup recovery', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: credentialRef },
       presentation: { connectedAccountLabel: 'Work account', machineDisplayName: 'Development Mac' },
@@ -1728,10 +1772,10 @@ describe('Channels mounted provider setup recovery', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: credentialRef },
       presentation: { connectedAccountLabel: 'Work account', machineDisplayName: 'Development Mac' },
@@ -1841,10 +1885,10 @@ describe('Channels mounted provider setup recovery', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -1926,10 +1970,10 @@ describe('Channels mounted provider setup recovery', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -3014,6 +3058,7 @@ describe('Channels mounted binding creation', () => {
         return null;
       },
     } satisfies PluginUiPresentationHost;
+    const openedSurfaces: (readonly [string, string])[] = [];
     const fixture = await createPluginUiTestkit({
       identity: { instanceId: 'fixture-instance-89', mountNonce: 'fixture-mount-89' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
@@ -3029,6 +3074,9 @@ describe('Channels mounted binding creation', () => {
       },
       adapter: createChannelsSemanticAdapter(emptyDataClient, presentationHost),
       handlers: {
+        openSurface: ({ view, subPath }) => {
+          openedSurfaces.push([typeof view === 'string' ? view : view.localId, subPath ?? '']);
+        },
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
         executeAction,
         readResource: async ({ resource }) => {
@@ -3162,17 +3210,14 @@ describe('Channels mounted binding creation', () => {
         fixture.getByRole('button', { name: 'Review and enable' }),
       ).resolves.toBeDefined();
 
-      // Reviewing continues in the existing binding editor — the single owner
-      // of reviewing and enabling a saved binding — opened for the exact
-      // binding id the finalize Action returned, not a bare close of the
-      // pairing view.
+      // Reviewing continues in the existing binding editor on the Channels
+      // page — the single owner of reviewing and enabling a saved binding —
+      // opened for the exact binding id the finalize Action returned.
       await fixture.press(await fixture.getByRole('button', { name: 'Review and enable' }));
       await vi.waitFor(() => {
-        expect(bindingReadIds).toEqual(['binding-pairing']);
+        expect(openedSurfaces).toEqual([['conversations', 'binding-pairing/edit']]);
       });
-      await expect(fixture.getByRole('heading', { name: 'Edit binding' })).resolves.toBeDefined();
-      await expect(fixture.getByRole('button', { name: 'Review changes' })).resolves.toBeDefined();
-      expect(document.body.textContent).not.toContain('Review and enable');
+      expect(bindingReadIds).toEqual([]);
     } finally {
       await fixture.dispose();
     }
@@ -3605,7 +3650,7 @@ describe('Channels mounted binding creation', () => {
             items: [{
               automationId: 'automation-2',
               label: 'Build report',
-              execution: { targetType: 'existing_session', enabled: true },
+              execution: { targetType: null, enabled: true },
             }],
             nextCursor: null,
           };
@@ -3673,7 +3718,7 @@ describe('Channels mounted binding creation', () => {
       const summary = document.querySelector<HTMLElement>('[data-testid="channels-binding-create-summary"]');
       expect(summary?.textContent).toContain('What an allowed sender starts');
       expect(summary?.textContent).toContain(
-        'A message from the allowed sender starts this Automation, which sends work into the existing Session it targets.',
+        'A message from the allowed sender starts this Automation, which runs its configured workflow.',
       );
       expect(summary?.textContent).toContain('Delegated authority');
       expect(summary?.textContent).toContain(
@@ -3890,7 +3935,8 @@ describe('Channels mounted binding creation', () => {
       identity: { instanceId: 'fixture-instance-97', mountNonce: 'fixture-mount-97' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -4016,7 +4062,8 @@ describe('Channels mounted binding creation', () => {
       identity: { instanceId: 'fixture-instance-98', mountNonce: 'fixture-mount-98' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -4201,7 +4248,8 @@ describe('Channels mounted binding editor', () => {
       identity: { instanceId: 'fixture-instance-100', mountNonce: 'fixture-mount-100' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -4363,7 +4411,8 @@ describe('Channels mounted binding editor', () => {
       identity: { instanceId: 'fixture-instance-101', mountNonce: 'fixture-mount-101' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContextWithForeignProvider(),
+      surfaceContext: { ...createChannelsSurfaceContextWithForeignProvider(), mount: createChannelsPageSurfaceContext().mount, target: { kind: 'app' as const } },
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -4552,7 +4601,8 @@ describe('Channels mounted binding editor', () => {
       identity: { instanceId: 'fixture-instance-102', mountNonce: 'fixture-mount-102' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -4722,7 +4772,8 @@ describe('Channels mounted binding editor', () => {
       identity: { instanceId: 'fixture-instance-103', mountNonce: 'fixture-mount-103' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -4843,7 +4894,8 @@ describe('Channels mounted binding editor', () => {
       identity: { instanceId: 'fixture-instance-104', mountNonce: 'fixture-mount-104' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -4931,7 +4983,8 @@ describe('Channels mounted binding editor', () => {
       identity: { instanceId: 'fixture-instance-105', mountNonce: 'fixture-mount-105' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -5023,7 +5076,8 @@ describe('Channels mounted binding editor', () => {
       identity: { instanceId: 'fixture-instance-106', mountNonce: 'fixture-mount-106' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -5032,6 +5086,9 @@ describe('Channels mounted binding editor', () => {
           bindingsReadCount += 1;
           return bindingsReadCount === 1 ? bindingsResource : updatedSummaryResource;
         }),
+        // The bindings list is live: another client's change arrives through
+        // the Resource watch, not a button on the page.
+        watchResource: () => ({ digest: bindingsResource.digest }),
       },
     });
 
@@ -5042,7 +5099,10 @@ describe('Channels mounted binding editor', () => {
         name: 'Enable this binding',
         state: { checked: true },
       }));
-      await pressButtonWithAccessibleLabelFragment('Refresh');
+      await act(async () => {
+        fixture.invalidateResource(BINDINGS_RESOURCE, updatedSummaryResource.digest);
+      });
+      await vi.waitFor(() => { expect(bindingsReadCount).toBeGreaterThanOrEqual(2); });
       await expect(fixture.getByText('This binding changed while you were editing')).resolves.toBeDefined();
       await fixture.press(await fixture.getByRole('button', { name: 'Review changes' }));
       await expect(fixture.findByRole('button', {
@@ -5116,7 +5176,8 @@ describe('Channels mounted binding editor', () => {
       identity: { instanceId: 'fixture-instance-107', mountNonce: 'fixture-mount-107' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -5217,7 +5278,8 @@ describe('Channels mounted binding editor', () => {
       identity: { instanceId: 'fixture-instance-108', mountNonce: 'fixture-mount-108' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(emptyDataClient, presentationHost),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -5268,7 +5330,8 @@ describe('Channels binding enablement presentation', () => {
       identity: { instanceId: 'fixture-instance-109', mountNonce: 'fixture-mount-109' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -5281,10 +5344,7 @@ describe('Channels binding enablement presentation', () => {
     });
 
     try {
-      await fixture.press(await fixture.getByRole('switch', {
-        name: 'Binding enabled',
-        state: { checked: true },
-      }));
+      await fixture.press(await fixture.getByRole('button', { name: 'Pause' }));
 
       await vi.waitFor(() => {
         expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
@@ -5324,11 +5384,12 @@ describe('Channels binding enablement presentation', () => {
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: {
-        ...createChannelsSurfaceContext(),
+        ...createChannelsPageSurfaceContext(),
         translations: {
           'plugins.channels.surface.bindingEnableFailedDescription': 'Aktualisiere die Bindungsdetails und versuche es erneut.',
         },
       },
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -5338,10 +5399,7 @@ describe('Channels binding enablement presentation', () => {
     });
 
     try {
-      await fixture.press(await fixture.getByRole('switch', {
-        name: 'Binding enabled',
-        state: { checked: true },
-      }));
+      await fixture.press(await fixture.getByRole('button', { name: 'Pause' }));
       await expect(fixture.getByText(
         'Aktualisiere die Bindungsdetails und versuche es erneut.',
       )).resolves.toBeDefined();
@@ -5366,7 +5424,8 @@ describe('Channels binding deletion presentation', () => {
       identity: { instanceId: 'fixture-instance-111', mountNonce: 'fixture-mount-111' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -5379,10 +5438,10 @@ describe('Channels binding deletion presentation', () => {
     });
 
     try {
-      await fixture.press(await fixture.getByRole('button', { name: 'Delete binding' }));
+      await fixture.press(await fixture.getByRole('button', { name: 'Unlink…' }));
       expect(executeAction).not.toHaveBeenCalled();
-      await expect(fixture.getByText('Delete this binding?')).resolves.toBeDefined();
-      await fixture.press(await fixture.getByRole('button', { name: 'Confirm deletion' }));
+      await expect(fixture.getByText('Unlink this conversation?')).resolves.toBeDefined();
+      await fixture.press(await fixture.getByRole('button', { name: 'Unlink' }));
 
       await vi.waitFor(() => {
         expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
@@ -5412,7 +5471,8 @@ describe('Channels binding deletion presentation', () => {
       identity: { instanceId: 'fixture-instance-112', mountNonce: 'fixture-mount-112' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -5428,13 +5488,13 @@ describe('Channels binding deletion presentation', () => {
     });
 
     try {
-      await fixture.press(await fixture.getByRole('button', { name: 'Delete binding' }));
+      await fixture.press(await fixture.getByRole('button', { name: 'Unlink…' }));
       expect(executeAction).not.toHaveBeenCalled();
-      await expect(fixture.getByText('Delete this binding?')).resolves.toBeDefined();
-      await fixture.press(await fixture.getByRole('button', { name: 'Confirm deletion' }));
+      await expect(fixture.getByText('Unlink this conversation?')).resolves.toBeDefined();
+      await fixture.press(await fixture.getByRole('button', { name: 'Unlink' }));
       await expect(fixture.getByText('Could not confirm binding deletion')).resolves.toBeDefined();
       await expect(fixture.findByRole('button', {
-        name: 'Delete binding',
+        name: 'Unlink…',
         state: { disabled: true },
       })).resolves.toBeDefined();
 
@@ -5444,7 +5504,7 @@ describe('Channels binding deletion presentation', () => {
         expect(resolveBindingsRefresh).toBeTypeOf('function');
       });
       await expect(fixture.findByRole('button', {
-        name: 'Delete binding',
+        name: 'Unlink…',
         state: { disabled: true },
       })).resolves.toBeDefined();
 
@@ -5452,7 +5512,7 @@ describe('Channels binding deletion presentation', () => {
         resolveBindingsRefresh?.(bindingsResource);
       });
       await vi.waitFor(async () => {
-        const deleteBinding = await fixture.getByRole('button', { name: 'Delete binding' });
+        const deleteBinding = await fixture.getByRole('button', { name: 'Unlink…' });
         expect(deleteBinding.state?.disabled).not.toBe(true);
       });
       expect(executeAction).toHaveBeenCalledTimes(1);
@@ -5469,7 +5529,8 @@ describe('Channels binding deletion presentation', () => {
       identity: { instanceId: 'fixture-instance-113', mountNonce: 'fixture-mount-113' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -5485,13 +5546,12 @@ describe('Channels binding deletion presentation', () => {
 
     try {
       await vi.waitFor(() => {
-        expect(document.querySelector('[data-testid="channels-binding-binding-1"]')?.getAttribute('aria-label'))
+        expect(document.querySelector('[data-testid="channels-binding-deleting-binding-1"]')?.textContent)
           .toContain('Deletion cleanup in progress');
       });
-      await expect(fixture.getByRole('switch', {
-        name: 'Binding enabled',
-        state: { checked: false, disabled: true },
-      })).resolves.toBeDefined();
+      // A conversation being unlinked offers no way to turn it on, pause it or edit it.
+      await expect(fixture.queryByRole('button', { name: 'Turn on' })).resolves.toBeUndefined();
+      await expect(fixture.queryByRole('button', { name: 'Pause' })).resolves.toBeUndefined();
       await expect(fixture.queryByRole('button', { name: 'Edit binding' })).resolves.toBeUndefined();
       expect(executeAction).not.toHaveBeenCalled();
     } finally {
@@ -5940,10 +6000,10 @@ describe('Channels connection lifecycle actions', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: credentialRef },
       presentation: {
@@ -6066,10 +6126,10 @@ describe('Channels connection lifecycle actions', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -6165,10 +6225,10 @@ describe('Channels connection lifecycle actions', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -6283,10 +6343,10 @@ describe('Channels connection lifecycle actions', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -6495,10 +6555,10 @@ describe('Channels connection lifecycle actions', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -6991,7 +7051,8 @@ describe('Channels destructive confirmation focus', () => {
       identity: { instanceId: 'fixture-instance-134', mountNonce: 'fixture-mount-134' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(emptyDataClient, focusTransferPresentationHost()),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -7001,7 +7062,7 @@ describe('Channels destructive confirmation focus', () => {
     });
 
     try {
-      await fixture.press(await fixture.getByRole('button', { name: 'Delete binding' }));
+      await fixture.press(await fixture.getByRole('button', { name: 'Unlink…' }));
       const confirm = document.querySelector<HTMLElement>('[data-testid="channels-binding-delete-confirm-binding-1"]');
       expect(confirm).not.toBeNull();
       expect(document.activeElement).toBe(confirm);
@@ -7058,7 +7119,8 @@ describe('Channels offline Account-local binding policy', () => {
       identity: { instanceId: 'fixture-instance-136', mountNonce: 'fixture-mount-136' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(account.dataClient),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -7068,10 +7130,7 @@ describe('Channels offline Account-local binding policy', () => {
     try {
       // Proves the cold-offline read path reached the canonical Account rows
       // before any assertion about what the surface offers to edit.
-      await expect(fixture.getByRole('switch', {
-        name: 'Binding enabled',
-        state: { checked: false },
-      })).resolves.toBeDefined();
+      await expect(fixture.getByRole('button', { name: 'Turn on' })).resolves.toBeDefined();
       await fixture.press(await fixture.getByRole('button', { name: 'Edit binding' }));
       await fixture.press(await fixture.getByRole('radio', {
         name: 'Direct mentions only',
@@ -7192,7 +7251,8 @@ describe('Channels offline Account-local binding policy', () => {
       identity: { instanceId: 'fixture-instance-139', mountNonce: 'fixture-mount-139' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(account.dataClient),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -7202,16 +7262,13 @@ describe('Channels offline Account-local binding policy', () => {
     try {
       // Proves the cold-offline read path reached the canonical Account rows
       // before any assertion about what the surface offers to edit.
-      await expect(fixture.getByRole('switch', {
-        name: 'Binding enabled',
-        state: { checked: false },
-      })).resolves.toBeDefined();
+      await expect(fixture.getByRole('button', { name: 'Turn on' })).resolves.toBeDefined();
       await fixture.press(await fixture.getByRole('button', { name: 'Edit binding' }));
       await expect(fixture.queryByRole('button', {
         name: 'Re-resolve conversation and allowed senders',
       })).resolves.toBeUndefined();
       await expect(fixture.queryByRole('button', { name: 'Change target' })).resolves.toBeUndefined();
-      await expect(fixture.queryByRole('button', { name: 'Delete binding' })).resolves.toBeUndefined();
+      await expect(fixture.queryByRole('button', { name: 'Unlink…' })).resolves.toBeUndefined();
       expect(account.collection.batches).toHaveLength(0);
     } finally {
       await fixture.dispose();
@@ -7224,7 +7281,8 @@ describe('Channels offline Account-local binding policy', () => {
       identity: { instanceId: 'fixture-instance-140', mountNonce: 'fixture-mount-140' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(account.dataClient),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -7296,7 +7354,8 @@ describe('Channels offline Account-local binding policy', () => {
       identity: { instanceId: 'fixture-instance-141', mountNonce: 'fixture-mount-141' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(account.dataClient),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -7345,7 +7404,8 @@ describe('Channels offline Account-local binding policy', () => {
       identity: { instanceId: 'fixture-instance-142', mountNonce: 'fixture-mount-142' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(account.dataClient),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -7403,7 +7463,8 @@ describe('Channels offline Account-local binding policy', () => {
       identity: { instanceId: 'fixture-instance-143', mountNonce: 'fixture-mount-143' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(account.dataClient),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -7508,7 +7569,8 @@ describe('Channels offline Account-local sender revocation', () => {
       identity: { instanceId: 'fixture-instance-144', mountNonce: 'fixture-mount-144' },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath: 'binding-1',
       adapter: createChannelsSemanticAdapter(account.dataClient),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -7565,12 +7627,32 @@ describe('Channels Session destination', () => {
     return createSurfaceContextFixture({
       mount: {
         kind: 'embedded',
-        role: 'sessionWidget',
+        role: 'widget',
         presentation: 'content',
       },
       target: { kind: 'session', sessionId },
     });
   }
+
+  it('shows the current Session conversations from Account rows without daemon Resources', async () => {
+    const account = createOfflineChannelStateFixture();
+    const fixture = await createPluginUiTestkit({
+      identity: { instanceId: 'fixture-session-offline', mountNonce: 'fixture-session-offline' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
+      surface: renderSurface,
+      surfaceContext: createSessionConversationsContext('session-1'),
+      adapter: createChannelsSemanticAdapter(account.dataClient),
+    });
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="channels-session-conversations"]')).not.toBeNull();
+        expect(document.body.textContent).toContain('Example conversation');
+      });
+      expect(document.querySelector('[data-testid="channels-account-local-bindings"]')).toBeNull();
+    } finally {
+      await fixture.dispose();
+    }
+  });
 
   const sessionConversationsResource = jsonResource({
     bindings: [{
@@ -7630,8 +7712,13 @@ describe('Channels Session destination', () => {
       await vi.waitFor(() => {
         expect(mount.container.textContent).toContain('Example conversation');
       });
-      expect(mount.container.textContent).toContain('Mirror Session');
-      expect(mount.container.textContent).toContain('Direct mentions only');
+      // What the conversation hears and gets is in the row, one press away (round 2, XP).
+      const row = mount.container.querySelector<HTMLElement>('[data-testid="channels-session-conversation:binding-session-1"]');
+      await act(async () => { row?.click(); });
+      await vi.waitFor(() => {
+        expect(mount.container.textContent).toContain('Mirror Session');
+        expect(mount.container.textContent).toContain('Direct mentions only');
+      });
       // The Settings vertical is a different destination of the same artifact.
       // Mounting it here would offer Account-wide binding mutation on a Session.
       expect(mount.container.textContent).not.toContain('Conversation connections');
@@ -7641,7 +7728,7 @@ describe('Channels Session destination', () => {
     }
   });
 
-  it('renders the same read-only Session conversations through the public sessionWidget role', async () => {
+  it('renders the same read-only Session conversations through the public widget role', async () => {
     const surface = createSessionConversationsWidgetContext('session-under-test');
     const baseHostApi = createHostApiStub(surface);
     const hostApi = createHostApiStub(surface, {
@@ -7755,7 +7842,7 @@ describe('Channels Session destination', () => {
     }
   });
 
-  it('names the affected conversation, its reason, and the one Settings owner that can repair it', async () => {
+  it('names the affected conversation and its reason, and opens that conversation in Channels', async () => {
     // Before this the Composer warning opened an ordinary metadata list: the
     // person could see that something was wrong and had no way to learn what
     // or to reach the control that fixes it.
@@ -7783,17 +7870,40 @@ describe('Channels Session destination', () => {
       expect(mount.container.querySelector(
         '[data-testid="channels-session-conversation-attention:binding-session-1"]',
       )).not.toBeNull();
-      const manage = mount.container.querySelector<HTMLElement>(
-        '[data-testid="channels-session-conversations-manage"]',
+      const open = mount.container.querySelector<HTMLElement>(
+        '[data-testid="channels-session-conversation-open:binding-session-1"]',
       );
-      expect(manage).not.toBeNull();
-      await act(async () => { manage?.click(); });
-      // Recovery keeps exactly one owner: this routes to the Settings page and
-      // performs no Account mutation of its own.
-      expect(openSurface).toHaveBeenCalledWith({
-        pluginId: 'happier.channels',
-        localId: 'connections',
-      });
+      expect(open).not.toBeNull();
+      await act(async () => { open?.click(); });
+      // The tab stays read-only: its one exit opens this exact conversation on
+      // the Channels page, the one owner that edits it, and mutates nothing.
+      expect(openSurface).toHaveBeenCalledWith(
+        { pluginId: 'happier.channels', localId: 'conversations' },
+        undefined,
+        { subPath: 'binding-session-1' },
+      );
+    } finally {
+      mount.unmount();
+    }
+  });
+
+  it('shows a deliberately paused binding under Paused, never as an alert', async () => {
+    const paused = jsonResource({
+      bindings: [{
+        bindingId: 'binding-session-1', revision: 1, connectionId: 'connection-1',
+        endpoint: { audience: 'direct', label: 'Example conversation' },
+        target: { kind: 'session', summary: 'session-under-test' },
+        inputMode: 'directMentionsOnly', deliveryMode: 'mirrorSession', approval: { kind: 'off' },
+        enabled: false, deletionState: 'none',
+      }],
+      attention: [{ bindingId: 'binding-session-1', reason: 'bindingDisabled' }],
+    }, 'paused');
+    const mount = await mountSessionDestination(paused);
+    try {
+      await vi.waitFor(() => expect(mount.container.textContent).toContain('Paused'));
+      expect(mount.container.querySelector('[data-testid="channels-session-conversation-attention:binding-session-1"]')).toBeNull();
+      expect(mount.container.querySelector('[role="alert"]')).toBeNull();
+      expect(mount.container.textContent).not.toContain('repaired');
     } finally {
       mount.unmount();
     }
@@ -7862,6 +7972,205 @@ describe('Channels Session destination', () => {
       expect(mount.container.textContent).not.toContain('Conversation connections');
     } finally {
       mount.unmount();
+    }
+  });
+});
+
+/**
+ * Plugin tabs round 2 (lab `plugin-tabs` X1 / XP / XL / XE): the session tab groups its conversations by what they
+ * are doing, each row opens in place with what it hears and gets and its own actions, and the header "+" links one.
+ */
+describe('Channels Session tab (round 2)', () => {
+  const sessionTabSurface = () => createSurfaceContextFixture({
+    mount: {
+      kind: 'destination',
+      destination: { pluginId: 'happier.channels', localId: 'session-conversations' },
+      container: 'rightSidebarTab',
+    },
+    target: { kind: 'session', sessionId: 'session-under-test' },
+  });
+  const sessionBinding = (overrides: Readonly<Record<string, unknown>>) => ({
+    revision: 3,
+    connectionId: 'connection-1',
+    target: { kind: 'session', summary: 'session-under-test' },
+    inputMode: 'addressedMessages',
+    deliveryMode: 'repliesOnly',
+    approval: { kind: 'off' },
+    enabled: true,
+    deletionState: 'none',
+    ...overrides,
+  });
+  const botConnections = (() => {
+    const decoded = JSON.parse(new TextDecoder().decode(connectionsResource.bytes)) as { connections: Record<string, unknown>[] };
+    return jsonResource({
+      connections: decoded.connections.map((connection) => ({ ...connection, integrationPrincipalLabel: '@happier_ops_bot' })),
+    }, 'c');
+  })();
+  const threeConversations = jsonResource({
+    bindings: [
+      sessionBinding({ bindingId: 'binding-need', endpoint: { audience: 'direct', label: 'Leeroy Brun' } }),
+      sessionBinding({ bindingId: 'binding-live', endpoint: { audience: 'shared', label: 'happier-dev' } }),
+      sessionBinding({ bindingId: 'binding-paused', endpoint: { audience: 'shared', label: 'Ops on-call' }, enabled: false }),
+    ],
+    attention: [
+      { bindingId: 'binding-need', reason: 'providerCredentialInvalid' },
+      { bindingId: 'binding-paused', reason: 'bindingDisabled' },
+    ],
+  }, 'e');
+
+  async function mountSessionTab(input: Readonly<{
+    conversations: ResourceContent;
+    executeAction?: (input: PluginUiTestkitExecuteActionInput) => JsonValue | Promise<JsonValue>;
+    opened?: (readonly [string, string])[];
+    readConversations?: () => ResourceContent | Promise<ResourceContent>;
+  }>) {
+    return await createPluginUiTestkit({
+      identity: { instanceId: 'fixture-session-tab', mountNonce: 'fixture-session-tab' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
+      surface: renderSurface,
+      surfaceContext: sessionTabSurface(),
+      adapter: createChannelsSemanticAdapter(emptyDataClient, undefined, { paneHeader: true, overlays: true }),
+      handlers: {
+        ...(input.executeAction === undefined ? {} : { executeAction: input.executeAction }),
+        openSurface: ({ view, subPath }) => {
+          input.opened?.push([typeof view === 'string' ? view : view.localId, subPath ?? '']);
+        },
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === 'session-conversations-v1') return input.readConversations?.() ?? input.conversations;
+          if (localId === CONNECTIONS_RESOURCE.localId) return botConnections;
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+  }
+
+  it('groups the conversations as Needs you, Live and Paused, each row naming its bot, and says the cause once', async () => {
+    const fixture = await mountSessionTab({ conversations: threeConversations });
+    try {
+      await expect(fixture.findByRole('button', { name: 'happier-dev' })).resolves.toBeDefined();
+      await expect(fixture.getByText('Needs you')).resolves.toBeDefined();
+      await expect(fixture.getByText('Live')).resolves.toBeDefined();
+      await expect(fixture.getByText('Paused')).resolves.toBeDefined();
+      await expect(fixture.getByText('Connected Account credential needs attention')).resolves.toBeDefined();
+      // The healthy rows say who they are and nothing else; what they hear and get waits for the row to open.
+      expect(document.body.textContent).toContain('@happier_ops_bot');
+      expect(document.body.textContent).not.toContain('Addressed messages');
+      // Paused is the group, not a banner on the row.
+      expect(document.body.textContent).not.toContain('repaired');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('opens a conversation in place with what it hears and gets, and pauses it from there', async () => {
+    const executeAction = vi.fn(async () => ({ bindingId: 'binding-live', revision: 4, enabled: false }) as JsonValue);
+    const fixture = await mountSessionTab({ conversations: threeConversations, executeAction });
+    try {
+      await fixture.press(await fixture.findByRole('button', { name: 'happier-dev' }));
+      await expect(fixture.findByRole('button', { name: 'Pause' })).resolves.toBeDefined();
+      await expect(fixture.getByText('Hears')).resolves.toBeDefined();
+      expect(document.body.textContent).toContain('Addressed messages');
+      await fixture.press(await fixture.getByRole('button', { name: 'Pause' }));
+      await vi.waitFor(() => {
+        expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
+          action: CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingSetEnabled,
+          input: { bindingId: 'binding-live', expectedRevision: 3, enabled: false },
+        }));
+      });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('keeps healthy retained conversations quiet during a refresh after Pause', async () => {
+    let reads = 0;
+    let finishRead: ((value: ResourceContent) => void) | undefined;
+    const readPending = new Promise<ResourceContent>((resolve) => { finishRead = resolve; });
+    const fixture = await mountSessionTab({
+      conversations: threeConversations,
+      executeAction: async () => ({ bindingId: 'binding-live', revision: 4, enabled: false }),
+      readConversations: () => ++reads === 1 ? threeConversations : readPending,
+    });
+    try {
+      await fixture.press(await fixture.findByRole('button', { name: 'happier-dev' }));
+      await fixture.press(await fixture.findByRole('button', { name: 'Pause' }));
+      await vi.waitFor(() => expect(reads).toBeGreaterThan(1));
+      expect(document.body.textContent).toContain('happier-dev');
+      expect(document.querySelector('[data-testid="channels-session-conversations-resource-refreshing"]')).toBeNull();
+    } finally {
+      finishRead?.(threeConversations);
+      await fixture.dispose();
+    }
+  });
+
+  it('resumes a paused conversation, and unlinks one only after an inline confirm', async () => {
+    const executeAction = vi.fn(async () => ({}) as JsonValue);
+    const fixture = await mountSessionTab({ conversations: threeConversations, executeAction });
+    try {
+      await fixture.press(await fixture.findByRole('button', { name: 'Ops on-call' }));
+      await fixture.press(await fixture.findByRole('button', { name: 'Resume' }));
+      await vi.waitFor(() => {
+        expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
+          action: CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingSetEnabled,
+          input: { bindingId: 'binding-paused', expectedRevision: 3, enabled: true },
+        }));
+      });
+
+      await fixture.press(await fixture.getByRole('button', { name: 'Unlink Ops on-call' }));
+      expect(executeAction).toHaveBeenCalledTimes(1);
+      await fixture.press(await fixture.findByRole('button', { name: 'Unlink' }));
+      await vi.waitFor(() => {
+        expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
+          action: CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingDelete,
+          input: { bindingId: 'binding-paused', expectedRevision: 3 },
+        }));
+      });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('says when a live conversation last got a reply, from the delivery records (adopted default 1)', async () => {
+    const atMs = Date.now() - 5 * 60_000;
+    const withDelivery = jsonResource({
+      bindings: [sessionBinding({ bindingId: 'binding-live', endpoint: { audience: 'shared', label: 'happier-dev' } })],
+      lastDeliveries: [{ bindingId: 'binding-live', atMs, outcome: 'delivered' }],
+    }, 'd');
+    const fixture = await mountSessionTab({ conversations: withDelivery });
+    try {
+      await fixture.press(await fixture.findByRole('button', { name: 'happier-dev' }));
+      await expect(fixture.getByText('Last reply')).resolves.toBeDefined();
+      const expected = new Intl.DateTimeFormat(sessionTabSurface().locale, { hour: '2-digit', minute: '2-digit' }).format(atMs);
+      expect(document.body.textContent?.match(/Last reply.{0,24}/u)?.[0]).toContain(expected);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('puts "+" in the pane header, opening Channels\' link journey on the one connected bot', async () => {
+    const opened: (readonly [string, string])[] = [];
+    const fixture = await mountSessionTab({ conversations: threeConversations, opened });
+    try {
+      await fixture.press(await fixture.findByRole('button', { name: 'Link a conversation' }));
+      await vi.waitFor(() => expect(opened).toContainEqual(['conversations', 'link/connection-1']));
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('invites linking a conversation when none is linked yet', async () => {
+    const opened: (readonly [string, string])[] = [];
+    const fixture = await mountSessionTab({ conversations: jsonResource({ bindings: [] }, '0'), opened });
+    try {
+      await vi.waitFor(() => expect(document.body.textContent).toContain('Talk to this session from your chats'));
+      const links = await fixture.getAllByRole('button', { name: 'Link a conversation' });
+      // The header "+" and the empty state's primary: the add sits in the same place before and after the first link.
+      expect(links.length).toBe(2);
+      await fixture.press(links[links.length - 1]!);
+      await vi.waitFor(() => expect(opened).toContainEqual(['conversations', 'link/connection-1']));
+    } finally {
+      await fixture.dispose();
     }
   });
 });
@@ -8042,12 +8351,13 @@ describe('Channels collapsed row identity', () => {
     });
   }
 
-  it('mount the labeled binding rows with account, provider, and endpoint facts', async () => {
-    const fixture = await createPluginUiTestkit({
-      identity: { instanceId: 'fixture-instance-146', mountNonce: 'fixture-mount-146' },
+  it('names each linked conversation by its endpoint label or short identity, and its page by its bot', async () => {
+    const mountAt = async (subPath: string, instance: string) => await createPluginUiTestkit({
+      identity: { instanceId: instance, mountNonce: instance },
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
-      surfaceContext: createChannelsSurfaceContext(),
+      surfaceContext: createChannelsPageSurfaceContext(),
+      subPath,
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
@@ -8063,24 +8373,32 @@ describe('Channels collapsed row identity', () => {
       },
     });
 
+    // The page's own list (what a phone shows at the root).
+    const index = await mountAt('', 'fixture-instance-146');
     try {
-      const labeled = await collapsedRowByIdentity('channels-binding-binding-1');
-      // The integration account is its own fact, distinct from the provider
-      // brand and the endpoint label, in both the visible row and its
-      // accessible name.
-      expect(labeled.accessibleName).toContain('Project room');
-      expect(labeled.accessibleName).toContain('Provider:');
-      expect(labeled.accessibleName).toContain('Account: Team bot');
-      expect(labeled.text).toContain('Team bot');
-
-      const unlabeled = await collapsedRowByIdentity('channels-binding-binding-Qm2xwAbCdEfGh7k');
+      const labeled = await collapsedRowByIdentity('channels-page-row-binding-1');
+      expect(labeled.text).toContain('Project room');
+      const unlabeled = await collapsedRowByIdentity('channels-page-row-binding-Qm2xwAbCdEfGh7k');
       // Without an endpoint label the row names itself by its short stable
       // identity rather than a generic word shared by every unlabeled row.
-      expect(unlabeled.accessibleName).toContain('Qm2xwAbC');
       expect(unlabeled.text).toContain('Qm2xwAbC');
       expect(unlabeled.text).not.toContain('External conversation');
     } finally {
-      await fixture.dispose();
+      await index.dispose();
+    }
+
+
+    // One conversation: the integration account is its own fact beside the
+    // provider and the endpoint.
+    const page = await mountAt('binding-1', 'fixture-instance-146b');
+    try {
+      await vi.waitFor(() => {
+        const header = document.querySelector('[data-testid="channels-binding-binding-1"]')?.textContent ?? '';
+        expect(header).toContain('Project room');
+        expect(header).toContain('Team bot');
+      });
+    } finally {
+      await page.dispose();
     }
   });
 
@@ -8223,10 +8541,10 @@ describe('Channels first connection continuation', () => {
       selection: {
         target: {
           pluginId: 'happier.channels',
-          immutableGenerationId: 'channels-target-generation-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-target-root-a' } as const,
         },
         point: providerSetupOperation.point,
-        contributor: providerSetupOperation.contributor,
+        contributor: providerPortableContributor(),
       },
       connectedAccount: { kind: 'none' as const },
       presentation: { connectedAccountLabel: null, machineDisplayName: null },
@@ -8341,6 +8659,190 @@ describe('Channels first connection continuation', () => {
           request.action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate
         )),
       ).toHaveLength(1);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+});
+
+describe('Channels page (the one owner of linked conversations)', () => {
+  const pausedBindingsResource = jsonResource({
+    bindings: [{
+      bindingId: 'binding-1',
+      revision: 3,
+      connectionId: 'connection-1',
+      endpoint: { audience: 'shared', label: 'Paired room' },
+      target: { kind: 'session', summary: 'session-7' },
+      inputMode: 'addressedMessages',
+      deliveryMode: 'repliesOnly',
+      approval: { kind: 'off' },
+      enabled: false,
+      deletionState: 'none',
+    }],
+  }, '4');
+  const noBindingsResource = jsonResource({ bindings: [] }, '5');
+  const noConnectionsResource = jsonResource({ connections: [] }, '7');
+  const readerFor = (bindings: ResourceContent, connections: ResourceContent = connectionsResource) => (
+    async ({ resource }: Readonly<{ resource: string | Readonly<{ localId: string }> }>) => {
+      const localId = typeof resource === 'string' ? resource : resource.localId;
+      if (localId === BINDINGS_RESOURCE.localId) return bindings;
+      if (localId === CONNECTIONS_RESOURCE.localId) return connections;
+      throw new Error(`Unexpected Resource: ${localId}`);
+    }
+  );
+  const opened = (calls: readonly (readonly [string, string])[]) => calls.map(([view, subPath]) => `${view}:${subPath}`);
+
+  it('shows a selection prompt beside its column and the list when the column is hidden', async () => {
+    const visible = await mountPage({
+      subPath: '',
+      surfaceContext: { ...createChannelsPageSurfaceContext(), page: { columnVisible: true } },
+    });
+    try {
+      await vi.waitFor(async () => { await visible.fixture.getByText('Choose a conversation'); });
+      await expect(visible.fixture.queryByText('Example conversation')).resolves.toBeUndefined();
+    } finally {
+      await visible.fixture.dispose();
+    }
+    const hidden = await mountPage({
+      subPath: '',
+      surfaceContext: { ...createChannelsPageSurfaceContext(), page: { columnVisible: false } },
+    });
+    try {
+      await vi.waitFor(async () => { await hidden.fixture.getByText('Example conversation'); });
+    } finally {
+      await hidden.fixture.dispose();
+    }
+  });
+
+  async function mountPage(input: Readonly<{
+    subPath: string;
+    bindings?: ResourceContent;
+    connections?: ResourceContent;
+    executeAction?: (request: PluginUiTestkitExecuteActionInput) => Promise<JsonValue>;
+    surfaceContext?: ReturnType<typeof createChannelsSurfaceContext>;
+  }>) {
+    const openedSurfaces: (readonly [string, string])[] = [];
+    const fixture = await createPluginUiTestkit({
+      identity: { instanceId: `channels-page-${input.subPath}`, mountNonce: `channels-page-${input.subPath}` },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
+      surface: renderSurface,
+      surfaceContext: input.surfaceContext ?? createChannelsPageSurfaceContext(),
+      subPath: input.subPath,
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+        executeAction: input.executeAction ?? (async ({ action }) => {
+          throw new Error(`Unexpected mounted Action: ${String(action)}`);
+        }),
+        readResource: readerFor(input.bindings ?? bindingsResource, input.connections),
+        openSurface: ({ view, subPath }) => {
+          openedSurfaces.push([typeof view === 'string' ? view : view.localId, subPath ?? '']);
+        },
+      },
+    });
+    return { fixture, openedSurfaces };
+  }
+
+  it('keeps bots and linking in Settings and sends every linked conversation to Channels', async () => {
+    const { fixture, openedSurfaces } = await mountPage({ subPath: '', surfaceContext: createChannelsSurfaceContext() });
+    try {
+      await expect(fixture.findByRole('button', { name: 'Open Channels' })).resolves.toBeDefined();
+      // Settings no longer carries a second writer for linked conversations.
+      await expect(fixture.queryByRole('button', { name: 'Edit binding' })).resolves.toBeUndefined();
+      await expect(fixture.queryByRole('button', { name: 'Pause' })).resolves.toBeUndefined();
+      await expect(fixture.queryByRole('button', { name: 'Unlink…' })).resolves.toBeUndefined();
+      await fixture.press(await fixture.getByRole('button', { name: 'Open Channels' }));
+      expect(opened(openedSurfaces)).toEqual(['conversations:']);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('asks for a bot first when none is connected', async () => {
+    const { fixture, openedSurfaces } = await mountPage({
+      subPath: '',
+      bindings: noBindingsResource,
+      connections: noConnectionsResource,
+    });
+    try {
+      await fixture.press(await fixture.findByRole('button', { name: 'Connect a bot' }));
+      expect(opened(openedSurfaces)).toEqual(['connections:']);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('offers linking a conversation once a bot is connected and nothing is linked', async () => {
+    const { fixture, openedSurfaces } = await mountPage({ subPath: '', bindings: noBindingsResource });
+    try {
+      await vi.waitFor(async () => { await fixture.getByText('Link a conversation to a session'); });
+      await fixture.press(await fixture.getByRole('button', { name: 'Link a conversation' }));
+      expect(opened(openedSurfaces)).toEqual(['conversations:link']);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('pauses a conversation and turns a paused one on through the canonical enablement Action', async () => {
+    const executeAction = vi.fn(async ({ action }: PluginUiTestkitExecuteActionInput): Promise<JsonValue> => {
+      if (action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingSetEnabled) return { kind: 'updated' };
+      throw new Error(`Unexpected mounted Action: ${String(action)}`);
+    });
+    const live = await mountPage({ subPath: 'binding-1', executeAction });
+    try {
+      await vi.waitFor(async () => { await live.fixture.getByText('Talks to'); });
+      await live.fixture.press(await live.fixture.getByRole('button', { name: 'Pause' }));
+      await vi.waitFor(() => {
+        expect(executeAction).toHaveBeenLastCalledWith(expect.objectContaining({
+          action: CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingSetEnabled,
+          input: { bindingId: 'binding-1', expectedRevision: 1, enabled: false },
+        }));
+      });
+    } finally {
+      await live.fixture.dispose();
+    }
+
+    const paused = await mountPage({ subPath: 'binding-1', bindings: pausedBindingsResource, executeAction });
+    try {
+      // A paused conversation says why and offers one way back; Pause is gone.
+      await paused.fixture.press(await paused.fixture.findByRole('button', { name: 'Turn on' }));
+      await expect(paused.fixture.queryByRole('button', { name: 'Pause' })).resolves.toBeUndefined();
+      await vi.waitFor(() => {
+        expect(executeAction).toHaveBeenLastCalledWith(expect.objectContaining({
+          action: CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingSetEnabled,
+          input: { bindingId: 'binding-1', expectedRevision: 3, enabled: true },
+        }));
+      });
+    } finally {
+      await paused.fixture.dispose();
+    }
+  });
+
+  it('opens the review editor for a conversation handed over at `<bindingId>/edit`', async () => {
+    const readIds: unknown[] = [];
+    const { fixture } = await mountPage({
+      subPath: 'binding-1/edit',
+      executeAction: async ({ action, input }) => {
+        if (action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingRead) {
+          readIds.push((input as Readonly<{ bindingId?: string }>).bindingId);
+          return { kind: 'notFound' };
+        }
+        throw new Error(`Unexpected mounted Action: ${String(action)}`);
+      },
+    });
+    try {
+      await vi.waitFor(() => { expect(readIds).toEqual(['binding-1']); });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('says so when the location names a conversation that is no longer linked', async () => {
+    const { fixture, openedSurfaces } = await mountPage({ subPath: 'binding-gone' });
+    try {
+      await vi.waitFor(async () => { await fixture.getByText('This conversation is no longer linked'); });
+      await fixture.press(await fixture.getByRole('button', { name: 'Show all conversations' }));
+      expect(opened(openedSurfaces)).toEqual(['conversations:']);
     } finally {
       await fixture.dispose();
     }

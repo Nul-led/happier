@@ -34,6 +34,43 @@ test('plugin-sdk workspace bundling uses the canonical repository bundle lock by
   );
 });
 
+test('runtime compilation leaves public-toolchain checks to the check lane', () => {
+  const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.doesNotMatch(packageJson.scripts['build:prepared'], /prepare:declarations:prepared|check:action-type-map/u);
+  assert.doesNotMatch(packageJson.scripts['build:prepared'], /api-governance|public-toolchain/u);
+  assert.match(packageJson.scripts['check:api-governance'], /--run-script=check:api-governance:locked/u);
+  assert.match(packageJson.scripts['check:api-governance:locked'], /--profile plugin-sdk --check/u);
+  assert.match(packageJson.scripts['check:public-toolchain'], /--run-script=check:public-toolchain:prepared/u);
+  assert.match(packageJson.scripts['check:public-toolchain:prepared'], /generatePublicToolchainCompatibility\.mjs --check/u);
+  assert.match(packageJson.scripts['prepack:prepared'], /api-governance\/cli\.mjs --profile plugin-sdk --write/u);
+});
+
+test('internal SDK dependency builds admit a stale Action map while publication gates reject it', async (t) => {
+  const directory = await mkdtemp(resolve(tmpdir(), 'happier-sdk-stale-action-map-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const { scripts } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  await mkdir(resolve(directory, 'scripts'), { recursive: true });
+  await writeFile(resolve(directory, 'package.json'), JSON.stringify({
+    name: '@fixture/sdk', private: true, type: 'module',
+    scripts: {
+      ...scripts,
+      // Compiler and Action-generator subprocesses are genuine system boundaries.
+      // The actual package-script graph and prepared-script runner remain real.
+      'build:compiled': 'node ./scripts/compile.mjs',
+    },
+  }));
+  await writeFile(resolve(directory, 'scripts/compile.mjs'),
+    "import { writeFileSync } from 'node:fs'; writeFileSync('compiled', 'runtime emitted');\n");
+  await writeFile(resolve(directory, 'scripts/generateActionTypeMap.mjs'),
+    "throw new Error('Generated Action type map is stale: result field changed');\n");
+  await assert.doesNotReject(() => runPluginSdkPreparedScript('build:prepared', { pluginSdkDir: directory }));
+  assert.equal(await readFile(resolve(directory, 'compiled'), 'utf8'), 'runtime emitted');
+  for (const gate of ['check:prepare:api-governance:prepared', 'prepack:prepared', 'prepare:declarations:prepared', 'generated:finite']) {
+    await assert.rejects(() => runPluginSdkPreparedScript(gate, { pluginSdkDir: directory }),
+      undefined, `${gate} must retain rejection of the stale Action map`);
+  }
+});
+
 test('plugin-sdk workspace bundling preserves an explicit lock override', () => {
   assert.equal(
     resolvePluginSdkWorkspaceBundleLockPath({ repoRoot: '/repo', lockPath: '/tmp/explicit.lock' }),
@@ -101,7 +138,7 @@ test('plugin-sdk prepared readers preserve the caller environment until their sc
     },
     spawnImpl(command, args, options) {
       calls.push({ command, args, options });
-      queueMicrotask(() => child.emit('exit', 0, null));
+      queueMicrotask(() => child.emit('close', 0, null));
       return child;
     },
   });
@@ -117,6 +154,7 @@ test('plugin-sdk prepared readers preserve the caller environment until their sc
         HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: 'held-by-reader',
       },
       stdio: 'inherit',
+      ownedProcessGroup: true,
     },
   }]);
 });
@@ -179,7 +217,7 @@ test('plugin-sdk keeps publication preparation separate from ordinary source val
   const adjacentScript = packageJson.scripts['test:local:adjacent'];
   assert.doesNotMatch(adjacentScript, /bundleWorkspaceDeps|prepare:declarations/u);
   assert.ok(
-    adjacentScript.startsWith('node ./scripts/buildExampleProjects.mjs --yarn=automation-event-source,action-contract-producer,triage-source-target,triage-source-contributor,public-authoring --happier-dev=session-agent && node --test '),
+    adjacentScript.startsWith('node ./scripts/buildExampleProjects.mjs --yarn=automation-event-source,action-contract-producer,triage-source-target,triage-source-contributor --happier-dev=public-authoring,session-agent && node --test '),
     'the managed isolated build for every dist-importing example must immediately precede the SDK unit lane test batch',
   );
   const adjacentNodeTests = adjacentScript.slice(adjacentScript.indexOf('node --test '));

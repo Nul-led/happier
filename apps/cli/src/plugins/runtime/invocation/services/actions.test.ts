@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+    ApiTokenGrantV1Schema,
     createActionExecutor,
     normalizeActionsSettingsV1,
     type ActionExecutorContext,
@@ -121,7 +122,19 @@ describe('plugin invocation ActionsService', () => {
             serverId: 'home-profile-1',
             serverIdentityId: 'home-identity-1',
             actionRequestId: 'outer-request-1',
-            externalActionCredential: { accountId: 'account-1', principalId: 'pat-principal-1', credentialId: 'pat-1' },
+            externalActionCredential: {
+                accountId: 'account-1', principalId: 'pat-principal-1', credentialId: 'pat-1',
+                grant: ApiTokenGrantV1Schema.parse({
+                    v: 1,
+                    actions: { families: [], ids: ['teams.archive'] },
+                    targets: null,
+                    approve: false,
+                    origins: [],
+                    models: null,
+                    permissionModes: null,
+                    create: null,
+                }),
+            },
             externalActionExecutionAuthorization: { opaque: 'authorization' } as never,
             externalActionTarget: { kind: 'session' as const, sessionId: 'session-1' },
             signExternalActionApprovalInput,

@@ -103,6 +103,39 @@ function hasProjectedSurfaceChrome(element: HTMLElement | null): boolean {
 }
 
 describe('controlled overlay presentation', () => {
+  it('keeps an icon menu trigger visibly focused for keyboard users', async () => {
+    const context = createSurfaceContext({ contrast: 'high' });
+    const mount = mountThroughReactNativeWeb(
+      <PluginUiProvider hostApi={createHostApiStub(context)} context={context}>
+        <Menu open={false} onOpenChange={() => undefined} trigger="Add"
+          triggerIcon="add" triggerAccessibilityLabel="Add source"
+          items={[{ id: 'source', label: 'Source' }]} onSelect={() => undefined} />
+      </PluginUiProvider>,
+    );
+    const button = mount.container.querySelector<HTMLElement>('[role="button"]')!;
+    await act(async () => { button.focus(); });
+    // The environment projects high-contrast focus through the existing text token.
+    const ring = resolveRenderedColor('borderTopColor', context.theme.colors.text);
+    expect([button, ...button.querySelectorAll<HTMLElement>('*')].some((element) => {
+      const style = getComputedStyle(element);
+      return Number.parseFloat(style.borderTopWidth) > 0 && style.borderTopColor === ring;
+    })).toBe(true);
+    mount.unmount();
+  });
+
+  it('keeps menu identity and explanatory subtitle available to assistive technology', () => {
+    const items = [{ id: 'bot', label: 'Review bot', subtitle: 'GitHub', icon: 'add' }] satisfies readonly MenuItem[];
+    const mount = mountWithPresentationHost(
+      <Menu open onOpenChange={() => undefined} trigger="Bots"
+        triggerAccessibilityLabel="Choose bot" items={items} onSelect={() => undefined} />,
+      (input) => input.content,
+    );
+    const row = mount.container.querySelector<HTMLElement>('[role="menuitem"]')!;
+    expect(row.textContent).toContain('GitHub');
+    expect(row.getAttribute('aria-label')).toContain('GitHub');
+    mount.unmount();
+  });
+
   it('rejects interactive trigger children across every public overlay entry point', async () => {
     const context = createSurfaceContext();
     const interactiveTrigger = (

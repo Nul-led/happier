@@ -7,6 +7,21 @@ import {
 } from './transcriptSource.js';
 
 describe('transcriptSource helpers', () => {
+  it('keeps an observational finite follow alive until caller cancellation when a Session is inactive', async () => {
+    let active = false;
+    const delivered: string[] = [];
+    const result = await followTranscriptSourceWithFiniteActions({
+      initialCursor: '0', leaseId: 'observer', stopWhenInactive: false,
+      follow: async () => ({ items: active ? ['after-reactivation'] : [], nextCursor: active ? '1' : '0', truncated: false }),
+      release: async () => undefined,
+      isSessionActive: async () => active,
+      waitForNextPoll: async () => { active = true; },
+      onItems: ({ items }) => { delivered.push(...items); },
+      shouldContinue: () => delivered.length === 0,
+    });
+    expect(delivered).toEqual(['after-reactivation']);
+    expect(result).toEqual({ tailCursor: '1', stopped: 'aborted' });
+  });
   it('does not retain callerless hosted-direct replay or handoff helpers', () => {
     expect(transcriptSource).not.toHaveProperty('replayTranscriptSourceHistory');
     expect(transcriptSource).not.toHaveProperty('bridgeTranscriptSourceHandoffGap');

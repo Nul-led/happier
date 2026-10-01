@@ -73,6 +73,17 @@ export type TriageListShellFailureV1 =
   Readonly<{ kind: 'sources'; sources: readonly TriageListSourceFailureV1[] }>;
 
 /**
+ * Why no list could be assembled, as the reader needs it: whether pressing
+ * Refresh can help, and a diagnostic for support behind a disclosure. The
+ * message is the host's text and is never shown as the sentence.
+ */
+export type TriageListShellReadFailureV1 = Readonly<{
+  message: string;
+  retryable: boolean;
+  detail?: string;
+}>;
+
+/**
  * The one honest presentation of the mounted window snapshot.
  *
  * The store already models value, freshness, pending work and a retained error
@@ -97,13 +108,13 @@ export type TriageListShellStateV1 =
    * be reached for the sources. A full-screen error takes that away and tells
    * them nothing is there.
    */
-  | Readonly<{ kind: 'sourcesUnreachable'; message: string }>
+  | Readonly<{ kind: 'sourcesUnreachable' } & TriageListShellReadFailureV1>
   /**
    * No window was ever assembled and the reader's durable state is unreachable
    * too (`core/SURFACE.md` §6.2, reachability state 6) — the whole surface is
    * unavailable, including durable user state.
    */
-  | Readonly<{ kind: 'unavailable'; message: string }>
+  | Readonly<{ kind: 'unavailable' } & TriageListShellReadFailureV1>
   | Readonly<{
       kind: 'window';
       window: TriageListWindowV1;
@@ -345,6 +356,8 @@ export function resolveTriageListShellState(
     return Object.freeze({
       kind: options.durableStateReachable === true ? 'sourcesUnreachable' : 'unavailable',
       message: snapshot.error.message,
+      retryable: snapshot.error.retryable !== false,
+      ...(snapshot.error.detail === undefined ? {} : { detail: snapshot.error.detail }),
     });
   }
   return Object.freeze({ kind: 'initial' });

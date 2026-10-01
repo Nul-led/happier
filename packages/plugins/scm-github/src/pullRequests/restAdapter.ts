@@ -212,18 +212,20 @@ function mapGithubRestError(context: ScmForgeHttpErrorContext): Error {
     }),
     Date.now(),
   );
-  if (failure.class === 'rateLimit') {
-    throw createGithubRateLimitedError(failure.retryNotBeforeMs);
-  }
   // A withheld permission stays an authentication repair here: the owner fixes it
   // by reconnecting an account whose scopes cover the operation.
-  if (failure.class === 'authentication' || failure.class === 'permission') {
-    throw createGithubAuthRequiredError('GitHub REST authentication failed');
-  }
-  if (isGithubInaccessibleResourceFailure(failure)) {
-    throw createGithubNotFoundError();
-  }
-  throw createGithubCommandFailedError(`GitHub REST request failed with status ${context.status || context.statusText}`);
+  const error = failure.class === 'rateLimit'
+    ? createGithubRateLimitedError(failure.retryNotBeforeMs)
+    : failure.class === 'authentication' || failure.class === 'permission'
+      ? createGithubAuthRequiredError('GitHub REST authentication failed')
+      : isGithubInaccessibleResourceFailure(failure)
+        ? createGithubNotFoundError()
+        : createGithubCommandFailedError(`GitHub REST request failed with status ${context.status || context.statusText}`);
+  // A definite client rejection cannot have created a PR. Transport loss,
+  // server errors and HTTP request timeout retain uncertain-effect semantics.
+  return Object.assign(error, {
+    effectNotApplied: context.status >= 400 && context.status < 500 && context.status !== 408,
+  });
 }
 
 function readPullRequestNumberFromProviderUrl(provider: ScmHostingProviderRef, url: string): number | null {

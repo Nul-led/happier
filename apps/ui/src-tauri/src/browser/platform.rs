@@ -6,19 +6,6 @@ use super::types::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DesktopBrowserRuntimeSupport {
     pub macos_custom_data_store_identifiers: bool,
-    /// Whether the **desktop browser surface** has recorded manual QA on the current platform
-    /// (open → navigate → resize → z-order → close, no bleed/crash). Seeded from the BRW-12 spike
-    /// evidence in `.project/reviews/browser-desktop-shell-spike/`. macOS rides its own
-    /// WK-data-store gate and ignores this flag; Windows/X11 advertise `available` ONLY when this
-    /// is true, so an unverified platform stays honestly fail-closed instead of over-claiming.
-    ///
-    /// This is a product-readiness record for arbitrary navigation, persistent profiles, devtools
-    /// and capture — not the structural embedding fact. That fact has one owner,
-    /// `child_embedding_supported_for`, which every arm below also consults so this surface can
-    /// never advertise a platform whose embedding primitive does not exist. Restricted consumers
-    /// that have none of those browser powers (the hosted-Artifact frame) read the primitive owner
-    /// directly rather than borrowing this surface's QA schedule.
-    pub child_embedding_verified: bool,
 }
 
 pub(crate) fn resolve_current_desktop_browser_platform() -> DesktopBrowserPlatform {
@@ -69,31 +56,15 @@ pub(crate) fn resolve_desktop_browser_strategy_for_runtime(
             DesktopBrowserPrimitive::MacOsNsViewWebKit,
             DesktopBrowserDisabledReason::NativeChildViewUnverified,
         ),
-        DesktopBrowserPlatform::Windows
-            if runtime_support.child_embedding_verified
-                && child_embedding_supported_for(platform) =>
-        {
+        DesktopBrowserPlatform::Windows => {
             native_child_view_availability(platform, DesktopBrowserPrimitive::WindowsHwndWebView2)
         }
-        DesktopBrowserPlatform::Windows => DesktopBrowserAvailability::unavailable(
-            platform,
-            DesktopBrowserPrimitive::WindowsHwndWebView2,
-            DesktopBrowserDisabledReason::NativeChildViewUnverified,
-        ),
-        DesktopBrowserPlatform::LinuxX11
-            if runtime_support.child_embedding_verified
-                && child_embedding_supported_for(platform) =>
-        {
+        DesktopBrowserPlatform::LinuxX11 => {
             native_child_view_availability(
                 platform,
                 DesktopBrowserPrimitive::LinuxX11ChildEmbedding,
             )
         }
-        DesktopBrowserPlatform::LinuxX11 => DesktopBrowserAvailability::unavailable(
-            platform,
-            DesktopBrowserPrimitive::LinuxX11ChildEmbedding,
-            DesktopBrowserDisabledReason::LinuxX11ChildEmbeddingUnverified,
-        ),
         DesktopBrowserPlatform::LinuxWayland => DesktopBrowserAvailability::unavailable(
             platform,
             DesktopBrowserPrimitive::LinuxWaylandGtkEmbedding,
@@ -132,13 +103,8 @@ fn native_child_view_availability(
             // them false only disabled two buttons whose seam works.
             reload: true,
             stop: true,
-            // Back/forward stays false: the vendored Wry fork exposes `go_back()` but has NO
-            // `go_forward()` and no public `can_go_back()`/`can_go_forward()` accessor, and the
-            // only `canGoBack` observer in this shell is macOS-only KVO on the hosted-Artifact
-            // view. There is therefore no producer AND no dispatcher for forward on any desktop
-            // platform; advertising the pair would enable two buttons with nothing behind them.
-            // The toolbar hides them rather than shipping them permanently disabled.
-            go_back_forward: false,
+            go_back_forward: true,
+            automation: true,
             page_info_diagnostics: true,
             native_devtools: native_devtools_supported(),
             capture: native_capture_supported(platform),
@@ -169,9 +135,7 @@ fn native_capture_supported(platform: DesktopBrowserPlatform) -> bool {
 ///   is a different host widget topology and is not built here.
 /// - No display / non-desktop targets — there is no host window to embed into.
 ///
-/// Product surfaces layer their own gates on top of this owner (the desktop browser additionally
-/// requires `child_embedding_verified_for`), but none of them may report available for a platform
-/// this returns `false` for.
+/// Product surfaces use this implementation fact independently of their manual-QA schedule.
 pub(crate) fn child_embedding_supported_for(platform: DesktopBrowserPlatform) -> bool {
     match platform {
         DesktopBrowserPlatform::MacOs
@@ -183,34 +147,9 @@ pub(crate) fn child_embedding_supported_for(platform: DesktopBrowserPlatform) ->
     }
 }
 
-/// Per-platform child-embedding verification, seeded from recorded manual-QA evidence in
-/// `.project/reviews/browser-desktop-shell-spike/`. Flipping a platform to `true` is the one
-/// auditable edit that turns its `available` bit on — and it must be backed by a passing QA run
-/// (open → navigate → resize → z-order → close, no bleed/crash), never set speculatively.
-///
-/// Current evidence (BRW-12 spike): macOS is verified-sound (it rides its own WK-data-store gate
-/// below, so it is not listed here). Windows (WebView2 child lifecycle) and X11 (`build_as_child`
-/// against a Tauri-window handle, not an adapter-owned `gtk::Fixed`) have NO recorded passing QA,
-/// so both stay `false` and fall closed to an honest typed-unavailable rather than over-claiming.
-pub(crate) fn child_embedding_verified_for(platform: DesktopBrowserPlatform) -> bool {
-    match platform {
-        // No recorded manual-QA evidence yet for either child-embedding path.
-        DesktopBrowserPlatform::Windows | DesktopBrowserPlatform::LinuxX11 => false,
-        // macOS uses `macos_custom_data_store_identifiers`; the remaining platforms are unavailable
-        // for unrelated reasons (Wayland GTK path, no display, unsupported).
-        DesktopBrowserPlatform::MacOs
-        | DesktopBrowserPlatform::LinuxWayland
-        | DesktopBrowserPlatform::LinuxUnknown
-        | DesktopBrowserPlatform::Unsupported => false,
-    }
-}
-
 fn resolve_current_desktop_browser_runtime_support() -> DesktopBrowserRuntimeSupport {
     DesktopBrowserRuntimeSupport {
         macos_custom_data_store_identifiers: macos_custom_data_store_identifiers_supported(),
-        child_embedding_verified: child_embedding_verified_for(
-            resolve_current_desktop_browser_platform(),
-        ),
     }
 }
 

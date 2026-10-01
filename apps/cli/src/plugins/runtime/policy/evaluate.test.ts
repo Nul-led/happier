@@ -12,7 +12,7 @@ import {
 
 const action = {
   qualifiedId: 'acme.alpha/actions/run',
-  generation: '7',
+  occurrenceId: '7',
   dangerLevel: 'safe',
   scopes: ['global'],
   surfaces: ['cli'],
@@ -25,12 +25,12 @@ function authorizationFacts(overrides: Readonly<{
 }> = {}) {
   return {
     generation: {
-      targetGeneration: action.generation,
+      targetGeneration: action.occurrenceId,
       desiredGeneration: overrides.desiredGeneration === undefined
-        ? action.generation
+        ? action.occurrenceId
         : overrides.desiredGeneration,
       appliedGeneration: overrides.appliedGeneration === undefined
-        ? action.generation
+        ? action.occurrenceId
         : overrides.appliedGeneration,
     },
     resourceSelections: [],
@@ -159,7 +159,7 @@ describe('evaluateTargetActionPolicy', () => {
       })({
         qualifiedId: action.qualifiedId,
         pluginId: 'acme.alpha',
-        generation: action.generation,
+        occurrenceId: action.occurrenceId,
       }, {
         hostAccessRequests: [{ required: true, request }],
         surface: 'cli',

@@ -25,14 +25,14 @@ type BackgroundServiceContextCreation = Readonly<{
 export type BackgroundServiceRunnerRegistration = Readonly<{
     pluginId: string;
     pluginVersion: string;
-    generation: string;
+    occurrenceId: string;
     localId: string;
     runner: BackgroundServiceRunner;
 }>;
 
 type BackgroundServiceDiagnosticBase = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     localId: string;
 }>;
 
@@ -63,10 +63,10 @@ export function createBackgroundServiceRunnerHost(params: Readonly<{
     createContext(input: Readonly<{
         pluginId: string;
         pluginVersion: string;
-        generation: string;
+        occurrenceId: string;
         localId: string;
         signal: AbortSignal;
-        isGenerationCurrent(): boolean;
+        isOccurrenceCurrent(): boolean;
     }>): BackgroundServiceContextCreation;
     settlementTimeoutMs?: number;
     onDiagnostic?(event: BackgroundServiceDiagnostic): void;
@@ -84,7 +84,7 @@ export function createBackgroundServiceRunnerHost(params: Readonly<{
     let disposalPromise: Promise<void> | null = null;
 
     const keyOf = (registration: BackgroundServiceRunnerRegistration): string => (
-        `${registration.pluginId}\u0000${registration.generation}\u0000${registration.localId}`
+        `${registration.pluginId}\u0000${registration.occurrenceId}\u0000${registration.localId}`
     );
     const isCurrent = (registration: BackgroundServiceRunnerRegistration): boolean => (
         !disposed && !retiredPluginIds.has(registration.pluginId)
@@ -110,17 +110,17 @@ export function createBackgroundServiceRunnerHost(params: Readonly<{
                 const created = params.createContext({
                     pluginId: registration.pluginId,
                     pluginVersion: registration.pluginVersion,
-                    generation: registration.generation,
+                    occurrenceId: registration.occurrenceId,
                     localId: registration.localId,
                     signal: controller.signal,
-                    isGenerationCurrent: () => isCurrent(registration),
+                    isOccurrenceCurrent: () => isCurrent(registration),
                 });
                 if ('unavailable' in created) {
                     if (!isCurrent(registration) || controller.signal.aborted) return;
                     diagnose(Object.freeze({
                         code: 'background_service_unavailable',
                         pluginId: registration.pluginId,
-                        generation: registration.generation,
+                        occurrenceId: registration.occurrenceId,
                         localId: registration.localId,
                         reason: created.unavailable,
                     }));
@@ -134,7 +134,7 @@ export function createBackgroundServiceRunnerHost(params: Readonly<{
                 diagnose(Object.freeze({
                     code: 'background_service_failed',
                     pluginId: registration.pluginId,
-                    generation: registration.generation,
+                    occurrenceId: registration.occurrenceId,
                     localId: registration.localId,
                     error,
                 }));
@@ -152,7 +152,7 @@ export function createBackgroundServiceRunnerHost(params: Readonly<{
             for (const service of running.values()) {
                 if (service.registration.pluginId !== pluginId || service.controller.signal.aborted) continue;
                 service.controller.abort(new Error(
-                    `Plugin '${pluginId}' background service generation retired`,
+                    `Plugin '${pluginId}' background service occurrenceId retired`,
                 ));
             }
         }
@@ -183,7 +183,7 @@ export function createBackgroundServiceRunnerHost(params: Readonly<{
             diagnose(Object.freeze({
                 code: 'background_service_settlement_timeout',
                 pluginId: service.registration.pluginId,
-                generation: service.registration.generation,
+                occurrenceId: service.registration.occurrenceId,
                 localId: service.registration.localId,
             }));
         }

@@ -1,5 +1,12 @@
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
-import type { TriageSourceFailureV1 } from '@happier-dev/triage-protocol/v1';
+import {
+  MAX_TRIAGE_TEXT_UTF8_BYTES_V1,
+  projectTriageDisplayTextV1,
+  TriageGetInputV1Schema,
+  TriagePullRequestStatusResultV1Schema,
+  type TriagePullRequestStatusResultV1,
+  type TriageSourceFailureV1,
+} from '@happier-dev/triage-protocol/v1';
 import {
   fitActionResultPageV1,
   fitActionResultSequenceV1,
@@ -34,6 +41,7 @@ import {
 import {
   GITHUB_DETAIL_BOUNDS_V1,
   projectGithubCheckRows,
+  projectGithubDetailIdentifierV1,
 } from './detail/projection.js';
 import {
   readGithubChangedFilesPage,
@@ -41,9 +49,14 @@ import {
   readGithubTimelinePage,
   type GithubDetailPageV1,
 } from './detail/reads.js';
-import { toTriageFailure } from './mapping/protocol.js';
-import { readGithubIssue, readGithubPullRequest } from './get.js';
+import { toTriageFailure, toTriageFacts } from './mapping/protocol.js';
+import { mapGithubMergeability, readGithubIssue, readGithubPullRequest } from './get.js';
 import { createGithubRepositoryReader } from './repositories.js';
+import { readGithubPullRequestChecks } from './checks.js';
+import { readGithubCheckOutcomeV1 } from './checkOutcome.js';
+import { buildGithubStateRowFactsV1 } from './mapping/facts.js';
+import { readLatestGithubReviewsV1 } from './mapping/reviews.js';
+import { classifyGithubTransportFailure } from './errors.js';
 
 /**
  * The seven bound source-native detail operations.
@@ -505,3 +518,135 @@ export async function readGithubChecks(
 }
 
 /* -------------------------------------------------------------------- reviews */
+
+/** Detail-on-open summary; scan/get never fan out into these provider reads. */
+export async function readGithubPullRequestStatus(
+  input: unknown,
+  context: PluginInvocationContext,
+): Promise<TriagePullRequestStatusResultV1> {
+  const parsed = TriageGetInputV1Schema.safeParse(input);
+  if (!parsed.success) return unavailable(INVALID_INPUT_FAILURE);
+  const request = parsed.data;
+  const admitted = await admitGithubEntryInvocation({
+    instance: request.instance,
+    localRef: request.localRef,
+    routingToken: request.lastKnownLocator?.routingToken ?? '',
+    admissibleKinds: ['pull-request'],
+  }, context);
+  if (!admitted.ok) return unavailable(admitted.failure);
+  const dependencies = { client: admitted.client, now: Date.now, signal: admitted.signal };
+  const repositories = createGithubRepositoryReader(dependencies);
+  const read = await readGithubPullRequest(admitted.localRef, admitted.route, repositories, dependencies);
+  if (read.observation.kind === 'unresolved') return unavailable(toTriageFailure(read.observation.failure));
+  if (read.observation.kind === 'absent') return unavailable(ENTRY_ABSENT_FAILURE);
+  if (read.observation.kind !== 'present' || read.overview === null || read.facts === null) {
+    return unavailable(ENTRY_NOT_OBSERVED_FAILURE);
+  }
+  const repositoryId = readGithubRepositoryIdFromCollisionScope(admitted.localRef.collisionScope);
+  if (repositoryId === null) return unavailable(INVALID_INPUT_FAILURE);
+  const feedbackInput = {
+    route: admitted.route, repositoryId, number: admitted.entryNumber,
+    kindId: 'pull-request' as const, cursor: null,
+  };
+  const [surface, reviews, requests] = await Promise.all([
+    read.facts.headRevision === null ? null : readGithubPullRequestChecks({
+      route: admitted.route, headSha: read.facts.headRevision,
+    }, dependencies),
+    readGithubFeedbackConnection({ ...feedbackInput, connection: 'reviews' }, dependencies),
+    readGithubFeedbackConnection({ ...feedbackInput, connection: 'requests' }, dependencies),
+  ]);
+  if (admitted.signal.aborted) {
+    return unavailable(toTriageFailure(classifyGithubTransportFailure(admitted.signal.reason)));
+  }
+
+  let projectionTruncated = false;
+  const text = (value: string) => {
+    const projected = projectTriageDisplayTextV1(value, MAX_TRIAGE_TEXT_UTF8_BYTES_V1);
+    projectionTruncated ||= projected.truncated;
+    return projected.value;
+  };
+  type Status = Extract<TriagePullRequestStatusResultV1, { kind: 'status' }>;
+  type CheckRow = NonNullable<Status['checks']>['rows'][number];
+  type Reviewer = NonNullable<Status['review']>['reviewers'][number];
+  const checkRows: CheckRow[] = [];
+  for (const observation of surface?.observations ?? []) {
+    const identifier = projectGithubDetailIdentifierV1(observation.key);
+    const id = identifier?.value;
+    projectionTruncated ||= identifier?.truncated === true;
+    const name = text(observation.name);
+    if (!id || !name) { projectionTruncated = true; continue; }
+    const state = readGithubCheckOutcomeV1(observation);
+    checkRows.push({ id, name, state,
+      ...(observation.startedAtMs === null ? {} : { startedAtMs: observation.startedAtMs }),
+      ...(observation.completedAtMs === null ? {} : { completedAtMs: observation.completedAtMs }),
+    });
+  }
+  const reviewers = new Map<string, Reviewer>();
+  let reviewIncomplete = reviews.kind !== 'reviews' || requests.kind !== 'requests';
+  if (reviews.kind === 'reviews') {
+    reviewIncomplete ||= reviews.previousCursor !== null || reviews.rows.some((row) => row.author === null);
+    for (const [author, row] of readLatestGithubReviewsV1(reviews.rows)) {
+      const verb: Reviewer['verb'] | null = row.state === 'APPROVED' ? 'approved'
+        : row.state === 'CHANGES_REQUESTED' ? 'changesRequested'
+        : row.state === 'COMMENTED' ? 'commented'
+        : row.state === 'DISMISSED' ? 'dismissed' : row.state === 'PENDING' ? 'pending' : null;
+      const name = text(author);
+      if (verb === null || !name) { reviewIncomplete = true; continue; }
+      reviewers.set(`user:${author}`, { name, verb });
+    }
+  }
+  if (requests.kind === 'requests') {
+    reviewIncomplete ||= requests.nextCursor !== null;
+    for (const row of requests.rows) {
+      const name = text(row.subject);
+      if (!name) { reviewIncomplete = true; continue; }
+      reviewers.set(`${row.kind}:${row.subject}`, { name, verb: 'pending' });
+    }
+  }
+  const decision = reviews.kind === 'reviews' ? reviews.reviewDecision : null;
+  const facts = toTriageFacts(buildGithubStateRowFactsV1({
+    reviewDecision: decision, checks: surface?.rowState ?? null,
+  }));
+  const nativeMerge = mapGithubMergeability({ mergeable: read.facts.mergeable, mergeable_state: read.facts.mergeableState });
+  const merge: Status['merge'] = {
+    state: nativeMerge === 'computing' ? 'unknown'
+      : nativeMerge ?? (read.facts.mergeable === true ? 'mergeable' : 'unknown'),
+    blocker: nativeMerge === 'blocked' || nativeMerge === 'conflicts'
+      ? text(read.facts.mergeableState ?? nativeMerge) || null : null,
+  };
+  const head = text(read.overview.headBranch ?? '');
+  const base = text(read.overview.baseBranch ?? '');
+  const branch: Status['branch'] = head && base ? { head, base,
+    ...(read.overview.additions === undefined ? {} : { additions: read.overview.additions }),
+    ...(read.overview.deletions === undefined ? {} : { deletions: read.overview.deletions }),
+  } : null;
+  const state = surface?.state === 'knownIncomplete' ? 'incomplete'
+    : surface?.state === 'resolved' ? 'complete' : surface?.state ?? 'unknown';
+  const checkIncomplete = state === 'incomplete' || state === 'unknown'
+    || checkRows.length < (surface?.observations.length ?? 0);
+  const reviewRows = [...reviewers.values()];
+  const observedAtMs = Date.now();
+  const rows = [
+    ...checkRows.map((row) => ({ kind: 'check' as const, row })),
+    ...reviewRows.map((row) => ({ kind: 'reviewer' as const, row })),
+  ];
+  const fitted = fitActionResultSequenceV1(rows, (included, omittedCount): Status => {
+    const checks = included.flatMap((item) => item.kind === 'check' ? [item.row] : []);
+    const includedReviewers = included.flatMap((item) => item.kind === 'reviewer' ? [item.row] : []);
+    return {
+      kind: 'status', observedAtMs,
+      checks: { state, passed: surface?.passingCount ?? null, failed: surface?.failingCount ?? null,
+        pending: surface?.runningCount ?? null,
+        total: state === 'complete' || state === 'none' ? surface?.observations.length ?? null : null,
+        rows: checks, incomplete: checkIncomplete || checks.length < checkRows.length,
+      },
+      review: { decision: decision === 'changes-requested' ? 'changesRequested'
+        : decision === 'review-required' ? 'reviewRequired' : decision,
+        reviewers: includedReviewers, incomplete: reviewIncomplete || includedReviewers.length < reviewRows.length,
+      },
+      merge, branch, facts: facts.facts,
+      ...(projectionTruncated || facts.dropped || omittedCount > 0 ? { projectionTruncated: true } : {}),
+    };
+  });
+  return TriagePullRequestStatusResultV1Schema.parse(fitted.result);
+}

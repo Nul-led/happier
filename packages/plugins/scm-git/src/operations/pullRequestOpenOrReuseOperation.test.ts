@@ -1,4 +1,8 @@
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -14,7 +18,24 @@ import {
 
 import type { ScmBackendContext } from '../types.js';
 import { createPrStatusCache } from '../hostingProviders/prStatusCache.js';
-import { createGitPullRequestOpenOrReuseOperation } from './pullRequestOpenOrReuseOperation.js';
+import { createGitPullRequestOpenOrReuseOperation as createOperation } from './pullRequestOpenOrReuseOperation.js';
+import { createEmptyScmHostingProviderRegistry, runWithGitScmCommandRunner, runWithRealGitScmRuntime } from '../testkit/scmRuntime.test-support.js';
+
+function createGitPullRequestOpenOrReuseOperation(...args: Parameters<typeof createOperation>) {
+    const operation = createOperation(...args);
+    return {
+        ...operation,
+        openOrReuse(input: Parameters<typeof operation.openOrReuse>[0]) {
+            // Provider-boundary cases use a synthetic empty repository; real-template cases
+            // below retain the managed real Git runtime and its committed object database.
+            if (input.context.cwd !== '/repo') return operation.openOrReuse(input);
+            return runWithGitScmCommandRunner(async (command) => ({
+                success: true, exitCode: 0, stderr: '',
+                stdout: command.args[0] === 'rev-parse' ? 'a'.repeat(40) : '',
+            }), () => operation.openOrReuse(input));
+        },
+    };
+}
 
 const provider: ScmHostingProviderRef = {
     id: 'scm.github',
@@ -109,7 +130,7 @@ function createSnapshot(overrides: Partial<ScmWorkingSnapshot> = {}): ScmWorking
     };
 }
 
-function createRegistry(adapter: Partial<HostingProviderPullRequestsCapability>) {
+function createRegistry(adapter: Partial<HostingProviderPullRequestsCapability>, hostingProvider = provider) {
     const capability: HostingProviderPullRequestsCapability | undefined = Object.keys(adapter).length === 0
         ? undefined
         : {
@@ -123,7 +144,7 @@ function createRegistry(adapter: Partial<HostingProviderPullRequestsCapability>)
         };
     return {
         getPullRequests(id: string) {
-            return id === provider.id ? capability : undefined;
+            return id === hostingProvider.id ? capability : undefined;
         },
         buildCompareUrl() {
             return {
@@ -134,7 +155,131 @@ function createRegistry(adapter: Partial<HostingProviderPullRequestsCapability>)
     };
 }
 
+function templateHostingServices(adapter: Partial<HostingProviderPullRequestsCapability>, hostingProvider = provider) {
+    // The host service is outside this plugin's process boundary. Repository
+    // inspection, status projection and template discovery below remain real.
+    return {
+        resolveScmHostingProviderRegistry: async () => ({
+            ...createEmptyScmHostingProviderRegistry(),
+            ...createRegistry(adapter, hostingProvider),
+            detectRemote: () => ({ kind: 'resolved' as const, providerId: hostingProvider.id, provider: hostingProvider }),
+        }),
+    };
+}
+
+function configureLocalTrackingRefs(git: (args: string[]) => string, hostingProvider = provider) {
+    git(['remote', 'add', 'origin', `${hostingProvider.baseUrl}/${hostingProvider.nameWithOwner}.git`]);
+    git(['update-ref', 'refs/remotes/origin/feature/scm-pr-6', 'HEAD']);
+    git(['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    git(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
+    git(['branch', '--set-upstream-to=origin/feature/scm-pr-6']);
+}
+
+async function runWithRealPullRequestRepository(adapter: Partial<HostingProviderPullRequestsCapability>, request: ScmPullRequestOpenOrReuseRequest) {
+    const root = await mkdtemp(join(tmpdir(), 'happier-pr-effect-'));
+    try {
+        const git = (args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+        git(['init', '-b', 'main']);
+        git(['-c', 'user.name=PR test', '-c', 'user.email=pr@example.com', 'commit', '--allow-empty', '-m', 'base']);
+        git(['checkout', '-b', 'feature/scm-pr-6']);
+        configureLocalTrackingRefs(git);
+        const operation = createGitPullRequestOpenOrReuseOperation();
+        return await runWithRealGitScmRuntime(() => operation.openOrReuse({
+            context: { ...context, cwd: root, detection: { ...context.detection, rootPath: root } }, request,
+        }), { hostingProviderRuntimeServices: templateHostingServices(adapter) });
+    } finally { await rm(root, { recursive: true, force: true }); }
+}
+
 describe('git pull request open-or-reuse operation', () => {
+    it('retains a provider pre-effect validation as actionable input rather than an unknown creation', async () => {
+        const error = Object.assign(new Error('Choose a valid provider input'), { errorCode: 'INVALID_REQUEST', effectNotApplied: true });
+        await expect(runWithRealPullRequestRepository({ createPullRequest: async () => { throw error; } },
+            { base: 'main', body: '' })).resolves.toMatchObject({
+            success: false, errorCode: 'INVALID_REQUEST', outcome: { kind: 'needs_input', errorCode: 'INVALID_REQUEST' },
+        });
+    });
+
+    it('reports an unknown outward outcome when creation loses transport and lookup cannot prove the effect', async () => {
+        await expect(runWithRealPullRequestRepository({
+                listPullRequests: vi.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('Network unavailable')),
+                createPullRequest: async () => { throw new Error('Connection lost after submission'); },
+            }, { base: 'main', body: '' })).resolves.toMatchObject({
+            success: false,
+            outcome: {
+                kind: 'outcome_unknown',
+                reconciliation: { kind: 'pull_request', providerId: provider.id, repository: provider.nameWithOwner, head: 'feature/scm-pr-6', base: 'main' },
+            },
+        });
+    });
+
+    it.each([
+        ['ambiguous', ['.github/PULL_REQUEST_TEMPLATE/bug.md', '.github/PULL_REQUEST_TEMPLATE/feature.md'], 'Body'],
+        ['binary', ['.github/PULL_REQUEST_TEMPLATE.md'], 'Unsafe\0body'],
+        ['large valid', ['.github/PULL_REQUEST_TEMPLATE.md'], 'Valid template\n'.repeat(6000)],
+    ])('preserves %s committed template semantics before creating a PR', async (scenario, paths, body) => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-pr-template-'));
+        try {
+            const git = (args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+            git(['init', '-b', 'main']);
+            for (const path of paths) {
+                await mkdir(dirname(join(root, path)), { recursive: true });
+                await writeFile(join(root, path), body);
+            }
+            git(['add', '.']);
+            git(['-c', 'user.name=Template test', '-c', 'user.email=template@example.com', 'commit', '-m', 'base']);
+            git(['checkout', '-b', 'feature/scm-pr-6']);
+            configureLocalTrackingRefs(git);
+            const create = vi.fn(async (_input: Parameters<HostingProviderPullRequestsCapability['createPullRequest']>[0]) => createPullRequest());
+            const operation = createGitPullRequestOpenOrReuseOperation();
+            const result = await runWithRealGitScmRuntime(() => operation.openOrReuse({
+                context: { ...context, cwd: root, detection: { ...context.detection, rootPath: root } }, request: { base: 'main' },
+            }), { hostingProviderRuntimeServices: templateHostingServices({ createPullRequest: create }) });
+            if (scenario === 'large valid') {
+                expect(result.success).toBe(true);
+                expect(create.mock.calls[0]?.[0].body === body).toBe(true);
+            } else {
+                expect(result).toMatchObject({ success: false, outcome: { kind: 'needs_input', errorCode: 'INVALID_REQUEST' } });
+                expect(create).not.toHaveBeenCalled();
+            }
+        } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    it.each([
+        ['github', '.github/PULL_REQUEST_TEMPLATE.md'],
+        ['github', 'docs/pull_request_template.md'],
+        ['gitlab', '.gitlab/merge_request_templates/Default.md'],
+    ])('seeds %s creation from the committed base template at %s', async (kind, templatePath) => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-pr-template-'));
+        try {
+            const git = (args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+            git(['init', '-b', 'main']);
+            await mkdir(dirname(join(root, templatePath)), { recursive: true });
+            await writeFile(join(root, templatePath), 'Base template\n');
+            git(['add', '.']);
+            git(['-c', 'user.name=Template test', '-c', 'user.email=template@example.com', 'commit', '-m', 'base']);
+            git(['checkout', '-b', 'feature/scm-pr-6']);
+            await writeFile(join(root, templatePath), 'Uncommitted feature template\n');
+            const hostingProvider = { ...provider, id: `scm.${kind}`, kind,
+                ...(kind === 'gitlab' ? { baseUrl: 'https://gitlab.com', repositoryWebUrl: 'https://gitlab.com/happier-dev/happier' } : {}) };
+            configureLocalTrackingRefs(git, hostingProvider);
+            const localContext = { ...context, cwd: root, detection: { ...context.detection, rootPath: root } };
+            const create = vi.fn(async (_input: Parameters<NonNullable<HostingProviderPullRequestsCapability['createPullRequest']>>[0]) => createPullRequest({ provider: hostingProvider,
+                ...(kind === 'gitlab' ? { url: 'https://gitlab.com/happier-dev/happier/-/merge_requests/42' } : {}) }));
+            const operation = createGitPullRequestOpenOrReuseOperation();
+            const runtimeOptions = { hostingProviderRuntimeServices: templateHostingServices({ supportsDraftCreate: true, createPullRequest: create }, hostingProvider) };
+            await runWithRealGitScmRuntime(() => operation.openOrReuse({
+                context: localContext, request: { base: 'main', draft: true },
+            }), runtimeOptions);
+            expect(create.mock.calls[0]?.[0]).toMatchObject({ body: 'Base template\n', draft: true, base: 'main', head: 'feature/scm-pr-6' });
+            await runWithRealGitScmRuntime(() => operation.openOrReuse({
+                context: localContext, request: { base: 'main', body: '' },
+            }), runtimeOptions);
+            expect(create.mock.calls[1]?.[0]).toMatchObject({ body: '' });
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
     it('resolves default hosting provider runtime services from the host only', () => {
         const source = readFileSync(new URL('./pullRequestOpenOrReuseOperation.ts', import.meta.url), 'utf8');
 
@@ -153,6 +298,7 @@ describe('git pull request open-or-reuse operation', () => {
             cache,
             registry: createRegistry({
                 getPullRequestAuthProfileKey: () => 'github:work',
+                supportsDraftCreate: true,
                 listPullRequests,
                 createPullRequest: createPullRequestHook,
             }),
@@ -166,6 +312,7 @@ describe('git pull request open-or-reuse operation', () => {
                 cwd: '/repo',
                 base: 'main',
                 title: 'Open PR',
+                draft: true,
             },
         });
         const second = await operation.openOrReuse({
@@ -180,6 +327,7 @@ describe('git pull request open-or-reuse operation', () => {
         expect(first).toMatchObject({ success: true, reused: false, pullRequest });
         expect(second).toMatchObject({ success: true, reused: true, pullRequest });
         expect(createPullRequestHook).toHaveBeenCalledTimes(1);
+        expect(createPullRequestHook).toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
         expect(cache.getFresh({
             workspaceKey: context.projectKey,
             repoRootPath: '/repo',
@@ -207,7 +355,8 @@ describe('git pull request open-or-reuse operation', () => {
                 title: 'Open PR',
             },
         })).resolves.toMatchObject({
-            success: true,
+            success: false,
+            outcome: { kind: 'needs_input', nextActions: [{ kind: 'open_url', url: 'https://github.com/happier-dev/happier/compare/main...feature/scm-pr-6' }] },
             pullRequest: null,
             reused: false,
             composeUrl: 'https://github.com/happier-dev/happier/compare/main...feature/scm-pr-6',
@@ -219,6 +368,20 @@ describe('git pull request open-or-reuse operation', () => {
             },
             authState: 'authentication_required',
         });
+    });
+
+    it('uses the provider compose page instead of silently creating a non-draft PR when the adapter lacks Draft support', async () => {
+        const createPullRequest = vi.fn();
+        const operation = createGitPullRequestOpenOrReuseOperation({
+            cache: createPrStatusCache({ now: () => 1000 }),
+            registry: createRegistry({ createPullRequest }),
+            readSnapshot: async () => createSnapshot(),
+            now: () => 1000,
+        });
+        await expect(operation.openOrReuse({
+            context, request: { cwd: '/repo', base: 'main', title: 'Draft PR', draft: true },
+        })).resolves.toMatchObject({ success: false, outcome: { kind: 'needs_input' }, pullRequest: null, nextAction: { kind: 'openUrl', purpose: 'compose' } });
+        expect(createPullRequest).not.toHaveBeenCalled();
     });
 
     it('does not return an openUrl follow-up when the provider PR URL escapes the allowed base URL', async () => {

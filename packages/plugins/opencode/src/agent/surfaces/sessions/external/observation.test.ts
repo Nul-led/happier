@@ -64,6 +64,18 @@ async function registerCredential(
     if (liveReadByBaseUrl.get(normalizedBaseUrl) !== managedEndpointRead) {
       throw new Error('Managed endpoint read is unavailable or stale');
     }
+    if (request.pathAndQuery === '/api/info') {
+      return { ok: false, status: 404, statusText: 'Not Found', headers: {}, body: null };
+    }
+    if (request.pathAndQuery === '/global/health') {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        body: new Response(JSON.stringify({ healthy: true })).body,
+      };
+    }
     const response = await fetchImpl(
       new URL(request.pathAndQuery, `${normalizedBaseUrl}/`),
       {
@@ -246,15 +258,24 @@ describe('OpenCode External Session observation', () => {
   it('adapts managed global-event observation to relative contextual reads without caller auth or global fetch', async () => {
     const directFetch = vi.fn();
     vi.stubGlobal('fetch', directFetch);
-    const managedEndpointRead = vi.fn<AgentExternalSessionsManagedEndpointRead>(async () => ({
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      headers: { 'content-type': 'text/event-stream' },
-      body: new Response(
-        'data: {"payload":{"type":"server.connected","properties":{}}}\n\n',
-      ).body,
-    }));
+    const managedEndpointRead = vi.fn<AgentExternalSessionsManagedEndpointRead>(async ({ pathAndQuery }) => {
+      if (pathAndQuery === '/api/info') {
+        return { ok: false, status: 404, statusText: 'Not Found', headers: {}, body: null };
+      }
+      if (pathAndQuery === '/global/health') {
+        return {
+          ok: true, status: 200, statusText: 'OK', headers: { 'content-type': 'application/json' },
+          body: new Response(JSON.stringify({ healthy: true })).body,
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'text/event-stream' },
+        body: new Response('data: {"payload":{"type":"server.connected","properties":{}}}\n\n').body,
+      };
+    });
     const requestReconcile = vi.fn();
     const contribution = createOpenCodeExternalSessionObservationContribution();
     const descriptor = contribution.describeResource(
@@ -269,10 +290,9 @@ describe('OpenCode External Session observation', () => {
       requestTranscriptRefresh() {},
     });
 
-    await vi.waitFor(() => expect(managedEndpointRead).toHaveBeenCalledOnce());
-    expect(managedEndpointRead).toHaveBeenCalledWith({
+    await vi.waitFor(() => expect(managedEndpointRead).toHaveBeenCalledWith({
       pathAndQuery: '/global/event',
-    });
+    }));
     await vi.waitFor(() => expect(requestReconcile).toHaveBeenCalled());
     expect(directFetch).not.toHaveBeenCalled();
 
@@ -322,6 +342,18 @@ describe('OpenCode External Session observation', () => {
     vi.stubGlobal('fetch', directFetch);
     const managedEndpointRead = vi.fn<AgentExternalSessionsManagedEndpointRead>(
       async ({ pathAndQuery }) => {
+        if (pathAndQuery === '/api/info') {
+          return { ok: false, status: 404, statusText: 'Not Found', headers: {}, body: null };
+        }
+        if (pathAndQuery === '/global/health') {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            headers: { 'content-type': 'application/json' },
+            body: new Response(JSON.stringify({ healthy: true })).body,
+          };
+        }
         expect(pathAndQuery).toBe(
           '/session/status?directory=%2Ftmp%2Fmanaged-project',
         );
@@ -384,7 +416,7 @@ describe('OpenCode External Session observation', () => {
         }],
       }],
     });
-    expect(managedEndpointRead).toHaveBeenCalledOnce();
+    expect(managedEndpointRead).toHaveBeenCalledTimes(3);
     expect(directFetch).not.toHaveBeenCalled();
   });
 

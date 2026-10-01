@@ -59,7 +59,6 @@ async function createFixtureRoot() {
       '@callstack/repack': '5.2.5',
       '@react-native-community/cli': '20.1.2',
       '@rspack/core': '2.1.3',
-      '@swc/helpers': '0.5.23',
       '@types/react': '19.2.0',
       '@vitejs/plugin-react': '4.7.0',
       react: '19.2.0',
@@ -90,7 +89,6 @@ async function createFixtureRoot() {
       '@callstack/repack': '0.0.0',
       '@react-native-community/cli': '0.0.0',
       '@rspack/core': '0.0.0',
-      '@swc/helpers': '0.0.0',
       '@types/node': '0.0.0',
       '@types/react': '0.0.0',
       '@typescript/native': '0.0.0',
@@ -119,7 +117,7 @@ async function createFixtureRoot() {
     "export * from './hostApiDefinition.js';\n",
     'utf8',
   );
-  await writeFile(join(root, 'packages', 'protocol', 'src', 'plugins', 'ui', 'uiArtifactsManifest.ts'), 'export const PLUGIN_UI_ARTIFACT_GRAMMAR_VERSION_V1 = 1 as const;\n', 'utf8');
+  await writeFile(join(root, 'packages', 'protocol', 'src', 'plugins', 'ui', 'uiArtifactsManifest.ts'), 'export const PLUGIN_UI_ARTIFACT_GRAMMAR_VERSION_V2 = 2 as const;\n', 'utf8');
   await writeFile(join(root, 'packages', 'protocol', 'src', 'installables', 'definitions', 'pluginUiBundlers.ts'), [
     'export const PLUGIN_UI_BUNDLER_VITE_INSTALLABLE_DESCRIPTOR = {',
     "packageName: 'vite',",
@@ -150,7 +148,7 @@ async function createFixtureRoot() {
     [
       'export const PUBLIC_TOOLCHAIN_PROTOCOL_FACTS_V1 = Object.freeze({',
       '  runtimeApiVersion: 1,',
-      "  ui: Object.freeze({ artifactGrammarVersion: 1, hostApiVersion: '1.0.0' }),",
+      "  ui: Object.freeze({ artifactGrammarVersion: 2, hostApiVersion: '1.0.0' }),",
       "  bundlers: Object.freeze({ vite: Object.freeze({ packageName: 'vite', executable: 'vite' }), repack: Object.freeze({ packageName: '@callstack/repack', executable: 'react-native' }) }),",
       '});',
       '',
@@ -172,8 +170,6 @@ async function createFixtureRoot() {
     '  version "20.1.2"',
     '"@rspack/core@2.1.3":',
     '  version "2.1.3"',
-    '"@swc/helpers@0.5.23":',
-    '  version "0.5.23"',
     '"@types/react@19.2.0":',
     '  version "19.2.0"',
     '"@types/node@>=20":',
@@ -278,24 +274,16 @@ test('derives the one public packet from manifests, lock facts, Protocol facts, 
     pluginSdk: { version: '0.2.10' },
     pluginUi: { version: '0.2.10', pluginSdkVersion: '0.2.10' },
     framework: {
-      react: '19.2.0', reactNative: '0.83.5', reactNativeWeb: '0.21.2', vite: '7.3.1', repack: '5.2.5', expo: '55.0.11', runtime: '1',
+      react: '19.2.0', reactNative: '0.83.5', reactNativeWeb: '0.21.2', expo: '55.0.11', runtime: '1',
     },
-    ui: { artifactGrammarVersion: 1, hostApiVersion: '1.0.0' },
+    ui: { artifactGrammarVersion: 2, hostApiVersion: '1.0.0' },
     authoringDependencies: {
       nodeTypes: { packageName: '@types/node', dependencySpec: '25.0.10', resolvedVersion: '25.0.10' },
       reactDom: { packageName: 'react-dom', dependencySpec: '19.2.0', resolvedVersion: '19.2.0' },
       reactTypes: { packageName: '@types/react', dependencySpec: '19.2.0', resolvedVersion: '19.2.0' },
-      reactNativeCommunityCli: { packageName: '@react-native-community/cli', dependencySpec: '20.1.2', resolvedVersion: '20.1.2' },
-      rspack: { packageName: '@rspack/core', dependencySpec: '2.1.3', resolvedVersion: '2.1.3' },
-      swcHelpers: { packageName: '@swc/helpers', dependencySpec: '0.5.23', resolvedVersion: '0.5.23' },
       typescript: { packageName: 'typescript', dependencySpec: '5.9.3', resolvedVersion: '5.9.3' },
       typescriptNative: { packageName: '@typescript/native', dependencySpec: 'npm:typescript@7.0.2', resolvedVersion: '7.0.2' },
-      viteReactPlugin: { packageName: '@vitejs/plugin-react', dependencySpec: '4.7.0', resolvedVersion: '4.7.0' },
     },
-    buildTools: [
-      { packageName: '@callstack/repack', packageVersion: '5.2.5', executable: 'react-native', executableVersion: '20.1.2' },
-      { packageName: 'vite', packageVersion: '7.3.1', executable: 'vite', executableVersion: '7.3.1' },
-    ],
   });
   const rendered = renderPublicToolchainCompatibilityModule(packet);
   assert.match(rendered, /PUBLIC_TOOLCHAIN_COMPATIBILITY_V1/u);
@@ -353,12 +341,12 @@ test('fails closed rather than defaulting a required authoring dependency', asyn
   const root = await createFixtureRoot();
   const sdkPackagePath = join(root, 'packages', 'plugin-sdk', 'package.json');
   const sdk = JSON.parse(await readFile(sdkPackagePath, 'utf8'));
-  delete sdk.devDependencies['@vitejs/plugin-react'];
+  delete sdk.devDependencies['@types/react'];
   await writeJson(sdkPackagePath, sdk);
 
   await assert.rejects(
     derivePublicToolchainCompatibilityV1({ repoRoot: root }),
-    /must declare @vitejs\/plugin-react/i,
+    /must declare @types\/react/i,
   );
 });
 
@@ -460,7 +448,7 @@ test('keeps every generated example and external-fixture package dependency on t
   assert.equal(current.status, 0, current.stderr);
 });
 
-test('leaves materialized dependencies and managed build operations outside the generated package owner', async () => {
+test('leaves materialized dependencies and managed staging outside the generated package owner', async () => {
   const root = await createFixtureRoot();
   const packet = await derivePublicToolchainCompatibilityV1({ repoRoot: root });
   const outputPath = join(root, 'packages', 'plugin-sdk', 'src', 'ui', 'build', 'publicToolchainCompatibility.generated.ts');
@@ -490,15 +478,31 @@ test('leaves materialized dependencies and managed build operations outside the 
     'plugin-sdk',
     'examples',
     'current-source',
-    '.happier-plugin-ui-build-operation',
+    '.happier-plugin-ui-staging',
+    'operation-fixture',
     'package.json',
   );
   const operationBytes = `${JSON.stringify({
     private: true,
-    name: 'happier-plugin-ui-build-operation',
+    name: 'happier-plugin-ui-staging-operation',
+    dependencies: { react: 'operation-local-version' },
   }, null, 2)}\n`;
   await mkdir(join(operationPackagePath, '..'), { recursive: true });
   await writeFile(operationPackagePath, operationBytes, 'utf8');
+  const retiredOperationPackagePath = join(
+    root,
+    'packages',
+    'plugin-sdk',
+    'examples',
+    'current-source',
+    '.happier-plugin-ui-build-retired',
+    'package.json',
+  );
+  await writeJson(retiredOperationPackagePath, {
+    private: true,
+    name: 'happier-plugin-ui-build-retired',
+    dependencies: { react: 'retired-operation-version' },
+  });
 
   const write = spawnSync(process.execPath, [GENERATOR_PATH, '--repo-root', root, '--write'], {
     encoding: 'utf8',
@@ -506,6 +510,8 @@ test('leaves materialized dependencies and managed build operations outside the 
   assert.equal(write.status, 0, write.stderr);
   assert.equal(await readFile(installedPackagePath, 'utf8'), installedBytes);
   assert.equal(await readFile(operationPackagePath, 'utf8'), operationBytes);
+  const retiredOperationPackage = JSON.parse(await readFile(retiredOperationPackagePath, 'utf8'));
+  assert.equal(retiredOperationPackage.dependencies.react, packet.framework.react);
 
   const current = spawnSync(process.execPath, [GENERATOR_PATH, '--repo-root', root, '--check'], {
     encoding: 'utf8',

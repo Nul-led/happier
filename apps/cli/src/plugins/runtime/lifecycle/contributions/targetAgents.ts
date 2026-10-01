@@ -50,10 +50,13 @@ import {
     ExternalAgentObservationReconcileResultV1Schema,
     ExternalAgentObservationResourceGroupingV1Schema,
     ExternalAgentObservationResourceKeyV1Schema,
+    type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import { declaresHostSynthesizedAgentResumeOnlyExternalSources } from '@happier-dev/protocol/plugins/contributions/agent-resume-only-sources';
 import { logExternalSessionsInternalError } from '@/session/actions/externalSessions/responseErrors';
+import { ExternalSessionProviderFailureError } from '@/session/external/providerOps';
 import { readValidatedAgentSessionRunnerFactory } from '../../api/registrationRightsHost';
+import { readRetainedBundledAgentFactory } from '../../retainedBundledAgentFactory';
 import {
     createAgentSessionRunnerFactoryBinding,
     createHostDeclarativeAcpRunnerBinding,
@@ -70,6 +73,7 @@ import {
     type AcpSessionListingOwner,
 } from '@/agent/acp/runtime/sessionListing/createAcpSessionListingContribution';
 import type { ResolvedAgentContribution } from '../../../projection/registry/types';
+import type { CanonicalPluginManifest } from '../../../manifest/types';
 import {
     indexAgentRoutingIdsByContributionIdentity,
     readAgentRoutingIdForContributionIdentity,
@@ -111,11 +115,11 @@ const EXTERNAL_SESSION_OBSERVATION_POLICY = Object.freeze({
 
 type TargetRegistration = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }>;
 
-type GenerationBoundExternalSessionHooks = Readonly<{
+type OccurrenceBoundExternalSessionHooks = Readonly<{
     installationVariants:
         AgentExternalSessionHooksContribution['installationVariants'];
     resolveInstallation(
@@ -134,7 +138,7 @@ type GenerationBoundExternalSessionHooks = Readonly<{
     >>>;
 }>;
 
-export type GenerationBoundExternalSessionCandidateLifecycle = Readonly<{
+export type OccurrenceBoundExternalSessionCandidateLifecycle = Readonly<{
     /**
      * Runs one candidate-listing request and reports the delete support the
      * connection that served *that* request negotiated, under this generation.
@@ -152,10 +156,10 @@ export type GenerationBoundExternalSessionCandidateLifecycle = Readonly<{
     }>): Promise<AgentExternalSessionsResult<void>>;
 }>;
 
-type GenerationBoundExternalSessionTakeover = Readonly<{
+type OccurrenceBoundExternalSessionTakeover = Readonly<{
     resolveLaunch(
         request: AgentExternalSessionTakeoverResolveLaunchRequest,
-    ): Promise<GenerationBoundExternalSessionTakeoverResolveLaunchResult>;
+    ): Promise<OccurrenceBoundExternalSessionTakeoverResolveLaunchResult>;
 }>;
 
 /**
@@ -163,10 +167,10 @@ type GenerationBoundExternalSessionTakeover = Readonly<{
  * admitted only at the generation-bound callback seam, then carried through
  * the daemon-owned spawn and respawn path that owns its use.
  */
-type GenerationBoundExternalSessionTakeoverResolveLaunchResult =
+type OccurrenceBoundExternalSessionTakeoverResolveLaunchResult =
     AgentExternalSessionTakeoverResolveLaunchResult;
 
-export type GenerationBoundExternalSessionObservation = Readonly<{
+export type OccurrenceBoundExternalSessionObservation = Readonly<{
     describeResource:
         AgentExternalSessionObservationContribution['describeResource'];
     observeResource(
@@ -194,8 +198,9 @@ type AgentRuntimeRegistrationLeaseBase = Readonly<{
      * `{pluginId, localId}`, never the host routing id.
      */
     localAgentId: string;
-    generation: string;
+    occurrenceId: string;
     immutableGenerationId?: string | null;
+    sourceCustody: PluginSourceCustodyV1;
     startupInstructionsVersions?: readonly [1];
     externalSessions?: BoundedAgentExternalSessionsContribution;
     /**
@@ -205,10 +210,10 @@ type AgentRuntimeRegistrationLeaseBase = Readonly<{
      * control of an Agent's own session records, so a plugin can never supply
      * this facet.
      */
-    externalSessionCandidateLifecycle?: GenerationBoundExternalSessionCandidateLifecycle;
-    externalSessionHooks?: GenerationBoundExternalSessionHooks;
-    externalSessionObservation?: GenerationBoundExternalSessionObservation;
-    externalSessionTakeover?: GenerationBoundExternalSessionTakeover;
+    externalSessionCandidateLifecycle?: OccurrenceBoundExternalSessionCandidateLifecycle;
+    externalSessionHooks?: OccurrenceBoundExternalSessionHooks;
+    externalSessionObservation?: OccurrenceBoundExternalSessionObservation;
+    externalSessionTakeover?: OccurrenceBoundExternalSessionTakeover;
     terminal?: AgentTerminalSurface;
     daemonSpawnHooks?: AgentDaemonSpawnHooks;
     providerCliAttach?: AgentProviderCliAttachDeclarationV1;
@@ -248,7 +253,7 @@ export type AgentRuntimeOwnerDuplicate = Readonly<{
     secondPluginId: string;
 }>;
 
-type AgentRuntimeGenerationLifecycleResolver = (
+type AgentRuntimeOccurrenceLifecycleResolver = (
     pluginId: string,
 ) => Readonly<{
     isCurrent(): boolean;
@@ -258,11 +263,11 @@ type AgentRuntimeGenerationLifecycleResolver = (
 type AgentRuntimeRetirementOwner =
     | Readonly<{
         retirementSignal: AbortSignal;
-        resolveGenerationLifecycle?: AgentRuntimeGenerationLifecycleResolver;
+        resolveOccurrenceLifecycle?: AgentRuntimeOccurrenceLifecycleResolver;
     }>
     | Readonly<{
         retirementSignal?: never;
-        resolveGenerationLifecycle: AgentRuntimeGenerationLifecycleResolver;
+        resolveOccurrenceLifecycle: AgentRuntimeOccurrenceLifecycleResolver;
     }>;
 
 function requireAgentRuntimeRetirementSignal(params: Readonly<{
@@ -279,13 +284,13 @@ function requireAgentRuntimeRetirementSignal(params: Readonly<{
     return signal;
 }
 
-function readGenerationBoundDaemonSpawnHookFailure(params: Readonly<{
-    isGenerationActive(): boolean;
+function readOccurrenceBoundDaemonSpawnHookFailure(params: Readonly<{
+    isOccurrenceCurrent(): boolean;
     retirementSignal: AbortSignal;
     signal: AbortSignal;
 }>): Readonly<{ ok: false; reasonCode: string; errorMessage: string }> | null {
     if (!isAgentRuntimeGenerationCurrent({
-        isCurrent: params.isGenerationActive,
+        isCurrent: params.isOccurrenceCurrent,
         retirementSignal: params.retirementSignal,
     })) {
         return Object.freeze({
@@ -358,9 +363,9 @@ function isDaemonSpawnValidationResult(
         && (result.reasonCode === undefined || typeof result.reasonCode === 'string');
 }
 
-function createGenerationBoundAgentDaemonSpawnHooks(params: Readonly<{
+function createOccurrenceBoundAgentDaemonSpawnHooks(params: Readonly<{
     contribution: AgentDaemonSpawnHooks;
-    isGenerationActive(): boolean;
+    isOccurrenceCurrent(): boolean;
     retirementSignal: AbortSignal;
 }>): AgentDaemonSpawnHooks {
     const resolveRuntimePrerequisites = params.contribution.resolveRuntimePrerequisites
@@ -369,8 +374,8 @@ function createGenerationBoundAgentDaemonSpawnHooks(params: Readonly<{
                 selection,
                 retirementSignal: params.retirementSignal,
             });
-            const unavailableBefore = readGenerationBoundDaemonSpawnHookFailure({
-                isGenerationActive: params.isGenerationActive,
+            const unavailableBefore = readOccurrenceBoundDaemonSpawnHookFailure({
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
                 retirementSignal: params.retirementSignal,
                 signal: bound.signal,
             });
@@ -379,16 +384,16 @@ function createGenerationBoundAgentDaemonSpawnHooks(params: Readonly<{
                 const result = await params.contribution.resolveRuntimePrerequisites!(
                     bound.selection,
                 );
-                const unavailableAfter = readGenerationBoundDaemonSpawnHookFailure({
-                    isGenerationActive: params.isGenerationActive,
+                const unavailableAfter = readOccurrenceBoundDaemonSpawnHookFailure({
+                    isOccurrenceCurrent: params.isOccurrenceCurrent,
                     retirementSignal: params.retirementSignal,
                     signal: bound.signal,
                 });
                 if (unavailableAfter) return unavailableAfter;
                 if (isDaemonSpawnValidationResult(result)) return result;
             } catch {
-                const unavailableAfter = readGenerationBoundDaemonSpawnHookFailure({
-                    isGenerationActive: params.isGenerationActive,
+                const unavailableAfter = readOccurrenceBoundDaemonSpawnHookFailure({
+                    isOccurrenceCurrent: params.isOccurrenceCurrent,
                     retirementSignal: params.retirementSignal,
                     signal: bound.signal,
                 });
@@ -407,8 +412,8 @@ function createGenerationBoundAgentDaemonSpawnHooks(params: Readonly<{
                 selection,
                 retirementSignal: params.retirementSignal,
             });
-            const unavailableBefore = readGenerationBoundDaemonSpawnHookFailure({
-                isGenerationActive: params.isGenerationActive,
+            const unavailableBefore = readOccurrenceBoundDaemonSpawnHookFailure({
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
                 retirementSignal: params.retirementSignal,
                 signal: bound.signal,
             });
@@ -421,8 +426,8 @@ function createGenerationBoundAgentDaemonSpawnHooks(params: Readonly<{
             } catch {
                 throw new Error('Agent daemon spawn environment hook failed.');
             }
-            const unavailableAfter = readGenerationBoundDaemonSpawnHookFailure({
-                isGenerationActive: params.isGenerationActive,
+            const unavailableAfter = readOccurrenceBoundDaemonSpawnHookFailure({
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
                 retirementSignal: params.retirementSignal,
                 signal: bound.signal,
             });
@@ -524,20 +529,20 @@ function canonicalizeObservationReconciliationOutcomes<T>(
     return requestedLinkKeys.map((linkKey) => outcomesByLinkKey.get(linkKey)!);
 }
 
-function createGenerationBoundExternalSessionObservation(params: Readonly<{
+function createOccurrenceBoundExternalSessionObservation(params: Readonly<{
     contribution: AgentExternalSessionObservationContribution;
     identity: Readonly<{
         pluginId: string;
         agentId: string;
-        generation: string;
+        occurrenceId: string;
         contributionQualifiedId: string;
-        immutableGenerationId: string | null;
+        sourceCustody: PluginSourceCustodyV1;
     }>;
     assertCurrent(): void;
-    isGenerationActive(): boolean;
+    isOccurrenceCurrent(): boolean;
     retirementSignal: AbortSignal;
     managedEndpointRead?: AgentExternalSessionsManagedEndpointReadHost;
-}>): GenerationBoundExternalSessionObservation {
+}>): OccurrenceBoundExternalSessionObservation {
     const bindManagedEndpointRead = async (
         source: Parameters<typeof bindAgentExternalSessionsManagedEndpointRead>[0]['source']
             | undefined,
@@ -551,7 +556,7 @@ function createGenerationBoundExternalSessionObservation(params: Readonly<{
             identity: params.identity,
             source,
             signal,
-            isCurrent: params.isGenerationActive,
+            isCurrent: params.isOccurrenceCurrent,
             retirementSignal: params.retirementSignal,
             host: params.managedEndpointRead,
             maxResponseBytes,
@@ -614,14 +619,32 @@ function createGenerationBoundExternalSessionObservation(params: Readonly<{
         });
     };
 
+    // The host-owned terminal outcomes keep the External Sessions contract's
+    // typed codes (retired → retryable `unavailable`, caller `cancelled`,
+    // deadline → retryable `timeout`) so a caller such as attach answers them
+    // truthfully instead of as an opaque internal error.
+    const retiredError = (cause?: unknown) => new ExternalSessionProviderFailureError({
+        code: 'unavailable',
+        message: 'Agent External Session observation belongs to a retired generation',
+        operation: 'externalSessionObservation',
+        retryable: true,
+        cause,
+    });
+    const cancelledError = (cause?: unknown) => new ExternalSessionProviderFailureError({
+        code: 'cancelled',
+        message: 'Agent External Session observation was cancelled',
+        operation: 'externalSessionObservation',
+        cause,
+    });
+
     const assertAdmissible = (callerSignal?: AbortSignal): void => {
         params.assertCurrent();
         if (params.retirementSignal.aborted) {
             params.assertCurrent();
-            throw new Error('Agent External Session observation belongs to a retired generation');
+            throw retiredError();
         }
         if (callerSignal?.aborted) {
-            throw new Error('Agent External Session observation was cancelled');
+            throw cancelledError();
         }
     };
 
@@ -630,20 +653,20 @@ function createGenerationBoundExternalSessionObservation(params: Readonly<{
         composed: ReturnType<typeof composeSignal>,
         cause?: unknown,
     ): Error => {
-        if (params.retirementSignal.aborted || !params.isGenerationActive()) {
-            return new Error(
-                'Agent External Session observation belongs to a retired generation',
-                { cause },
-            );
+        if (params.retirementSignal.aborted || !params.isOccurrenceCurrent()) {
+            return retiredError(cause);
         }
         if (callerSignal.aborted) {
-            return new Error('Agent External Session observation was cancelled', { cause });
+            return cancelledError(cause);
         }
         if (composed.timedOut()) {
-            return new Error(
-                `Agent External Session observation timed out after ${EXTERNAL_SESSION_OBSERVATION_POLICY.deadlineMs}ms`,
-                { cause },
-            );
+            return new ExternalSessionProviderFailureError({
+                code: 'timeout',
+                message: `Agent External Session observation timed out after ${EXTERNAL_SESSION_OBSERVATION_POLICY.deadlineMs}ms`,
+                operation: 'externalSessionObservation',
+                retryable: true,
+                cause,
+            });
         }
         return cause instanceof Error
             ? cause
@@ -660,7 +683,7 @@ function createGenerationBoundExternalSessionObservation(params: Readonly<{
         },
         async observeResource(
             request: Parameters<
-                GenerationBoundExternalSessionObservation['observeResource']
+                OccurrenceBoundExternalSessionObservation['observeResource']
             >[0],
         ) {
             assertAdmissible(request.signal);
@@ -787,14 +810,14 @@ function createGenerationBoundExternalSessionObservation(params: Readonly<{
                     emit(batch) {
                         if (composed.signal.aborted
                             || params.retirementSignal.aborted
-                            || !params.isGenerationActive()) {
+                            || !params.isOccurrenceCurrent()) {
                             return;
                         }
                         const parsed =
                             ExternalAgentObservationLinkEvidenceBatchV1Schema.parse(batch);
                         if (composed.signal.aborted
                             || params.retirementSignal.aborted
-                            || !params.isGenerationActive()) {
+                            || !params.isOccurrenceCurrent()) {
                             return;
                         }
                         request.emit(parsed);
@@ -802,7 +825,7 @@ function createGenerationBoundExternalSessionObservation(params: Readonly<{
                     requestReconcile() {
                         if (composed.signal.aborted
                             || params.retirementSignal.aborted
-                            || !params.isGenerationActive()) {
+                            || !params.isOccurrenceCurrent()) {
                             return;
                         }
                         request.requestReconcile();
@@ -810,14 +833,14 @@ function createGenerationBoundExternalSessionObservation(params: Readonly<{
                     requestTranscriptRefresh(linkKey) {
                         if (composed.signal.aborted
                             || params.retirementSignal.aborted
-                            || !params.isGenerationActive()) {
+                            || !params.isOccurrenceCurrent()) {
                             return;
                         }
                         const parsedLinkKey =
                             ExternalAgentObservationLinkKeyV1Schema.parse(linkKey);
                         if (composed.signal.aborted
                             || params.retirementSignal.aborted
-                            || !params.isGenerationActive()) {
+                            || !params.isOccurrenceCurrent()) {
                             return;
                         }
                         request.requestTranscriptRefresh(parsedLinkKey);
@@ -841,7 +864,7 @@ function createGenerationBoundExternalSessionObservation(params: Readonly<{
                 });
                 if (composed.signal.aborted
                     || params.retirementSignal.aborted
-                    || !params.isGenerationActive()) {
+                    || !params.isOccurrenceCurrent()) {
                     await disposeWithinObservationDeadline().catch(() => undefined);
                     throw terminalError(request.signal, composed);
                 }
@@ -879,7 +902,7 @@ function createGenerationBoundExternalSessionObservation(params: Readonly<{
         },
         async reconcileResource(
             request: Parameters<
-                GenerationBoundExternalSessionObservation['reconcileResource']
+                OccurrenceBoundExternalSessionObservation['reconcileResource']
             >[0],
         ) {
             assertAdmissible(request.signal);
@@ -963,15 +986,15 @@ function createGenerationBoundExternalSessionObservation(params: Readonly<{
     });
 }
 
-function createGenerationBoundExternalSessionHooks(params: Readonly<{
+function createOccurrenceBoundExternalSessionHooks(params: Readonly<{
     contribution: AgentExternalSessionHooksContribution;
     createInvocationContext(
         signal: AbortSignal,
     ): Promise<PluginInvocationContext>;
     assertCurrent(): void;
-    isGenerationActive(): boolean;
+    isOccurrenceCurrent(): boolean;
     retirementSignal: AbortSignal;
-}>): GenerationBoundExternalSessionHooks {
+}>): OccurrenceBoundExternalSessionHooks {
     type Invocation = Readonly<{
         signal: AbortSignal;
         deadlineAtMs: number;
@@ -1028,7 +1051,7 @@ function createGenerationBoundExternalSessionHooks(params: Readonly<{
             resolveTerminal = resolve;
         });
         const terminalError = (): Error => {
-            if (params.retirementSignal.aborted || !params.isGenerationActive()) {
+            if (params.retirementSignal.aborted || !params.isOccurrenceCurrent()) {
                 return new Error(
                     'Agent External Session hooks belong to a retired generation',
                 );
@@ -1054,7 +1077,7 @@ function createGenerationBoundExternalSessionHooks(params: Readonly<{
         params.retirementSignal.addEventListener('abort', retire, { once: true });
         const remainingMs = deadlineAtMs - Date.now();
         let timeout: ReturnType<typeof setTimeout> | null = null;
-        if (params.retirementSignal.aborted || !params.isGenerationActive()) {
+        if (params.retirementSignal.aborted || !params.isOccurrenceCurrent()) {
             retire();
         } else if (request.signal.aborted) {
             cancel();
@@ -1127,12 +1150,12 @@ function createGenerationBoundExternalSessionHooks(params: Readonly<{
     });
 }
 
-function createGenerationBoundExternalSessionTakeover(params: Readonly<{
+function createOccurrenceBoundExternalSessionTakeover(params: Readonly<{
     contribution: AgentExternalSessionTakeoverContribution;
     assertCurrent(): void;
-    isGenerationActive(): boolean;
+    isOccurrenceCurrent(): boolean;
     retirementSignal: AbortSignal;
-}>): GenerationBoundExternalSessionTakeover {
+}>): OccurrenceBoundExternalSessionTakeover {
     const encoder = new TextEncoder();
     const policy =
         AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS.callbacks.resolveLaunch;
@@ -1188,7 +1211,7 @@ function createGenerationBoundExternalSessionTakeover(params: Readonly<{
             });
             const terminalError = (): Error => {
                 if (params.retirementSignal.aborted
-                    || !params.isGenerationActive()) {
+                    || !params.isOccurrenceCurrent()) {
                     return new Error(
                         'Agent External Session takeover belongs to a retired generation',
                     );
@@ -1221,7 +1244,7 @@ function createGenerationBoundExternalSessionTakeover(params: Readonly<{
             const remainingMs = deadlineAtMs - Date.now();
             let timeout: ReturnType<typeof setTimeout> | null = null;
             if (params.retirementSignal.aborted
-                || !params.isGenerationActive()) {
+                || !params.isOccurrenceCurrent()) {
                 retire();
             } else if (request.signal.aborted) {
                 cancel();
@@ -1282,26 +1305,28 @@ function createLease(params: Readonly<{
     pluginVersion: string;
     agentId: string;
     localAgentId: string;
-    generation: string;
+    occurrenceId: string;
     immutableGenerationId: string | null;
+    sourceCustody: PluginSourceCustodyV1;
+    manifest?: CanonicalPluginManifest;
     declaredPrimary?: 'sessions' | 'executionRuns' | null;
     declaresExecutionRunContextV1?: boolean;
     startupInstructionsVersions?: readonly [1];
     registration: AgentContributionRuntimeRegistration;
     runnerBinding?: AgentSessionRunnerBindingV1;
-    isGenerationActive(): boolean;
+    isOccurrenceCurrent(): boolean;
     retirementSignal: AbortSignal;
     boundedExternalSessions?: BoundedAgentExternalSessionsContribution;
     acpSessionListingOwner?: AcpSessionListingOwner;
-    boundedExternalSessionHooks?: GenerationBoundExternalSessionHooks;
-    boundedExternalSessionObservation?: GenerationBoundExternalSessionObservation;
-    boundedExternalSessionTakeover?: GenerationBoundExternalSessionTakeover;
+    boundedExternalSessionHooks?: OccurrenceBoundExternalSessionHooks;
+    boundedExternalSessionObservation?: OccurrenceBoundExternalSessionObservation;
+    boundedExternalSessionTakeover?: OccurrenceBoundExternalSessionTakeover;
     boundedDaemonSpawnHooks?: AgentDaemonSpawnHooks;
     createAgentInvocationServices?: CreateAgentInvocationServices;
     managedEndpointRead?: AgentExternalSessionsManagedEndpointReadHost;
 }>): AgentRuntimeRegistrationLease {
     const assertCurrent = (): void => {
-        if (!params.isGenerationActive()) {
+        if (!params.isOccurrenceCurrent()) {
             throw new Error(
                 `Agent runtime '${params.agentId}' from plugin '${params.pluginId}' belongs to a retired generation`,
             );
@@ -1315,13 +1340,13 @@ function createLease(params: Readonly<{
             pluginId: params.pluginId,
             pluginVersion: params.pluginVersion,
             agentId: params.agentId,
-            generation: params.generation,
+            occurrenceId: params.occurrenceId,
             correlationId: randomUUID(),
             cwd,
             providerBindingActive:
                 params.registration.providerBinding !== undefined,
             signal,
-            isGenerationCurrent: params.isGenerationActive,
+            isOccurrenceCurrent: params.isOccurrenceCurrent,
         })
         ?? createUnavailablePluginServices()
     );
@@ -1361,7 +1386,7 @@ function createLease(params: Readonly<{
             ui: createPluginInvocationPresentation({
                 currentSession: null,
                 signal: input.signal,
-                isGenerationCurrent: params.isGenerationActive,
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
             }),
         });
     };
@@ -1381,11 +1406,11 @@ function createLease(params: Readonly<{
                     pluginId: params.pluginId,
                     pluginVersion: params.pluginVersion,
                     agentId: params.agentId,
-                    generation: params.generation,
+                    occurrenceId: params.occurrenceId,
                 },
                 createAgentInvocationServices: params.createAgentInvocationServices,
                 cwd: process.cwd(),
-                isGenerationActive: params.isGenerationActive,
+                isOccurrenceActive: params.isOccurrenceCurrent,
                 retirementSignal: params.retirementSignal,
             })
             : null;
@@ -1398,15 +1423,15 @@ function createLease(params: Readonly<{
                 identity: {
                     pluginId: params.pluginId,
                     agentId: params.agentId,
-                    generation: params.generation,
+                    occurrenceId: params.occurrenceId,
                     contributionQualifiedId:
                         resolveAgentContributionQualifiedId({
                             pluginId: params.pluginId,
                             localId: params.localAgentId,
                         }),
-                    immutableGenerationId: params.immutableGenerationId,
+                    sourceCustody: params.sourceCustody,
                 },
-                isCurrent: params.isGenerationActive,
+                isCurrent: params.isOccurrenceCurrent,
                 retirementSignal: params.retirementSignal,
                 createInvocationExec: async (signal) => (
                     (await createInvocationServices(signal)).exec
@@ -1442,7 +1467,7 @@ function createLease(params: Readonly<{
      * beside it: a retired generation can neither advertise nor perform a
      * destructive Agent-side deletion.
      */
-    const externalSessionCandidateLifecycle: GenerationBoundExternalSessionCandidateLifecycle | undefined =
+    const externalSessionCandidateLifecycle: OccurrenceBoundExternalSessionCandidateLifecycle | undefined =
         params.acpSessionListingOwner
             ? Object.freeze({
                 async runListingRequest(run) {
@@ -1450,12 +1475,12 @@ function createLease(params: Readonly<{
                     return Object.freeze({
                         value: listed.value,
                         negotiatedDeleteSupport: listed.negotiatedDeleteSupport
-                            && params.isGenerationActive()
+                            && params.isOccurrenceCurrent()
                             && !params.retirementSignal.aborted,
                     });
                 },
                 async deleteCandidate(request) {
-                    if (!params.isGenerationActive() || params.retirementSignal.aborted) {
+                    if (!params.isOccurrenceCurrent() || params.retirementSignal.aborted) {
                         return { ok: false, code: 'unavailable' };
                     }
                     const controller = new AbortController();
@@ -1465,7 +1490,7 @@ function createLease(params: Readonly<{
                     try {
                         if (request.signal?.aborted) return { ok: false, code: 'cancelled' };
                         const exec = (await createInvocationServices(controller.signal)).exec;
-                        if (!params.isGenerationActive() || params.retirementSignal.aborted) {
+                        if (!params.isOccurrenceCurrent() || params.retirementSignal.aborted) {
                             return { ok: false, code: 'unavailable' };
                         }
                         return await params.acpSessionListingOwner!.deleteCandidate({
@@ -1486,21 +1511,21 @@ function createLease(params: Readonly<{
             : undefined;
     const externalSessionObservation = params.boundedExternalSessionObservation
         ?? (params.registration.externalSessionObservation
-            ? createGenerationBoundExternalSessionObservation({
+            ? createOccurrenceBoundExternalSessionObservation({
                 contribution: params.registration.externalSessionObservation,
                 identity: {
                     pluginId: params.pluginId,
                     agentId: params.agentId,
-                    generation: params.generation,
+                    occurrenceId: params.occurrenceId,
                     contributionQualifiedId:
                         resolveAgentContributionQualifiedId({
                             pluginId: params.pluginId,
                             localId: params.localAgentId,
                         }),
-                    immutableGenerationId: params.immutableGenerationId,
+                    sourceCustody: params.sourceCustody,
                 },
                 assertCurrent,
-                isGenerationActive: params.isGenerationActive,
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
                 retirementSignal: params.retirementSignal,
                 ...(observationManagedEndpointRead
                     ? { managedEndpointRead: observationManagedEndpointRead }
@@ -1509,7 +1534,7 @@ function createLease(params: Readonly<{
             : undefined);
     const externalSessionHooks = params.boundedExternalSessionHooks
         ?? (params.registration.externalSessionHooks
-            ? createGenerationBoundExternalSessionHooks({
+            ? createOccurrenceBoundExternalSessionHooks({
                 contribution: params.registration.externalSessionHooks,
                 async createInvocationContext(signal) {
                     return await createInvocationContext({
@@ -1518,16 +1543,16 @@ function createLease(params: Readonly<{
                     });
                 },
                 assertCurrent,
-                isGenerationActive: params.isGenerationActive,
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
                 retirementSignal: params.retirementSignal,
             })
             : undefined);
     const externalSessionTakeover = params.boundedExternalSessionTakeover
         ?? (params.registration.externalSessionTakeover
-            ? createGenerationBoundExternalSessionTakeover({
+            ? createOccurrenceBoundExternalSessionTakeover({
                 contribution: params.registration.externalSessionTakeover,
                 assertCurrent,
-                isGenerationActive: params.isGenerationActive,
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
                 retirementSignal: params.retirementSignal,
             })
             : undefined);
@@ -1545,9 +1570,9 @@ function createLease(params: Readonly<{
         : undefined;
     const daemonSpawnHooks = params.boundedDaemonSpawnHooks
         ?? (params.registration.daemonSpawnHooks
-            ? createGenerationBoundAgentDaemonSpawnHooks({
+            ? createOccurrenceBoundAgentDaemonSpawnHooks({
                 contribution: params.registration.daemonSpawnHooks,
-                isGenerationActive: params.isGenerationActive,
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
                 retirementSignal: params.retirementSignal,
             })
             : undefined);
@@ -1556,8 +1581,9 @@ function createLease(params: Readonly<{
         pluginVersion: params.pluginVersion,
         agentId: params.agentId,
         localAgentId: params.localAgentId,
-        generation: params.generation,
+        occurrenceId: params.occurrenceId,
         immutableGenerationId: params.immutableGenerationId,
+        sourceCustody: params.sourceCustody,
         ...(params.startupInstructionsVersions
             ? { startupInstructionsVersions: params.startupInstructionsVersions }
             : {}),
@@ -1608,7 +1634,7 @@ function createLease(params: Readonly<{
             ? { vendorResumeSupport: params.registration.vendorResumeSupport }
             : {}),
         retirementSignal: params.retirementSignal,
-        isCurrent: params.isGenerationActive,
+        isCurrent: params.isOccurrenceCurrent,
         createAgentRuntimeSurfaceInvocationContext: async (
             { cwd, happierSessionId }: Parameters<
                 AgentRuntimeRegistrationLeaseBase['createAgentRuntimeSurfaceInvocationContext']
@@ -1640,19 +1666,23 @@ function createLease(params: Readonly<{
             `Agent runtime '${params.agentId}' has competing runner binding owners`,
         );
     }
+    const publishedFactory = params.sourceCustody.kind === 'bundled_first_party'
+        && validatedSessionRunnerFactory
+        ? readRetainedBundledAgentFactory(params.manifest, params.localAgentId)
+        : validatedSessionRunnerFactory;
     const sessionRunnerFactoryBinding = params.runnerBinding
-        ?? (validatedSessionRunnerFactory
-        && params.immutableGenerationId
+        ?? (publishedFactory
+        && params.sourceCustody
         ? createAgentSessionRunnerFactoryBinding({
             v: 1,
             pluginId: params.pluginId,
             pluginVersion: params.pluginVersion,
             agentId: params.agentId,
             localAgentId: params.localAgentId,
-            immutableGenerationId: params.immutableGenerationId,
-            locator: validatedSessionRunnerFactory.locator,
-            normalizedModulePath: validatedSessionRunnerFactory.normalizedModulePath,
-            loadMode: validatedSessionRunnerFactory.loadMode,
+            sourceCustody: params.sourceCustody,
+            locator: publishedFactory.locator,
+            normalizedModulePath: publishedFactory.normalizedModulePath,
+            loadMode: publishedFactory.loadMode,
         })
         : undefined);
     let runtimePromise: Promise<AgentRuntime> | null = null;
@@ -1720,7 +1750,9 @@ export function createTargetAgentRuntimeRegistry(params: Readonly<{
     activationTargets: readonly ActivationTarget[];
     targetRegistrations: readonly TargetRegistration[];
     immutableGenerationIdsByPluginId?: ReadonlyMap<string, string>;
-    isGenerationActive(): boolean;
+    readPluginOccurrenceId(pluginId: string): string | null;
+    readPluginSourceCustody(pluginId: string): PluginSourceCustodyV1 | null;
+    isOccurrenceCurrent(): boolean;
     createAgentInvocationServices?: CreateAgentInvocationServices;
     managedEndpointRead?: AgentExternalSessionsManagedEndpointReadHost;
     onDuplicate(duplicate: AgentRuntimeOwnerDuplicate): void;
@@ -1790,7 +1822,7 @@ export function createTargetAgentRuntimeRegistry(params: Readonly<{
             }));
             continue;
         }
-        const lifecycle = params.resolveGenerationLifecycle?.(candidate.pluginId);
+        const lifecycle = params.resolveOccurrenceLifecycle?.(candidate.pluginId);
         const startupInstructionsVersions = readStartupInstructionsVersions(
             selectedAgentById.get(agentId),
         );
@@ -1801,20 +1833,29 @@ export function createTargetAgentRuntimeRegistry(params: Readonly<{
             : null;
         const declaresExecutionRunContextV1 = readAgentSessionCapabilities(selectedDefinition)
             ?.executionRunContext?.versions.includes(1) === true;
+        const occurrenceId = params.readPluginOccurrenceId(candidate.pluginId);
+        const sourceCustody = params.readPluginSourceCustody(candidate.pluginId);
+        if (!occurrenceId || occurrenceId !== candidate.occurrenceId || !sourceCustody) {
+            throw new Error(
+                `Agent runtime '${agentId}' has no admitted plugin occurrence or source custody`,
+            );
+        }
         registry.set(agentId, createLease({
             pluginId: candidate.pluginId,
             pluginVersion: target.manifest.version,
             agentId,
             localAgentId: candidate.registration.localId,
-            generation: candidate.generation,
+            occurrenceId,
             immutableGenerationId: params.immutableGenerationIdsByPluginId?.get(candidate.pluginId) ?? null,
+            sourceCustody,
+            manifest: target.manifest,
             declaredPrimary,
             declaresExecutionRunContextV1,
             ...(startupInstructionsVersions
                 ? { startupInstructionsVersions }
                 : {}),
             registration: candidate.registration.value,
-            isGenerationActive: lifecycle?.isCurrent ?? params.isGenerationActive,
+            isOccurrenceCurrent: lifecycle?.isCurrent ?? params.isOccurrenceCurrent,
             retirementSignal: requireAgentRuntimeRetirementSignal({
                 agentId,
                 ...(lifecycle
@@ -1874,9 +1915,9 @@ function retainAgentAuxiliaryRuntimeFacets(
     registration: AgentAuxiliaryRuntimeRegistration;
     boundedLeaseFacets: Readonly<{
         boundedExternalSessions?: BoundedAgentExternalSessionsContribution;
-        boundedExternalSessionHooks?: GenerationBoundExternalSessionHooks;
-        boundedExternalSessionObservation?: GenerationBoundExternalSessionObservation;
-        boundedExternalSessionTakeover?: GenerationBoundExternalSessionTakeover;
+        boundedExternalSessionHooks?: OccurrenceBoundExternalSessionHooks;
+        boundedExternalSessionObservation?: OccurrenceBoundExternalSessionObservation;
+        boundedExternalSessionTakeover?: OccurrenceBoundExternalSessionTakeover;
         boundedDaemonSpawnHooks?: AgentDaemonSpawnHooks;
     }>;
 }> {
@@ -1917,9 +1958,10 @@ function retainAgentAuxiliaryRuntimeFacets(
 export function createDeclarativeAcpAgentRuntimeRegistry(params: Readonly<{
     agents: readonly ResolvedAgentContribution[];
     registered: ReadonlyMap<string, AgentRuntimeRegistrationLease>;
-    generation: string;
     immutableGenerationIdsByPluginId?: ReadonlyMap<string, string>;
-    isGenerationActive(): boolean;
+    readPluginOccurrenceId(pluginId: string): string | null;
+    readPluginSourceCustody(pluginId: string): PluginSourceCustodyV1 | null;
+    isOccurrenceCurrent(): boolean;
     createAgentInvocationServices?: CreateAgentInvocationServices;
 }> & AgentRuntimeRetirementOwner): Map<string, AgentRuntimeRegistrationLease> {
     const registry = new Map(params.registered);
@@ -1942,7 +1984,7 @@ export function createDeclarativeAcpAgentRuntimeRegistry(params: Readonly<{
         ));
 
     for (const declaration of declarations) {
-        const lifecycle = params.resolveGenerationLifecycle?.(declaration.pluginId);
+        const lifecycle = params.resolveOccurrenceLifecycle?.(declaration.pluginId);
         const existing = registry.get(declaration.agent.id);
         if (existing?.hasPrimaryRuntime || (existing && existing.pluginId !== declaration.pluginId)) {
             throw new Error(
@@ -2002,8 +2044,17 @@ export function createDeclarativeAcpAgentRuntimeRegistry(params: Readonly<{
                 declaration.pluginId,
             )
             ?? null;
+        const sourceCustody = existing?.sourceCustody
+            ?? params.readPluginSourceCustody(declaration.pluginId);
+        const occurrenceId = existing?.occurrenceId
+            ?? params.readPluginOccurrenceId(declaration.pluginId);
+        if (!occurrenceId || !sourceCustody) {
+            throw new Error(
+                `Declarative ACP Agent '${declaration.agent.id}' has no admitted plugin occurrence or source custody`,
+            );
+        }
         const runnerBinding = pluginVersion
-            && immutableGenerationId
+            && sourceCustody
             ? createHostDeclarativeAcpRunnerBinding({
                 kind: 'host_declarative_acp_v1',
                 v: 1,
@@ -2015,7 +2066,7 @@ export function createDeclarativeAcpAgentRuntimeRegistry(params: Readonly<{
                     localId: localAgentId,
                 }),
                 localAgentId,
-                immutableGenerationId,
+                sourceCustody,
             })
             : undefined;
         registry.set(declaration.agent.id, createLease({
@@ -2029,16 +2080,17 @@ export function createDeclarativeAcpAgentRuntimeRegistry(params: Readonly<{
                 ? declaration.agent.richDefinition.definition.primary
                 : null,
             localAgentId,
-            generation: existing?.generation ?? params.generation,
+            occurrenceId,
             immutableGenerationId,
+            sourceCustody,
             ...(readStartupInstructionsVersions(declaration.agent)
                 ? { startupInstructionsVersions: [1] as const }
                 : {}),
             registration,
             ...(runnerBinding ? { runnerBinding } : {}),
-            isGenerationActive: existing
-                ? () => existing.isCurrent() && (lifecycle?.isCurrent() ?? params.isGenerationActive())
-                : lifecycle?.isCurrent ?? params.isGenerationActive,
+            isOccurrenceCurrent: existing
+                ? () => existing.isCurrent() && (lifecycle?.isCurrent() ?? params.isOccurrenceCurrent())
+                : lifecycle?.isCurrent ?? params.isOccurrenceCurrent,
             retirementSignal: existing?.retirementSignal
                 ?? requireAgentRuntimeRetirementSignal({
                     agentId: declaration.agent.id,

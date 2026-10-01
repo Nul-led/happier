@@ -7,7 +7,6 @@ import {
     createPluginExecClientAbortError,
     createPluginExecClientExitError,
 } from './errors';
-import { PluginExecError } from './hostService';
 
 describe('plugin exec error contract', () => {
     it('delivers every exec-client failure through the canonical public PluginError contract', () => {
@@ -45,21 +44,6 @@ describe('plugin exec error contract', () => {
             code: 'PLUGIN_EXEC_CLIENT_EXITED',
             cleanProcessExit: true,
             stderrPreview: 'stderr tail',
-        });
-    });
-
-    it('delivers exec launch denials through the canonical public PluginError contract', () => {
-        const denied = new PluginExecError(
-            'PLUGIN_EXEC_PERMISSION_DENIED',
-            'Process launch is not authorized for this plugin',
-        );
-
-        expect(denied).toBeInstanceOf(PluginError);
-        expect(isPluginError(denied)).toBe(true);
-        expect(denied).toMatchObject({
-            name: 'PluginError',
-            code: 'PLUGIN_EXEC_PERMISSION_DENIED',
-            retryable: false,
         });
     });
 });

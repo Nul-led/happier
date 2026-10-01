@@ -23,14 +23,17 @@ import type {
   TriageConfiguredSourceInstanceV1,
   TriageSourceEntryLocalRefV1,
   TriageSourceFailureV1,
+  TriagePullRequestStatusV1,
+  TriagePullRequestStatusResultV1,
 } from '@happier-dev/triage-protocol/v1';
+import { TriageGetInputV1Schema, TriagePullRequestStatusResultV1Schema } from '@happier-dev/triage-protocol/v1';
 import {
   fitActionResultPageV1,
   fitActionResultSequenceV1,
 } from '@happier-dev/triage-sources/projection/actionResultSequence';
 import { fitActionResultTextV1 } from '@happier-dev/triage-sources/projection/actionResultText';
 
-import { admitGitlabItemInvocation } from './admission.js';
+import { admitGitlabItemIdentity, admitGitlabItemInvocation } from './admission.js';
 import {
   GitlabActivityEventsInputV1Schema,
   GitlabApprovalsInputV1Schema,
@@ -56,7 +59,8 @@ import {
   type GitlabDetailContinuationPlaneV1,
   type GitlabDetailContinuationProvenanceV1,
 } from './detail/continuation.js';
-import type { GitlabDetailRouteInputV1 } from './detail/routes.js';
+import { GITLAB_MAX_DETAIL_PAGE_SIZE_V1, type GitlabDetailRouteInputV1 } from './detail/routes.js';
+import { boundGitlabText } from './mapping/bounded.js';
 import {
   readGitlabActivityEventsPage,
   readGitlabApprovalsSurface,
@@ -137,6 +141,81 @@ function unavailable(failure: TriageSourceFailureV1): Readonly<{
   failure: TriageSourceFailureV1;
 }> {
   return Object.freeze({ kind: 'unavailable' as const, failure });
+}
+
+/** Expanded-row demand reuses the exact Overview read and its admitted request closure. */
+export async function readGitlabPullRequestStatus(input: unknown, context: PluginInvocationContext): Promise<TriagePullRequestStatusResultV1> {
+  const parsed = TriageGetInputV1Schema.safeParse(input);
+  if (!parsed.success) return unavailable(INVALID_INPUT_FAILURE);
+  const identity = admitGitlabItemIdentity({ localRef: parsed.data.localRef, admissibleKinds: ['merge-request'] });
+  if (!identity.ok) return unavailable(identity.failure);
+  const read = await readGitlabTriageEntryForOverview({
+    get: parsed.data, connectedAccounts: readGitlabConnectedAccounts(context),
+    fetcher: createGitlabHttpFetcher(context), signal: context.signal, nowMs: Date.now(),
+  });
+  if (read.result.kind !== 'present' || read.pullRequest === null || read.readContext === null) {
+    return unavailable('failure' in read.result ? read.result.failure : { class: 'unknown', code: 'gitlab-status-not-observed' });
+  }
+  const { route, dependencies } = read.readContext;
+  const [pipelines, approvals] = await Promise.all([
+    readGitlabPipelinesPage({ route, perPage: GITLAB_MAX_DETAIL_PAGE_SIZE_V1, position: { kind: 'first' } }, dependencies),
+    readGitlabApprovalsSurface({ route }, dependencies),
+  ]);
+  let checks: TriagePullRequestStatusV1['checks'] = null;
+  if (pipelines.ok) {
+    const { jobs, rollup } = pipelines.value;
+    checks = {
+      state: jobs.incomplete ? (jobs.rows.length > 0 ? 'incomplete' : 'unknown')
+        : jobs.rows.some((row) => row.state === 'unknown') ? 'unknown'
+          : jobs.total === 0 ? 'none' : 'complete',
+      passed: rollup?.passingCount ?? (jobs.total === 0 ? 0 : null),
+      failed: rollup?.failingCount ?? (jobs.total === 0 ? 0 : null),
+      pending: rollup?.runningCount ?? (jobs.total === 0 ? 0 : null),
+      total: jobs.total, rows: [...jobs.rows], incomplete: jobs.incomplete,
+    };
+  }
+  let review: TriagePullRequestStatusV1['review'] = null;
+  let textTruncated = read.pullRequest.projectionTruncated || read.result.snapshot.projectionTruncated === true
+    || (pipelines.ok && pipelines.value.jobs.projectionTruncated);
+  if (approvals.ok) {
+    const { state } = approvals.value;
+    const approvedBy = state.approvedBy.map((name) => boundGitlabText(name));
+    const approvedNames = new Set(state.approvedBy);
+    const pendingReviewers = read.pullRequest.reviewers.filter((name) => !approvedNames.has(name)).map((name) => boundGitlabText(name));
+    textTruncated ||= [...approvedBy, ...pendingReviewers].some((name) => name.truncated);
+    review = {
+      decision: read.pullRequest.changesRequested ? 'changesRequested'
+        : state.approvalsLeft !== undefined && state.approvalsLeft > 0 ? 'reviewRequired'
+          : state.approvalsLeft === 0 && ((state.approvalsRequired ?? 0) > 0 || state.approvedBy.length > 0) ? 'approved' : null,
+      reviewers: [
+        ...approvedBy.map((name) => ({ name: name.text, verb: 'approved' as const })),
+        ...pendingReviewers.map((name) => ({ name: name.text, verb: 'pending' as const })),
+      ],
+      incomplete: state.omittedApproverCount > 0,
+    };
+  } else if (read.pullRequest.changesRequested) {
+    review = { decision: 'changesRequested', reviewers: [], incomplete: true };
+  }
+  const base: TriagePullRequestStatusV1 = {
+    kind: 'status', observedAtMs: Date.now(), checks, review,
+    merge: read.pullRequest.merge, branch: read.pullRequest.branch, facts: read.result.snapshot.facts,
+  };
+  const candidates = [
+    ...(checks?.rows.map((value) => ({ kind: 'check' as const, value })) ?? []),
+    ...(review?.reviewers.map((value) => ({ kind: 'reviewer' as const, value })) ?? []),
+  ];
+  return TriagePullRequestStatusResultV1Schema.parse(fitActionResultSequenceV1(candidates, (included, omitted) => {
+    const checkRows = included.filter((item) => item.kind === 'check').map((item) => item.value);
+    const reviewers = included.filter((item) => item.kind === 'reviewer').map((item) => item.value);
+    const checksOmitted = checks !== null && checkRows.length < checks.rows.length;
+    return {
+      ...base,
+      checks: checks === null ? null : { ...checks, rows: checkRows,
+        state: checksOmitted ? 'incomplete' as const : checks.state, incomplete: checks.incomplete || checksOmitted },
+      review: review === null ? null : { ...review, reviewers, incomplete: review.incomplete || reviewers.length < review.reviewers.length },
+      ...(textTruncated || omitted > 0 ? { projectionTruncated: true as const } : {}),
+    };
+  }).result);
 }
 
 /**

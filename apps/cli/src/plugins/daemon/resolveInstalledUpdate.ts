@@ -56,7 +56,7 @@ export function resolveInstalledPluginUpdate(
       `Plugin '${pluginId}' has no current trusted update channel`,
     );
   }
-  const updatePolicy = record.install.updatePolicy ?? 'reviewEveryUpdate';
+  const updatePolicy = record.install.updatePolicy ?? 'allowed';
   if (updatePolicy === 'pinned') {
     throw new DaemonPluginChangePreparationError(
       'plugin_update_pinned',
@@ -90,12 +90,17 @@ export function resolveInstalledPluginUpdate(
         },
       };
     case 'localPath':
+      if (record.source.devWatch === true) {
+        throw new DaemonPluginChangePreparationError(
+          'plugin_development_update_requires_reload',
+          `Development plugin '${pluginId}' advances through its registered source observer`,
+        );
+      }
       return {
         kind: 'path',
         request: {
           kind: 'installPath',
           locator: trust.distribution.canonicalPath,
-          development: record.source.devWatch === true,
         },
       };
   }

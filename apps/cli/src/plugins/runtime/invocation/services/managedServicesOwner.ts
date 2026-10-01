@@ -39,6 +39,7 @@ import {
     type ManagedServiceProcessSupervisorHost,
     readManagedServiceProcessCredentialRedactionValues,
 } from './managedProcessSupervisor';
+import type { PluginSourceCustodyV1 } from '@happier-dev/protocol';
 import {
     normalizeManagedServiceHealthyWaitTimeout,
     normalizeManagedServiceSpec,
@@ -61,14 +62,15 @@ import {
 } from '@/agent/runtime/session/process/runnerManagedProviderBindingMaterialization';
 
 type ManagedServicesScope = Readonly<{
-    generation: string;
+    occurrenceId: string;
+    sourceCustody?: PluginSourceCustodyV1;
     pluginId: string;
     contributionQualifiedId: string;
     sessionId?: string;
     operationId?: string;
     signal?: AbortSignal;
     declaredSecretReadPort?: DeclaredPluginSecretReadPort;
-    isGenerationCurrent(): boolean;
+    isOccurrenceCurrent(): boolean;
 }>;
 
 type ValidatedManagedServiceClientAccess =
@@ -297,7 +299,7 @@ function canonicalSpecIdentity(spec: ManagedServiceSpec): string {
 }
 
 function assertScopeCurrent(scope: ManagedServicesScope): void {
-    if (scope.signal?.aborted || !scope.isGenerationCurrent()) {
+    if (scope.signal?.aborted || !scope.isOccurrenceCurrent()) {
         fail(
             'plugin_managed_service_unavailable',
             'Managed-service invocation authority is no longer current',
@@ -722,7 +724,7 @@ function validateClientAccess(
     // inside an exact Session lifecycle scope. Under daemon custody the daemon
     // mints, holds and attaches it itself — the same trust boundary host-bearer
     // already relies on above — but its credential must still belong to an
-    // exact operation. A generation only bounds that operation; it is not
+    // exact operation. A occurrenceId only bounds that operation; it is not
     // credential custody by itself.
     if (custodyOwner === 'sessionRunner' && !scope.sessionId) {
         return specInvalid(
@@ -825,6 +827,7 @@ function createHostClientCredential(
  */
 type ResolvedDeclaredClientCredential = Readonly<{
     credential: ManagedServiceProcessCredential | undefined;
+    environmentValue?: string;
     isCurrent?: DeclaredPluginSecretReadResult['isCurrent'];
 }>;
 
@@ -859,6 +862,9 @@ async function resolveDeclaredClientCredential(
         credential: typeof secret.value === 'string' && secret.value.length > 0
             ? renderHostClientCredential(access, secret.value)
             : undefined,
+        ...(typeof secret.value === 'string' && secret.value.length > 0
+            ? { environmentValue: secret.value }
+            : {}),
         isCurrent: secret.isCurrent,
     });
 }
@@ -884,6 +890,19 @@ function translateHealthCheck(
     });
     return Object.freeze({
         kind: 'http' as const,
+        ...(value.alternatives
+            ? {
+                alternatives: Object.freeze(value.alternatives.map(
+                    (alternative) => Object.freeze({
+                        target: Object.freeze({
+                            kind: 'serverPath' as const,
+                            path: alternative.target.path,
+                        }),
+                        response: alternative.response,
+                    }),
+                )),
+            }
+            : {}),
         ...(value.target
             ? {
                 target: Object.freeze({
@@ -1317,7 +1336,7 @@ async function materializeCredentialBindings(input: Readonly<{
         }
         const lease = await fileOwner.materialize({
             scope: Object.freeze({
-                generation: input.scope.generation,
+                occurrenceId: input.scope.occurrenceId,
                 pluginId: input.scope.pluginId,
                 contributionQualifiedId:
                     input.scope.contributionQualifiedId,
@@ -1748,7 +1767,7 @@ function requestUnavailable(message: string): never {
  * Establishment and streaming compose several abort authorities into one signal — the caller's own
  * `signal`, the exact handle's lifetime, and the invocation scope — so by the time a request fails
  * the composed signal no longer says who ended it. Reporting all of them as unavailability tells a
- * plugin that its service, credentials or generation are gone when in fact it cancelled itself, and
+ * plugin that its service, credentials or occurrenceId are gone when in fact it cancelled itself, and
  * that is the difference between retrying, re-establishing, and reporting an outage to the user.
  * The caller's signal is therefore consulted directly: it aborted, so this is `plugin_operation_aborted`;
  * anything else (handle/scope/currentness/process retirement, timeout, transport failure) stays
@@ -2321,7 +2340,7 @@ function composeAbortSignals(
 }
 
 type ManagedServiceLifecycle = Readonly<{
-    kind: 'session' | 'operation' | 'generation';
+    kind: 'session' | 'operation' | 'occurrenceId';
     identity: string;
     retainedAcrossOrdinaryGenerationRetirement: boolean;
 }>;
@@ -2330,7 +2349,7 @@ type ManagedServiceSemanticEntry = {
     readonly kind: 'service';
     readonly effectiveOwnerKey: string;
     readonly lifecycle: ManagedServiceLifecycle;
-    readonly generation: string;
+    readonly occurrenceId: string;
     readonly pluginId: string;
     readonly specIdentity: string;
     readonly scope: ManagedServicesScope;
@@ -2363,12 +2382,13 @@ export type ManagedProviderExplicitStartOperationInput = Readonly<{
     operationId: string;
     pluginId: string;
     contributionQualifiedId: string;
-    generation: string;
+    occurrenceId: string;
     purposeBindingsEqualityKey: string;
     /** Bounds only this caller's joined projection, never the shared operation. */
     signal?: AbortSignal;
     isCurrent(): boolean;
     lifecycleKind?: 'publicExplicitStart' | 'providerBroker';
+    retirementGroup?: Readonly<{ identity: string; onRetired(): Promise<void> }>;
     /** Re-enters the durable authority for the retained semantic claim. */
     revalidateRetainedCurrentness?(signal?: AbortSignal): Promise<boolean>;
     establish(input: Readonly<{
@@ -2382,10 +2402,12 @@ type ManagedProviderExplicitStartOperationEntry = {
     readonly operationId: string;
     readonly pluginId: string;
     readonly contributionQualifiedId: string;
-    readonly generation: string;
+    readonly occurrenceId: string;
     readonly purposeBindingsEqualityKey: string;
     readonly isCurrent: () => boolean;
     readonly lifecycleKind: 'publicExplicitStart' | 'providerBroker';
+    readonly retirementGroup: ManagedProviderExplicitStartOperationInput['retirementGroup'];
+    cleanupComplete: boolean;
     revalidateRetainedCurrentness: ((signal?: AbortSignal) => Promise<boolean>) | null;
     readonly abort: AbortController;
     establishment: Promise<ManagedProviderExplicitStartOperationOutcome>;
@@ -2476,14 +2498,14 @@ function managedServiceSemanticEntryKey(input: Readonly<{
     pluginId: string;
     contributionQualifiedId: string;
     serviceId: string;
-    generation: string;
+    occurrenceId: string;
 }>): string {
     return [
         input.lifecycleIdentity,
         input.pluginId,
         input.contributionQualifiedId,
         input.serviceId,
-        input.generation,
+        input.occurrenceId,
     ].join('\u0000');
 }
 
@@ -2512,13 +2534,13 @@ function managedServiceLifecycle(
         );
     }
     const identity = [
-        'generation',
+        'occurrenceId',
         scope.pluginId,
-        scope.generation,
+        scope.occurrenceId,
         scope.contributionQualifiedId,
     ].join(':');
     return Object.freeze({
-        kind: 'generation',
+        kind: 'occurrenceId',
         identity,
         retainedAcrossOrdinaryGenerationRetirement: false,
     });
@@ -2574,12 +2596,13 @@ export function createManagedServicesOwner(input: Readonly<{
         | ManagedDependenciesService
         | ((scope: ManagedServicesScope) => ManagedDependenciesService);
     resolveScope(seed: Readonly<{
-        generation: string;
+        occurrenceId: string;
+        sourceCustody?: PluginSourceCustodyV1;
         pluginId: string;
         contributionQualifiedId: string;
         sessionId?: string;
         signal?: AbortSignal;
-        isGenerationCurrent(): boolean;
+        isOccurrenceCurrent(): boolean;
     }>, context?: ManagedServicesInvocationBindingContext):
         ManagedServicesScope | null;
 }>): ManagedServicesInvocationOwner & Readonly<{
@@ -2593,13 +2616,22 @@ export function createManagedServicesOwner(input: Readonly<{
     ): ManagedServices;
     bindSessionManagedServiceRequest(input: Readonly<{
         sessionId: string;
-        generation: string;
+        occurrenceId: string;
         pluginId: string;
         contributionQualifiedId: string;
         serviceId: string;
     }>): ((
         request: ManagedServiceRequest,
     ) => Promise<ManagedServiceResponse>) | null;
+    materializeSessionManagedServiceClientEnvironment(input: Readonly<{
+        sessionId: string;
+        occurrenceId: string;
+        pluginId: string;
+        contributionQualifiedId: string;
+        serviceId: string;
+        environmentKey: string;
+        signal?: AbortSignal;
+    }>): Promise<Readonly<Record<string, string>> | null>;
     runManagedProviderExplicitStart(
         input: ManagedProviderExplicitStartOperationInput,
     ): Promise<ManagedProviderExplicitStartOperationResult>;
@@ -2631,6 +2663,13 @@ export function createManagedServicesOwner(input: Readonly<{
     const endpointAccessByService = new WeakMap<
         ManagedServiceHandle,
         ManagedProviderEndpointAccessFacts
+    >();
+    const clientEnvironmentByService = new WeakMap<
+        ManagedServiceHandle,
+        (
+            environmentKey: string,
+            signal?: AbortSignal,
+        ) => Promise<Readonly<Record<string, string>>>
     >();
     const projectedEndpointAccess = new WeakSet<ManagedServiceHandle>();
     const semanticEntries = new Map<
@@ -2793,7 +2832,7 @@ export function createManagedServicesOwner(input: Readonly<{
             operationId: string;
             pluginId: string;
             contributionQualifiedId: string;
-            generation: string;
+            occurrenceId: string;
         }>,
     ): readonly ManagedServiceSemanticEntry[] => (
         [...semanticEntries.values()]
@@ -2803,7 +2842,7 @@ export function createManagedServicesOwner(input: Readonly<{
                 && entry.pluginId === operation.pluginId
                 && entry.scope.contributionQualifiedId
                     === operation.contributionQualifiedId
-                && entry.generation === operation.generation
+                && entry.occurrenceId === operation.occurrenceId
             ))
     );
     const explicitStartOperationForScope = (
@@ -2820,7 +2859,7 @@ export function createManagedServicesOwner(input: Readonly<{
         if (
             !entry
             || isManagedServiceSemanticEntry(entry)
-            || entry.generation !== scope.generation
+            || entry.occurrenceId !== scope.occurrenceId
         ) return null;
         return entry;
     };
@@ -2836,7 +2875,7 @@ export function createManagedServicesOwner(input: Readonly<{
                     'Managed Provider explicit-start operation retired',
                 );
             }
-            const established = await entry.establishment.catch(() => null);
+            const established = entry.cleanupComplete ? null : await entry.establishment.catch(() => null);
             const results = await Promise.allSettled(
                 [
                     ...(established
@@ -2856,6 +2895,14 @@ export function createManagedServicesOwner(input: Readonly<{
                     failures,
                     'Managed Provider explicit-start cleanup failed',
                 );
+            }
+            entry.cleanupComplete = true;
+            const group = entry.retirementGroup;
+            if (group && ![...semanticEntries.values()].some((other) => (
+                other !== entry && !isManagedServiceSemanticEntry(other)
+                && other.retirementGroup?.identity === group.identity
+            ))) {
+                await group.onRetired();
             }
             removeSemanticEntry(entry);
         })();
@@ -2901,12 +2948,15 @@ export function createManagedServicesOwner(input: Readonly<{
                     suppliedContext.requestAuth ?? null,
             });
         const processSupervisor = input.processSupervisorHost.bind({
-            generation: scope.generation,
+            occurrenceId: scope.occurrenceId,
+            ...(scope.sourceCustody
+                ? { sourceCustody: scope.sourceCustody }
+                : {}),
             pluginId: scope.pluginId,
             contributionId: scope.contributionQualifiedId,
             ...(scope.sessionId ? { sessionId: scope.sessionId } : {}),
             ...(scope.operationId ? { operationId: scope.operationId } : {}),
-            isGenerationCurrent: scope.isGenerationCurrent,
+            isOccurrenceCurrent: scope.isOccurrenceCurrent,
             exec,
         });
         return Object.freeze({
@@ -2971,7 +3021,7 @@ export function createManagedServicesOwner(input: Readonly<{
                     contributionQualifiedId:
                         scope.contributionQualifiedId,
                     serviceId: normalizedSpec.id,
-                    generation: scope.generation,
+                    occurrenceId: scope.occurrenceId,
                 });
                 const specIdentity = canonicalSpecIdentity(normalizedSpec);
                 let existing = semanticEntries.get(entryKey);
@@ -3029,20 +3079,20 @@ export function createManagedServicesOwner(input: Readonly<{
                     .filter(isManagedServiceSemanticEntry)
                     .filter((entry) => (
                         entry.effectiveOwnerKey === effectiveOwnerKey
-                        && entry.generation !== scope.generation
+                        && entry.occurrenceId !== scope.occurrenceId
                         && !entry.terminal
                     ));
                 for (const prior of priorEffectiveOwners) {
                     if (
                         prior.lifecycle.kind !== 'session'
-                        && !readsCurrent(prior.scope.isGenerationCurrent)
+                        && !readsCurrent(prior.scope.isOccurrenceCurrent)
                     ) {
                         await retireEntry(prior);
                         continue;
                     }
                     return fail(
                         'plugin_managed_service_unavailable',
-                        'A different managed-service generation still owns this lifecycle scope',
+                        'A different managed-service occurrenceId still owns this lifecycle scope',
                     );
                 }
 
@@ -3054,7 +3104,7 @@ export function createManagedServicesOwner(input: Readonly<{
                     kind: 'service',
                     effectiveOwnerKey,
                     lifecycle,
-                    generation: scope.generation,
+                    occurrenceId: scope.occurrenceId,
                     pluginId: scope.pluginId,
                     specIdentity,
                     scope,
@@ -3221,7 +3271,7 @@ export function createManagedServicesOwner(input: Readonly<{
                         entry.establishmentCleanup = null;
                         if (
                             entry.establishmentAbort.signal.aborted
-                            || !scope.isGenerationCurrent()
+                            || !scope.isOccurrenceCurrent()
                             || (context.managedProvider
                                 && !readsCurrent(
                                     context.managedProvider.isCurrent,
@@ -3266,7 +3316,7 @@ export function createManagedServicesOwner(input: Readonly<{
                                 return !lifetimeSignal.aborted
                                     && !scope.signal?.aborted
                                     && readsCurrent(
-                                        scope.isGenerationCurrent,
+                                        scope.isOccurrenceCurrent,
                                     )
                                     && (
                                         !context.managedProvider
@@ -3401,8 +3451,50 @@ export function createManagedServicesOwner(input: Readonly<{
                                         operation,
                                     ).length === 0
                                 ) {
-                                    removeSemanticEntry(operation);
+                                    if (operation.retirementGroup) {
+                                        void retireExplicitStartOperation(operation).catch(() => undefined);
+                                    } else {
+                                        removeSemanticEntry(operation);
+                                    }
                                 }
+                            },
+                        );
+                        clientEnvironmentByService.set(
+                            wrapped,
+                            async (environmentKey, signal) => {
+                                assertCanonicalName(environmentKey, 'environment');
+                                if (
+                                    signal?.aborted
+                                    || entry.terminal
+                                    || !readsCurrent(scope.isOccurrenceCurrent)
+                                ) {
+                                    return fail(
+                                        'plugin_managed_service_unavailable',
+                                        'Managed-service client environment is unavailable',
+                                    );
+                                }
+                                if (clientAccess.kind === 'none') {
+                                    return Object.freeze({});
+                                }
+                                const current = resolveCurrentDeclaredClientCredential
+                                    ? await resolveCurrentDeclaredClientCredential(signal)
+                                    : null;
+                                const value = current?.environmentValue
+                                    ?? staticClientCredential?.environment?.value;
+                                if (
+                                    !value
+                                    || current?.isCurrent
+                                        && !await current.isCurrent(signal)
+                                    || signal?.aborted
+                                    || entry.terminal
+                                    || !readsCurrent(scope.isOccurrenceCurrent)
+                                ) {
+                                    return fail(
+                                        'plugin_managed_service_unavailable',
+                                        'Managed-service client environment is unavailable',
+                                    );
+                                }
+                                return Object.freeze({ [environmentKey]: value });
                             },
                         );
                         if (context.managedProvider) {
@@ -3467,14 +3559,14 @@ export function createManagedServicesOwner(input: Readonly<{
     };
     return Object.freeze({
         readRetainedSemanticCustodyCount: () => semanticEntries.size,
-        isAvailable({ generation, contributionQualifiedId }) {
+        isAvailable({ occurrenceId, contributionQualifiedId }) {
             return input.resolveScope({
-                generation,
+                occurrenceId,
                 pluginId:
                     contributionQualifiedId.split('/')[0]
                     ?? '',
                 contributionQualifiedId,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             }) !== null;
         },
         bind() {
@@ -3485,7 +3577,10 @@ export function createManagedServicesOwner(input: Readonly<{
         },
         bindWithExec(seed, exec, context) {
             const resolvedScope = input.resolveScope({
-                generation: seed.generation,
+                occurrenceId: seed.occurrenceId,
+                ...(seed.sourceCustody
+                    ? { sourceCustody: seed.sourceCustody }
+                    : {}),
                 pluginId: seed.plugin.id,
                 contributionQualifiedId:
                     seed.contribution.qualifiedId,
@@ -3493,8 +3588,8 @@ export function createManagedServicesOwner(input: Readonly<{
                     ? { sessionId: seed.session.id }
                     : {}),
                 signal: seed.signal,
-                isGenerationCurrent:
-                    seed.isGenerationCurrent,
+                isOccurrenceCurrent:
+                    seed.isOccurrenceCurrent,
             }, context);
             if (!resolvedScope) {
                 return fail(
@@ -3514,17 +3609,33 @@ export function createManagedServicesOwner(input: Readonly<{
             if (permanentRetirementStarted) {
                 return Object.freeze({ status: 'unavailable' as const });
             }
+            if (operationInput.retirementGroup) {
+                const retiring = [...semanticEntries.values()].filter(
+                    (entry): entry is ManagedProviderExplicitStartOperationEntry => (
+                        !isManagedServiceSemanticEntry(entry) && entry.terminal
+                        && entry.retirementGroup?.identity === operationInput.retirementGroup?.identity
+                    ),
+                );
+                if (retiring.length > 0) {
+                    // A later invocation may finish previously failed cleanup,
+                    // but it cannot rejoin the authority being retired.
+                    for (const entry of retiring) {
+                        if (!entry.retirement) await retireExplicitStartOperation(entry);
+                    }
+                    return Object.freeze({ status: 'unavailable' as const });
+                }
+            }
             const operationId = operationInput.operationId.trim();
             const pluginId = operationInput.pluginId.trim();
             const contributionQualifiedId =
                 operationInput.contributionQualifiedId.trim();
-            const generation = operationInput.generation.trim();
+            const occurrenceId = operationInput.occurrenceId.trim();
             const purposeBindingsEqualityKey =
                 operationInput.purposeBindingsEqualityKey.trim();
             if (
                 !operationId
                 || !pluginId
-                || !generation
+                || !occurrenceId
                 || !purposeBindingsEqualityKey
                 || !contributionQualifiedId.startsWith(
                     `${pluginId}/providers/`,
@@ -3552,7 +3663,7 @@ export function createManagedServicesOwner(input: Readonly<{
                     operationId,
                     pluginId,
                     contributionQualifiedId,
-                    generation,
+                    occurrenceId,
                 });
             if (retainedServices.some((entry) => entry.terminal)) {
                 for (const retained of retainedServices) {
@@ -3587,7 +3698,7 @@ export function createManagedServicesOwner(input: Readonly<{
             }
             if (existing) {
                 if (
-                    existing.generation !== generation
+                    existing.occurrenceId !== occurrenceId
                     || !readsCurrent(existing.isCurrent)
                 ) {
                     return Object.freeze({ status: 'not_current' as const });
@@ -3626,7 +3737,7 @@ export function createManagedServicesOwner(input: Readonly<{
                     operationId,
                     pluginId,
                     contributionQualifiedId,
-                    generation,
+                    occurrenceId,
                 });
             if (orphanedRetainedServices.some((entry) => !entry.terminal)) {
                 return Object.freeze({ status: 'unavailable' as const });
@@ -3643,18 +3754,20 @@ export function createManagedServicesOwner(input: Readonly<{
                 released = true;
                 entry.terminal = true;
                 abort.abort('Managed Provider explicit-start operation retired');
-                removeSemanticEntry(entry);
+                if (!entry.retirementGroup) removeSemanticEntry(entry);
             };
             entry = {
                 kind: 'explicitStartOperation',
                 operationId,
                 pluginId,
                 contributionQualifiedId,
-                generation,
+                occurrenceId,
                 purposeBindingsEqualityKey,
                 isCurrent: operationInput.isCurrent,
                 lifecycleKind:
                     operationInput.lifecycleKind ?? 'publicExplicitStart',
+                retirementGroup: operationInput.retirementGroup,
+                cleanupComplete: false,
                 revalidateRetainedCurrentness:
                     operationInput.revalidateRetainedCurrentness ?? null,
                 abort,
@@ -3679,7 +3792,7 @@ export function createManagedServicesOwner(input: Readonly<{
                 }));
             }).catch((error) => {
                 entry.terminal = true;
-                removeSemanticEntry(entry);
+                if (!entry.retirementGroup) removeSemanticEntry(entry);
                 throw error;
             });
             semanticEntries.set(entryKey, entry);
@@ -3698,6 +3811,13 @@ export function createManagedServicesOwner(input: Readonly<{
                     })
                     : Object.freeze({ status: 'not_current' as const });
             } catch (error) {
+                // An establishment failure still owns the external operation
+                // claim until its cleanup and retirement-group acknowledgement
+                // have completed. Reuse the existing retirement owner so the
+                // Home-side current-operation binding is released exactly once.
+                // `entry.establishment` is already settled here, so retirement
+                // can safely await its rejected promise without a cycle.
+                await retireExplicitStartOperation(entry);
                 throw error;
             }
         },
@@ -3733,14 +3853,20 @@ export function createManagedServicesOwner(input: Readonly<{
                 try {
                     const established = await entry.establishment;
                     signal?.throwIfAborted();
+                    const readSignal = signal
+                        ? AbortSignal.any([signal, entry.abort.signal])
+                        : entry.abort.signal;
                     const retainedCurrent =
                         established.projection.isCurrent() === true
-                        && await entry.revalidateRetainedCurrentness!(signal) === true;
+                        && await entry.revalidateRetainedCurrentness!(readSignal) === true;
                     signal?.throwIfAborted();
                     current = retainedCurrent;
                 } catch {
                     signal?.throwIfAborted();
-                    current = false;
+                    // An unreadable currentness source is unknown, not
+                    // authority loss. Preserve the retained operation so a
+                    // later revalidation can decide it from fresh evidence.
+                    return false;
                 }
                 if (
                     current
@@ -3774,7 +3900,7 @@ export function createManagedServicesOwner(input: Readonly<{
                 contributionQualifiedId:
                     requestInput.contributionQualifiedId,
                 serviceId: requestInput.serviceId,
-                generation: requestInput.generation,
+                occurrenceId: requestInput.occurrenceId,
             });
             const entry = semanticEntries.get(entryKey);
             if (
@@ -3809,6 +3935,38 @@ export function createManagedServicesOwner(input: Readonly<{
                 return await handle.request(request);
             };
         },
+        async materializeSessionManagedServiceClientEnvironment(requestInput) {
+            if (permanentRetirementStarted) return null;
+            const entryKey = managedServiceSemanticEntryKey({
+                lifecycleIdentity: `session:${requestInput.sessionId}`,
+                pluginId: requestInput.pluginId,
+                contributionQualifiedId:
+                    requestInput.contributionQualifiedId,
+                serviceId: requestInput.serviceId,
+                occurrenceId: requestInput.occurrenceId,
+            });
+            const entry = semanticEntries.get(entryKey);
+            if (
+                !entry
+                || !isManagedServiceSemanticEntry(entry)
+                || entry.terminal
+                || entry.lifecycle.kind !== 'session'
+                || entry.scope.sessionId !== requestInput.sessionId
+            ) return null;
+            const service = await entry.establishment;
+            if (
+                permanentRetirementStarted
+                || semanticEntries.get(entryKey) !== entry
+                || entry.terminal
+            ) return null;
+            const materialize = clientEnvironmentByService.get(service);
+            return materialize
+                ? await materialize(
+                    requestInput.environmentKey,
+                    requestInput.signal,
+                )
+                : null;
+        },
         async projectManagedProviderEndpointAccess({
             service,
             endpoints,
@@ -3821,7 +3979,7 @@ export function createManagedServicesOwner(input: Readonly<{
                 || projectedEndpointAccess.has(service)
                 || signal.aborted
                 || facts.scope.signal?.aborted
-                || !readsCurrent(facts.scope.isGenerationCurrent)
+                || !readsCurrent(facts.scope.isOccurrenceCurrent)
                 || !readsCurrent(facts.binding.isCurrent)
                 || !readsCurrent(isCallerCurrent)
             ) return null;
@@ -3835,7 +3993,7 @@ export function createManagedServicesOwner(input: Readonly<{
                 if (
                     signal.aborted
                     || facts.scope.signal?.aborted
-                    || !readsCurrent(facts.scope.isGenerationCurrent)
+                    || !readsCurrent(facts.scope.isOccurrenceCurrent)
                     || !readsCurrent(facts.binding.isCurrent)
                     || !readsCurrent(isCallerCurrent)
                 ) return null;
@@ -3857,7 +4015,7 @@ export function createManagedServicesOwner(input: Readonly<{
                     && !lifetime.signal.aborted
                     && !signal.aborted
                     && !facts.scope.signal?.aborted
-                    && readsCurrent(facts.scope.isGenerationCurrent)
+                    && readsCurrent(facts.scope.isOccurrenceCurrent)
                     && readsCurrent(facts.binding.isCurrent)
                     && readsCurrent(isCallerCurrent)
                     && currentEndpoint !== null
@@ -3961,7 +4119,7 @@ export function createManagedServicesOwner(input: Readonly<{
                 !facts
                 || !endpointUrl
                 || !projection.isCurrent()
-                || !readsCurrent(facts.scope.isGenerationCurrent)
+                || !readsCurrent(facts.scope.isOccurrenceCurrent)
                 || !readsCurrent(facts.binding.isCurrent)
             ) return null;
             if (facts.clientAccess.kind === 'none') {
@@ -3972,7 +4130,7 @@ export function createManagedServicesOwner(input: Readonly<{
                 if (
                     endpointAccessByService.get(service) !== facts
                     || !projection.isCurrent()
-                    || !readsCurrent(facts.scope.isGenerationCurrent)
+                    || !readsCurrent(facts.scope.isOccurrenceCurrent)
                     || !readsCurrent(facts.binding.isCurrent)
                 ) {
                     return fail(
@@ -4009,7 +4167,7 @@ export function createManagedServicesOwner(input: Readonly<{
             if (
                 endpointAccessByService.get(service) !== facts
                 || !projection.isCurrent()
-                || !readsCurrent(facts.scope.isGenerationCurrent)
+                || !readsCurrent(facts.scope.isOccurrenceCurrent)
                 || !readsCurrent(facts.binding.isCurrent)
             ) {
                 return fail(
@@ -4028,7 +4186,7 @@ export function createManagedServicesOwner(input: Readonly<{
                 isCurrent: () => (
                     endpointAccessByService.get(service) === facts
                     && projection.isCurrent()
-                    && readsCurrent(facts.scope.isGenerationCurrent)
+                    && readsCurrent(facts.scope.isOccurrenceCurrent)
                     && readsCurrent(facts.binding.isCurrent)
                 ),
             });
@@ -4038,13 +4196,13 @@ export function createManagedServicesOwner(input: Readonly<{
                 transformLaunchEnvironment: transformer.transform,
             });
         },
-        async retireGeneration(generation, pluginId) {
+        async retireGeneration(occurrenceId, pluginId) {
             const retiring = [...semanticEntries.values()].filter((entry) => {
                 if (!isManagedServiceSemanticEntry(entry)) {
-                    return entry.generation === generation
+                    return entry.occurrenceId === occurrenceId
                         && entry.pluginId === pluginId;
                 }
-                return entry.generation === generation
+                return entry.occurrenceId === occurrenceId
                     && entry.pluginId === pluginId
                     && (
                         entry.processHandle !== null
@@ -4065,7 +4223,7 @@ export function createManagedServicesOwner(input: Readonly<{
             if (failures.length > 0) {
                 throw new AggregateError(
                     failures,
-                    'Failed to retire managed services for the plugin generation',
+                    'Failed to retire managed services for the plugin occurrenceId',
                 );
             }
         },

@@ -21,6 +21,14 @@ import { sessionLinkTagComponents } from '../../corpus/identity/components.js';
 import { TRIAGE_SESSION_LINKED_ENTRIES_UI_QUERY_ID_V1 } from './linkedEntriesQuery.js';
 import { renderSurface as renderSessionLinkedEntriesSurface } from './sessionLinkedEntriesSurface.js';
 import { TRIAGE_ENTRY_DETAIL_DESTINATION_V1 } from '../../composer/openEntryDetails.js';
+import type { PluginUiEphemeralSharedScope } from '@happier-dev/plugin-ui';
+import type { TriagePullRequestStatusV1 } from '@happier-dev/triage-protocol/v1';
+import { testkitObservation, testkitSnapshot } from '../../corpus/testkit/observations.test-support.js';
+import { acquireTriageListWindow, refreshTriageListWindow } from '../../ui/window/mountedWindow.js';
+import { createTriageEphemeralSharedScopeFixture } from '../../ui/window/ephemeralSharedScope.test-support.js';
+import { foldTriageListWindow, TRIAGE_LIST_DEFAULT_LENS_V1 } from '../../projection/listWindow.js';
+import { toTriageListWireRows } from '../../projection/listWindowWire.js';
+import { TriageListEntriesResultV1Schema } from '../../actions/listEntriesProtocol.js';
 
 /**
  * The mounted Session cockpit, driven through the real host boundary.
@@ -180,6 +188,7 @@ function createDataHarness(input: Readonly<{
 /** Mirrors the host's post-render private Data binding without widening author context. */
 function createCockpitAdapter(
     dataClient: PluginUiDataClient | null,
+    sharedScope?: PluginUiEphemeralSharedScope,
 ): PluginUiSemanticSurfaceAdapter<typeof renderSessionLinkedEntriesSurface> {
     const rnwAdapter = createPluginUiRnwSemanticSurfaceAdapter();
     return {
@@ -189,8 +198,8 @@ function createCockpitAdapter(
                 surface: (context: RenderContext): ReactElement => dataClient === null
                     ? mountInput.surface(context) as ReactElement
                     : cloneElement(
-                        mountInput.surface(context) as ReactElement<{ dataClient?: PluginUiDataClient }>,
-                        { dataClient },
+                        mountInput.surface(context) as ReactElement<{ dataClient?: PluginUiDataClient; ephemeralSharedScope?: PluginUiEphemeralSharedScope }>,
+                        { dataClient, ...(sharedScope === undefined ? {} : { ephemeralSharedScope: sharedScope }) },
                     ),
             });
         },
@@ -216,6 +225,7 @@ async function mountCockpit(
     unlinkResult: unknown = null,
     accountReachable = true,
     openSurfaceError: unknown = null,
+    statusFixture?: Readonly<{ scope: PluginUiEphemeralSharedScope; readStatus: () => Promise<TriagePullRequestStatusV1> }>,
 ): Promise<PluginUiTestkit> {
     let fixture!: PluginUiTestkit;
     await act(async () => {
@@ -230,11 +240,29 @@ async function mountCockpit(
                     container: 'rightSidebarTab',
                 },
                 target,
+                targetedContributions: {
+                    ...createSurfaceContextFixture().targetedContributions!,
+                    points: [{ pointId: 'sources', protocols: [{ protocol: { id: 'happier.triage/sources', version: 1 },
+                        contributions: [{
+                            contributor: { pluginId: 'happier.example.source', contributionId: 'example-forge',
+                                occurrenceId: 'example-forge-1', sourceCustody: { kind: 'development', registeredRootId: 'example-root' } },
+                            protocol: { id: 'happier.triage/sources', version: 1 },
+                            descriptor: { v: 1, purpose: 'triage-source', displayName: 'Example forge',
+                                kinds: [{ id: 'pull-request', workflowSubject: 'pullRequest', displayName: 'Pull request' },
+                                    { id: 'merge-request', workflowSubject: 'pullRequest', displayName: 'Merge request' },
+                                    { id: 'issue', workflowSubject: 'issue', displayName: 'Issue' }] },
+                            operations: [], surfaces: [],
+                        }],
+                    }] }],
+                },
             }),
-            adapter: createCockpitAdapter(accountReachable ? harness.client : null),
+            adapter: createCockpitAdapter(accountReachable ? harness.client : null, statusFixture?.scope),
             handlers: {
                 executeAction: async ({ action, input }) => {
                     actionCalls.push({ action: String(action), input });
+                    if (statusFixture !== undefined && String(action) === 'entries/read-pull-request-status-v1') {
+                        return await statusFixture.readStatus() as never;
+                    }
                     if (unlinkResult === null) {
                         throw new Error('This mount scripts no host Action.');
                     }
@@ -258,6 +286,147 @@ afterEach(async () => {
     actionCalls.splice(0);
     surfaceOpens.splice(0);
     for (const fixture of mounted.splice(0)) await fixture.dispose();
+});
+
+/** Round 2 (lab `plugin-tabs` P1/PP): a linked row opens in place; its actions sit at the bottom of the open row. */
+async function openRow(fixture: PluginUiTestkit, name: string): Promise<void> {
+    await act(async () => { await fixture.press(await fixture.findByRole('button', { name })); });
+    await act(async () => { await Promise.resolve(); });
+}
+
+describe('expanded PR status from the exact linked source observation', () => {
+    it('loads only on expansion and retains source facts across collapse and failed refresh, then recovers', async () => {
+        const scope = createTriageEphemeralSharedScopeFixture();
+        const link = linkRow();
+        const observation = testkitObservation({ entryRef: link.entryRef, outcome: {
+            kind: 'present',
+            locator: { v: 1, displayPath: link.displayPathAtLink, routingToken: 'exact-route' },
+            snapshot: testkitSnapshot({ title: 'Key settings modals by route' }),
+            viewer: { involvement: [] },
+        } });
+        const seedHost = { executeAction: async () => ({
+            v: 1, configuredSourcesStatus: 'complete',
+            configuredSources: [{ sourceInstanceId: observation.sourceInstanceId, source: link.entryRef.source, available: true }],
+            window: { v: 1, assembledAtMs: observation.observedAtMs, coverage: 'complete',
+                lanes: [{ sourceInstanceId: observation.sourceInstanceId, source: link.entryRef.source, health: { kind: 'walkFinished' }, exhausted: true }],
+                rows: toTriageListWireRows(foldTriageListWindow({
+                    observations: [observation], lanes: [], activeSourceInstanceIds: [observation.sourceInstanceId],
+                    configuredSourcesStatus: 'complete', lens: TRIAGE_LIST_DEFAULT_LENS_V1, assembledAtMs: observation.observedAtMs,
+                })),
+            },
+        }) };
+        TriageListEntriesResultV1Schema.parse(await seedHost.executeAction());
+        const lease = acquireTriageListWindow(seedHost, scope);
+        await refreshTriageListWindow('manual', seedHost, scope);
+        lease.release();
+        const status: TriagePullRequestStatusV1 = {
+            kind: 'status', observedAtMs: observation.observedAtMs,
+            checks: { state: 'complete', passed: 9, failed: 1, pending: 0, total: 10, incomplete: false,
+                rows: [{ id: 'web', name: 'ui-tests (web)', state: 'failed' },
+                    ...Array.from({ length: 9 }, (_, index) => ({ id: `unit-${index}`, name: `unit-tests ${index}`, state: 'passed' as const }))] },
+            review: { decision: 'changesRequested', incomplete: false,
+                reviewers: [{ name: 'Ana', verb: 'changesRequested' }, { name: 'Jonas', verb: 'pending' }] },
+            merge: { state: 'blocked', blocker: 'Blocked by the failing check and required review' },
+            branch: { head: 'fix/settings-remount', base: 'main', additions: 48, deletions: 12 }, facts: [],
+        };
+        const harness = createDataHarness({
+            snapshot: { status: 'ready', rows: [queryRow('link-pr', link.linkedAtMs)] },
+            rowsById: new Map([['link-pr', link]]),
+        });
+        let currentStatus = status;
+        let readFails = false;
+        const fixture = await mountCockpit(harness, { kind: 'session', sessionId: SESSION_ID }, null, true, null, { scope, readStatus: async () => {
+            if (readFails) throw new Error('The source is temporarily unavailable.');
+            return currentStatus;
+        } });
+        expect(actionCalls.filter((call) => call.action === 'entries/read-pull-request-status-v1')).toEqual([]);
+        await openRow(fixture, 'Key settings modals by route');
+        await expect(fixture.getByText('ui-tests (web)')).resolves.toBeDefined();
+        await expect(fixture.getByText('Ana')).resolves.toBeDefined();
+        await expect(fixture.getByText('Jonas')).resolves.toBeDefined();
+        await expect(fixture.getByText(status.merge!.blocker!)).resolves.toBeDefined();
+        await expect(fixture.getByText('fix/settings-remount')).resolves.toBeDefined();
+        await expect(fixture.getByText('9/10')).resolves.toBeDefined();
+        const calls = actionCalls.filter((call) => call.action === 'entries/read-pull-request-status-v1');
+        expect(calls).toEqual([{ action: 'entries/read-pull-request-status-v1', input: {
+            v: 1, entryRef: link.entryRef, sourceInstanceId: observation.sourceInstanceId,
+            lastKnownLocator: observation.outcome.kind === 'present' ? observation.outcome.locator : null,
+        } }]);
+        await openRow(fixture, 'Key settings modals by route');
+        await openRow(fixture, 'Key settings modals by route');
+        await expect(fixture.getByText('ui-tests (web)')).resolves.toBeDefined();
+        expect(actionCalls.filter((call) => call.action === 'entries/read-pull-request-status-v1')).toEqual(calls);
+        readFails = true;
+        // The tab's existing refresh appears on its retained-query failure line, not as new header chrome.
+        await act(async () => { harness.control.publish({ rows: [queryRow('link-pr', link.linkedAtMs)], status: 'error' }); });
+        await act(async () => { await fixture.press(await fixture.findByRole('button', { name: 'Refresh' })); });
+        await act(async () => { await Promise.resolve(); });
+        await expect(fixture.getByText('PR status is unavailable.')).resolves.toBeDefined();
+        await expect(fixture.getByText('ui-tests (web)')).resolves.toBeDefined();
+        await expect(fixture.getByText('9/10')).resolves.toBeDefined();
+        readFails = false;
+        currentStatus = { ...status, checks: { ...status.checks!, passed: 10, failed: 0,
+            rows: status.checks!.rows.map((check) => ({ ...check, state: 'passed' as const })) } };
+        // The query failure line and status recovery use the same existing refresh owner.
+        const refreshButtons = (await fixture.queryAllByRole('button')).filter((button) => button.name === 'Refresh');
+        await act(async () => { await fixture.press(refreshButtons.at(-1)!); });
+        await act(async () => { await Promise.resolve(); });
+        await expect(fixture.getByText('10/10')).resolves.toBeDefined();
+        await expect(fixture.queryByText('PR status is unavailable.')).resolves.toBeUndefined();
+    });
+});
+
+async function unlinkThroughConfirm(fixture: PluginUiTestkit, name: string): Promise<void> {
+    await openRow(fixture, name);
+    await act(async () => { await fixture.press(await fixture.findByRole('button', { name: `Unlink ${name}` })); });
+    await act(async () => { await fixture.press(await fixture.findByRole('button', { name: 'Unlink' })); });
+    await act(async () => { await Promise.resolve(); });
+}
+
+describe('the Session tab, round 2', () => {
+    it('groups the links as Pull requests and Issues, reading each by its path until PRs & Issues knows it', async () => {
+        const issueRef = {
+            source: { pluginId: 'happier.example.source', localId: 'example-forge' },
+            kindId: 'issue',
+            collisionScope: 'example/repository',
+            entryId: '7',
+        } as const;
+        const harness = createDataHarness({
+            snapshot: { rows: [queryRow('link-a', 2_000), queryRow('link-b', 1_000)], hasMore: false, status: 'ready' },
+            rowsById: new Map([
+                ['link-a', linkRow({ displayPathAtLink: 'example/repository#42' })],
+                ['link-b', linkRow({ displayPathAtLink: 'example/repository#7', entryRef: issueRef, identityEntryRef: issueRef })],
+            ]),
+        });
+        const fixture = await mountCockpit(harness, { kind: 'session', sessionId: SESSION_ID });
+
+        await expect(fixture.findByRole('button', { name: 'example/repository#42' })).resolves.toBeDefined();
+        await expect(fixture.getByText('Pull requests')).resolves.toBeDefined();
+        await expect(fixture.getByText('Issues')).resolves.toBeDefined();
+        // Rows are not a list of Unlink buttons any more: removing a link is one step down, in the open row.
+        expect((await fixture.queryAllByRole('button')).filter((button) => button.name === 'Unlink')).toHaveLength(0);
+    });
+
+    it('opens a linked row in place, with Open as its primary and Unlink behind a confirm', async () => {
+        const harness = createDataHarness({
+            snapshot: { rows: [queryRow('link-a', 2_000)], hasMore: false, status: 'ready' },
+            rowsById: new Map([['link-a', linkRow({ displayPathAtLink: 'example/repository#42' })]]),
+        });
+        const fixture = await mountCockpit(harness, { kind: 'session', sessionId: SESSION_ID }, { v: 1, status: 'unlinked' });
+
+        await openRow(fixture, 'example/repository#42');
+        // Pressing the row opened it; it did not navigate.
+        expect(surfaceOpens).toHaveLength(0);
+        await act(async () => { await fixture.press(await fixture.findByRole('button', { name: 'Open' })); });
+        await act(async () => { await Promise.resolve(); });
+        expect(surfaceOpens[0]).toMatchObject({ view: TRIAGE_ENTRY_DETAIL_DESTINATION_V1 });
+
+        await act(async () => { await fixture.press(await fixture.findByRole('button', { name: 'Unlink example/repository#42' })); });
+        expect(harness.deletes).toHaveLength(0);
+        await act(async () => { await fixture.press(await fixture.findByRole('button', { name: 'Unlink' })); });
+        await act(async () => { await Promise.resolve(); });
+        expect(harness.deletes).toHaveLength(1);
+    });
 });
 
 describe('the mounted Session cockpit', () => {
@@ -312,10 +481,7 @@ describe('the mounted Session cockpit', () => {
         await expect(fixture.getByText('example/repository#51')).resolves
             .toEqual({ content: 'example/repository#51' });
 
-        const unlinkButtons = (await fixture.queryAllByRole('button'))
-            .filter((button) => button.name === 'Unlink');
-        await act(async () => { await fixture.press(unlinkButtons[0]!); });
-        await act(async () => { await Promise.resolve(); });
+        await unlinkThroughConfirm(fixture, 'example/repository#51');
 
         const link51 = rowsById.get('link-51')!;
         expect(harness.identityRequests).toContainEqual({
@@ -446,16 +612,16 @@ describe('the mounted Session cockpit', () => {
         expect(actionCalls).toEqual([]);
     });
 
-    it('opens a linked row through the qualified Triage destination and preserves a separate Unlink action', async () => {
+    it('opens a linked row through the qualified Triage destination and keeps Unlink beside Open', async () => {
         const harness = createDataHarness({
             snapshot: { rows: [queryRow('link-a', 2_000)], hasMore: false, status: 'ready' },
             rowsById: new Map([['link-a', linkRow({ displayPathAtLink: 'example/repository#42' })]]),
         });
         const fixture = await mountCockpit(harness, { kind: 'session', sessionId: SESSION_ID });
 
-        // The row itself is the primary, accessible action. Its accessory is
-        // outside that press target and remains a separate Unlink button.
-        await fixture.press(await fixture.findByRole('button', { name: 'example/repository#42' }));
+        // The row opens in place; Open is its primary and Unlink a separate control beside it.
+        await openRow(fixture, 'example/repository#42');
+        await fixture.press(await fixture.findByRole('button', { name: 'Open' }));
         await act(async () => { await Promise.resolve(); });
 
         expect(surfaceOpens).toHaveLength(1);
@@ -465,7 +631,7 @@ describe('the mounted Session cockpit', () => {
         });
         expect(surfaceOpens[0]?.input).toBeUndefined();
         expect((await fixture.queryAllByRole('button'))
-            .filter((button) => button.name === 'Unlink'))
+            .filter((button) => button.name === 'Unlink example/repository#42'))
             .toHaveLength(1);
         expect(actionCalls).toEqual([]);
     });
@@ -483,13 +649,14 @@ describe('the mounted Session cockpit', () => {
             new Error('The destination is unavailable.'),
         );
 
-        await fixture.press(await fixture.findByRole('button', { name: 'example/repository#42' }));
+        await openRow(fixture, 'example/repository#42');
+        await fixture.press(await fixture.findByRole('button', { name: 'Open' }));
         await act(async () => { await Promise.resolve(); });
 
         await expect(fixture.getByText('This entry could not be opened.')).resolves
             .toEqual({ content: 'This entry could not be opened.' });
         expect((await fixture.queryAllByRole('button'))
-            .filter((button) => button.name === 'Unlink'))
+            .filter((button) => button.name === 'Unlink example/repository#42'))
             .toHaveLength(1);
         expect(actionCalls).toEqual([]);
     });
@@ -560,7 +727,7 @@ describe('the mounted Session cockpit', () => {
         });
         await act(async () => { await Promise.resolve(); });
         await expect(fixture.getByRole('button', { name: 'example/repository#43' })).resolves.toBeDefined();
-        expect((await fixture.queryAllByRole('button')).filter((button) => button.name === 'Unlink')).toHaveLength(2);
+        await expect(fixture.findByRole('button', { name: 'example/repository#42' })).resolves.toBeDefined();
         expect(harness.gets).toEqual(['link-a', 'link-b', 'link-b']);
         await act(async () => { harness.control.publish({ rows, hasMore: false, status: 'ready' }); });
         expect(harness.gets).toEqual(['link-a', 'link-b', 'link-b']);
@@ -639,8 +806,8 @@ describe('the mounted Session cockpit', () => {
 
         const fixture = await mountCockpit(harness, { kind: 'session', sessionId: SESSION_ID });
 
-        await expect(fixture.getByText('Nothing is linked yet')).resolves
-            .toEqual({ content: 'Nothing is linked yet' });
+        await expect(fixture.getByText('Keep this session’s PRs and issues at hand')).resolves
+            .toEqual({ content: 'Keep this session’s PRs and issues at hand' });
     });
 
     it('opens no query at all when the mounted target is not a Session', async () => {
@@ -688,16 +855,8 @@ describe('undoing a link from the mounted cockpit', () => {
             { v: 1, status: 'unlinked' },
         );
 
-        const buttons = (await fixture.queryAllByRole('button'))
-            .filter((button) => button.name === 'Unlink');
-        // One per resolved link and no more: a row that is still being read,
-        // already removed, or unreadable carries no reference to remove.
-        expect(buttons.map((button) => button.name ?? '')).toEqual(['Unlink', 'Unlink']);
-
-        await act(async () => {
-            await fixture.press(buttons[0]!);
-        });
-        await act(async () => { await Promise.resolve(); });
+        // Unlink is addressed by the row it was opened from: the open row's own control, behind a confirm.
+        await unlinkThroughConfirm(fixture, 'example/repository#42');
 
         // The mounted surface can reach Account Collections directly, so it
         // removes through that canonical transport rather than needlessly
@@ -727,16 +886,12 @@ describe('undoing a link from the mounted cockpit', () => {
             { v: 1, status: 'failed' },
         );
 
-        await act(async () => {
-            await fixture.press(await fixture.getByRole('button', { name: 'Unlink' }));
-        });
-        await act(async () => { await Promise.resolve(); });
+        await unlinkThroughConfirm(fixture, 'example/repository#42');
 
         // The row is still the link it was. Presenting a refused delete as a
         // removal would tell the reader their mistake is undone while the
         // Session still claims the entry.
-        await expect(fixture.getByText('example/repository#42')).resolves
-            .toEqual({ content: 'example/repository#42' });
+        await expect(fixture.findByRole('button', { name: 'example/repository#42' })).resolves.toBeDefined();
         await expect(fixture.getByText('This link could not be removed.')).resolves
             .toEqual({ content: 'This link could not be removed.' });
     });

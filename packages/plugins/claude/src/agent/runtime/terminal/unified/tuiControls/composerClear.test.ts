@@ -18,6 +18,20 @@ const USER_DRAFT = [
 ].join('\n');
 
 describe('clearUserAuthorizedClaudeComposerDraft', () => {
+  it('refuses Escape draft clearing while Claude owns an automatic usage-limit wait', async () => {
+    const port = createFakeControlPort({ captures: [[
+      USER_DRAFT,
+      '  ⚠ Usage limit reached · limit resets 5:10pm',
+      '    Continuing automatically at 5:10pm · esc to cancel',
+    ].join('\n')] });
+
+    expect(await clearUserAuthorizedClaudeComposerDraft({
+      port,
+      wait: async () => undefined,
+    })).toMatchObject({ status: 'refused', reason: 'usage_limit_wait' });
+    expect(port.sentKeys).toEqual([]);
+  });
+
   it('clears a visible idle user draft with Escape and verifies the composer is empty', async () => {
     const port = createFakeControlPort({ captures: [USER_DRAFT, EMPTY_COMPOSER] });
 

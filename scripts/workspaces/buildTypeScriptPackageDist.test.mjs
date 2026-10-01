@@ -544,8 +544,20 @@ test('buildTypeScriptPackageDist isolates concurrent staged compiler work trees 
   assert.notEqual(compilerRuns[1].tsBuildInfoFile, compilerRuns[0].tsBuildInfoFile);
   assert.notEqual(compilerRuns[0].compilerOutputDir, stagedOutputs[0]);
   assert.notEqual(compilerRuns[1].compilerOutputDir, stagedOutputs[1]);
-  assert.equal(existsSync(compilerRuns[0].tsBuildInfoFile), false);
-  assert.equal(existsSync(compilerRuns[1].tsBuildInfoFile), false);
+  for (const { compilerOutputDir, tsBuildInfoFile } of compilerRuns) {
+    assert.equal(
+      isPathInside(packageDir, compilerOutputDir),
+      false,
+      'unlocked staged compiler output must not appear beneath a watched package root',
+    );
+    assert.equal(
+      isPathInside(packageDir, tsBuildInfoFile),
+      false,
+      'unlocked staged compiler metadata must not appear beneath a watched package root',
+    );
+    assert.equal(existsSync(compilerOutputDir), false);
+    assert.equal(existsSync(tsBuildInfoFile), false);
+  }
   assert.match(await readFile(join(stagedOutputs[1], 'index.js'), 'utf-8'), /built/);
 });
 

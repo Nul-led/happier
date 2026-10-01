@@ -59,11 +59,11 @@ describe('production Account Collections invocation binding', () => {
                     id: 'provider/observation-ingest-v1',
                     qualifiedId: 'happier.channels/actions/provider/observation-ingest-v1',
                 }),
-                generation: '7',
+                occurrenceId: '7',
                 correlationId: 'channels-account-data-binding',
                 surface: 'plugin' as const,
                 signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             const requiredRequest = {
                 id: 'account-state',
@@ -73,7 +73,7 @@ describe('production Account Collections invocation binding', () => {
             };
             const target = {
                 pluginId: seed.plugin.id,
-                generation: seed.generation,
+                occurrenceId: seed.occurrenceId,
                 qualifiedId: seed.contribution.qualifiedId,
             };
             const requiredPolicy = owners.resolveInvocationHostPolicy(target, {
@@ -115,7 +115,7 @@ describe('production Account Collections invocation binding', () => {
                 ...seed,
                 correlationId: 'channels-account-data-ordinary-binding',
             }), owners.createOrdinaryServiceBinding(
-                seed.generation,
+                seed.occurrenceId,
                 'channels-account-data-ordinary-binding',
             ));
 
@@ -140,7 +140,7 @@ describe('production Account Collections invocation binding', () => {
             expect(bind).toHaveBeenCalledTimes(2);
             expect(bind).toHaveBeenNthCalledWith(1, expect.objectContaining({
                 pluginId: 'happier.channels',
-                generation: '7',
+                occurrenceId: '7',
                 signal,
             }));
             expect(requiredServices.storage.account).toBe(account);

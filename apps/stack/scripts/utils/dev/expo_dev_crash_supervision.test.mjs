@@ -127,7 +127,7 @@ test('ensureDevExpoServer restarts Expo after a Node heap OOM abort', async () =
       .map((line) => JSON.parse(line));
     assert.equal(spawnedArgs.length, 2);
     assert.equal(spawnedArgs[0].includes('--clear'), false);
-    assert.equal(spawnedArgs[1].includes('--clear'), true);
+    assert.equal(spawnedArgs[1].includes('--clear'), false);
     assert.equal(children.length, 2);
     assert.equal(children[0].signalCode, 'SIGABRT');
     assert.equal(children[1].exitCode, null);

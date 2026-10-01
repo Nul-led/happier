@@ -1,0 +1,61 @@
+import * as React from 'react';
+import { usePluginHostApi } from '@happier-dev/plugin-ui';
+
+import type { TriageListLaneV1, TriageListRowV1 } from '../../projection/listWindow.js';
+import { readTriageSelectedObservationV1 } from '../window/selectedObservation.js';
+import { deriveTriageDetailMountInstanceKey } from './mountKey.js';
+import { reobserveTriagePostMutationRow } from './postMutationReobservation.js';
+
+/** The shell supplies this one selected-detail snapshot to its host band and source body. */
+export function useTriagePostMutationRow(
+  windowRow: TriageListRowV1 | null,
+  lanes: readonly TriageListLaneV1[],
+) {
+  const hostApi = usePluginHostApi();
+  const selectedFromWindow = React.useMemo(
+    () => windowRow === null ? null : readTriageSelectedObservationV1(windowRow),
+    [windowRow],
+  );
+  const ownerKey = windowRow === null || selectedFromWindow === null
+    ? null
+    : deriveTriageDetailMountInstanceKey(windowRow.entryRef, selectedFromWindow.sourceInstanceId);
+  const [state, setState] = React.useState<Readonly<{
+    ownerKey: string | null;
+    generation: number;
+    row: TriageListRowV1 | null;
+  }>>({ ownerKey, generation: 0, row: null });
+  // Retire A before even one render can combine B's selection with A's observation.
+  if (state.ownerKey !== ownerKey) {
+    setState({ ownerKey, generation: state.generation + 1, row: null });
+  }
+  const reobservation = React.useRef<AbortController | null>(null);
+  React.useEffect(() => {
+    setState((current) => current.ownerKey === ownerKey ? { ...current, row: null } : current);
+    return () => {
+      reobservation.current?.abort();
+      reobservation.current = null;
+    };
+  }, [ownerKey, windowRow]);
+  const row = state.ownerKey === ownerKey ? state.row ?? windowRow : windowRow;
+  const selected = React.useMemo(
+    () => row === null ? null : readTriageSelectedObservationV1(row),
+    [row],
+  );
+  const completePostMutation = React.useCallback(async (): Promise<void> => {
+    if (row === null || selected === null) return;
+    const lifecycleGeneration = state.generation;
+    reobservation.current?.abort();
+    const controller = new AbortController();
+    reobservation.current = controller;
+    const next = await reobserveTriagePostMutationRow(hostApi, row, lanes, selected.sourceInstanceId, {
+      signal: controller.signal,
+    });
+    if (!controller.signal.aborted && reobservation.current === controller && next !== null) {
+      setState((current) => current.ownerKey === ownerKey && current.generation === lifecycleGeneration
+        ? { ...current, row: next }
+        : current);
+    }
+    if (reobservation.current === controller) reobservation.current = null;
+  }, [hostApi, lanes, ownerKey, row, selected, state.generation]);
+  return { row, completePostMutation };
+}

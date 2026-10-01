@@ -2,7 +2,7 @@ import { readClaudeProviderIdentityValue } from '../../protocol/providerIdentity
 import { readSessionHookSidechainAgentId } from '../hooks/sidechain.js';
 import {
   CLAUDE_NON_TRANSCRIPT_RECORD_TYPES,
-  INTERNAL_CLAUDE_EVENT_TYPES,
+  isClaudeInternalEventType,
 } from './internalEventTypes.js';
 import {
   resolveClaudeTranscriptMessageRole,
@@ -89,6 +89,21 @@ export type ClaudeNativeHookLifecycleClassification =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Native lifecycle evidence preserves the envelope, but never transports image bytes. */
+export function projectClaudeNativeTranscriptObservation(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.message) || !Array.isArray(value.message.content)) return value;
+  const content = value.message.content;
+  if (!content.some((part) => isRecord(part) && part.type === 'image')) return value;
+  return {
+    ...value,
+    message: {
+      ...value.message,
+      // Images have only an unsupported-image meaning in the canonical classifier.
+      content: content.map((part) => isRecord(part) && part.type === 'image' ? { type: 'image' } : part),
+    },
+  };
 }
 
 function readString(value: unknown): string | null {
@@ -267,7 +282,7 @@ export function classifyClaudeNativeTranscriptRow(
   const rawTypeValue = isRecord(rawObject) ? rawObject.type : null;
   const rawType = typeof rawTypeValue === 'string' ? rawTypeValue : null;
 
-  if (rawType && INTERNAL_CLAUDE_EVENT_TYPES.has(rawType)) {
+  if (isClaudeInternalEventType(rawType)) {
     return createBaseClassification({
       rawObject,
       rawType,

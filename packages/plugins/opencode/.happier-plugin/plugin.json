@@ -13,8 +13,7 @@
               ]
             },
             "compaction": {
-              "events": true,
-              "manual": true
+              "events": true
             },
             "configuration": true,
             "delivery": [
@@ -84,6 +83,14 @@
             },
             "manual": {
               "kind": "command"
+            },
+            "nativeUpdate": {
+              "args": [
+                "upgrade"
+              ],
+              "installPaths": [
+                ".opencode/bin"
+              ]
             },
             "recommendationOrder": 40
           }
@@ -323,6 +330,65 @@
         "actions": [],
         "fields": [
           {
+            "default": "auto",
+            "description": {
+              "fallback": "Choose which installed OpenCode command Happier launches.",
+              "key": "settingsAgents.plugins.opencode.fields.opencodeCliGeneration.subtitle"
+            },
+            "id": "opencodeCliGeneration",
+            "presentation": {
+              "control": "select",
+              "options": [
+                {
+                  "description": {
+                    "fallback": "Prefer stable OpenCode, then use V2 when stable is unavailable.",
+                    "key": "settingsAgents.plugins.opencode.fields.opencodeCliGeneration.options.auto.subtitle"
+                  },
+                  "title": {
+                    "fallback": "Auto (recommended)",
+                    "key": "settingsAgents.plugins.opencode.fields.opencodeCliGeneration.options.auto.title"
+                  },
+                  "value": "auto"
+                },
+                {
+                  "description": {
+                    "fallback": "Always launch the opencode command.",
+                    "key": "settingsAgents.plugins.opencode.fields.opencodeCliGeneration.options.stable.subtitle"
+                  },
+                  "title": {
+                    "fallback": "Stable",
+                    "key": "settingsAgents.plugins.opencode.fields.opencodeCliGeneration.options.stable.title"
+                  },
+                  "value": "stable"
+                },
+                {
+                  "description": {
+                    "fallback": "Prefer the opencode2 preview command, then the released opencode command.",
+                    "key": "settingsAgents.plugins.opencode.fields.opencodeCliGeneration.options.v2.subtitle"
+                  },
+                  "title": {
+                    "fallback": "V2",
+                    "key": "settingsAgents.plugins.opencode.fields.opencodeCliGeneration.options.v2.title"
+                  },
+                  "value": "v2"
+                }
+              ]
+            },
+            "schema": {
+              "description": "Preferred OpenCode CLI generation",
+              "enum": [
+                "auto",
+                "stable",
+                "v2"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "fallback": "OpenCode version",
+              "key": "settingsAgents.plugins.opencode.fields.opencodeCliGeneration.title"
+            }
+          },
+          {
             "default": "server",
             "description": {
               "fallback": "Choose the integration backend.",
@@ -442,7 +508,21 @@
           "sections": [
             {
               "description": {
-                "fallback": "Server mode unlocks questions and native forking. ACP mode is a legacy fallback.",
+                "fallback": "Auto prefers stable OpenCode. V2 selects the V2 API even when the released command is named opencode. Happier MCP tools work in ACP mode; the V2 server API does not expose dynamic registration.",
+                "key": "settingsAgents.plugins.opencode.sections.cliGeneration.footer"
+              },
+              "fields": [
+                "opencodeCliGeneration"
+              ],
+              "id": "opencode-cli-generation",
+              "title": {
+                "fallback": "OpenCode version",
+                "key": "settingsAgents.plugins.opencode.sections.cliGeneration.title"
+              }
+            },
+            {
+              "description": {
+                "fallback": "Server mode unlocks questions. Native forking is offered only when the connected server supports it; ACP mode is a legacy fallback.",
                 "key": "settingsAgents.plugins.opencode.sections.backendMode.footer"
               },
               "fields": [
@@ -492,6 +572,21 @@
         ],
         "id": "opencode-cli",
         "title": "OpenCode CLI"
+      },
+      {
+        "executableNames": [
+          "opencode"
+        ],
+        "id": "opencode-cli-stable",
+        "title": "OpenCode CLI (stable)"
+      },
+      {
+        "executableNames": [
+          "opencode2",
+          "opencode"
+        ],
+        "id": "opencode-cli-v2",
+        "title": "OpenCode CLI (V2)"
       }
     ],
     "targetedPluginContributions": [],
@@ -554,6 +649,14 @@
             {
               "id": "opencode-cli",
               "kind": "systemTool"
+            },
+            {
+              "id": "opencode-cli-stable",
+              "kind": "systemTool"
+            },
+            {
+              "id": "opencode-cli-v2",
+              "kind": "systemTool"
             }
           ]
         }
@@ -562,6 +665,19 @@
   },
   "id": "happier.agent.opencode",
   "runtime": {
+    "agentFactories": [
+      {
+        "loadMode": "immutable-js",
+        "localAgentId": "opencode",
+        "locator": {
+          "export": "createOpenCodeAgentRuntime",
+          "externalSessionsExport": "openCodeExternalSessionsContribution",
+          "module": "./agent/runtime/nativeRuntime",
+          "runtimeApiVersion": 1
+        },
+        "normalizedModulePath": ".happier-plugin/agent/runtime/nativeRuntime.js"
+      }
+    ],
     "apiVersion": 1
   },
   "schemaVersion": 2,

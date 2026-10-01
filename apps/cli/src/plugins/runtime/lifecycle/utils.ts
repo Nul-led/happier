@@ -22,6 +22,13 @@ import {
 
 export const DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS = 30_000;
 
+/** A cold daemon start spends one outer wait budget across plugin phases. */
+export function remainingPluginInitializationTimeoutMs(startupDeadlineAtMs?: number): number {
+    return startupDeadlineAtMs === undefined
+        ? DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS
+        : Math.max(0, startupDeadlineAtMs - Date.now());
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object';
 }

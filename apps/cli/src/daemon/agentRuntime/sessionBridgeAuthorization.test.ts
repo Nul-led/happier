@@ -42,7 +42,11 @@ function createRetainedAgent() {
     pluginVersion: '1.2.3',
     agentId: 'acme-agent',
     localAgentId: 'acme-agent',
-    immutableGenerationId: `sha256:${'1'.repeat(64)}`,
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: `sha256:${'1'.repeat(64)}`,
+      installSource: 'localPath',
+    },
     locator: {
       module: './runtime.mjs',
       export: 'createRuntime',
@@ -61,6 +65,80 @@ afterEach(async () => {
 });
 
 describe('Agent runtime session bridge authorization', () => {
+  it('rejects bundled source custody that names a different snapshot than its runner', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-bundled-runner-custody-'));
+    roots.push(happyHomeDir);
+    const path = await createAgentRuntimeDaemonServiceAuthorityPath({
+      happyHomeDir,
+      publicReleaseRing: 'stable',
+    });
+    const runner = {
+      pid: 1234,
+      processStartTimeMs: 1_717_171_717_000,
+      processCommandHash: 'a'.repeat(64),
+      snapshotIdentity: 'snapshot:runner-a',
+    };
+    const retainedAgent = createAgentSessionRunnerFactoryBinding({
+      v: 1,
+      pluginId: 'happier.agent.codex',
+      pluginVersion: '1.2.3',
+      agentId: 'codex',
+      localAgentId: 'codex',
+      sourceCustody: {
+        kind: 'bundled_first_party',
+        packagedRuntime: { kind: 'pinned_runner_snapshot', snapshotId: 'runner-b' },
+      },
+      locator: { module: './runtime.mjs', export: 'createRuntime', runtimeApiVersion: 1 },
+      normalizedModulePath: 'runtime.mjs',
+      loadMode: 'immutable-js',
+    });
+    await expect(publishAgentRuntimeDaemonServiceAuthority({
+      path,
+      happyHomeDir,
+      publicReleaseRing: 'stable',
+      sessionId: 'session-bundled-1',
+      runner,
+      retainedAgent,
+      httpPort: 31_001,
+      capability: 'A'.repeat(43),
+    })).rejects.toThrow(/snapshot/iu);
+    const matchingAgent = createAgentSessionRunnerFactoryBinding({
+      ...retainedAgent,
+      sourceCustody: {
+        kind: 'bundled_first_party',
+        packagedRuntime: { kind: 'pinned_runner_snapshot', snapshotId: 'runner-a' },
+      },
+    });
+    const published = await publishAgentRuntimeDaemonServiceAuthority({
+      path,
+      happyHomeDir,
+      publicReleaseRing: 'stable',
+      sessionId: 'session-bundled-1',
+      runner,
+      retainedAgent: matchingAgent,
+      httpPort: 31_001,
+      capability: 'A'.repeat(43),
+    });
+    await expect(readAgentRuntimeDaemonServiceAuthorityForVerifiedMarker({
+      path,
+      happyHomeDir,
+      publicReleaseRing: 'stable',
+      sessionId: 'session-bundled-1',
+      runner,
+    })).resolves.toEqual(published.document);
+    await writeFile(path, `${JSON.stringify({
+      ...published.document,
+      retainedAgent,
+    })}\n`, 'utf8');
+    await expect(readAgentRuntimeDaemonServiceAuthorityForVerifiedMarker({
+      path,
+      happyHomeDir,
+      publicReleaseRing: 'stable',
+      sessionId: 'session-bundled-1',
+      runner,
+    })).resolves.toBeNull();
+  });
+
   it('publishes direct retained runner correspondence without a grant or binding digest', async () => {
     const happyHomeDir = await mkdtemp(join(
       tmpdir(),
@@ -147,7 +225,7 @@ describe('Agent runtime session bridge authorization', () => {
         }),
       }),
     ).resolves.toEqual(new Set([
-      retainedAgent.immutableGenerationId,
+      `sha256:${'1'.repeat(64)}`,
     ]));
     await expect(
       readLiveRunnerAgentDaemonServiceAuthorityRetainedGenerationIds({
@@ -162,6 +240,50 @@ describe('Agent runtime session bridge authorization', () => {
     ).resolves.toEqual(new Set());
   });
 
+  it('retains a live runner generation when its command no longer matches the authority snapshot', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-live-runner-command-drift-'));
+    roots.push(happyHomeDir);
+    const runner = {
+      pid: process.pid,
+      processStartTimeMs: 12_345,
+      processCommandHash: 'a'.repeat(64),
+      snapshotIdentity: 'snapshot:runner-a',
+    };
+    await publishAgentRuntimeDaemonServiceAuthority({
+      path: await createAgentRuntimeDaemonServiceAuthorityPath({
+        happyHomeDir,
+        publicReleaseRing: 'stable',
+      }),
+      happyHomeDir,
+      publicReleaseRing: 'stable',
+      sessionId: 'session-command-drift-1',
+      runner,
+      retainedAgent: createRetainedAgent(),
+      httpPort: 31_001,
+      capability: 'A'.repeat(43),
+    });
+    processIdentityMock.mockResolvedValueOnce({
+      pid: process.pid,
+      processStartTimeMs: runner.processStartTimeMs,
+      command: 'a different command for the same process generation',
+    });
+
+    await expect(readLiveRunnerAgentDaemonServiceAuthorityRetainedGenerationIds({
+      happyHomeDir,
+      publicReleaseRing: 'stable',
+    })).resolves.toEqual(new Set([`sha256:${'1'.repeat(64)}`]));
+
+    processIdentityMock.mockResolvedValueOnce({
+      pid: process.pid,
+      processStartTimeMs: runner.processStartTimeMs + 1,
+      command: 'a different process generation',
+    });
+    await expect(readLiveRunnerAgentDaemonServiceAuthorityRetainedGenerationIds({
+      happyHomeDir,
+      publicReleaseRing: 'stable',
+    })).resolves.toEqual(new Set());
+  });
+
   it('creates a descriptor-only runner bootstrap with a stable empty V2 authority path', async () => {
     const happyHomeDir = await mkdtemp(join(
       tmpdir(),
@@ -174,7 +296,12 @@ describe('Agent runtime session bridge authorization', () => {
       pluginVersion: '1.2.3',
       agentId: 'grok',
       backendId: 'grok',
-      generation: 'generation-7',
+      occurrenceId: 'occurrence:happier.agent.grok:7',
+      sourceCustody: {
+        kind: 'managed' as const,
+        immutableGenerationId: 'generation-7',
+        installSource: 'npm' as const,
+      },
     };
 
     const issued =
@@ -220,8 +347,12 @@ describe('Agent runtime session bridge authorization', () => {
       pluginVersion: '1.2.3',
       agentId: 'grok',
       backendId: 'grok',
-      generation: 'generation-7',
-      immutableGenerationId: 'sha256:abc',
+      occurrenceId: 'occurrence:happier.agent.grok:7',
+      sourceCustody: {
+        kind: 'managed' as const,
+        immutableGenerationId: 'sha256:abc',
+        installSource: 'npm' as const,
+      },
     };
     const issued = await createForegroundAgentRuntimeBootstrapAuthorization({
       happyHomeDir,
@@ -400,7 +531,7 @@ describe('Agent runtime session bridge authorization', () => {
         ...expected.runner,
         processCommandHash: 'c'.repeat(64),
       },
-    })).resolves.toBeNull();
+    })).resolves.toMatchObject({ sessionId: 'session-1' });
     await expect(readAgentRuntimeDaemonServiceAuthority({
       ...expected,
       ...authority,
@@ -413,8 +544,12 @@ describe('Agent runtime session bridge authorization', () => {
       ...authority,
       retainedAgent: {
         ...authority.retainedAgent,
-        immutableGenerationId:
-          'generation-successor-must-rematerialize',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId:
+            'generation-successor-must-rematerialize',
+          installSource: 'localPath',
+        },
       },
     })).resolves.toBeNull();
     await expect(readAgentRuntimeDaemonServiceAuthority({
@@ -591,11 +726,37 @@ describe('Agent runtime session bridge authorization', () => {
         expectedSessionId: 'session-2',
       }),
     ).resolves.toBeNull();
+    const runningCommand = `${processCommand} --existing-session session-1`;
+    processIdentityMock.mockResolvedValue({
+      pid: process.pid,
+      processStartTimeMs: runner.processStartTimeMs,
+      command: runningCommand,
+    });
+    await expect(
+      readCurrentRunnerAgentRuntimeDaemonServiceAuthority({
+        path: authority.path,
+        happyHomeDir,
+        publicReleaseRing: 'stable',
+        expectedSessionId: 'session-1',
+      }),
+    ).resolves.toMatchObject({ sessionId: 'session-1' });
+    await expect(
+      readAgentRuntimeDaemonServiceAuthorityForVerifiedMarker({
+        path: authority.path,
+        happyHomeDir,
+        publicReleaseRing: 'stable',
+        sessionId: 'session-1',
+        runner: {
+          ...runner,
+          processCommandHash: hashProcessCommand(runningCommand),
+        },
+      }),
+    ).resolves.toMatchObject({ sessionId: 'session-1' });
     processIdentityMock.mockResolvedValue({
       pid: process.pid,
       processStartTimeMs:
         runner.processStartTimeMs + 1,
-      command: processCommand,
+      command: runningCommand,
     });
     await expect(
       readCurrentRunnerAgentRuntimeDaemonServiceAuthority({

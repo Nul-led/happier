@@ -141,7 +141,8 @@ function measurePage() {
     for (const sel of ['[data-testid="settings-shell.sidebarPane"]', '[data-testid="sidebar-view"]']) {
         for (const el of document.querySelectorAll(sel)) {
             const rect = rectOf(el);
-            if (visible(el) && rect.left <= 10 && rect.right < vw * 0.6) paneLeft = Math.max(paneLeft, rect.right);
+            // The settings modal is inset from the viewport, so its rail need not start at x=0.
+            if (visible(el) && rect.right < vw * 0.6) paneLeft = Math.max(paneLeft, rect.right);
         }
     }
     const inPane = (el) => rectOf(el).left >= paneLeft - 1;
@@ -196,9 +197,15 @@ function measurePage() {
     };
 
     // Headings (react-native-web renders accessibilityRole="header" as role="heading").
+    // The app draws weights with Inter-* font families rather than font-weight, so read both.
+    const weightOf = (style) => {
+        const family = style.fontFamily ?? '';
+        const byFamily = /ExtraBold|Black/i.test(family) ? 800 : /SemiBold/i.test(family) ? 600 : /Bold/i.test(family) ? 700 : /Medium/i.test(family) ? 500 : 0;
+        return Math.max(Number(style.fontWeight) || 400, byFamily);
+    };
     const headings = candidates('[role="heading"]').map((el) => {
         const style = cs(el);
-        return { el, fontSize: px(style.fontSize), lineHeight: px(style.lineHeight), weight: Number(style.fontWeight) || 400 };
+        return { el, fontSize: px(style.fontSize), lineHeight: px(style.lineHeight), weight: weightOf(style) };
     });
     const pageTitles = headings.filter((h) => h.fontSize >= 20).sort((a, b) => rectOf(a.el).top - rectOf(b.el).top);
     const navTitles = headings.filter((h) => h.fontSize >= 16 && h.fontSize < 20 && rectOf(h.el).top < 80);
@@ -206,7 +213,8 @@ function measurePage() {
     const otherHeadings = headings.filter((h) => !pageTitles.includes(h) && !navTitles.includes(h) && !sectionTitles.includes(h));
 
     const used = new Set(headings.map((h) => h.el));
-    const result = { paneLeft: r(paneLeft), title: null, subtitle: null, leading: null, back: null, navTitle: null, sections: [], sheets: [], otherCards: [], otherHeadings: [], emptyStates: [], gaps: {}, rows: [] };
+    const pageTextLength = (document.body.innerText ?? '').trim().length;
+    const result = { blank: pageTextLength < 40, paneLeft: r(paneLeft), title: null, subtitle: null, leading: null, back: null, navTitle: null, sections: [], sheets: [], otherCards: [], otherHeadings: [], emptyStates: [], gaps: {}, rows: [] };
 
     const titleHeading = pageTitles[0];
     if (titleHeading) {
@@ -223,7 +231,11 @@ function measurePage() {
         if (backEl) {
             const b = rectOf(backEl);
             const column = result.title.column;
-            result.back = { ...box(backEl, 'back'), onTitleRow: Math.abs((b.top + b.bottom) / 2 - (t.top + t.bottom) / 2) < 20, insideColumn: column ? b.left >= column.left - 1 && b.right <= column.left + column.width + 1 : null };
+            const level = Math.abs((b.top + b.bottom) / 2 - (t.top + t.bottom) / 2) < 20;
+            // Design: in the gutter left of the content edge, level with the title (or the mark); the
+            // title-row fallback puts it just before the title inside the column.
+            const inGutter = level && column !== null && b.right <= column.left + 18 + 1;
+            result.back = { ...box(backEl, 'back'), onTitleRow: level, inGutter, insideColumn: column ? b.left >= column.left - 1 && b.right <= column.left + column.width + 1 : null };
         }
         // Leading mark: a text-free square-ish block left of the title within its row.
         const lead = candidates('div, img, svg').filter((el) => {
@@ -311,7 +323,8 @@ function measurePage() {
         if (!result.sections.some((s) => s.top >= prev.bottom - 1 && s.bottom <= next.top + 1)) result.gaps.untitledSheetGaps.push(r(next.top - prev.bottom));
     }
     const header = result.subtitle ?? result.title;
-    const firstBlock = [result.sections[0], result.sheets[0]].filter(Boolean).sort((a, b) => a.top - b.top)[0];
+    const firstBlock = [result.sections[0], result.sheets[0], result.otherCards[0], ...(result.emptyStates ?? []).slice(0, 1)]
+        .filter((b) => b && (!header || b.top >= header.bottom - 1)).sort((a, b) => a.top - b.top)[0];
     if (header && firstBlock) result.gaps.headerToFirstBlock = r(firstBlock.top - header.bottom);
 
     // Empty-state copy.
@@ -385,12 +398,14 @@ function computeOutliers(results) {
     const outliers = [];
     const add = (entry, what, value, expected) => outliers.push({ route: entry.route, viewport: entry.viewport, what, value, expected });
     for (const viewport of [...new Set(results.map((e) => e.viewport))]) {
-        const measured = results.filter((e) => e.viewport === viewport && e.m);
+        // A page that rendered no text (a reload mid-capture) is not measured, not reported as drift.
+        const measured = results.filter((e) => e.viewport === viewport && e.m && !e.m.blank);
         const settings = measured.filter((e) => e.group === 'settings');
         const all = (pick) => settings.flatMap((e) => pick(e.m)).filter((v) => typeof v === 'number');
         const modes = {
-            titleLeft: mode(all((m) => [m.title?.left])),
-            titleRel: mode(all((m) => [m.title?.relLeft])),
+            // With a leading mark, the mark takes the content edge and the title follows it (design).
+            titleLeft: mode(all((m) => [(m.leading ?? m.title)?.left])),
+            titleRel: mode(all((m) => [(m.leading ?? m.title)?.relLeft])),
             subtitleLeft: mode(all((m) => [m.subtitle?.left])),
             sectionLeft: mode(all((m) => m.sections.map((s) => s.left))),
             sectionRel: mode(all((m) => m.sections.map((s) => s.relLeft))),
@@ -415,8 +430,8 @@ function computeOutliers(results) {
             e.modes = modes;
             if (!m.title) add(e, m.navTitle ? `no in-page title (nav header "${m.navTitle.text}")` : 'no page title detected', null, 'page title');
             else if (!m.title.owner) add(e, `title not PageHeader typography (${m.title.fontSize}/${m.title.lineHeight})`, m.title.fontSize, '22/28');
-            left(m.title, modes.titleLeft, modes.titleRel, 'title');
-            left(m.subtitle, modes.subtitleLeft ?? modes.titleLeft, modes.titleRel, 'subtitle');
+            left(m.leading ?? m.title, modes.titleLeft, modes.titleRel, m.leading ? 'leading mark' : 'title');
+            if (!m.leading) left(m.subtitle, modes.subtitleLeft ?? modes.titleLeft, modes.titleRel, 'subtitle');
             for (const s of m.sections) {
                 left(s, modes.sectionLeft, modes.sectionRel, 'section title');
                 if (s.description) left(s.description, modes.sectionDescLeft, modes.sectionRel, 'section description');
@@ -427,8 +442,9 @@ function computeOutliers(results) {
             for (const s of m.sheets) left(s, modes.sheetLeft, modes.sheetRel, 'sheet');
             if (m.title && m.sections[0] && Math.abs(m.title.left - m.sections[0].left) > TOLERANCE_PX) add(e, 'title vs first section title (same page)', m.title.left, m.sections[0].left);
             if (m.title && m.subtitle && Math.abs(m.title.left - m.subtitle.left) > TOLERANCE_PX) add(e, 'title vs subtitle (same page)', m.subtitle.left, m.title.left);
-            if (m.back && !m.back.onTitleRow) add(e, 'back control not on title row', m.back.left, 'title row');
-            if (m.back && m.back.insideColumn === false) add(e, 'back control outside content column', m.back.left, m.title?.column?.left ?? null);
+            // Back belongs in the gutter level with the title (or on the title row when the gutter is too narrow).
+            if (m.back && !m.back.onTitleRow) add(e, 'back control not level with the title', m.back.left, 'title line');
+            if (m.back && !m.back.inGutter && m.back.insideColumn === false) add(e, 'back control outside the column and not in the gutter', m.back.left, m.title?.column?.left ?? null);
             if (off(m.gaps.headerToFirstBlock, modes.headerToFirstBlock)) add(e, 'header→first section gap', m.gaps.headerToFirstBlock, modes.headerToFirstBlock);
             const tall = m.rows.filter((row) => row.single && modes.singleRow !== null && row.height > modes.singleRow + TOLERANCE_PX);
             for (const row of tall) add(e, `single-line row taller ("${row.text}")`, row.height, modes.singleRow);
@@ -546,6 +562,11 @@ async function main() {
         await browser.close();
     }
 
+    // A run where most pages rendered blank (the dev bundle reloading, a signed-out state) measures
+    // nothing: say so and fail rather than reporting blanks as drift.
+    const blankPages = results.filter((e) => e.m?.blank).map((e) => `${e.route}@${e.viewport}`);
+    const invalid = blankPages.length > 0 && blankPages.length >= results.filter((e) => e.m).length / 2;
+    if (invalid) process.exitCode = 2;
     const outliers = computeOutliers(results);
     const durationMs = Date.now() - runStarted;
     const measured = results.filter((e) => e.m);
@@ -559,6 +580,8 @@ async function main() {
         measurements: measured.length,
         clientNavigations: measured.filter((e) => e.nav?.method === 'client').length,
         gotoFallbacks: measured.filter((e) => e.nav?.method === 'goto').length,
+        invalid,
+        blankPages,
         settleCapped: measured.filter((e) => e.nav?.capped).map((e) => `${e.route}@${e.viewport}`),
         unmatched: results.filter((e) => e.unmatched).map((e) => `${e.route}@${e.viewport}`),
         errors: results.filter((e) => e.error).map((e) => ({ route: e.route, viewport: e.viewport, error: e.error })),
@@ -575,6 +598,7 @@ async function main() {
 
     const lines = [
         `# Alignment audit "${args.label}" — ${summary.routesMeasured} routes, ${summary.measurements} measurements, ${Math.round(durationMs / 1000)}s`,
+        ...(invalid ? ['', `INVALID RUN: ${blankPages.length} pages rendered blank; the numbers below measure nothing.`] : []),
         '',
         '## Outlier classes (routes affected)',
         ...summary.outlierClasses.map((c) => `- ${c.class}: ${c.routes}`),

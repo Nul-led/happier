@@ -129,6 +129,42 @@ describe('createOpenAiCodexQuotaFetcher', () => {
     expect(snapshot).not.toHaveProperty('profileId');
   });
 
+  it('publishes the ChatGPT subscription on the same account usage observation', async () => {
+    const now = 1_700_000_000_000;
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      kind: 'oauth',
+      expiresAt: now + 60_000,
+      oauth: {
+        accessToken: 'at', refreshToken: 'rt', idToken: null, scope: null,
+        tokenType: null, providerAccountId: 'acct', providerEmail: 'user@example.com',
+      },
+    });
+    const requests: string[] = [];
+    const fetcher = createOpenAiCodexQuotaFetcher({
+      usageUrl: 'https://quota.happier.dev/usage',
+      subscriptionUrl: 'https://quota.happier.dev/subscriptions',
+      runtimeFetch: {
+        request: async (request) => {
+          requests.push(request.url);
+          return jsonResponse(request.url.includes('subscriptions')
+            ? { active_until: '2026-10-05T12:00:00Z', will_renew: false }
+            : { plan_type: 'pro', rate_limit: { primary_window: { used_percent: 12 } } });
+        },
+      },
+    });
+
+    const snapshot = await fetcher.loadQuota({ record, now, signal: new AbortController().signal });
+
+    expect(snapshot?.subscription).toEqual({
+      status: 'subscribed', renewal: 'off', observedAtMs: now,
+      staleAfterMs: 300_000, currentPeriodEndAtMs: Date.parse('2026-10-05T12:00:00Z'),
+    });
+    expect(requests).toContain('https://quota.happier.dev/subscriptions?account_id=acct');
+  });
+
   it('uses the Codex-owned private ChatGPT usage endpoint by default', async () => {
     const now = 1_000_000;
     const fetchMock = vi.fn(async () => systemJsonResponse({
@@ -216,6 +252,7 @@ describe('createOpenAiCodexQuotaFetcher', () => {
     expect(requests.map((request) => request.url)).toEqual([
       'https://chatgpt.com/backend-api/wham/usage',
       'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits',
+      'https://chatgpt.com/backend-api/subscriptions?account_id=acct',
     ]);
     expect(requests[1]?.headers).toMatchObject({
       Authorization: 'Bearer at',

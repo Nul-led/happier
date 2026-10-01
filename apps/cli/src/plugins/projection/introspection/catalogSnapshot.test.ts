@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { normalizePluginManifestV2 } from '@/plugins/manifest/normalize';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import type { PluginCatalogEntry } from '@/plugins/projection/catalog/installed';
 import {
   joinInstalledCatalogRuntimeIntrospection,
@@ -100,7 +101,7 @@ describe('plugin catalog introspection snapshot', () => {
       .toBe(entry.contributionIntrospection.diagnostics);
   });
 
-  it('gives list, show, and dev-loop consumers the same generation-joined runtime snapshot', () => {
+  it('gives list, show, and dev-loop consumers the same occurrence-joined runtime snapshot', () => {
     const entry = {
       pluginId: 'acme.snapshot', title: 'Snapshot', description: null, version: '1.0.0', enabled: true,
       desiredGeneration: 'generation-1', appliedGeneration: null, admittedIntegrity: null,
@@ -121,7 +122,7 @@ describe('plugin catalog introspection snapshot', () => {
       entries: [entry], generation: 4, runtimeState: 'current',
       targetActivationFacts: [{
         pluginId: 'acme.snapshot', pluginVersion: '1.0.0', source: 'localPath',
-        generation: '4', host: 'daemon', platform: 'darwin', occurredAtMs: 10,
+        occurrenceId: '4', host: 'daemon', platform: 'darwin', occurredAtMs: 10,
         status: 'active',
         required: [{ family: 'actions', localId: 'run' }], bound: [{ family: 'actions', localId: 'run' }], diagnostics: [],
       }],
@@ -135,19 +136,20 @@ describe('plugin catalog introspection snapshot', () => {
     expect(projectPluginCatalogEntriesSnapshot([entry], runtimeSnapshot)[0]).toEqual(snapshots[0]);
     expect(projectPluginCatalogEntrySnapshot(entry, runtimeSnapshot)).toEqual(snapshots[0]);
 
+    const occurrenceId = createPluginRuntimeOccurrenceId('acme.snapshot');
     const joinedEntries = joinInstalledCatalogRuntimeIntrospection([entry], {
       generation: 4,
-      pluginFinalPolicyCurrentGenerationsById: new Map([['acme.snapshot', {
-        immutableGenerationId: 'generation-1',
-        desiredImmutableGenerationId: 'generation-1',
-        appliedImmutableGenerationId: 'generation-1',
-        distribution: { kind: 'localPath' },
+      pluginFinalPolicyCurrentRuntimesById: new Map([['acme.snapshot', {
+        occurrenceId,
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-1', installSource: 'localPath' },
+        desiredOccurrenceId: occurrenceId,
+        appliedOccurrenceId: occurrenceId,
         applied: true,
         selectedAccess: [],
       }]]),
       targetActivationFacts: [{
         pluginId: 'acme.snapshot', pluginVersion: '1.0.0', source: 'localPath',
-        generation: '4', host: 'daemon', platform: 'darwin', occurredAtMs: 10,
+        occurrenceId: '4', host: 'daemon', platform: 'darwin', occurredAtMs: 10,
         status: 'active',
         required: [{ family: 'actions', localId: 'run' }],
         bound: [{ family: 'actions', localId: 'run' }], diagnostics: [],
@@ -162,12 +164,13 @@ describe('plugin catalog introspection snapshot', () => {
       desiredGeneration: 'generation-1',
       appliedGeneration: 'generation-1',
     });
+    const previousOccurrenceId = createPluginRuntimeOccurrenceId('acme.snapshot-before-update');
     expect(joinInstalledCatalogRuntimeIntrospection([entry], {
-      pluginFinalPolicyCurrentGenerationsById: new Map([['acme.snapshot', {
-        immutableGenerationId: 'generation-before-update',
-        desiredImmutableGenerationId: 'generation-before-update',
-        appliedImmutableGenerationId: 'generation-before-update',
-        distribution: { kind: 'localPath' },
+      pluginFinalPolicyCurrentRuntimesById: new Map([['acme.snapshot', {
+        occurrenceId: previousOccurrenceId,
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-before-update', installSource: 'localPath' },
+        desiredOccurrenceId: previousOccurrenceId,
+        appliedOccurrenceId: previousOccurrenceId,
         applied: true,
         selectedAccess: [],
       }]]),
@@ -217,7 +220,7 @@ describe('plugin catalog introspection snapshot', () => {
           capabilities: {
             turn: { cancelResponse: true, bargeIn: false },
           },
-          client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+          client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
         }],
       },
     });
@@ -248,7 +251,7 @@ describe('plugin catalog introspection snapshot', () => {
       entries: [entry], generation: 4, runtimeState: 'current',
       targetActivationFacts: [{
         pluginId: 'acme.speech', pluginVersion: '1.0.0', source: 'localPath',
-        generation: '4', host: 'daemon', platform: 'darwin', occurredAtMs: 10,
+        occurrenceId: '4', host: 'daemon', platform: 'darwin', occurredAtMs: 10,
         status: 'active',
         required: [{ family: 'voiceProviders', localId: 'speech' }],
         bound: [{ family: 'voiceProviders', localId: 'speech' }],
@@ -269,8 +272,8 @@ describe('plugin catalog introspection snapshot', () => {
       qualifiedId: 'acme.speech/voiceProviders/speech',
     });
     expect(speech).toMatchObject({
-      registration: { state: 'bound', generation: '4' },
-      activation: { state: 'active', generation: '4' },
+      registration: { state: 'bound', occurrenceId: '4' },
+      activation: { state: 'active', occurrenceId: '4' },
     });
     expect(conversation).toMatchObject({
       contribution: {
@@ -301,7 +304,7 @@ describe('plugin catalog introspection snapshot', () => {
     } satisfies PluginCatalogEntry;
     const fact = {
       pluginId: 'acme.snapshot', pluginVersion: '1.0.0', source: 'localPath' as const,
-      generation: '4', host: 'daemon' as const, platform: 'darwin', occurredAtMs: 10,
+      occurrenceId: '4', host: 'daemon' as const, platform: 'darwin', occurredAtMs: 10,
       status: 'unavailable' as const, required: [], bound: [],
       diagnostics: [{ code: 'plugin_activation_failed' as const, message: 'Startup failed' }],
     };

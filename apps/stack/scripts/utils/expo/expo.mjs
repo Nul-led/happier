@@ -200,11 +200,7 @@ export async function ensureExpoIsolationEnv({ env, stateDir, expoHomeDir, tmpDi
 
 export function wantsExpoClearCache({ env }) {
   const raw = (env.HAPPIER_STACK_EXPO_CLEAR_CACHE ?? '').trim();
-  if (raw) {
-    return raw !== '0';
-  }
-  // Default: clear cache when non-interactive (LLMs/services), keep fast iteration in TTY shells.
-  return !(process.stdin.isTTY && process.stdout.isTTY);
+  return raw !== '' && raw !== '0';
 }
 
 export async function readPidState(statePath) {

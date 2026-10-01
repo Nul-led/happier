@@ -39,7 +39,7 @@ import {
 
 async function prepareOpenCodeAgentSupervisionFixture(input: Readonly<{
     pluginId: string;
-    manifestAuthority: 'external' | 'bundled_first_party';
+    manifestAuthority: 'external';
     engines: PluginEnginesV2;
 }>) {
     const happyHomeDir = await mkdtemp(join(
@@ -87,7 +87,7 @@ async function prepareOpenCodeAgentSupervisionFixture(input: Readonly<{
             kind: 'localPath',
             canonicalPath: sourceRootPath,
         },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
         immutableGenerationId,
     });
@@ -118,7 +118,11 @@ async function prepareOpenCodeAgentSupervisionFixture(input: Readonly<{
         pluginVersion: manifest.version,
         agentId: 'opencode',
         localAgentId: 'opencode',
-        immutableGenerationId,
+        sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId,
+            installSource: 'localPath',
+        },
         locator,
         normalizedModulePath: 'agent/runtime.mjs',
         loadMode: 'immutable-js',
@@ -133,7 +137,7 @@ async function prepareOpenCodeAgentSupervisionFixture(input: Readonly<{
         request: {
             contributionId: `${manifest.id}/agents/opencode`,
             serverId: 'opencode-server',
-            immutableGenerationId,
+            sourceCustody: binding.sourceCustody,
             executable: {
                 kind: 'systemTool' as const,
                 id: 'opencode-cli',
@@ -150,7 +154,7 @@ async function prepareOpenCodeAgentSupervisionFixture(input: Readonly<{
 }
 
 async function prepareProviderSupervisionFixture(input: Readonly<{
-    manifestAuthority: 'external' | 'bundled_first_party';
+    manifestAuthority: 'external';
 }>) {
     const happyHomeDir = await mkdtemp(join(
         tmpdir(),
@@ -197,9 +201,9 @@ async function prepareProviderSupervisionFixture(input: Readonly<{
             kind: 'localPath',
             canonicalPath: sourceRootPath,
         },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
-        immutableGenerationId: 'provider-generation-p',
+        immutableGenerationId: 'provider-occurrenceId-p',
     });
     const prepared = await prepareImmutablePluginGeneration({
         paths,
@@ -228,7 +232,7 @@ async function prepareProviderSupervisionFixture(input: Readonly<{
                             approvedAtMs: 1,
                         },
                         source: { distribution },
-                        updatePolicy: 'reviewEveryUpdate',
+                        updatePolicy: 'allowed',
                         optionalAccess: [],
                     },
                 },
@@ -243,7 +247,7 @@ async function prepareProviderSupervisionFixture(input: Readonly<{
             transactionId: 'provider-supervision-commit-p',
             baseRevision: 0,
             installationState,
-            pluginGenerations: { [manifest.id]: prepared.reference },
+            pluginOccurrenceIds: { [manifest.id]: prepared.reference },
             createdAtMs: 1,
             creator: { pid: 1, instanceId: 'provider-supervision' },
         }), 'utf8');
@@ -312,8 +316,12 @@ async function prepareProviderSupervisionFixture(input: Readonly<{
             },
             pluginId: manifest.id,
             providerLocalId: provider.id,
-            activationGeneration: 'activation-p',
-            immutableGenerationId: record.immutableGenerationId,
+            occurrenceId: 'occurrence-p',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: record.immutableGenerationId,
+                installSource: 'localPath',
+            },
             manifestAuthority: input.manifestAuthority,
             operationClaimId: 'provider-operation-p',
         },
@@ -327,7 +335,7 @@ async function prepareProviderSupervisionFixture(input: Readonly<{
         contributionId: `${manifest.id}/providers/${provider.id}`,
         operationClaimId: bootstrap.scope.operationClaimId,
         serverId: 'cliproxyapi-managed',
-        immutableGenerationId: bootstrap.scope.immutableGenerationId,
+        sourceCustody: bootstrap.scope.sourceCustody,
         executable,
         environmentKeys: [
             'HAPPIER_CLIPROXYAPI_DOWNSTREAM_BEARER',
@@ -388,9 +396,9 @@ async function prepareOllamaProviderSupervisionFixture() {
             kind: 'localPath',
             canonicalPath: sourceRootPath,
         },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
-        immutableGenerationId: 'ollama-provider-generation-p',
+        immutableGenerationId: 'ollama-provider-occurrenceId-p',
     });
     await prepareImmutablePluginGeneration({
         paths,
@@ -498,8 +506,12 @@ async function prepareOllamaProviderSupervisionFixture() {
             },
             pluginId: OLLAMA_PLUGIN_MANIFEST.id,
             providerLocalId: provider.id,
-            activationGeneration: 'activation-ollama',
-            immutableGenerationId: record.immutableGenerationId,
+            occurrenceId: 'occurrence-ollama',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: record.immutableGenerationId,
+                installSource: 'localPath',
+            },
             manifestAuthority: 'bundled_first_party',
             operationClaimId: 'provider-operation-ollama',
         },
@@ -526,7 +538,7 @@ async function prepareOllamaProviderSupervisionFixture() {
                 `${OLLAMA_PLUGIN_MANIFEST.id}/providers/${provider.id}`,
             operationClaimId: bootstrap.scope.operationClaimId,
             serverId: expectedLaunch.serverId,
-            immutableGenerationId: bootstrap.scope.immutableGenerationId,
+            sourceCustody: bootstrap.scope.sourceCustody,
             executable: expectedLaunch.executable,
             environmentKeys: expectedLaunch.environmentKeys,
         },
@@ -616,10 +628,10 @@ describe('runner managed-server supervision authorization', () => {
         })).toBeNull();
     });
 
-    it('authorizes a direct retained Agent binding from its exact generation', async () => {
+    it('authorizes a direct retained Agent binding from its exact occurrenceId', async () => {
         const fixture = await prepareOpenCodeAgentSupervisionFixture({
-            pluginId: OPENCODE_PLUGIN_MANIFEST.id,
-            manifestAuthority: 'bundled_first_party',
+            pluginId: 'acme.opencode-supervision',
+            manifestAuthority: 'external',
             engines: OPENCODE_PLUGIN_MANIFEST.engines,
         });
         try {
@@ -639,7 +651,11 @@ describe('runner managed-server supervision authorization', () => {
                 binding: fixture.binding,
                 request: {
                     ...fixture.request,
-                    immutableGenerationId: 'different-generation',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: 'different-occurrenceId',
+                        installSource: 'localPath',
+                    },
                 },
                 processEnv: fixture.processEnv,
             })).rejects.toMatchObject({
@@ -690,25 +706,6 @@ describe('runner managed-server supervision authorization', () => {
                 request: fixture.request,
             })).rejects.toMatchObject({
                 code: 'plugin_managed_server_launch_denied',
-            });
-        } finally {
-            await fixture.cleanup();
-        }
-    });
-
-    it('keeps a bundled first-party Provider bootstrap bound to runner packaged runtime', async () => {
-        const fixture = await prepareProviderSupervisionFixture({
-            manifestAuthority: 'bundled_first_party',
-        });
-        try {
-            await expect(authorizeRunnerManagedProviderServerSupervision({
-                paths: fixture.paths,
-                sessionId: fixture.bootstrap.scope.sessionId,
-                bootstrap: fixture.bootstrap,
-                expectedLaunch: fixture.expectedLaunch,
-                request: fixture.request,
-            })).resolves.toEqual({
-                launch: { kind: 'runnerPackagedRuntime' },
             });
         } finally {
             await fixture.cleanup();

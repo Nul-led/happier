@@ -1,6 +1,7 @@
 import type {
   TriageLinkedSessionProjectionV1,
   TriageSourceDescriptorV1,
+  TriageSourceEntrySnapshotV1,
   TriageSourceWorkflowSubjectV1,
 } from '@happier-dev/triage-protocol/v1';
 
@@ -59,6 +60,8 @@ export type TriageDetailHeaderV1 = Readonly<{
   scopeLabel: string | null;
   /** The provider's own state word when it sent one. */
   stateLabel: string | null;
+  /** Where the entry's lifecycle stands, for the glyph it shares with its row. */
+  lifecyclePresentation: TriageSourceEntrySnapshotV1['state']['presentation'] | null;
   /** The configured connection this detail is being read through. */
   connectionLabel: string | null;
   /** Why this entry is asking for the reader, in the source's own words. */
@@ -139,6 +142,7 @@ export function projectTriageDetailHeaderV1(
     workflowSubject: kind?.workflowSubject ?? null,
     scopeLabel: present?.snapshot.scopeLabel ?? null,
     stateLabel: present?.snapshot.state.nativeLabel ?? null,
+    lifecyclePresentation: present?.snapshot.state.presentation ?? null,
     connectionLabel: input.connectionLabel,
     attention: row.attention === null ? null : Object.freeze({
       level: row.attention.level,

@@ -12,184 +12,57 @@ launcher_dir=${launcher_path%/*}
 [ "$launcher_dir" != "$launcher_path" ] || launcher_dir=.
 script_dir=$(CDPATH= cd -- "$launcher_dir" && pwd -P) || exit 1
 projection_generator="$script_dir/../scripts/utils/dev_targets/native_execution_projection.mjs"
+projection_command_policy="$script_dir/../scripts/utils/dev_targets/remote_commands.mjs"
 repo_root=${script_dir%/apps/stack/bin}
 if [ "$repo_root" = "$script_dir" ]; then
   repo_root=$(CDPATH= cd -- "$script_dir/../../.." && pwd -P) || exit 1
 fi
 invoked_cwd=$(pwd -P) || exit 1
 
-case "$invoked_cwd" in
-  "$repo_root"|"$repo_root"/*) ;;
-  *) printf '%s\n' '[preferred-execution] command working directory must stay inside the repository' >&2; exit 1 ;;
-esac
-
-resolve_package_manager_script_family() {
-  command_name=${1##*/}
-  if [ "$command_name" = corepack ]; then
-    shift
-    [ "$#" -gt 0 ] || return 0
-    command_name=${1##*/}
-  fi
-  case "$command_name" in yarn|npm|pnpm) ;; *) return 0 ;; esac
-  shift
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      run|-s|--silent) shift ;;
-      --cwd|-C) shift; [ "$#" -gt 0 ] && shift ;;
-      -*) shift ;;
-      workspace)
-        if [ "$command_name" = yarn ]; then
-          shift
-          [ "$#" -gt 0 ] || return 0
-          shift
-        else
-          printf '%s' workspace
-          return 0
-        fi
-        ;;
-      *) printf '%s' "${1%%:*}"; return 0 ;;
-    esac
-  done
+score_load_sample() {
+  # Placement ranks reachable machines. Resource admission belongs exclusively
+  # to the selected machine's existing heavyweight queue.
+  printf '%s\n' "$1" | awk -v heavy="${2-0}" '
+    {
+      if ($1 <= 0 || $2 < 0 || ($4 != "" && $4 < 1048576)) exit
+      ratio = $3
+      if ($8 > 0) ratio = $7 / $8
+      if (ratio < 0) ratio = 0
+      if (ratio > 1) ratio = 1
+      # Zero headroom ranks last but remains eligible to wait remotely.
+      pressure = heavy ? (ratio > 0 ? ((1 - ratio) / ratio) : 1e30) : (ratio < 0.1 ? 1 : 0)
+      printf "%.6f", ($2 / $1) + pressure
+    }'
 }
 
-resolve_package_manager_cwd() {
-  command_name=${1##*/}
-  if [ "$command_name" = corepack ]; then
-    shift
-    [ "$#" -gt 0 ] || return 0
-    command_name=${1##*/}
-  fi
-  case "$command_name" in yarn|npm|pnpm) ;; *) return 0 ;; esac
-  shift
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --cwd|-C)
-        shift
-        [ "$#" -gt 0 ] && printf '%s' "$1"
-        return 0
-        ;;
-    esac
-    shift
-  done
+exec_in_jobs_slice() {
+  # Scope execution inherits niceness. Raising a nested background job back to
+  # 10 needs privileges, so retain any already-lower scheduling priority.
+  jobs_slice_nice=$(ps -o ni= -p "$$") || return
+  jobs_slice_nice=$((jobs_slice_nice))
+  if [ "$jobs_slice_nice" -lt 10 ]; then jobs_slice_nice=10; fi
+  exec systemd-run --user --scope --quiet --slice=happier-jobs.slice "--nice=$jobs_slice_nice" -- "$@"
 }
 
-is_package_manager_vitest_runner_invocation() {
-  command_name=${1##*/}
-  if [ "$command_name" = corepack ]; then
-    shift
-    [ "$#" -gt 0 ] || return 1
-    command_name=${1##*/}
+resolve_command_policy() {
+  if [ "${native_policy_loaded-0}" != 1 ]; then
+    . "$script_dir/../scripts/utils/dev_targets/native_command_policy.sh" || exit 1
+    native_policy_loaded=1
   fi
-  case "$command_name" in yarn|npm|pnpm) ;; *) return 1 ;; esac
-  shift
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --cwd|-C) shift; [ "$#" -gt 0 ] && shift; continue ;;
-      node)
-        shift
-        case "${1##*/}" in run-vitest-with-heartbeat.mjs) return 0 ;; esac
-        return 1
-        ;;
-    esac
-    shift
-  done
-  return 1
-}
-
-is_bundled_plugin_generator_invocation() {
-  [ "${1##*/}" = node ] || return 1
-  [ "${2-}" = --experimental-strip-types ] || return 1
-  case "${3-}" in
-    scripts/migrations/extensions/generateBundledPluginEntries.ts|./scripts/migrations/extensions/generateBundledPluginEntries.ts|"$repo_root"/scripts/migrations/extensions/generateBundledPluginEntries.ts)
-      return 0
-      ;;
-  esac
-  return 1
+  resolve_native_command_policy "$@"
 }
 
 resolve_nested_worker_policy() {
-  nested_worker_tool=
-  nested_vitest_arguments_supported=0
-  script_family=
-
-  [ "${1-}" = -- ] && shift
-
-  case "${1-}" in
-    --script=*)
-      script_family=${1#--script=}
-      script_family=${script_family%%:*}
-      case "$script_family" in
-        test|vitest) nested_worker_tool=vitest ;;
-        typecheck) nested_worker_tool=typescript-native ;;
-      esac
-      return
-      ;;
-  esac
-
-  nested_requested_command=${1-}
-  nested_requested_command_name=${nested_requested_command##*/}
-  case "$nested_requested_command_name" in
-    rg) nested_worker_tool=rg ;;
-    vitest) nested_worker_tool=vitest; nested_vitest_arguments_supported=1 ;;
-  esac
-  script_family=$(resolve_package_manager_script_family "$@")
-  case "$script_family" in
-    test|vitest) nested_worker_tool=vitest ;;
-    typecheck) nested_worker_tool=typescript-native ;;
-  esac
-  case "$nested_requested_command_name:${2-}" in
-    node:scripts/workspaces/runTypeScriptCli.mjs|node:./scripts/workspaces/runTypeScriptCli.mjs|node:"$repo_root"/scripts/workspaces/runTypeScriptCli.mjs)
-      nested_worker_tool=typescript-native
-      ;;
-    node:node_modules[\\/]vitest[\\/]vitest.mjs|node:./node_modules[\\/]vitest[\\/]vitest.mjs|node:"$repo_root"/node_modules[\\/]vitest[\\/]vitest.mjs|tsx:node_modules[\\/]vitest[\\/]vitest.mjs|tsx:./node_modules[\\/]vitest[\\/]vitest.mjs|tsx:"$repo_root"/node_modules[\\/]vitest[\\/]vitest.mjs)
-      nested_worker_tool=vitest
-      nested_vitest_arguments_supported=1
-      ;;
-  esac
-  if is_bundled_plugin_generator_invocation "$@"; then
-    nested_worker_tool=bundled-plugin-generator
-  fi
-  if is_package_manager_vitest_runner_invocation "$@"; then
-    nested_worker_tool=vitest
-    nested_vitest_arguments_supported=1
-  fi
+  resolve_command_policy "$@"
+  nested_worker_tool=$policy_workerTool
+  nested_vitest_arguments_supported=$policy_workerArguments
+  script_family=$policy_family
 }
 
 heavyweight_command_class() {
-  if is_bundled_plugin_generator_invocation "$@"; then
-    printf '%s' validation
-    return 0
-  fi
-  heavyweight_command_name=${1##*/}
-  case "$heavyweight_command_name" in
-    tsc|vitest)
-      printf '%s' validation
-      return 0
-      ;;
-    node)
-      case "${2-}" in
-        scripts/workspaces/runTypeScriptCli.mjs|./scripts/workspaces/runTypeScriptCli.mjs|"$repo_root"/scripts/workspaces/runTypeScriptCli.mjs)
-          printf '%s' validation
-          return 0
-          ;;
-      esac
-      return 1
-      ;;
-    yarn|npm|pnpm|corepack) ;;
-    *) return 1 ;;
-  esac
-  heavyweight_script_family=$(resolve_package_manager_script_family "$@")
-  case "$heavyweight_script_family" in
-    install)
-      printf '%s' dependency-install
-      return 0
-      ;;
-    build|check|test|typecheck|vitest)
-      printf '%s' validation
-      return 0
-      ;;
-  esac
-  return 1
+  resolve_command_policy "$@"
+  [ -n "$policy_heavyClass" ] || return 1
+  printf '%s' "$policy_heavyClass"
 }
 
 is_heavyweight_dispatch_class() {
@@ -287,6 +160,17 @@ heavyweight_try_reentrant_admission() {
   return 0
 }
 
+heavyweight_run_admitted_command() {
+  # Admission reuse does not imply cgroup placement: nested dispatch can have
+  # moved this process into the protected control slice since its parent ran.
+  if command -v systemd-run >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1 \
+    && systemctl --user show-environment >/dev/null 2>&1 \
+    && [ "$(systemctl --user show happier-jobs.slice --property=LoadState --value 2>/dev/null || true)" = loaded ]; then
+    exec_in_jobs_slice "$@"
+  fi
+  exec "$@"
+}
+
 run_heavyweight_admission() {
   heavyweight_admission_root=$1
   heavyweight_admission_class=$2
@@ -308,7 +192,7 @@ run_heavyweight_admission() {
   if heavyweight_try_reentrant_admission; then
     # This wrapper is a descendant of the owner and therefore must not create
     # a waiter, acquire the capacity lock, or release the owner's reservation.
-    exec "$@"
+    heavyweight_run_admitted_command "$@"
   fi
 
   umask 077
@@ -443,7 +327,10 @@ EOF
     case "$heavyweight_mem_available:$heavyweight_mem_total" in
       *[!0-9:]*|'':*) ;;
       *)
-        if awk -v available="$heavyweight_mem_available" -v total="$heavyweight_mem_total" 'BEGIN { exit !(total > 0 && (available / total) < 0.1) }'; then
+        # The audit measured a ~5.3 GB compiler and ~1.1 GB suite; their
+        # combined footprint established the existing 6 GiB / 10% floor.
+        if [ "$heavyweight_mem_total" -gt 0 ] && awk -v available="$heavyweight_mem_available" -v total="$heavyweight_mem_total" \
+          'BEGIN { exit !(available < 6291456 || available / total < 0.1) }'; then
           heavyweight_resource_reason="memory-available=$heavyweight_mem_available/$heavyweight_mem_total"
           return 1
         fi
@@ -481,17 +368,6 @@ EOF
   }
 
   heavyweight_child_pid=
-  heavyweight_run_admitted_command() {
-    # A prepared user slice keeps admitted build work out of the agent/control
-    # cgroup. Do not create or configure it here: a missing user manager or
-    # slice simply retains the portable direct-child behavior.
-    if command -v systemd-run >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1 \
-      && systemctl --user show-environment >/dev/null 2>&1 \
-      && [ "$(systemctl --user show happier-jobs.slice --property=LoadState --value 2>/dev/null || true)" = loaded ]; then
-      exec systemd-run --user --scope --quiet --slice=happier-jobs.slice --nice=10 -- "$@"
-    fi
-    exec "$@"
-  }
   heavyweight_interrupt() {
     if [ -n "$heavyweight_child_pid" ] && kill -0 "$heavyweight_child_pid" 2>/dev/null; then
       kill -TERM "$heavyweight_child_pid" 2>/dev/null || true
@@ -601,19 +477,17 @@ if [ "${1-}" = --heavyweight-admission ]; then
 fi
 
 run_local() {
+  resolve_command_policy "$@"
   protected_dispatch_local_payload=${HAPPIER_HSTACK_DISPATCH_CONTROL-0}
   unset HAPPIER_HSTACK_DISPATCH_CONTROL
   HAPPIER_HSTACK_EXECUTION=1
   export HAPPIER_HSTACK_EXECUTION
-  heavyweight_local_class=
+  heavyweight_local_class=$policy_heavyClass
   case "${1-}" in
     --script=*)
       local_script=${1#--script=}
       shift
       if [ "${1-}" = "--" ]; then shift; fi
-      case "${local_script%%:*}" in
-        build|check|test|typecheck|vitest) heavyweight_local_class=validation ;;
-      esac
       if [ -n "${npm_node_execpath-}" ] && [ -n "${npm_execpath-}" ]; then
         set -- "$npm_node_execpath" "$npm_execpath" -s "$local_script" "$@"
       else
@@ -647,7 +521,7 @@ run_local() {
     if command -v systemd-run >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1 \
       && systemctl --user show-environment >/dev/null 2>&1 \
       && [ "$(systemctl --user show happier-jobs.slice --property=LoadState --value 2>/dev/null || true)" = loaded ]; then
-      exec systemd-run --user --scope --quiet --slice=happier-jobs.slice --nice=10 -- "$@"
+      exec_in_jobs_slice "$@"
     fi
     if command -v nice >/dev/null 2>&1; then
       exec nice -n 10 "$@"
@@ -662,6 +536,9 @@ run_selected_local() {
   # before entering its existing machine-wide admission gate. Explicit local
   # placement bypasses distribution, not the worker budget that keeps the
   # authoritative machine responsive.
+  # The command delimiter belongs to this launcher, not the dispatched payload.
+  # Remove it before a tool-specific rewriter chooses the executable position.
+  if [ "${1-}" = -- ]; then shift; fi
   resolve_nested_worker_policy "$@"
   selected_local_workers=
   selected_local_cpu=${local_candidate_cpu-}
@@ -837,6 +714,22 @@ if [ "${1-}" = --local ]; then
   run_selected_local "$@"
 fi
 
+# An already-placed child or explicitly local publisher may operate on a
+# temporary repository. Only outbound routing needs a synchronized cwd.
+if [ "${HAPPIER_DEV_TARGET_EXECUTION-}" = 1 ]; then
+  if [ -n "$explicit_target" ]; then
+    printf '%s\n' '[preferred-execution] nested exact-target execution is not allowed' >&2
+    exit 1
+  fi
+  run_local "$@"
+fi
+case "$invoked_cwd" in
+  "$repo_root"|"$repo_root"/*) ;;
+  *)
+    printf '[preferred-execution] command working directory must stay inside the repository: cwd=%s, repository=%s. Run from that repository (cd), or use --target=NAME --cwd=REPO_RELATIVE_PATH from its root.\n' "$invoked_cwd" "$repo_root" >&2
+    exit 1 ;;
+esac
+
 storage_root=${HAPPIER_STACK_STORAGE_DIR-}
 if [ -z "$storage_root" ]; then
   if [ -z "${HOME-}" ]; then run_local_without_target_config "$@"; fi
@@ -898,7 +791,8 @@ if [ -n "${HAPPIER_EXEC_CONFIG_PATH-}" ]; then
   candidate_projection=$(dirname -- "$candidate_config")/dev-target-exec-v1.sh
   if [ -f "$candidate_config" ] && [ -r "$candidate_projection" ] \
     && [ ! "$candidate_config" -nt "$candidate_projection" ] \
-    && [ ! "$projection_generator" -nt "$candidate_projection" ]; then
+    && [ ! "$projection_generator" -nt "$candidate_projection" ] \
+    && [ ! "$projection_command_policy" -nt "$candidate_projection" ]; then
     . "$candidate_projection" || run_local_without_target_config "$@"
     if [ "${HSTACK_EXEC_PROJECTION_VERSION-}" != 2 ]; then
       node "$projection_generator" "$candidate_config" "$candidate_projection" "$repo_root" || exit $?
@@ -918,7 +812,8 @@ for candidate_config in "$storage_root"/repo-"$repo_token"-*/dev-targets.json; d
   candidate_projection=$(dirname -- "$candidate_config")/dev-target-exec-v1.sh
   if [ -r "$candidate_projection" ] \
     && [ ! "$candidate_config" -nt "$candidate_projection" ] \
-    && [ ! "$projection_generator" -nt "$candidate_projection" ]; then
+    && [ ! "$projection_generator" -nt "$candidate_projection" ] \
+    && [ ! "$projection_command_policy" -nt "$candidate_projection" ]; then
     # The projection is generated from the validated canonical config and is
     # private to the stack directory. It is data for this native dispatcher.
     . "$candidate_projection" || run_local_without_target_config "$@"
@@ -945,7 +840,8 @@ if [ -z "$projection_path" ]; then
       . "$candidate_projection" && [ "${projection_repo_root-}" = "$repo_root" ]
     ); then
       if [ "$candidate_config" -nt "$candidate_projection" ] \
-        || [ "$projection_generator" -nt "$candidate_projection" ]; then
+        || [ "$projection_generator" -nt "$candidate_projection" ] \
+        || [ "$projection_command_policy" -nt "$candidate_projection" ]; then
         node "$projection_generator" "$candidate_config" "$candidate_projection" "$repo_root" || exit $?
         restart_launcher "$@"
       fi
@@ -978,13 +874,6 @@ if [ -z "$projection_path" ]; then
   run_local_without_target_config "$@"
 fi
 
-if [ "${HAPPIER_DEV_TARGET_EXECUTION-}" = 1 ]; then
-  if [ -n "$explicit_target" ]; then
-    printf '%s\n' '[preferred-execution] nested exact-target execution is not allowed' >&2
-    exit 1
-  fi
-  run_local "$@"
-fi
 if { [ -n "${CI-}" ] || [ "${command_mode-}" = local ]; } && [ -z "$explicit_target" ]; then
   run_local "$@"
 fi
@@ -996,6 +885,7 @@ if [ "${target_count-0}" -eq 0 ]; then
     printf '%s\n' '[preferred-execution] no POSIX execution target is configured' >&2
     exit 1
   fi
+  printf '%s\n' '[preferred-execution] no POSIX remote execution target is configured; configured fallback=local, running locally' >&2
   run_local "$@"
 fi
 
@@ -1093,108 +983,32 @@ esac
 [ "$#" -gt 0 ] || { printf '%s\n' '[preferred-execution] command is required' >&2; exit 1; }
 requested_command=$1
 requested_command_name=${requested_command##*/}
-command_class=unknown
-primary_only_direct_commands=${primary_only_direct_commands-git}
-case " $primary_only_direct_commands " in
-  *" $requested_command_name "*)
-    if [ -n "$explicit_target" ]; then
-      printf '%s\n' '[preferred-execution] Git/index/worktree commands must execute on the authoritative primary checkout' >&2
-      exit 1
-    fi
-    run_local -- "$@"
-    ;;
-esac
-requires_remote_dependencies=0
-case " ${dependency_direct_commands-} " in
-  *" $requested_command_name "*) requires_remote_dependencies=1 ;;
-esac
-if [ "$requested_command_name" = corepack ]; then
-  case " ${dependency_corepack_subcommands-} " in
-    *" ${2-} "*) requires_remote_dependencies=1 ;;
-  esac
-fi
-source_search_direct_commands=${source_search_direct_commands-find grep rg}
-case " $source_search_direct_commands " in
-  *" $requested_command_name "*) command_class=source-search ;;
-esac
-# Vitest worker arguments are only safe when the requested argv is itself a
-# Vitest entry point. A package script name is opaque: `test:*` families
-# routinely run other tools, and those CLIs reject Vitest arguments. Such
-# commands still inherit the VITEST_* budget below, which Vitest honors for
-# every pool and any other tool ignores.
 resolve_nested_worker_policy "$@"
-requires_remote_workspace_preparation=0
-validation_direct_commands=${validation_direct_commands-tsc vitest}
-case " $validation_direct_commands " in
-  *" $requested_command_name "*) requires_remote_workspace_preparation=1; command_class=validation ;;
-esac
-validation_script_families=${validation_script_families-build check lint test typecheck vitest}
-case " $validation_script_families " in
-  *" $script_family "*)
-    if [ -n "$script_family" ]; then
-      requires_remote_workspace_preparation=1
-      command_class=validation
-      validation_component_relative_dir=$(resolve_package_manager_cwd "$@")
+command_class=$policy_commandClass
+if [ "$policy_placement" = primary-only ]; then
+  if [ -n "$explicit_target" ]; then
+    if [ "$policy_generator" = 1 ]; then
+      printf '%s\n' '[preferred-execution] bundled-plugin projection writer must execute on the authoritative primary checkout' >&2
+    else
+      printf '%s\n' '[preferred-execution] Git/index/worktree commands must execute on the authoritative primary checkout' >&2
     fi
-    ;;
-esac
-# Package scripts are opaque to the dispatcher by design. Their names still
-# carry the same tool contract as their direct entry points, so use inherited
-# controls for the two owned toolchains rather than parsing script bodies.
-[ "$script_family" = install ] && command_class=dependency-install
-# `runTypeScriptCli.mjs` is the sole compiler-selection owner. It delegates to
-# TypeScript 7's native Go compiler, whose runtime honors GOMAXPROCS to narrow
-# internal parallelism without guessing at a process-wide Node setting.
-# Keep ordinary `node` commands untouched.
-case "$requested_command_name:${2-}" in
-  node:scripts/workspaces/runTypeScriptCli.mjs|node:./scripts/workspaces/runTypeScriptCli.mjs|node:"$repo_root"/scripts/workspaces/runTypeScriptCli.mjs)
-    requires_remote_workspace_preparation=1
-    command_class=validation
-    ;;
-esac
-if is_bundled_plugin_generator_invocation "$@"; then
-  requires_remote_workspace_preparation=1
-  command_class=validation
+    exit 1
+  fi
+  run_local -- "$@"
 fi
-case "$requested_command_name:${2-}" in
-  node:node_modules[\\/]vitest[\\/]vitest.mjs|node:./node_modules[\\/]vitest[\\/]vitest.mjs|node:"$repo_root"/node_modules[\\/]vitest[\\/]vitest.mjs|tsx:node_modules[\\/]vitest[\\/]vitest.mjs|tsx:./node_modules[\\/]vitest[\\/]vitest.mjs|tsx:"$repo_root"/node_modules[\\/]vitest[\\/]vitest.mjs)
-    requires_remote_workspace_preparation=1
-    command_class=validation
-    ;;
-esac
-validation_component_relative_dir=${validation_component_relative_dir-}
-if is_package_manager_vitest_runner_invocation "$@"; then
-  requires_remote_workspace_preparation=1
-  command_class=validation
-  validation_component_relative_dir=$(resolve_package_manager_cwd "$@")
-fi
+requires_remote_dependencies=$policy_bootstrap
+requires_remote_workspace_preparation=0
+[ "$command_class" = targeted-validation ] && requires_remote_workspace_preparation=1
+remote_validation_kind=$policy_kind
+preparation_component_relative_dir=$policy_component
+[ "$preparation_component_relative_dir" = . ] && preparation_component_relative_dir=
 preflight_command=$requested_command
 [ "$requires_remote_dependencies" -eq 1 ] && preflight_command=corepack
 relative_cwd=${invoked_cwd#"$repo_root"}
 relative_cwd=${relative_cwd#/}
 [ "$explicit_relative_cwd_set" -eq 1 ] && relative_cwd=$explicit_relative_cwd
-preparation_component_relative_dir=$relative_cwd
-[ -n "$validation_component_relative_dir" ] && preparation_component_relative_dir=$validation_component_relative_dir
-if [ -n "$preparation_component_relative_dir" ]; then
-  [ "$command_class" = validation ] && command_class=targeted-validation
-else
-  requires_remote_workspace_preparation=0
-  [ "$command_class" = validation ] && command_class=full-validation
-fi
-
-# Only command forms with a known heavy test/typecheck/build contract enter the
-# machine-wide gate. Searches and ordinary control commands retain immediate
-# dispatch, including the existing per-command worker hints below.
 heavyweight_admission_required=0
-case "$requested_command_name" in
-  tsc|vitest) heavyweight_admission_required=1 ;;
-esac
-case "$nested_worker_tool" in
-  vitest|typescript-native|bundled-plugin-generator) heavyweight_admission_required=1 ;;
-esac
-case "$script_family" in
-  build|check|test|typecheck|vitest|install) heavyweight_admission_required=1 ;;
-esac
+[ -n "$policy_heavyClass" ] && heavyweight_admission_required=1
 
 stack_dir=$(dirname -- "$config_path")
 cache_dir="$stack_dir/dev-target-command-load-native"
@@ -1213,11 +1027,8 @@ if ! mkdir -p -- "$cache_dir" 2>/dev/null \
   cache_identity=$(printf '%s' "$stack_dir" | cksum | awk '{print $1}')
   cache_dir="${TMPDIR:-/tmp}/happier-preferred-execution-$(id -u)/$cache_identity"
   if ! (umask 077; mkdir -p -- "$cache_dir") 2>/dev/null; then
-    if [ "${fallback_mode-local}" = error ]; then
-      printf '%s\n' '[preferred-execution] command dispatch state is unavailable' >&2
-      exit 1
-    fi
-    run_local "$@"
+    printf '[preferred-execution] command dispatch state is unavailable: %s; check directory permissions.\n' "$cache_dir" >&2
+    exit 1
   fi
 fi
 
@@ -1262,31 +1073,21 @@ sync_is_ready() {
   target_number=$2
   sync_name=$(sync_name_for_target "$target_name" "$target_number") || return 1
   configure_mutagen_environment
-  status_line=$("$script_dir/hstack-dev-target-control" -- mutagen sync list "$sync_name" \
-    --template='{{range .}}{{printf "%s|%s|%d|%s|%t|%d\n" .Name .Status .SuccessfulCycles .LastError .Paused (len .Conflicts)}}{{end}}' \
-    2>/dev/null || true)
-  IFS='|' read -r session_name session_status successful_cycles last_error paused conflict_count <<EOF
+  status_line=$(HSTACK_SYNC_CHECK_VERBOSE=1 "$script_dir/hstack-dev-target-control" --sync-check "$sync_name" 2>/dev/null || true)
+  [ -n "$status_line" ] || return 1
+  IFS='|' read -r s_name s_status _s_paused _s_alpha_connected _s_alpha_scanned _s_alpha_scan _s_alpha_trans _s_beta_connected _s_beta_scanned _s_beta_scan _s_beta_trans _s_active s_cycles _s_error _s_conflicts _s_excluded <<EOF
 $status_line
 EOF
-  [ "$session_name" = "$sync_name" ] || return 1
-  [ "$paused" = false ] || return 1
-  [ -z "$last_error" ] || return 1
-  [ "${conflict_count-0}" = 0 ] || return 1
-  case "${successful_cycles-}" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$successful_cycles" -gt 0 ] || return 1
-  case "$session_status" in
-    Watching|Scanning|Waiting-for-rescan|Reconciling|Staging-alpha|Staging-beta|Transitioning|Saving)
-      sync_cache="$cache_dir/$target_name.sync.cache"
-      sync_temporary=$(create_cache_temporary "$sync_cache" 2>/dev/null || true)
-      if [ -n "$sync_temporary" ]; then
-        printf '%s %s %s\n' "$(date +%s)" "$session_status" "$successful_cycles" > "$sync_temporary" && \
-          mv -f -- "$sync_temporary" "$sync_cache"
-        rm -f -- "$sync_temporary" 2>/dev/null || true
-      fi
-      return 0
-      ;;
-    *) return 1 ;;
-  esac
+  [ "$s_name" = "$sync_name" ] || return 1
+  case "${s_cycles-}" in ''|*[!0-9]*) return 1 ;; esac
+  sync_cache="$cache_dir/$target_name.sync.cache"
+  sync_temporary=$(create_cache_temporary "$sync_cache" 2>/dev/null || true)
+  if [ -n "$sync_temporary" ]; then
+    printf '%s %s %s\n' "$(date +%s)" "$s_status" "$s_cycles" > "$sync_temporary" && \
+      mv -f -- "$sync_temporary" "$sync_cache"
+    rm -f -- "$sync_temporary" 2>/dev/null || true
+  fi
+  return 0
 }
 
 flush_selected_sync() {
@@ -1331,7 +1132,7 @@ remote_load_probe() {
   if [ -n "$remote_path" ]; then
     path_setup="PATH=$(quote_remote "$remote_path"):\$PATH; export PATH; "
   fi
-  probe='cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || printf 1); kernel=$(uname -s); case "$kernel" in Darwin) platform=darwin; load=$(sysctl -n vm.loadavg | awk '\''{print $2}'\''); free=$(memory_pressure -Q 2>/dev/null | awk '\''/free percentage/ {gsub(/%/,"",$5); print $5/100; exit}'\''); run_queue=0; mem_available_kib=0; mem_total_kib=0; swap_used_kib=0; swap_total_kib=0; psi_cpu=0; psi_memory=0; psi_io=0; swap_in_pages=0; swap_out_pages=0 ;; *) platform=linux; load=$(awk '\''{print $1}'\'' /proc/loadavg 2>/dev/null || uptime | awk -F'\''load average: '\'' '\''{print $2}'\'' | cut -d, -f1); run_queue=$(awk '\''{split($4,r,"/"); print r[1]}'\'' /proc/loadavg 2>/dev/null); memory=$(awk '\''/MemTotal:/ {t=$2} /MemAvailable:/ {a=$2} /SwapTotal:/ {st=$2} /SwapFree:/ {sf=$2} END {if(t>0) print a/t, a, t, st-sf, st}'\'' /proc/meminfo 2>/dev/null); set -- $memory; free=${1-}; mem_available_kib=${2-}; mem_total_kib=${3-}; swap_used_kib=${4-}; swap_total_kib=${5-}; psi_cpu=$(awk '\''/^some / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/) {sub(/^avg10=/,"",$i); print $i; exit}}'\'' /proc/pressure/cpu 2>/dev/null); psi_memory=$(awk '\''/^some / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/) {sub(/^avg10=/,"",$i); print $i; exit}}'\'' /proc/pressure/memory 2>/dev/null); psi_io=$(awk '\''/^some / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/) {sub(/^avg10=/,"",$i); print $i; exit}}'\'' /proc/pressure/io 2>/dev/null); swap_pages=$(awk '\''/pswpin / {i=$2} /pswpout / {o=$2} END {print i+0, o+0}'\'' /proc/vmstat 2>/dev/null); set -- $swap_pages; swap_in_pages=${1-}; swap_out_pages=${2-} ;; esac; [ -n "$free" ] || free=1; disk=$(df -Pk . 2>/dev/null | awk '\''NR==2 {gsub(/%/,"",$5); print $4, $5}'\''); set -- $disk; disk_free=${1-}; disk_used=${2-}; printf "%s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s\\n" "$cpu" "$load" "$free" "$disk_free" "$disk_used" "${run_queue:-0}" "${mem_available_kib:-0}" "${mem_total_kib:-0}" "${swap_used_kib:-0}" "${swap_total_kib:-0}" "${psi_cpu:-0}" "${psi_memory:-0}" "${psi_io:-0}" "${swap_in_pages:-0}" "${swap_out_pages:-0}" "$platform"'
+  probe='cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || printf 1); kernel=$(uname -s); case "$kernel" in Darwin) platform=darwin; load=$(sysctl -n vm.loadavg | awk '\''{print $2}'\''); free=$(memory_pressure -Q 2>/dev/null | awk '\''/free percentage/ {gsub(/%/,"",$5); print $5/100; exit}'\''); run_queue=0; mem_total_bytes=$(sysctl -n hw.memsize 2>/dev/null || printf 0); memory=$(awk -v bytes="$mem_total_bytes" -v ratio="${free:-1}" '\''BEGIN {printf "%.0f %.0f", (bytes/1024)*ratio, bytes/1024}'\''); set -- $memory; mem_available_kib=${1-}; mem_total_kib=${2-}; swap_used_kib=0; swap_total_kib=0; psi_cpu=0; psi_memory=0; psi_io=0; swap_in_pages=0; swap_out_pages=0 ;; *) platform=linux; load=$(awk '\''{print $1}'\'' /proc/loadavg 2>/dev/null || uptime | awk -F'\''load average: '\'' '\''{print $2}'\'' | cut -d, -f1); run_queue=$(awk '\''{split($4,r,"/"); print r[1]}'\'' /proc/loadavg 2>/dev/null); memory=$(awk '\''/MemTotal:/ {t=$2} /MemAvailable:/ {a=$2} /SwapTotal:/ {st=$2} /SwapFree:/ {sf=$2} END {if(t>0) print a/t, a, t, st-sf, st}'\'' /proc/meminfo 2>/dev/null); set -- $memory; free=${1-}; mem_available_kib=${2-}; mem_total_kib=${3-}; swap_used_kib=${4-}; swap_total_kib=${5-}; psi_cpu=$(awk '\''/^some / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/) {sub(/^avg10=/,"",$i); print $i; exit}}'\'' /proc/pressure/cpu 2>/dev/null); psi_memory=$(awk '\''/^some / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/) {sub(/^avg10=/,"",$i); print $i; exit}}'\'' /proc/pressure/memory 2>/dev/null); psi_io=$(awk '\''/^some / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/) {sub(/^avg10=/,"",$i); print $i; exit}}'\'' /proc/pressure/io 2>/dev/null); swap_pages=$(awk '\''/pswpin / {i=$2} /pswpout / {o=$2} END {print i+0, o+0}'\'' /proc/vmstat 2>/dev/null); set -- $swap_pages; swap_in_pages=${1-}; swap_out_pages=${2-} ;; esac; [ -n "$free" ] || free=1; disk=$(df -Pk . 2>/dev/null | awk '\''NR==2 {gsub(/%/,"",$5); print $4, $5}'\''); set -- $disk; disk_free=${1-}; disk_used=${2-}; printf "%s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s\\n" "$cpu" "$load" "$free" "$disk_free" "$disk_used" "${run_queue:-0}" "${mem_available_kib:-0}" "${mem_total_kib:-0}" "${swap_used_kib:-0}" "${swap_total_kib:-0}" "${psi_cpu:-0}" "${psi_memory:-0}" "${psi_io:-0}" "${swap_in_pages:-0}" "${swap_out_pages:-0}" "$platform"'
   remote_command="${path_setup}cd -- $(quote_remote "$remote_repo") && bash -lc $(quote_remote "$probe")"
   run_remote_ssh_probe "$remote_command"
 }
@@ -1354,13 +1155,8 @@ remote_command_probe() {
   esac
   remote_command="${path_setup}cd -- $(quote_remote "$remote_cwd") && $availability"
   if [ "$requires_remote_dependencies" -eq 1 ]; then
-    # Exit distinctly for the narrow dependency-refresh mutation window. That
-    # lets the cache retry a busy target quickly without turning genuine SSH or
-    # command unavailability into a hot probe loop.
-    # A dead owner must be admitted so the canonical lock owner can reclaim its
-    # stale file. Treating mere path existence as busy would permanently fence
-    # the target after an interrupted install or controller crash.
-    dependency_lock=$(quote_remote "$remote_repo/.project/tmp/dependency-install.lock")
+    # Dependency refresh waiting and stale-owner recovery belong to the
+    # bootstrap's existing workspace lock, beneath target-side admission.
     dependency_integrity=$(quote_remote "$remote_repo/node_modules/.yarn-integrity")
     # The current workspace's cold Yarn v1 install materializes an approximately
     # 12 GiB exploded cache before linking the approximately 4 GiB dependency
@@ -1368,7 +1164,7 @@ remote_command_probe() {
     # admission above that real boundary; already-prepared targets only need the
     # generic routed-command scratch floor from the load probe.
     cold_install_min_free_kib=16777216
-    remote_command="$remote_command && { dependency_lock=$dependency_lock; if [ -e \"\$dependency_lock\" ]; then dependency_owner_pid=\$(sed -n 's/.*\"pid\"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' \"\$dependency_lock\" | sed -n '1p'); case \"\$dependency_owner_pid\" in ''|*[!0-9]*) ;; *) if kill -0 \"\$dependency_owner_pid\" 2>/dev/null; then exit 75; fi ;; esac; fi; if [ ! -f $dependency_integrity ]; then dependency_free_kib=\$(df -Pk $(quote_remote "$remote_repo") 2>/dev/null | awk 'NR==2 {print \$4}'); case \"\$dependency_free_kib\" in ''|*[!0-9]*) exit 76 ;; esac; [ \"\$dependency_free_kib\" -ge $cold_install_min_free_kib ] || exit 76; fi; }"
+    remote_command="$remote_command && { if [ ! -f $dependency_integrity ]; then dependency_free_kib=\$(df -Pk $(quote_remote "$remote_repo") 2>/dev/null | awk 'NR==2 {print \$4}'); case \"\$dependency_free_kib\" in ''|*[!0-9]*) exit 76 ;; esac; [ \"\$dependency_free_kib\" -ge $cold_install_min_free_kib ] || exit 76; fi; }"
   fi
   run_remote_ssh_probe "$remote_command" >/dev/null 2>&1
 }
@@ -1388,8 +1184,6 @@ command_is_available() {
           ttl=5
         elif [ "$available" = 1 ]; then
           ttl=300
-        elif [ "$unavailable_reason" = busy ]; then
-          ttl=5
         else
           ttl=${unavailable_ttl_seconds-120}
         fi
@@ -1398,7 +1192,10 @@ command_is_available() {
           # An explicit request is also a recovery probe. Automatic routing
           # keeps the negative TTL to avoid repeatedly hitting broken hosts,
           # while a named target must observe a just-repaired SSH/tool state.
-          [ -z "$explicit_target_number" ] && return 1
+          if [ -z "$explicit_target_number" ] && [ "$unavailable_reason" = unreachable ]; then
+            command_unavailable_reason=$unavailable_reason
+            return 1
+          fi
         fi
         ;;
     esac
@@ -1414,13 +1211,11 @@ command_is_available() {
     return 0
   fi
   if [ -n "$temporary" ]; then
-    if [ "$probe_status" -eq 75 ]; then
-      printf '%s 0 busy\n' "$now" > "$temporary" && mv -f -- "$temporary" "$cache_path"
-    else
-      printf '%s 0 unavailable\n' "$now" > "$temporary" && mv -f -- "$temporary" "$cache_path"
-    fi
+    if [ "$probe_status" -eq 255 ]; then command_unavailable_reason=unreachable; else command_unavailable_reason=prerequisite; fi
+    printf '%s 0 %s\n' "$now" "$command_unavailable_reason" > "$temporary" && mv -f -- "$temporary" "$cache_path"
     rm -f -- "$temporary" 2>/dev/null || true
   fi
+  if [ "$probe_status" -eq 255 ]; then command_unavailable_reason=unreachable; else command_unavailable_reason=prerequisite; fi
   return 1
 }
 
@@ -1428,11 +1223,23 @@ read_fresh_cache() {
   cache_path=$1
   now=$2
   [ -r "$cache_path" ] || return 1
-  IFS=' ' read -r sampled available score capacity < "$cache_path" || return 1
+  IFS=' ' read -r sampled available score capacity cached_sample < "$cache_path" || return 1
   case "$sampled:$available" in *[!0-9:]*|'':*) return 1 ;; esac
   case "$capacity" in ''|*[!0-9]*|0) return 1 ;; esac
-  if [ "$available" = 1 ]; then ttl=${load_ttl_seconds-15}; else ttl=${unavailable_ttl_seconds-120}; fi
+  if [ "$available" = 0 ]; then ttl=${unavailable_ttl_seconds-120}; else ttl=${load_ttl_seconds-15}; fi
   [ $((now - sampled)) -lt "$ttl" ] || return 1
+  if [ "$available" != 0 ]; then
+    telemetry_path=${cache_path%.cache}.telemetry
+    if [ -n "$cached_sample" ] || [ -r "$telemetry_path" ]; then
+      [ -n "$cached_sample" ] || cached_sample=$(sed -n '1p' "$telemetry_path")
+      score=$(score_load_sample "$cached_sample" "$heavyweight_admission_required")
+      [ -n "$score" ] || return 1
+      available=1
+    elif [ "$heavyweight_admission_required" -eq 1 ] || [ "$available" = 2 ]; then
+      # Refresh legacy samples so memory can participate in ranking.
+      return 1
+    fi
+  fi
   printf '%s %s %s\n' "$available" "$score" "$capacity"
 }
 
@@ -1441,12 +1248,14 @@ probe_target() {
   name=$(value_for_target name "$number")
   case " ${HSTACK_EXEC_PRE_DISPATCH_EXCLUDED_TARGETS-} " in
     *" $name "*)
-      printf '%s %s 0 - 1 pre-dispatch-unavailable\n' "$number" "$name"
+      if [ "${HSTACK_EXEC_PRE_DISPATCH_SYNC_FAILED-0}" = 1 ]; then excluded_reason=prerequisite; else excluded_reason=unreachable; fi
+      printf '%s %s 0 - 1 %s\n' "$number" "$name" "$excluded_reason"
       return
       ;;
   esac
   if ! command_is_available "$number" "$name"; then
-    printf '%s %s 0 - 1 command-unavailable\n' "$number" "$name"
+    printf '[preferred-execution] %s command preflight failed (%s); check target tools, repository cwd and install scratch.\n' "$name" "$command_unavailable_reason" >&2
+    printf '%s %s 0 - 1 %s\n' "$number" "$name" "$command_unavailable_reason"
     return
   fi
   cache_path="$cache_dir/$name.cache"
@@ -1455,7 +1264,7 @@ probe_target() {
   cached=$(read_fresh_cache "$cache_path" "$now" 2>/dev/null || true)
   if [ -n "$cached" ]; then
     cached_available=${cached%% *}
-    if [ "$cached_available" = 1 ] || ! sync_is_ready "$name" "$number"; then
+    if [ "$cached_available" = 1 ]; then
       printf '%s %s %s cached\n' "$number" "$name" "$cached"
       return
     fi
@@ -1490,13 +1299,17 @@ probe_target() {
       fi
       attempt=$((attempt + 1))
     done
-    printf '%s %s 0 - 1 unavailable\n' "$number" "$name"
-    return
+    # Coalescing is an optimization. A contended probe lock must not turn a
+    # reachable target into a local fallback; perform this read-only probe.
   fi
-  trap 'rmdir "$lock_path" 2>/dev/null || true' EXIT HUP INT TERM
+  if [ "$lock_acquired" -eq 1 ]; then trap 'rmdir "$lock_path" 2>/dev/null || true' EXIT HUP INT TERM; fi
+  target_unavailable_reason=prerequisite
   if sync_is_ready "$name" "$number"; then
-    sample=$(remote_load_probe "$number" 2>/dev/null || true)
+    sample=$(remote_load_probe "$number" 2>/dev/null)
+    load_probe_status=$?
+    [ "$load_probe_status" -ne 255 ] || target_unavailable_reason=unreachable
   else
+    printf '[preferred-execution] %s synchronization is not ready; run hstack dev-targets status for details.\n' "$name" >&2
     sample=
   fi
   now=$(date +%s)
@@ -1507,7 +1320,7 @@ probe_target() {
     # available. Admit from the authoritative available-block count instead;
     # one GiB is the minimum useful scratch budget for the routed build/test
     # commands. Older three-field cached/test probes remain valid until refreshed.
-    score=$(printf '%s\n' "$sample" | awk '{if ($1 > 0 && $2 >= 0 && ($4 == "" || $4 >= 1048576)) printf "%.6f", ($2 / $1) + (($3 < 0.1) ? 1 : 0)}')
+    score=$(score_load_sample "$sample" "$heavyweight_admission_required")
     capacity=$(printf '%s\n' "$sample" | awk '{if ($1 ~ /^[0-9]+$/ && $1 > 0) print $1}')
     telemetry=$(printf '%s\n' "$sample" | awk '{for(i=1;i<=15;i++){if($i !~ /^[0-9]+([.][0-9]+)?$/)$i=0} platform=($16=="linux"||$16=="darwin")?$16:"unknown"; printf "%s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s\n",$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,platform}')
     telemetry_cache="$cache_dir/$name.telemetry"
@@ -1521,27 +1334,27 @@ probe_target() {
   temporary=$(create_cache_temporary "$cache_path" 2>/dev/null || true)
   if [ -n "$score" ] && [ -n "$capacity" ]; then
     if [ -n "$temporary" ]; then
-      printf '%s 1 %s %s\n' "$now" "$score" "$capacity" > "$temporary" && mv -f -- "$temporary" "$cache_path"
+      printf '%s 1 %s %s %s\n' "$now" "$score" "$capacity" "$sample" > "$temporary" && mv -f -- "$temporary" "$cache_path"
       rm -f -- "$temporary" 2>/dev/null || true
     fi
     printf '%s %s 1 %s %s fresh\n' "$number" "$name" "$score" "$capacity"
   else
     if [ -n "$temporary" ]; then
-      printf '%s 0 - 1\n' "$now" > "$temporary" && mv -f -- "$temporary" "$cache_path"
+      printf '%s 0 - 1\n' "$now" > "$temporary"
+      mv -f -- "$temporary" "$cache_path"
       rm -f -- "$temporary" 2>/dev/null || true
     fi
-    printf '%s %s 0 - 1 fresh\n' "$number" "$name"
+    printf '%s %s 0 - 1 %s\n' "$number" "$name" "$target_unavailable_reason"
   fi
-  rmdir "$lock_path" 2>/dev/null || true
-  trap - EXIT HUP INT TERM
+  if [ "$lock_acquired" -eq 1 ]; then
+    rmdir "$lock_path" 2>/dev/null || true
+    trap - EXIT HUP INT TERM
+  fi
 }
 
 probe_tmp=$(mktemp -d "${TMPDIR:-/tmp}/hstack-exec.XXXXXX") || {
-  if [ "${fallback_mode-local}" = error ]; then
-    printf '%s\n' '[preferred-execution] command target probe state is unavailable' >&2
-    exit 1
-  fi
-  run_local "$@"
+  printf '%s\n' '[preferred-execution] command target probe state is unavailable; check temporary directory permissions and disk space' >&2
+  exit 1
 }
 cleanup_probe_tmp() { rm -rf -- "$probe_tmp"; }
 trap cleanup_probe_tmp EXIT HUP INT TERM
@@ -1563,11 +1376,19 @@ if [ "${include_local-0}" = 1 ] && [ -z "$explicit_target" ]; then
   free=$(memory_pressure -Q 2>/dev/null | awk '/free percentage/ {gsub(/%/,"",$5); print $5/100; exit}')
   [ -n "$free" ] || free=$(awk '/MemTotal:/ {t=$2} /MemAvailable:/ {a=$2} END {if(t>0) print a/t}' /proc/meminfo 2>/dev/null)
   [ -n "$free" ] || free=1
+  local_memory=$(awk '/MemTotal:/ {t=$2} /MemAvailable:/ {a=$2} END {if(t>0) print a, t}' /proc/meminfo 2>/dev/null)
+  if [ -z "$local_memory" ]; then
+    local_mem_total_bytes=$(sysctl -n hw.memsize 2>/dev/null || true)
+    local_memory=$(awk -v bytes="${local_mem_total_bytes:-0}" -v ratio="$free" 'BEGIN {if(bytes>0) printf "%.0f %.0f", (bytes/1024)*ratio, bytes/1024}')
+  fi
+  IFS=' ' read -r local_mem_available local_mem_total <<EOF
+$local_memory
+EOF
   local_candidate_cpu=$cpu
   local_candidate_load=$load_value
   local_disk_free=$(df -Pk "$repo_root" 2>/dev/null | awk 'NR==2 {print $4}')
-  local_score=$(awk -v load_value="$load_value" -v cpu="$cpu" -v free="$free" 'BEGIN {if(cpu>0) printf "%.6f", (load_value/cpu)+((free<0.1)?1:0); else print "999999"}')
-  if [ -n "$local_disk_free" ] && [ "$local_disk_free" -lt 1048576 ]; then
+  local_score=$(score_load_sample "$cpu $load_value $free ${local_disk_free:-1048576} 0 0 ${local_mem_available:-0} ${local_mem_total:-0}" "$heavyweight_admission_required")
+  if [ -z "$local_score" ]; then
     printf '0 local 0 - %s local\n' "$cpu" > "$probe_tmp/local"
   else
     printf '0 local 1 %s %s local\n' "$local_score" "$cpu" > "$probe_tmp/local"
@@ -1594,8 +1415,7 @@ while :; do
     dispatch_lock_acquired=1
     break
   fi
-  # A non-directory means the cache cannot host the existing directory lock;
-  # preserve the configured local/error fallback instead of waiting forever.
+  # A non-directory is a controller filesystem failure, not a busy worker.
   [ -d "$dispatch_lock" ] || break
   dispatch_stale_check_attempt=$((dispatch_stale_check_attempt + 1))
   # The selection critical section is normally brief. Poll passively, and
@@ -1635,12 +1455,8 @@ release_dispatch_lock() {
 }
 if [ "$dispatch_lock_acquired" -ne 1 ]; then
   release_dispatch_lock
-  if [ "${fallback_mode-local}" = error ]; then
-    printf '%s\n' '[preferred-execution] command dispatch is temporarily unavailable' >&2
-    exit 1
-  fi
-  printf '%s\n' '[preferred-execution] command dispatch is temporarily unavailable; running locally' >&2
-  run_local "$@"
+  printf '[preferred-execution] command dispatch lock is unavailable: %s; check directory permissions.\n' "$dispatch_lock" >&2
+  exit 1
 fi
 
 count_active_dispatches() {
@@ -1720,11 +1536,15 @@ selected=$(awk '
 ' "$candidates")
 if [ -z "$selected" ]; then
   release_dispatch_lock
-  if [ "${fallback_mode-local}" = error ]; then
-    printf '%s\n' '[preferred-execution] no healthy execution target is available' >&2
+  if [ "${HSTACK_EXEC_PRE_DISPATCH_SYNC_FAILED-0}" = 1 ] || awk '$1 != 0 && $3 != 1 && $5 != "unreachable" { found=1 } END { exit !found }' "$candidates"; then
+    printf '%s\n' '[preferred-execution] reachable remote targets cannot run this command safely; check synchronization, target tools, repository cwd and disk space with hstack dev-targets status. Local fallback is only for unreachable targets.' >&2
     exit 1
   fi
-  printf '%s\n' '[preferred-execution] no healthy execution target is available; running locally' >&2
+  if [ "${fallback_mode-local}" = error ]; then
+    printf '%s\n' '[preferred-execution] no remote execution target is reachable' >&2
+    exit 1
+  fi
+  printf '%s\n' '[preferred-execution] no remote execution target is reachable; configured fallback=local, running locally' >&2
   run_local "$@"
 fi
 IFS=' ' read -r selected_number selected_name _selected_available selected_score selected_cache selected_base_score selected_active selected_capacity selected_class_active <<EOF
@@ -1760,12 +1580,8 @@ if [ -z "$reservation_temporary" ] \
   fi
   [ -z "$reservation_temporary" ] || rm -f -- "$reservation_temporary" 2>/dev/null || true
   release_dispatch_lock
-  if [ "${fallback_mode-local}" = error ]; then
-    printf '%s\n' '[preferred-execution] command dispatch reservation failed' >&2
-    exit 1
-  fi
-  printf '%s\n' '[preferred-execution] command dispatch reservation failed; running locally' >&2
-  run_local "$@"
+  printf '[preferred-execution] command dispatch reservation failed: %s; check directory permissions and disk space.\n' "$cache_dir" >&2
+  exit 1
 fi
 release_reservation() {
   rm -f -- "$reservation_path" 2>/dev/null || true
@@ -1932,10 +1748,10 @@ remote_script="set -euo pipefail; execution_id=$(quote_remote "$execution_id"); 
 if [ -n "$remote_path" ]; then remote_script="$remote_script PATH=$(quote_remote "$remote_path"):\$PATH; export PATH;"; fi
 remote_setup_script=
 if [ "$requires_remote_dependencies" -eq 1 ]; then
-  remote_setup_script="$remote_setup_script cd -- $(quote_remote "$remote_repo"); export HAPPIER_STACK_PM_CACHE_BASE_DIR=$(quote_remote "$remote_home/cache"); node ./apps/stack/scripts/utils/dev_targets/remote_dependency_bootstrap.mjs;"
+  remote_setup_script="$remote_setup_script cd -- $(quote_remote "$remote_repo"); export HAPPIER_STACK_PM_CACHE_BASE_DIR=$(quote_remote "$remote_home/cache"); node ./apps/stack/scripts/utils/dev_targets/remote_dependency_bootstrap.mjs $(quote_remote "--validation-kind=$remote_validation_kind") $(quote_remote "--component-relative-dir=$preparation_component_relative_dir");"
 fi
 if [ "$requires_remote_workspace_preparation" -eq 1 ]; then
-  remote_setup_script="$remote_setup_script cd -- $(quote_remote "$remote_repo"); export HAPPIER_STACK_PM_CACHE_BASE_DIR=$(quote_remote "$remote_home/cache"); node ./apps/stack/scripts/utils/dev_targets/remote_validation_preparation.mjs $(quote_remote "--component-relative-dir=$preparation_component_relative_dir");"
+  remote_setup_script="$remote_setup_script cd -- $(quote_remote "$remote_repo"); export HAPPIER_STACK_PM_CACHE_BASE_DIR=$(quote_remote "$remote_home/cache"); node ./apps/stack/scripts/utils/dev_targets/remote_validation_preparation.mjs $(quote_remote "--component-relative-dir=$preparation_component_relative_dir") $(quote_remote "--validation-kind=$remote_validation_kind");"
 fi
 remote_setup_script="$remote_setup_script cd -- $(quote_remote "$remote_cwd");"
 remote_command_environment=
@@ -2039,12 +1855,8 @@ if ! allocate_ssh_control_root; then
 fi
 allocate_ssh_control_root || {
   release_reservation
-  if [ "${fallback_mode-local}" = error ]; then
-    printf '%s\n' '[preferred-execution] could not allocate the SSH control connection' >&2
-    exit 1
-  fi
-  printf '%s\n' '[preferred-execution] could not allocate the SSH control connection; running locally' >&2
-  run_local "$@"
+  printf '[preferred-execution] could not allocate the SSH control connection: %s; check directory permissions and disk space.\n' "$ssh_control_root" >&2
+  exit 1
 }
 chmod 700 "$ssh_control_root" 2>/dev/null || true
 ssh_config_identity=
@@ -2177,11 +1989,15 @@ handle_selected_command_connection_failure() {
     exit 1
   fi
   retry_other_target_before_dispatch "$@"
+  if [ "${HSTACK_EXEC_PRE_DISPATCH_SYNC_FAILED-0}" = 1 ]; then
+    printf '%s\n' '[preferred-execution] reachable remote target synchronization failed; run hstack dev-targets status. Local fallback is only for unreachable targets.' >&2
+    exit 1
+  fi
   if [ "${fallback_mode-local}" = error ]; then
     printf '%s\n' '[preferred-execution] no execution target accepted a command connection' >&2
     exit 1
   fi
-  printf '%s\n' '[preferred-execution] no execution target accepted a command connection; running locally' >&2
+  printf '%s\n' '[preferred-execution] no remote execution target is reachable: no target accepted a command connection; configured fallback=local, running locally' >&2
   run_local "$@"
 }
 
@@ -2204,20 +2020,24 @@ if [ "$flush_status" -ne 0 ]; then
   printf '[preferred-execution] selected target sync flush failed: %s\n' "$selected_name" >&2
   close_selected_control
   release_reservation
+  HSTACK_EXEC_PRE_DISPATCH_SYNC_FAILED=1
+  export HSTACK_EXEC_PRE_DISPATCH_SYNC_FAILED
   retry_other_target_before_dispatch "$@"
-  if [ "${fallback_mode-local}" = error ]; then
-    exit 1
-  fi
-  printf '%s\n' '[preferred-execution] selected target sync flush failed; running locally' >&2
-  run_local "$@"
-fi
-
-if ! open_selected_control; then
-  handle_selected_command_connection_failure "$@"
+  printf '%s\n' '[preferred-execution] reachable remote target synchronization failed; run hstack dev-targets status and repair synchronization before retrying. Local fallback is only for unreachable targets.' >&2
+  exit 1
 fi
 
 authoritative_ssh_error_log=$(create_cache_temporary "$cache_dir/authoritative-ssh" 2>/dev/null || true)
 use_control_connection=1
+if ! open_selected_control; then
+  # A contended/broken master is not target unreachability. The existing
+  # direct transport can still establish the authoritative command channel.
+  if run_remote_ssh_probe ':' >/dev/null 2>&1; then
+    use_control_connection=0
+  else
+    handle_selected_command_connection_failure "$@"
+  fi
+fi
 
 run_selected_ssh() {
   ssh_tty=-T
@@ -2243,27 +2063,30 @@ run_selected_ssh() {
 
 run_selected_ssh &
 ssh_pid=$!
-cancel_remote() {
+cancel_remote_execution() {
   cancel_script="execution_id=$(quote_remote "$execution_id"); pid_file=$(quote_remote "$pid_file"); [ -f \"\$pid_file\" ] || exit 0; pid=\$(sed -n '1p' \"\$pid_file\"); case \"\$pid\" in ''|*[!0-9]*) exit 0;; esac; command=\$(ps -p \"\$pid\" -o command= 2>/dev/null || true); case \"\$command\" in *\"\$execution_id\"*) ;; *) rm -f -- \"\$pid_file\"; exit 0;; esac; descendants() { for child in \$(ps -eo pid=,ppid= | awk -v p=\"\$1\" '\$2 == p {print \$1}'); do descendants \"\$child\"; done; printf '%s\\n' \"\$1\"; }; descendant_pids=\$(descendants \"\$pid\"); for child_pid in \$descendant_pids; do [ \"\$child_pid\" = \"\$pid\" ] || kill -TERM \"\$child_pid\" 2>/dev/null || true; done; grace_attempt=0; while [ \"\$grace_attempt\" -lt 20 ]; do survivors=; for child_pid in \$descendant_pids; do if [ \"\$child_pid\" != \"\$pid\" ] && kill -0 \"\$child_pid\" 2>/dev/null; then survivors=1; fi; done; [ -n \"\$survivors\" ] || break; sleep 0.1; grace_attempt=\$((grace_attempt + 1)); done; for child_pid in \$descendant_pids; do if [ \"\$child_pid\" != \"\$pid\" ] && kill -0 \"\$child_pid\" 2>/dev/null; then kill -KILL \"\$child_pid\" 2>/dev/null || true; fi; done; kill -TERM \"\$pid\" 2>/dev/null || true; rm -f -- \"\$pid_file\""
   cancel_command="bash -lc $(quote_remote "$cancel_script")"
-  if [ "$use_control_connection" -eq 0 ] && [ -n "$ssh_config" ]; then
-    ssh -T -F "$ssh_config" -o ControlMaster=no -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=5 "$ssh_target" "$cancel_command" >/dev/null 2>&1 || true
-  elif [ "$use_control_connection" -eq 0 ]; then
-    ssh -T -o ControlMaster=no -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=5 "$ssh_target" "$cancel_command" >/dev/null 2>&1 || true
-  elif [ -n "$ssh_config" ]; then
-    ssh -T -F "$ssh_config" -S "$control_path" -o ControlMaster=no -o BatchMode=yes -o ConnectTimeout=5 "$ssh_target" "$cancel_command" >/dev/null 2>&1 || true
+  # A failed authoritative channel may also mean its shared control master
+  # died. Cancellation uses the same verified host config on an independent
+  # connection, and the execution ID/PID guard prevents touching another job.
+  if [ -n "$ssh_config" ]; then
+    ssh -T -F "$ssh_config" -o ControlMaster=no -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "$ssh_target" "$cancel_command" >/dev/null 2>&1 || true
   else
-    ssh -T -S "$control_path" -o ControlMaster=no -o BatchMode=yes -o ConnectTimeout=5 "$ssh_target" "$cancel_command" >/dev/null 2>&1 || true
+    ssh -T -o ControlMaster=no -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "$ssh_target" "$cancel_command" >/dev/null 2>&1 || true
   fi
+}
+cancel_remote() {
+  cancel_remote_execution
   kill -TERM "$ssh_pid" 2>/dev/null || true
   [ -n "$authoritative_ssh_error_log" ] && rm -f -- "$authoritative_ssh_error_log" 2>/dev/null || true
   close_selected_control
   release_reservation
 }
 trap 'cancel_remote; exit 130' INT TERM
+trap 'cancel_remote; exit 129' HUP
 wait "$ssh_pid"
 status=$?
-trap - INT TERM
+trap - HUP INT TERM
 authoritative_session_refused=0
 [ -n "$authoritative_ssh_error_log" ] && grep -q 'mux_client_request_session: session request failed:' "$authoritative_ssh_error_log" 2>/dev/null && authoritative_session_refused=1
 if [ "$status" -eq 255 ] && [ "$authoritative_session_refused" -eq 1 ]; then
@@ -2274,9 +2097,10 @@ if [ "$status" -eq 255 ] && [ "$authoritative_session_refused" -eq 1 ]; then
   run_selected_ssh &
   ssh_pid=$!
   trap 'cancel_remote; exit 130' INT TERM
+  trap 'cancel_remote; exit 129' HUP
   wait "$ssh_pid"
   status=$?
-  trap - INT TERM
+  trap - HUP INT TERM
   dedicated_session_refused=0
   [ -n "$authoritative_ssh_error_log" ] && grep -q 'mux_client_request_session: session request failed:' "$authoritative_ssh_error_log" 2>/dev/null && dedicated_session_refused=1
   if [ "$status" -eq 255 ] && [ "$dedicated_session_refused" -eq 1 ]; then
@@ -2288,6 +2112,22 @@ if [ "$status" -eq 255 ] && [ "$authoritative_session_refused" -eq 1 ]; then
     close_selected_control
     handle_selected_command_connection_failure "$@"
   fi
+fi
+if [ "$status" -eq 255 ]; then
+  # -E redirects SSH's ordinary ERROR diagnostics away from stderr. Preserve
+  # them before cleanup so a lost transport does not become a silent exit 255.
+  if [ -n "$authoritative_ssh_error_log" ] && [ -s "$authoritative_ssh_error_log" ]; then
+    cat "$authoritative_ssh_error_log" >&2
+  fi
+  # SSH cannot distinguish a transport failure after dispatch from a remote
+  # command that returned 255. Either way the caller has lost this execution's
+  # result; cancel only its recorded process tree if it is still alive. Never
+  # replay authoritative work or report cancellation as a successful command.
+  cancel_remote_execution
+fi
+if [ "$status" -eq 137 ]; then
+  printf '[preferred-execution] %s exited 137 (SIGKILL; possible OOM/out-of-memory). Last placement sample: available=%s KiB, total=%s KiB; command was started and will not be replayed.\n' \
+    "$selected_name" "$telemetry_mem_available_kib" "$telemetry_mem_total_kib" >&2
 fi
 [ -n "$authoritative_ssh_error_log" ] && rm -f -- "$authoritative_ssh_error_log" 2>/dev/null || true
 close_selected_control

@@ -157,18 +157,29 @@ export function normalizeOpenCodeV2SessionInfo(raw: unknown): unknown {
 export function buildOpenCodeV2Prompt(input: Readonly<{
   text: string;
   parts?: readonly OpenCodePromptPart[];
-}>): Readonly<{ text: string; agents?: readonly Readonly<{ name: string }>[] }> {
+}>): Readonly<{
+  text: string;
+  files?: readonly Readonly<{ uri: string; name?: string }>[];
+  agents?: readonly Readonly<{ name: string }>[];
+}> {
   const parts = input.parts;
   if (!parts || parts.length === 0) return { text: input.text };
 
   const textChunks: string[] = [];
+  const files: Array<Readonly<{ uri: string; name?: string }>> = [];
   const agents: Array<Readonly<{ name: string }>> = [];
   for (const part of parts) {
     if (part.type === 'text') textChunks.push(part.text);
-    else agents.push({ name: part.name });
+    else if (part.type === 'file') {
+      files.push({
+        uri: part.url,
+        ...(part.filename ? { name: part.filename } : {}),
+      });
+    } else agents.push({ name: part.name });
   }
   return {
     text: textChunks.join('\n'),
+    ...(files.length > 0 ? { files } : {}),
     ...(agents.length > 0 ? { agents } : {}),
   };
 }
@@ -214,6 +225,25 @@ export function normalizeOpenCodeV2PermissionRequest(
   };
 }
 
+/** Released V2's strict `{ action, resource, effect }` permission rule. */
+export function buildOpenCodeV2PermissionRuleset(
+  permissions: readonly unknown[],
+): readonly unknown[] {
+  return permissions.map((rule) => {
+    const record = asRecord(rule);
+    if (!record) return rule;
+    if (typeof record.effect === 'string' && typeof record.resource === 'string') return record;
+    const { permission: action, pattern: resource, action: effect, ...rest } = record;
+    if (typeof action !== 'string' || typeof effect !== 'string') return record;
+    return {
+      ...rest,
+      action,
+      resource: typeof resource === 'string' ? resource : '*',
+      effect,
+    };
+  });
+}
+
 /**
  * V2 `Provider.Info` carries neither a `models` map nor `env`: models are their
  * own location-scoped inventory (`/api/model`) keyed back by `providerID`.
@@ -239,7 +269,8 @@ export function combineOpenCodeV2Providers(
     modelsByProvider.set(providerId, bucket);
   }
 
-  return providers.flatMap((rawProvider) => {
+  if (models.length > 0 && modelsByProvider.size === 0) throw new Error('Invalid OpenCode provider inventory');
+  const parsedProviders = providers.flatMap((rawProvider) => {
     const id = normalizeString(asRecord(rawProvider)?.id);
     if (!id) return [];
     const providerModels = modelsByProvider.get(id);
@@ -248,6 +279,8 @@ export function combineOpenCodeV2Providers(
       ...(providerModels ? { models: providerModels } : {}),
     }];
   });
+  if (providers.length > 0 && parsedProviders.length === 0) throw new Error('Invalid OpenCode provider inventory');
+  return parsedProviders;
 }
 
 type NormalizedOpenCodeMessage = Readonly<{

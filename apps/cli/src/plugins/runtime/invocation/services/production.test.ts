@@ -33,6 +33,7 @@ import { PLUGIN_MANIFEST as DEEPSEC_PLUGIN_MANIFEST } from '@happier-dev/plugins
 
 import type { PluginInvocationLogRecord } from './logger';
 import { createPluginActionCallerMaterializationFixture } from './actionCaller.testkit';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import { createStablePluginMcpHost } from './mcp';
 import { createProductionPluginInvocationServiceOwners } from './production';
 import { createLoggerFilesystemAndEventsServiceBinding } from './factory';
@@ -51,7 +52,8 @@ const action = Object.freeze({
     qualifiedId: 'acme.alpha/actions/run',
     pluginId: 'acme.alpha',
     localId: 'run',
-    generation: '7',
+    occurrenceId: '7',
+    sourceCustody: { kind: 'development' as const, registeredRootId: 'acme-alpha-root' },
     dangerLevel: 'safe',
     scopes: Object.freeze(['global']),
     surfaces: Object.freeze(['cli']),
@@ -59,6 +61,11 @@ const action = Object.freeze({
     input: Object.freeze({}),
     policyFingerprint: 'a'.repeat(64),
 });
+const resolveTestNetworkAddresses = async (hostname: string): Promise<readonly string[]> => (
+    hostname === 'api.example.test' || hostname === 'outside-disclosure.example.test'
+        ? ['93.184.216.34']
+        : []
+);
 const eventDeclarations: readonly ParsedPluginEventContributionV1[] = Object.freeze([
     Object.freeze({ id: 'changed', kind: 'event', title: 'Changed' }),
 ]);
@@ -112,34 +119,34 @@ async function unavailableTestWebSocket(): Promise<never> {
 }
 
 describe('production invocation service owners', () => {
-    it('shares ephemeral storage only within one plugin generation and clears it on retirement', async () => {
+    it('shares ephemeral storage only within one plugin occurrenceId and clears it on retirement', async () => {
         const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-production-ephemeral-storage-'));
         const owners = createProductionPluginInvocationServiceOwners({
             loggerSink: { write: () => {} },
             storagePaths: resolvePluginStorePaths({ happyHomeDir }),
         });
         let correlationId = 0;
-        const createServices = (generation: string, pluginId = 'acme.alpha') => owners.createServices(Object.freeze({
+        const createServices = (occurrenceId: string, pluginId = 'acme.alpha') => owners.createServices(Object.freeze({
             plugin: Object.freeze({ id: pluginId, version: '1.0.0' }),
             contribution: Object.freeze({ id: 'run', qualifiedId: `${pluginId}/actions/run` }),
-            generation,
-            correlationId: `${pluginId}-${generation}-${correlationId += 1}`,
+            occurrenceId,
+            correlationId: `${pluginId}-${occurrenceId}-${correlationId += 1}`,
             surface: 'cli' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
-        }), owners.createOrdinaryServiceBinding(generation, `${pluginId}-${generation}`));
+            isOccurrenceCurrent: () => true,
+        }), owners.createOrdinaryServiceBinding(occurrenceId, `${pluginId}-${occurrenceId}`));
 
-        const first = createServices('generation-one');
-        await first.storage.ephemeral.set('token', 'generation-one-value');
-        await expect(createServices('generation-one').storage.ephemeral.get('token'))
-            .resolves.toBe('generation-one-value');
-        await expect(createServices('generation-two').storage.ephemeral.get('token'))
+        const first = createServices('occurrenceId-one');
+        await first.storage.ephemeral.set('token', 'occurrenceId-one-value');
+        await expect(createServices('occurrenceId-one').storage.ephemeral.get('token'))
+            .resolves.toBe('occurrenceId-one-value');
+        await expect(createServices('occurrenceId-two').storage.ephemeral.get('token'))
             .resolves.toBeNull();
-        await expect(createServices('generation-one', 'acme.beta').storage.ephemeral.get('token'))
+        await expect(createServices('occurrenceId-one', 'acme.beta').storage.ephemeral.get('token'))
             .resolves.toBeNull();
 
-        await owners.retireGeneration('generation-one', 'acme.alpha');
-        await expect(createServices('generation-one').storage.ephemeral.get('token'))
+        await owners.retireGeneration('occurrenceId-one', 'acme.alpha');
+        await expect(createServices('occurrenceId-one').storage.ephemeral.get('token'))
             .resolves.toBeNull();
         await owners.dispose();
     });
@@ -173,11 +180,11 @@ describe('production invocation service owners', () => {
                     id: 'stage-photo',
                     qualifiedId: 'acme.media/actions/stage-photo',
                 }),
-                generation: '7',
+                occurrenceId: '7',
                 correlationId: 'production-composer-content',
                 surface: 'cli' as const,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             const services = owners.createServices(seed, createLoggerFilesystemAndEventsServiceBinding(
                 '7',
@@ -231,8 +238,12 @@ describe('production invocation service owners', () => {
                 id: 'run',
                 qualifiedId: 'acme.beta/actions/run',
             }),
-            generation: '7',
-            immutableGenerationId: 'beta-generation-7',
+            occurrenceId: createPluginRuntimeOccurrenceId('acme.beta'),
+            sourceCustody: {
+                kind: 'managed' as const,
+                immutableGenerationId: 'beta-occurrenceId-7',
+                installSource: 'localPath' as const,
+            },
             correlationId: 'nested-beta-to-gamma',
             surface: 'plugin' as const,
             caller: Object.freeze({
@@ -242,17 +253,22 @@ describe('production invocation service owners', () => {
                     id: 'launch',
                     qualifiedId: 'acme.alpha/actions/launch',
                 }),
-                immutableGenerationId: 'alpha-generation-7',
+                occurrenceId: 'alpha-occurrence-7',
+                sourceCustody: {
+                    kind: 'managed' as const,
+                    immutableGenerationId: 'alpha-occurrenceId-7',
+                    installSource: 'localPath' as const,
+                },
                 materialization: upstreamMaterialization,
                 originSurface: 'ui' as const,
             }),
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         const services = owners.createServices(
             seed,
-            owners.createOrdinaryServiceBinding('7', 'nested-beta-to-gamma-binding'),
+            owners.createOrdinaryServiceBinding(seed.occurrenceId, 'nested-beta-to-gamma-binding'),
         );
 
         await expect(services.actions.execute(
@@ -270,7 +286,12 @@ describe('production invocation service owners', () => {
                     id: 'run',
                     qualifiedId: 'acme.beta/actions/run',
                 },
-                immutableGenerationId: 'beta-generation-7',
+                occurrenceId: expect.any(String),
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'beta-occurrenceId-7',
+                    installSource: 'localPath',
+                },
                 materialization: currentMaterialization,
                 originSurface: 'ui',
             },
@@ -294,11 +315,11 @@ describe('production invocation service owners', () => {
                 id: 'run',
                 qualifiedId: 'acme.beta/actions/run',
             }),
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'retired-beta-to-gamma',
             surface: 'plugin' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         const services = owners.createServices(
@@ -355,11 +376,11 @@ describe('production invocation service owners', () => {
                 id: 'run',
                 qualifiedId: 'acme.providers/actions/run',
             }),
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'provider-service',
             surface: 'cli' as const,
             signal: controller.signal,
-            isGenerationCurrent: current,
+            isOccurrenceCurrent: current,
         });
 
         const services = owners.createServices(
@@ -438,12 +459,12 @@ describe('production invocation service owners', () => {
                 id: 'run',
                 qualifiedId: 'acme.sessions/actions/run',
             }),
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'ordinary-sessions',
             surface: 'cli' as const,
             session: Object.freeze({ id: 'session-1' }),
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         const ordinaryBinding = owners.createOrdinaryServiceBinding('7', 'ordinary-sessions-binding');
@@ -500,11 +521,11 @@ describe('production invocation service owners', () => {
                 id: 'account-operation',
                 qualifiedId: 'acme.voice/actions/account-operation',
             }),
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'shared-invocation-logger',
             surface: 'ui' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const services = owners.createServices(
             seed,
@@ -548,11 +569,11 @@ describe('production invocation service owners', () => {
                 id: 'account-operation',
                 qualifiedId: 'acme.voice/actions/account-operation',
             }),
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'host-diagnostic-redaction',
             surface: 'ui' as const,
             signal: controller.signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         owners.createServices(
             seed,
@@ -615,11 +636,11 @@ describe('production invocation service owners', () => {
                     id: 'settings',
                     qualifiedId: 'acme.settings/settings',
                 }),
-                generation: '7',
+                occurrenceId: '7',
                 correlationId: `settings-request-${index}`,
                 surface: 'ui' as const,
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             const services = owners.createServices(
                 seed,
@@ -637,7 +658,7 @@ describe('production invocation service owners', () => {
             expect(records).toHaveLength(settledRecordCount);
             expect(owners.redactDiagnosticText({
                 pluginId: seed.plugin.id,
-                generation: seed.generation,
+                occurrenceId: seed.occurrenceId,
                 correlationId: seed.correlationId,
             }, secret)).toBe(secret);
             expect(addListener).toHaveBeenCalledWith(
@@ -660,22 +681,22 @@ describe('production invocation service owners', () => {
         const seed = Object.freeze({
             plugin: Object.freeze({ id: 'acme.alpha', version: '1.2.3' }),
             contribution: Object.freeze({ id: 'run', qualifiedId: action.qualifiedId }),
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'construction-failure',
             surface: 'cli' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const wrongGenerationBinding = owners.createOrdinaryServiceBinding(
             '8',
-            'wrong-generation-binding',
+            'wrong-occurrenceId-binding',
         );
 
         expect(() => owners.createServices(seed, wrongGenerationBinding)).toThrow();
         owners.registerRawForRedaction(seed, 'late-after-construction-failure');
         expect(owners.redactDiagnosticText({
             pluginId: seed.plugin.id,
-            generation: seed.generation,
+            occurrenceId: seed.occurrenceId,
             correlationId: seed.correlationId,
         }, 'late-after-construction-failure')).toBe('late-after-construction-failure');
     });
@@ -713,11 +734,11 @@ describe('production invocation service owners', () => {
                 id: 'run',
                 qualifiedId: 'acme.measured/actions/run',
             },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'measured-action',
             surface: 'cli',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, {
             filesystemRoots: {
                 pluginData: process.cwd(),
@@ -819,11 +840,11 @@ describe('production invocation service owners', () => {
                 id: 'runner',
                 qualifiedId: 'acme.agent/agents/runner',
             },
-            generation: 'immutable-g',
+            occurrenceId: 'immutable-g',
             correlationId: 'retained-executable-g',
             surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, {
             filesystemRoots: {
                 pluginData: process.cwd(),
@@ -899,11 +920,11 @@ describe('production invocation service owners', () => {
                 id: 'runner',
                 qualifiedId: `${pluginId}/agents/runner`,
             },
-            generation: 'shared-generation-label',
+            occurrenceId: 'shared-occurrenceId-label',
             correlationId: `resource-${pluginId}`,
             surface: 'agent' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         owners.createOperationServices(
             seed('acme.alpha'),
@@ -921,7 +942,7 @@ describe('production invocation service owners', () => {
         );
 
         await owners.retireGeneration(
-            'shared-generation-label',
+            'shared-occurrenceId-label',
             'acme.alpha',
         );
         expect(alphaRetirePlugin).toHaveBeenCalledOnce();
@@ -929,7 +950,7 @@ describe('production invocation service owners', () => {
         expect(betaRetirePlugin).not.toHaveBeenCalled();
 
         await owners.retireGeneration(
-            'shared-generation-label',
+            'shared-occurrenceId-label',
             'acme.beta',
         );
         expect(betaRetirePlugin).toHaveBeenCalledOnce();
@@ -1018,11 +1039,11 @@ process.stdin.on('data', (chunk) => {
                 id: 'codex',
                 qualifiedId: `${CODEX_PLUGIN_MANIFEST.id}/agents/codex`,
             },
-            generation: 'codex-readiness',
+            occurrenceId: 'codex-readiness',
             correlationId: 'hooks-list',
             surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, {
             filesystemRoots: {
                 pluginData: workspace,
@@ -1122,11 +1143,11 @@ process.stdin.on('data', (chunk) => {
                 id: agentId,
                 qualifiedId: `${manifest.id}/agents/${agentId}`,
             },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: `workspace-${systemToolId}`,
             surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, {
             filesystemRoots: {
                 pluginData: workspace,
@@ -1193,11 +1214,11 @@ process.stdin.on('data', (chunk) => {
                     id: 'opencode',
                     qualifiedId: `${OPENCODE_PLUGIN_MANIFEST.id}/agents/opencode`,
                 },
-                generation: '7',
+                occurrenceId: '7',
                 correlationId: 'opencode-request-auth-env',
                 surface: 'agent',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             }, {
                 filesystemRoots: {
                     pluginData: workspace,
@@ -1262,11 +1283,11 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createOperationServices({
             plugin: { id: 'acme.agent', version: '1.2.3' },
             contribution: { id: 'reviewer', qualifiedId: 'acme.agent/agents/reviewer' },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'run-1',
             surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, {
             filesystemRoots: {
                 pluginData: workspace,
@@ -1324,7 +1345,6 @@ process.stdin.on('data', (chunk) => {
     it('binds and disposes the stable daemon MCP owner through the production service surface', async () => {
         const loggerSink = vi.fn();
         const mcp = createStablePluginMcpHost({
-            generation: '7',
             servers: [{
                 provenance: 'external', source: { kind: 'path' }, pluginId: 'acme.tools',
                 definition: { id: 'runtime', title: 'Runtime tools', kind: 'dynamic' },
@@ -1332,7 +1352,7 @@ process.stdin.on('data', (chunk) => {
             discoverySources: [],
             activateOnDemand: async () => {},
             readServer: () => ({
-                generation: '7', qualifiedId: 'acme.tools/runtime', isCurrent: () => true,
+                occurrenceId: '7', qualifiedId: 'acme.tools/runtime', isCurrent: () => true,
                 listTools: async () => ({ items: [{ name: 'echo', inputSchema: { type: 'object' } }] }),
                 callTool: async ({ input }) => input,
                 listResources: async () => ({ items: [] }),
@@ -1368,8 +1388,8 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1.2.3' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7', correlationId: 'mcp-correlation', surface: 'cli',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: '7', correlationId: 'mcp-correlation', surface: 'cli',
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         }, hostBinding.serviceBinding);
 
         expect(services.availability('logger')).toEqual({ status: 'available' });
@@ -1402,8 +1422,8 @@ process.stdin.on('data', (chunk) => {
         const deniedServices = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1.2.3' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7', correlationId: 'denied-mcp-correlation', surface: 'cli',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: '7', correlationId: 'denied-mcp-correlation', surface: 'cli',
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         }, deniedBinding.serviceBinding);
         expect(deniedServices.availability('mcp')).toEqual({
             status: 'denied',
@@ -1421,8 +1441,8 @@ process.stdin.on('data', (chunk) => {
         const undeclaredServices = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1.2.3' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7', correlationId: 'undeclared-mcp-correlation', surface: 'cli',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: '7', correlationId: 'undeclared-mcp-correlation', surface: 'cli',
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         }, undeclaredBinding.serviceBinding);
         expect(undeclaredServices.availability('mcp')).toEqual({
             status: 'unavailable',
@@ -1460,7 +1480,11 @@ process.stdin.on('data', (chunk) => {
         });
         const owners = createProductionPluginInvocationServiceOwners({
             loggerSink: { write: () => {} },
-            http: createStablePluginHttpHost({ adapter, revalidateFinalPolicy: finalPolicy }),
+            http: createStablePluginHttpHost({
+                adapter,
+                revalidateFinalPolicy: finalPolicy,
+                resolveNetworkAddresses: resolveTestNetworkAddresses,
+            }),
             filesystemRoots: {
                 pluginData: '/tmp/plugin-data',
                 workspace: '/tmp/workspace',
@@ -1484,8 +1508,8 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1.2.3' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7', correlationId: 'network-correlation', surface: 'cli',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: '7', correlationId: 'network-correlation', surface: 'cli',
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         }, hostBinding.serviceBinding);
 
         expect(hostBinding.action.hostAccess).toEqual([
@@ -1535,8 +1559,8 @@ process.stdin.on('data', (chunk) => {
         const optionalServices = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1.2.3' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7', correlationId: 'optional-network-correlation', surface: 'cli',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: '7', correlationId: 'optional-network-correlation', surface: 'cli',
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         }, optionalBinding.serviceBinding);
         expect(optionalServices.availability('http')).toEqual({ status: 'available' });
         expect(optionalServices).not.toHaveProperty('fetch');
@@ -1561,6 +1585,7 @@ process.stdin.on('data', (chunk) => {
                     openWebSocket: unavailableTestWebSocket,
                 }),
                 recordDisclosureMismatch: ({ mismatch }) => { mismatches.push(mismatch); },
+                resolveNetworkAddresses: resolveTestNetworkAddresses,
             }),
         });
         const hostBinding = await owners.resolveHostBinding(action, {
@@ -1572,8 +1597,8 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1.2.3' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7', correlationId: 'network-no-declaration', surface: 'cli',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: '7', correlationId: 'network-no-declaration', surface: 'cli',
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         }, hostBinding.serviceBinding);
 
         expect(services.availability('http')).toEqual({ status: 'available' });
@@ -1612,7 +1637,7 @@ process.stdin.on('data', (chunk) => {
                 },
                 readChannel(ref, seed) {
                     return {
-                        generation: seed.generation,
+                        occurrenceId: seed?.occurrenceId ?? 'channel-occurrence',
                         isCurrent: () => true,
                         send: async (request) => ({
                             deliveryId: request.deliveryId,
@@ -1632,8 +1657,8 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1.2.3' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7', correlationId: 'notification-correlation', surface: 'cli',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: '7', correlationId: 'notification-correlation', surface: 'cli',
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         }, hostBinding.serviceBinding);
 
         expect(services.availability('notifications')).toEqual({ status: 'available' });
@@ -1669,11 +1694,11 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices(Object.freeze({
             plugin: Object.freeze({ id: 'acme.alpha', version: '1.2.3' }),
             contribution: Object.freeze({ id: 'run', qualifiedId: 'acme.alpha/actions/run' }),
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'correlation-host-owned',
             surface: 'cli',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }), hostBinding.serviceBinding);
 
         expect(services.availability('logger')).toEqual({ status: 'available' });
@@ -1697,8 +1722,8 @@ process.stdin.on('data', (chunk) => {
         const alpha = owners.createServices(Object.freeze({
             plugin: Object.freeze({ id: 'acme.alpha', version: '1.2.3' }),
             contribution: Object.freeze({ id: 'run', qualifiedId: 'acme.alpha/actions/run' }),
-            generation: '7', correlationId: 'alpha-settings', surface: 'cli',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: '7', correlationId: 'alpha-settings', surface: 'cli',
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         }), alphaBinding);
 
         expect(alpha.availability('settings')).toEqual({ status: 'available' });
@@ -1711,8 +1736,8 @@ process.stdin.on('data', (chunk) => {
         const beta = owners.createServices(Object.freeze({
             plugin: Object.freeze({ id: 'acme.beta', version: '1.2.3' }),
             contribution: Object.freeze({ id: 'run', qualifiedId: 'acme.beta/actions/run' }),
-            generation: '7', correlationId: 'beta-settings', surface: 'cli',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: '7', correlationId: 'beta-settings', surface: 'cli',
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         }), betaBinding);
         expect(beta.availability('settings')).toEqual({
             status: 'unavailable',
@@ -1795,8 +1820,8 @@ process.stdin.on('data', (chunk) => {
             const services = owners.createServices(Object.freeze({
                 plugin: Object.freeze({ id: 'acme.alpha', version: '1.2.3' }),
                 contribution: Object.freeze({ id: 'run', qualifiedId: 'acme.alpha/actions/run' }),
-                generation: '7', correlationId: 'agent-settings', surface: 'cli',
-                signal: new AbortController().signal, isGenerationCurrent: () => true,
+                occurrenceId: '7', correlationId: 'agent-settings', surface: 'cli',
+                signal: new AbortController().signal, isOccurrenceCurrent: () => true,
             }), owners.createOrdinaryServiceBinding('7', 'agent-settings-binding'));
 
             expect(services.availability('settings')).toEqual({ status: 'available' });
@@ -1845,8 +1870,8 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices(Object.freeze({
             plugin: Object.freeze({ id: 'acme.alpha', version: '1.2.3' }),
             contribution: Object.freeze({ id: 'run', qualifiedId: action.qualifiedId }),
-            generation: '7', correlationId: 'secret-correlation', surface: 'cli',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: '7', correlationId: 'secret-correlation', surface: 'cli',
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         }), owners.createOrdinaryServiceBinding('7', 'declared-secret-binding'));
 
         expect(services.availability('secrets')).toEqual({ status: 'available' });
@@ -1906,20 +1931,20 @@ process.stdin.on('data', (chunk) => {
         const publisher = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1.2.3' },
             contribution: { id: 'run', qualifiedId: 'acme.alpha/actions/run' },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'correlation-publisher',
             surface: 'cli',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, publisherBinding.serviceBinding);
         const subscriber = owners.createServices({
             plugin: { id: 'acme.beta', version: '2.0.0' },
             contribution: { id: 'run', qualifiedId: 'acme.beta/actions/run' },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'correlation-subscriber',
             surface: 'cli',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, subscriberBinding.serviceBinding);
         const delivered: number[] = [];
         subscriber.events.plugin.subscribe({ pluginId: 'acme.alpha', localId: 'changed' }, async (event) => {
@@ -1940,7 +1965,7 @@ process.stdin.on('data', (chunk) => {
             context: {
                 plugin: { id: 'acme.beta', version: '2.0.0' },
                 contribution: { id: 'run', qualifiedId: 'acme.beta/actions/run' },
-                generation: '7',
+                occurrenceId: '7',
                 correlationId: 'correlation-subscriber',
             },
             diagnostic: {
@@ -1949,7 +1974,7 @@ process.stdin.on('data', (chunk) => {
                 details: {
                     publisher: {
                         pluginId: 'acme.alpha',
-                        generation: '7',
+                        occurrenceId: '7',
                         correlationId: 'correlation-publisher',
                     },
                 },
@@ -1966,7 +1991,7 @@ process.stdin.on('data', (chunk) => {
         const request = { id: 'fs-src', capability: 'filesystem' as const, reason: 'source', scope: { locations: [{ root: 'workspace' as const, pathPrefix: 'src' }], access: ['read' as const, 'write' as const] } };
         const hostBinding = await owners.resolveHostBinding(action, { hostAccessRequests: [{ request, required: true }], surface: 'cli' });
         expect(hostBinding?.action.hostAccess[0]).toMatchObject({ status: 'available' });
-        const services = owners.createServices({ plugin: { id: 'acme.alpha', version: '1' }, contribution: { id: 'run', qualifiedId: action.qualifiedId }, generation: '7', correlationId: 'c', surface: 'cli', signal: new AbortController().signal, isGenerationCurrent: () => true }, hostBinding!.serviceBinding);
+        const services = owners.createServices({ plugin: { id: 'acme.alpha', version: '1' }, contribution: { id: 'run', qualifiedId: action.qualifiedId }, occurrenceId: '7', correlationId: 'c', surface: 'cli', signal: new AbortController().signal, isOccurrenceCurrent: () => true }, hostBinding!.serviceBinding);
         expect(services.availability('fs')).toEqual({ status: 'available' });
         await services.fs.writeFile({ root: 'workspace', relativePath: 'src/a.bin' }, new Uint8Array([1]));
         await expect(services.fs.writeFile({ root: 'workspace', relativePath: 'other/a.bin' }, new Uint8Array([1]))).resolves.toBeUndefined();
@@ -2002,11 +2027,11 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'no-declaration',
             surface: 'cli',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, hostBinding.serviceBinding);
 
         expect(services.availability('fs')).toEqual({ status: 'available' });
@@ -2047,11 +2072,11 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'c',
             surface: 'cli',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, hostBinding!.serviceBinding);
         expect(services.availability('fs')).toMatchObject({ status: 'unavailable' });
     });
@@ -2108,8 +2133,8 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7', correlationId: 'partial-project-root', surface: 'cli',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: '7', correlationId: 'partial-project-root', surface: 'cli',
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         }, hostBinding.serviceBinding);
 
         expect(hostBinding.action.hostAccess).toEqual([
@@ -2149,11 +2174,11 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'exec-production',
             surface: 'cli',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, hostBinding!.serviceBinding);
         expect(services.availability('exec')).toEqual({ status: 'available' });
     });
@@ -2177,11 +2202,11 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'exec-no-declaration',
             surface: 'cli',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, hostBinding.serviceBinding);
 
         expect(services.availability('exec')).toEqual({ status: 'available' });
@@ -2228,11 +2253,11 @@ process.stdin.on('data', (chunk) => {
                 id: 'run',
                 qualifiedId: action.qualifiedId,
             },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'managed-services-production',
             surface: 'cli' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         };
         const services = owners.createServices(
             seed,
@@ -2240,7 +2265,7 @@ process.stdin.on('data', (chunk) => {
         );
 
         expect(owner.isAvailable).toHaveBeenCalledWith({
-            generation: '7',
+            occurrenceId: '7',
             contributionQualifiedId: action.qualifiedId,
         });
         expect(owner.bind).toHaveBeenCalledWith(seed);
@@ -2311,11 +2336,11 @@ process.stdin.on('data', (chunk) => {
                 id: 'gateway',
                 qualifiedId: 'acme.providers/providers/gateway',
             },
-            generation: 'provider-q',
+            occurrenceId: 'provider-q',
             correlationId: 'managed-provider-runtime-operation',
             surface: 'cli' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         };
         const invocation = owners
             .createManagedProviderRuntimeInvocationServices(seed, {
@@ -2374,7 +2399,7 @@ process.stdin.on('data', (chunk) => {
                 providerLocalId: 'gateway',
                 contributionQualifiedId:
                     'acme.providers/providers/gateway',
-                generation: 'provider-q',
+                occurrenceId: 'provider-q',
             }),
         );
         const resolutionContext = resolveExecutable.mock.calls[0]?.[2] as
@@ -2422,17 +2447,17 @@ process.stdin.on('data', (chunk) => {
         const seed = {
             plugin: { id: 'acme.alpha', version: '1' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'ordinary-managed-services-production',
             surface: 'mcp' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         };
 
         const services = owners.createServices(
             seed,
             owners.createOrdinaryServiceBinding(
-                seed.generation,
+                seed.occurrenceId,
                 `${seed.contribution.qualifiedId}:binding`,
                 [],
                 seed.contribution.qualifiedId,
@@ -2440,7 +2465,7 @@ process.stdin.on('data', (chunk) => {
         );
 
         expect(owner.isAvailable).toHaveBeenCalledWith({
-            generation: '7',
+            occurrenceId: '7',
             contributionQualifiedId: action.qualifiedId,
         });
         expect(services.availability('managedServices')).toEqual({
@@ -2530,11 +2555,11 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices(Object.freeze({
             plugin: Object.freeze({ id: 'acme.alpha', version: '1.2.3' }),
             contribution: Object.freeze({ id: 'run', qualifiedId: action.qualifiedId }),
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'connected-account-redaction',
             surface: 'cli',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }), hostBinding.serviceBinding);
 
         await services.connectedAccounts.materialize('upstream', {
@@ -2606,11 +2631,11 @@ process.stdin.on('data', (chunk) => {
         const services = owners.createServices({
             plugin: { id: 'acme.alpha', version: '1' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
-            generation: '7',
+            occurrenceId: '7',
             correlationId: 'managed-unavailable',
             surface: 'cli',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, hostBinding.serviceBinding);
 
         expect(services.availability('exec')).toEqual({ status: 'available' });

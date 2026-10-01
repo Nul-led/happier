@@ -10,7 +10,7 @@ describe('runtimeControlSurface', () => {
     })).toMatchObject({
       sessionStorage: { direct: false, persisted: true },
       sessionCapabilities: {
-        sessionFork: { conversation: 'supported', fromMessage: 'unsupported' },
+        sessionFork: { conversation: 'unsupported', fromMessage: 'unsupported' },
       },
       localControl: null,
     });
@@ -23,7 +23,7 @@ describe('runtimeControlSurface', () => {
     })).toMatchObject({
       sessionStorage: { direct: true, persisted: true },
       sessionCapabilities: {
-        sessionFork: { conversation: 'supported', fromMessage: 'supported' },
+        sessionFork: { conversation: 'unsupported', fromMessage: 'unsupported' },
       },
       localControl: { supported: true, topology: 'shared', attachStrategy: 'provider_attach' },
     });

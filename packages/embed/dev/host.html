@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fieldwork · Leads</title>
+<style>
+  :root { color-scheme: light dark; --canvas:#f5f4ef; --surface:#fffefa; --text:#23382d; --muted:#657269; --line:#dcded5; --accent:#2f6f4e; }
+  * { box-sizing:border-box; } body { margin:0; background:var(--canvas); color:var(--text); font:15px/1.5 system-ui,sans-serif; }
+  main { max-width:1600px; margin:auto; padding:32px; } header,.section-heading { display:flex; align-items:center; justify-content:space-between; gap:24px; }
+  header { margin-bottom:32px; } h1 { font-size:32px; line-height:1.2; margin:6px 0; } h2 { font-size:19px; margin:0; } h3 { font-size:17px; margin:0; } p { margin:8px 0 16px; } header p, .section-heading p, .copilot>p { color:var(--muted); }
+  .eyebrow { font-size:14px; margin:0; letter-spacing:.04em; } .workspace { display:grid; grid-template-columns:230px minmax(350px,1fr) minmax(300px,.75fr); gap:24px; align-items:start; }
+  section { min-width:0; } aside { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:16px; } table { width:100%; border-collapse:collapse; margin:16px 0; text-align:left; } th { font-size:12px; color:var(--muted); font-weight:500; } td { padding:12px 0; border-bottom:1px solid var(--line); } tr[data-selected=true] button { color:var(--accent); font-weight:600; }
+  button,select { font:inherit; color:inherit; cursor:pointer; } button { background:none; border:0; padding:0; text-align:left; } button:disabled { opacity:.6; cursor:wait; } select { display:block; background:var(--surface); border:1px solid var(--line); border-radius:6px; padding:6px 10px; } label { color:var(--muted); font-size:12px; }
+  button:focus-visible,select:focus-visible { outline:2px solid var(--accent); outline-offset:4px; } .primary { padding:10px 16px; border-radius:8px; background:var(--accent); color:white; } .quiet { color:var(--muted); font-size:13px; } .badge { color:var(--muted); font-size:12px; white-space:nowrap; }
+  .analysis { padding:20px; border:1px solid var(--line); border-radius:12px; background:var(--surface); margin:20px 0; } .analysis p:last-child { margin-bottom:0; } .score { font-size:32px; font-variant-numeric:tabular-nums; margin:0; } .score small { font-size:13px; color:var(--muted); margin-left:8px; }
+  .chat { height:640px; min-width:0; border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--surface); }
+  @media (prefers-color-scheme:dark) { :root { --canvas:#171d19; --surface:#202821; --text:#e7ece6; --muted:#a4b0a5; --line:#354137; --accent:#83b998; } .primary { color:#171d19; } }
+  @media (max-width:1100px) { .workspace { grid-template-columns:200px minmax(0,1fr); } .copilot { grid-column:2; } }
+  @media (max-width:700px) { main { padding:20px; } header { align-items:start; } h1 { font-size:25px; } .workspace { display:flex; flex-direction:column; } aside,section { width:100%; } .chat { height:560px; } }
+</style>
+<div id="root"></div>
+<script type="module" src="/host.js"></script>
+</html>

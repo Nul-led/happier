@@ -10,6 +10,18 @@ import {
 } from './definition.js';
 
 describe('CLAUDE_AGENT_SETTINGS_CONTRIBUTION', () => {
+  it('offers Herdr through the existing unified terminal host setting', () => {
+    const field = CLAUDE_AGENT_SETTINGS_CONTRIBUTION.fields.find(
+      (entry) => entry.id === 'claudeUnifiedTerminalHost',
+    );
+    expect(field?.schema).toEqual(expect.objectContaining({
+      enum: ['auto', 'tmux', 'zellij', 'herdr'],
+    }));
+    expect(field?.presentation).toEqual(expect.objectContaining({
+      options: expect.arrayContaining([expect.objectContaining({ value: 'herdr' })]),
+    }));
+  });
+
   it('preserves released Agent Teams and advanced Agent SDK account settings in the canonical UI contribution', () => {
     const agentTeamsField = CLAUDE_AGENT_SETTINGS_CONTRIBUTION.fields.find(
       (entry) => entry.id === 'claudeCodeExperimentalAgentTeamsEnabled',

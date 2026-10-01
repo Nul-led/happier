@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 import {
   bundleWorkspaceDeps,
@@ -18,61 +20,7 @@ import {
 } from './testkit/packageLayoutSandbox';
 import { writeSandboxTextFile } from './testkit/cliBinPreflightSandbox';
 
-function sha256Digest(bytes: Buffer): string {
-  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-}
-
-function collectSandboxPackageTreeFiles(packageDir: string): readonly string[] {
-  const found: string[] = [];
-  const visit = (relativePath: string): void => {
-    const absolutePath = relativePath ? resolve(packageDir, ...relativePath.split('/')) : packageDir;
-    const entries = readdirSync(absolutePath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!relativePath && entry.name === 'node_modules') continue;
-      const childPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) visit(childPath);
-      else if (entry.isFile()) found.push(childPath);
-    }
-  };
-  visit('');
-  return found.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
-}
-
-function writeBundledPluginArtifactInventory(options: {
-  repoRoot: string;
-  packageName?: string;
-  pluginId?: string;
-  files?: readonly { relativePath: string; bytes: Buffer }[];
-  entries?: readonly {
-    packageName: string;
-    files: readonly { relativePath: string; bytes: Buffer }[];
-  }[];
-}): void {
-  const inventoryPath = resolve(
-    options.repoRoot,
-    'apps/cli/scripts/build-owned/generatedBundledPluginSourceIntegrities.json',
-  );
-  mkdirSync(dirname(inventoryPath), { recursive: true });
-  const entryList = options.entries ?? [{
-    packageName: options.packageName,
-    files: options.files,
-  }];
-  const sourceArtifactIntegrities = entryList.map((entry) => ({
-    packageName: entry.packageName,
-    files: entry.files.map((file) => ({
-      byteLength: file.bytes.byteLength,
-      digest: sha256Digest(file.bytes),
-      relativePath: file.relativePath,
-    })),
-  }));
-  writeFileSync(
-    inventoryPath,
-    `${JSON.stringify({
-      BUNDLED_FIRST_PARTY_SOURCE_ARTIFACT_INTEGRITIES: sourceArtifactIntegrities,
-    }, null, 2)}\n`,
-    'utf8',
-  );
-}
+const execFileAsync = promisify(execFile);
 
 describe('bundleWorkspaceDeps', () => {
   it('admits an existing cli-common dist before importing the implementation helper', async () => {
@@ -138,6 +86,7 @@ describe('bundleWorkspaceDeps', () => {
           '@happier-dev/agents',
           '@happier-dev/cli-common',
           '@happier-dev/connection-supervisor',
+          '@happier-dev/sync-client',
 	          '@happier-dev/plugin-sdk',
 	          '@happier-dev/plugins-claude',
 	          '@happier-dev/peer-mediation',
@@ -197,6 +146,20 @@ describe('bundleWorkspaceDeps', () => {
         devDependencies: { typescript: '^5' },
       },
       files: { 'dist/index.js': 'export const sdk = true;\n' },
+    });
+    writeRuntimeDependencyStub({ repoRoot, packageName: 'socket.io-client', manifestOverrides: { version: '4.8.1' } });
+    writeWorkspacePackageFixture({
+      repoRoot,
+      workspacePath: 'packages/sync-client',
+      packageName: '@happier-dev/sync-client',
+      manifestOverrides: {
+        dependencies: {
+          '@happier-dev/protocol': '0.0.0',
+          '@happier-dev/connection-supervisor': '0.0.0',
+          'socket.io-client': '^4.8.1',
+        },
+      },
+      files: { 'dist/index.js': 'export const syncClient = true;\n' },
     });
     writeWorkspacePackageFixture({
       repoRoot,
@@ -308,6 +271,12 @@ describe('bundleWorkspaceDeps', () => {
 
     expect(bundledConnectionSupervisorPkgJson.scripts).toBeUndefined();
     expect(bundledConnectionSupervisorPkgJson.name).toBe('@happier-dev/connection-supervisor');
+    const bundledSyncClientDir = resolve(happyCliDir, 'node_modules', '@happier-dev', 'sync-client');
+    const bundledSyncClientPkgJson = JSON.parse(readFileSync(resolve(bundledSyncClientDir, 'package.json'), 'utf8'));
+    expect(bundledSyncClientPkgJson.name).toBe('@happier-dev/sync-client');
+    expect(bundledSyncClientPkgJson.dependencies?.['@happier-dev/protocol']).toBeUndefined();
+    expect(bundledSyncClientPkgJson.dependencies?.['@happier-dev/connection-supervisor']).toBeUndefined();
+    expect(existsSync(resolve(bundledSyncClientDir, 'node_modules', 'socket.io-client', 'package.json'))).toBe(true);
 
     expect(bundledPluginSdkPkgJson.scripts).toBeUndefined();
     expect(bundledPluginSdkPkgJson.devDependencies).toBeUndefined();
@@ -606,29 +575,13 @@ describe('bundleWorkspaceDeps', () => {
       });
 
       // Phase 1 (live): materialize the exact installed trees the canonical publisher
-      // would bind, then write the pack-time inventory entries from those bytes. The
-      // artifact pass below fails closed without an inventory when bundled plugins exist.
+      // owns. The artifact pass below compares source and prepared package bytes directly.
       await bundleWorkspaceDeps({
         repoRoot,
         happyCliDir,
         ensureWorkspacePackagesBuiltByName,
       });
       const bundledScopeDir = resolve(happyCliDir, 'node_modules', '@happier-dev');
-      const inventoryPackageDirs = new Map([
-        ['@happier-dev/plugins-grok', resolve(bundledScopeDir, 'plugins-grok')],
-        ['@happier-dev/plugins-inspector', resolve(bundledScopeDir, 'plugins-inspector')],
-      ]);
-      writeBundledPluginArtifactInventory({
-        repoRoot,
-        entries: [...inventoryPackageDirs].map(([name, packageDir]) => ({
-          packageName: name,
-          files: collectSandboxPackageTreeFiles(packageDir).map((relativePath) => ({
-            relativePath,
-            bytes: readFileSync(resolve(packageDir, ...relativePath.split('/'))),
-          })),
-        })),
-      });
-
       await bundleWorkspaceDeps({
         repoRoot,
         happyCliDir,
@@ -732,8 +685,8 @@ describe('bundleWorkspaceDeps', () => {
           'dist/composer.js': "export { protocolUiClient } from '@happier-dev/protocol/plugins/ui/client';\n",
           'README.md': '# Plugin SDK\n',
           'API.md': '# API\n',
-          'api-declarations.md': '# Declarations\n',
-          'api-surface.json': '{"api":"current"}\n',
+          // `api-declarations.md` / `api-surface.json` are generated on demand
+          // and absent from a fresh checkout; bundling must not require them.
           'capability-matrix.json': '{"capability":"authoring"}\n',
           'examples/public-authoring/index.ts': 'export const authoringExample = true;\n',
           'scripts/validate-authoring.mjs': 'export const validate = true;\n',
@@ -756,7 +709,6 @@ describe('bundleWorkspaceDeps', () => {
         files: {
           'dist/index.js': "export { sdk } from '@happier-dev/plugin-sdk';\n",
           'README.md': '# Plugin UI\n',
-          'api-declarations.md': '# UI declarations\n',
         },
       });
 
@@ -790,13 +742,13 @@ describe('bundleWorkspaceDeps', () => {
       expect(sdkPackageJson.dependencies).toEqual({ '@happier-dev/protocol': '0.0.0' });
       expect(sdkPackageJson.optionalDependencies).toEqual({ '@happier-dev/protocol': '0.0.0' });
       expect(sdkPackageJson.bundledDependencies).toEqual(['@happier-dev/protocol']);
+      // Generated governance records are publication-only: the runtime bundle
+      // neither copies nor declares them.
       expect(sdkPackageJson.files).toEqual([
         'dist',
         'package.json',
         'README.md',
         'API.md',
-        'api-declarations.md',
-        'api-surface.json',
         'capability-matrix.json',
         'examples/public-authoring/index.ts',
         'scripts/validate-authoring.mjs',
@@ -811,7 +763,6 @@ describe('bundleWorkspaceDeps', () => {
         'dist',
         'package.json',
         'README.md',
-        'api-declarations.md',
       ]);
       expect(existsSync(resolve(bundledUiDir, 'node_modules', '@happier-dev', 'plugin-sdk'))).toBe(false);
 
@@ -842,15 +793,16 @@ describe('bundleWorkspaceDeps', () => {
       ).toBe(true);
       for (const relativePath of [
         'API.md',
-        'api-declarations.md',
-        'api-surface.json',
         'capability-matrix.json',
         'examples/public-authoring/index.ts',
         'scripts/validate-authoring.mjs',
       ]) {
         expect(existsSync(resolve(transientSdkDir, ...relativePath.split('/')))).toBe(true);
       }
-      expect(existsSync(resolve(transientUiDir, 'api-declarations.md'))).toBe(true);
+      for (const relativePath of ['api-declarations.md', 'api-surface.json']) {
+        expect(existsSync(resolve(transientSdkDir, relativePath))).toBe(false);
+      }
+      expect(existsSync(resolve(transientUiDir, 'api-declarations.md'))).toBe(false);
 
       // A detached author package resolves Protocol from the transient SDK closure,
       // rather than from the CLI's flattened runtime tree.
@@ -871,7 +823,46 @@ describe('bundleWorkspaceDeps', () => {
     }
   });
 
-  it('refuses artifact publication when a bundled plugin tree disagrees with the generated artifact inventory', async () => {
+  it('still rejects a missing ordinary declared file of a public SDK package', async () => {
+    const { repoRoot, happyCliDir, cleanup } = createPackageLayoutSandbox('happy-bundle-missing-declared-file-');
+    const ensureWorkspacePackagesBuiltByName = async (_repoRoot: string, names: readonly string[]) => ({
+      ok: true,
+      built: [...names],
+      skipped: [] as string[],
+    });
+
+    try {
+      writeCliBundledHostPackage({
+        happyCliDir,
+        bundledDependencies: ['@happier-dev/plugin-ui'],
+        dependencies: { '@happier-dev/plugin-ui': '0.0.0' },
+      });
+      writeWorkspacePackageFixture({
+        repoRoot,
+        workspacePath: 'packages/plugin-ui',
+        packageName: '@happier-dev/plugin-ui',
+        manifestOverrides: {
+          files: ['dist', 'package.json', 'README.md', 'API.md', 'api-declarations.md'],
+          happier: { publicSdkRelease: { posture: 'developer_preview' } },
+        },
+        files: {
+          'dist/index.js': 'export const ui = true;\n',
+          'README.md': '# Plugin UI\n',
+        },
+      });
+
+      await expect(bundleWorkspaceDeps({
+        repoRoot,
+        happyCliDir,
+        publicationMode: 'artifact',
+        ensureWorkspacePackagesBuiltByName,
+      })).rejects.toThrow(/declared file is missing: 'API\.md'/u);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('publishes a bundled plugin by comparing the current source and prepared package trees directly', async () => {
     const { repoRoot, happyCliDir, cleanup } = createPackageLayoutSandbox('happy-bundle-plugin-inventory-');
     // Workspace package building spawns real per-package builds; the inventory binding this
     // test asserts is decided by the bundled tree, not by that build boundary.
@@ -897,45 +888,12 @@ describe('bundleWorkspaceDeps', () => {
         },
       });
 
-      // The inventory the tarball ships publishes a chunked runtime entry; the built
-      // tree carries a stub entry and no chunk, which is exactly the disagreement that
-      // reached released tarballs before this assertion existed.
-      const inventoryPath = resolve(
-        repoRoot,
-        'apps/cli/scripts/build-owned/generatedBundledPluginSourceIntegrities.json',
-      );
-      const sourceArtifactIntegrities = [{
-        packageName: '@happier-dev/plugins-grok',
-        files: [
-          {
-            byteLength: 44,
-            digest: 'sha256:0000000000000000000000000000000000000000000000000000000000000001',
-            relativePath: 'dist/.happier-chunks/chunk-GROK0001.js',
-          },
-          {
-            byteLength: 61,
-            digest: 'sha256:0000000000000000000000000000000000000000000000000000000000000002',
-            relativePath: 'dist/index.js',
-          },
-        ],
-      }];
-      mkdirSync(dirname(inventoryPath), { recursive: true });
-      writeFileSync(
-        inventoryPath,
-        `${JSON.stringify({
-          BUNDLED_FIRST_PARTY_SOURCE_ARTIFACT_INTEGRITIES: sourceArtifactIntegrities,
-        }, null, 2)}\n`,
-        'utf8',
-      );
-
       await expect(bundleWorkspaceDeps({
         repoRoot,
         happyCliDir,
         publicationMode: 'artifact',
         ensureWorkspacePackagesBuiltByName,
-      })).rejects.toThrow(
-        /Bundled plugin files disagree with generatedBundledPluginSourceIntegrities\.json[\s\S]*missing: dist\/\.happier-chunks\/chunk-GROK0001\.js[\s\S]*mismatched: dist\/index\.js/,
-      );
+      })).resolves.toBeUndefined();
 
       // Live source-dev publication intentionally retains prior generation targets, so it
       // has no exact tree to bind and must stay usable while a plugin is being rebuilt.
@@ -949,7 +907,100 @@ describe('bundleWorkspaceDeps', () => {
     }
   });
 
-  it('fails closed in artifact mode when bundled plugins exist without a generated inventory', async () => {
+  it('loads an externalized first-party daemon from the actual prepared CLI workspace closure', async () => {
+    const { repoRoot, happyCliDir, cleanup } = createPackageLayoutSandbox('happy-bundle-plugin-external-closure-');
+    const packageName = '@happier-dev/plugins-grok';
+    const ensureWorkspacePackagesBuiltByName = async (_repoRoot: string, names: readonly string[]) => ({
+      ok: true,
+      built: [...names],
+      skipped: [] as string[],
+    });
+
+    try {
+      writeCliBundledHostPackage({
+        happyCliDir,
+        bundledDependencies: [
+          packageName,
+          '@happier-dev/plugin-sdk',
+          '@happier-dev/protocol',
+        ],
+        dependencies: {
+          [packageName]: '0.0.0',
+          '@happier-dev/plugin-sdk': '0.0.0',
+          '@happier-dev/protocol': '0.0.0',
+        },
+      });
+      writeWorkspacePackageFixture({
+        repoRoot,
+        workspacePath: 'packages/plugin-sdk',
+        packageName: '@happier-dev/plugin-sdk',
+        manifestOverrides: {
+          exports: { './actions': './dist/index.js' },
+        },
+        files: { 'dist/index.js': "export const sdkMarker = 'sdk-from-prepared-cli';\n" },
+      });
+      writeWorkspacePackageFixture({
+        repoRoot,
+        workspacePath: 'packages/protocol',
+        packageName: '@happier-dev/protocol',
+        manifestOverrides: {
+          exports: { './runtime': './dist/index.js' },
+        },
+        files: { 'dist/index.js': "export const protocolMarker = 'protocol-from-prepared-cli';\n" },
+      });
+      writeWorkspacePackageFixture({
+        repoRoot,
+        workspacePath: 'packages/plugins/grok',
+        packageName,
+        manifestOverrides: {
+          dependencies: {
+            '@happier-dev/plugin-sdk': '0.0.0',
+            '@happier-dev/protocol': '0.0.0',
+          },
+          files: ['dist', '.happier-plugin', 'package.json'],
+        },
+        files: {
+          'src/manifest.ts': bundledPluginManifestSource('grok'),
+          '.happier-plugin/plugin.json': '{"id":"grok","contributes":{"resources":[]}}\n',
+          '.happier-plugin/daemon.js': [
+            "import { sdkMarker } from '@happier-dev/plugin-sdk/actions';",
+            "import { protocolMarker } from '@happier-dev/protocol/runtime';",
+            'export const closureMarker = `${sdkMarker}:${protocolMarker}`;',
+            '',
+          ].join('\n'),
+        },
+      });
+
+      await bundleWorkspaceDeps({
+        repoRoot,
+        happyCliDir,
+        publicationMode: 'artifact',
+        ensureWorkspacePackagesBuiltByName,
+      });
+
+      const daemonPath = resolve(
+        happyCliDir,
+        'node_modules',
+        '@happier-dev',
+        'plugins-grok',
+        '.happier-plugin',
+        'daemon.js',
+      );
+      const daemonBytes = readFileSync(daemonPath, 'utf8');
+      expect(daemonBytes).toContain("from '@happier-dev/plugin-sdk/actions'");
+      expect(daemonBytes).toContain("from '@happier-dev/protocol/runtime'");
+      const { stdout } = await execFileAsync(process.execPath, [
+        '--input-type=module',
+        '--eval',
+        `import(${JSON.stringify(pathToFileURL(daemonPath).href)}).then((loaded) => process.stdout.write(loaded.closureMarker))`,
+      ], { cwd: happyCliDir });
+      expect(stdout).toBe('sdk-from-prepared-cli:protocol-from-prepared-cli');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does not require a committed byte ledger in artifact mode', async () => {
     const { repoRoot, happyCliDir, cleanup } = createPackageLayoutSandbox('happy-bundle-plugin-missing-inventory-');
     const packageName = '@happier-dev/plugins-grok';
     try {
@@ -977,20 +1028,15 @@ describe('bundleWorkspaceDeps', () => {
       };
       const spawn = vi.fn();
 
-      // A missing inventory used to mean "nothing is generator-owned": every bundled
-      // plugin was re-admitted to the ordinary compiler and the exact-byte check
-      // verified an empty set. With canonical bundled membership present, the pack
-      // must refuse instead of shipping unverified plugin bytes.
       await expect(bundleWorkspaceDeps({
         repoRoot,
         happyCliDir,
         publicationMode: 'artifact',
         ensureWorkspacePackagesBuiltByName,
-      })).rejects.toThrow(/Missing bundled plugin source-artifact integrity inventory/u);
+      })).resolves.toBeUndefined();
       expect(spawn).not.toHaveBeenCalled();
       // CLI-common is the non-plugin prerequisite required to discover canonical
-      // bundled membership. The missing inventory still fails before any bundled
-      // plugin compiler can replace the staged immutable trees.
+      // bundled membership; the plugin remains excluded from ordinary compilation.
       expect(forcedBuilds).toEqual(['@happier-dev/cli-common']);
     } finally {
       cleanup();
@@ -1065,19 +1111,9 @@ describe('bundleWorkspaceDeps', () => {
         return { ok: true, built: [...names], skipped: [] };
       };
 
-      // Bind the inventory to the exact canonical tree before invoking the pack-time copier.
+      // Materialize the canonical tree before invoking the pack-time copier.
       await bundleWorkspaceDeps({ repoRoot, happyCliDir, ensureWorkspacePackagesBuiltByName });
       const bundledPackageDir = resolve(happyCliDir, 'node_modules', '@happier-dev', 'plugins-grok');
-      writeBundledPluginArtifactInventory({
-        repoRoot,
-        packageName,
-        pluginId: 'grok',
-        files: collectSandboxPackageTreeFiles(bundledPackageDir).map((relativePath) => ({
-          relativePath,
-          bytes: readFileSync(resolve(bundledPackageDir, ...relativePath.split('/'))),
-        })),
-      });
-
       artifactBundlePhase = true;
       await expect(bundleWorkspaceDeps({
         repoRoot,

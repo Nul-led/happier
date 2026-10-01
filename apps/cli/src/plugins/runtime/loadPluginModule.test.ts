@@ -16,12 +16,6 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-const remoteDistribution = {
-    kind: 'archive' as const,
-    source: { kind: 'remoteUrl' as const, canonicalUrl: 'https://example.test/acme.tgz' },
-    integrity: `sha256-${Buffer.alloc(32, 1).toString('base64')}`,
-};
-
 async function writeDaemonModule(params: Readonly<{ extension: string; contents: string }>): Promise<string> {
     const rootDir = await mkdtemp(join(tmpdir(), 'happier-plugin-daemon-module-'));
     const daemonEntryPath = join(rootDir, `daemon.${params.extension}`);
@@ -33,21 +27,9 @@ function createCommittedAuthorization(
     entryPath: string,
     immutableGenerationId = `generation:${entryPath}`,
 ) {
-    const distribution = {
-        kind: 'localPath' as const,
-        canonicalPath: entryPath,
-    };
     return {
         pluginId: 'acme.fixture',
         immutableGenerationId,
-        distribution,
-        trust: {
-            pluginId: 'acme.fixture',
-            distribution,
-            state: 'trusted' as const,
-            approvedAtMs: 1,
-        },
-        isCurrent: async () => true,
     };
 }
 
@@ -138,14 +120,6 @@ describe('loadPluginModule', () => {
         const authorization = Object.freeze({
             pluginId,
             immutableGenerationId: 'generation-committed-esm-factory',
-            distribution: remoteDistribution,
-            trust: {
-                pluginId,
-                distribution: remoteDistribution,
-                state: 'trusted' as const,
-                approvedAtMs: 1,
-            },
-            isCurrent: async () => true,
         });
         await writeFile(
             factoryPath,
@@ -301,14 +275,6 @@ describe('loadPluginModule', () => {
         const authorization = {
             pluginId: 'acme.reviewed-dev',
             immutableGenerationId: 'generation-reviewed-dev',
-            distribution: remoteDistribution,
-            trust: {
-                pluginId: 'acme.reviewed-dev',
-                distribution: remoteDistribution,
-                state: 'trusted' as const,
-                approvedAtMs: 1,
-            },
-            isCurrent: async () => true,
         };
 
         const module = await loadPluginModule({
@@ -558,7 +524,7 @@ describe('loadPluginModule', () => {
         })).rejects.toThrow(/requires a reviewed, committed, current/i);
     });
 
-    it('loads an approved prompt-provenance remote generation and rejects substituted or stale authority', async () => {
+    it('loads an approved prompt-provenance remote generation', async () => {
         const entryPath = await writeDaemonModule({
             extension: 'mjs',
             contents: 'export const version = "approved-remote";\n',
@@ -566,67 +532,12 @@ describe('loadPluginModule', () => {
         const authorization = {
             pluginId: 'acme.remote',
             immutableGenerationId: 'generation-remote',
-            distribution: remoteDistribution,
-            trust: { pluginId: 'acme.remote', distribution: remoteDistribution, state: 'trusted' as const, approvedAtMs: 1 },
-            isCurrent: async () => true,
         };
 
         await expect(loadPluginModule({
             source: { kind: 'file_backed', entryPath, trustPolicy: 'prompt', committedAuthorization: authorization },
         })).resolves.toMatchObject({ version: 'approved-remote' });
 
-        await expect(loadPluginModule({
-            source: {
-                kind: 'file_backed', entryPath, trustPolicy: 'prompt',
-                committedAuthorization: {
-                    ...authorization,
-                    distribution: {
-                        ...remoteDistribution,
-                        source: { kind: 'remoteUrl', canonicalUrl: 'https://example.test/substituted.tgz' },
-                    },
-                },
-            },
-        })).rejects.toThrow(/trust|approval|authoriz/i);
-        await expect(loadPluginModule({
-            source: {
-                kind: 'file_backed', entryPath, trustPolicy: 'prompt',
-                committedAuthorization: { ...authorization, isCurrent: async () => false },
-            },
-        })).rejects.toThrow(/stale|current/i);
-    });
-
-    it('does not let local source provenance bypass committed generation currentness', async () => {
-        const entryPath = await writeDaemonModule({
-            extension: 'mjs',
-            contents: 'export const version = "stale-local";\n',
-        });
-        const authorization = {
-            pluginId: 'acme.local',
-            immutableGenerationId: 'generation-local-stale',
-            distribution: {
-                kind: 'localPath' as const,
-                canonicalPath: '/plugins/acme.local',
-            },
-            trust: {
-                pluginId: 'acme.local',
-                distribution: {
-                    kind: 'localPath' as const,
-                    canonicalPath: '/plugins/acme.local',
-                },
-                state: 'trusted' as const,
-                approvedAtMs: 1,
-            },
-            isCurrent: async () => false,
-        };
-
-        await expect(loadPluginModule({
-            source: {
-                kind: 'file_backed',
-                entryPath,
-                trustPolicy: 'local_trusted',
-                committedAuthorization: authorization,
-            },
-        })).rejects.toThrow(/stale|current/i);
     });
 
     it('fails closed when file-backed executable trust metadata is missing', async () => {

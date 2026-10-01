@@ -18,6 +18,10 @@ export type PluginEphemeralSharedScope = Readonly<{
         create: () => Readonly<{
             value: T;
             dispose(): void;
+            /** Preserve the value after its last lease is released. */
+            retainWhenIdle?: true;
+            /** Stop subscriptions and other live work when a retained value becomes idle. */
+            onIdle?(): void;
             /** The active transport changed while the shared value survived. */
             onExecutionOriginChange?(): void;
         }>,

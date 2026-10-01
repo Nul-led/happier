@@ -1,34 +1,56 @@
 import { describe, expect, it } from 'vitest';
 
 import { CORPUS_LANE } from '../../corpus/fold/lane.js';
+import {
+  testkitLocator,
+  testkitSnapshot,
+  testkitViewer,
+} from '../../corpus/testkit/observations.test-support.js';
 import type { TriageListRowV1 } from '../../projection/listWindow.js';
 import type { TriagePinnedEntryV1 } from '../marks/pinCommand.js';
 import {
-  TRIAGE_PINNED_SECTION_KEY,
-  planTriageListSections,
-  triageContinuationRowKey,
-  type TriageListSectionV1,
+  planTriageListItemsV1,
+  readTriageListGroupV1,
+  type TriageListItemV1,
 } from './sections.js';
 
-/** The entry rows of one section, in order. */
-function entryIds(section: TriageListSectionV1 | undefined): readonly string[] {
-  return (section?.data ?? [])
-    .filter((item) => item.kind === 'entry')
-    .map((item) => item.row.entryRef.entryId);
-}
-
 const SOURCE = { pluginId: 'happier.forge', localId: 'items' } as const;
+const INSTANCE = '11111111-1111-4111-8111-111111111111';
 
-function row(entryId: string, lane: TriageListRowV1['lane']): TriageListRowV1 {
+type RowFacts = Readonly<{
+  lane?: TriageListRowV1['lane'];
+  attention?: 'required' | 'suggested' | null;
+  involvement?: readonly ('reviewRequested' | 'assignee' | 'mentioned' | 'author' | 'participating' | 'subscribed')[];
+  kindId?: string;
+  facts?: ReturnType<typeof testkitSnapshot>['facts'];
+}>;
+
+function row(entryId: string, facts: RowFacts = {}): TriageListRowV1 {
+  const kindId = facts.kindId ?? 'pull-request';
   return {
-    entryRef: { source: SOURCE, kindId: 'pull-request', collisionScope: 'origin', entryId },
-    lane,
+    entryRef: { source: SOURCE, kindId, collisionScope: 'origin', entryId },
+    content: {
+      sourceInstanceId: INSTANCE,
+      observedAtMs: 1_000,
+      outcome: {
+        kind: 'present',
+        locator: testkitLocator(),
+        snapshot: testkitSnapshot({ title: `Entry ${entryId}`, ...(facts.facts === undefined ? {} : { facts: facts.facts }) }),
+        viewer: testkitViewer({ involvement: [...(facts.involvement ?? [])] }),
+      },
+    },
+    lane: facts.lane ?? CORPUS_LANE.open,
     sortAtMs: 0,
-    presence: { kind: 'unresolved', observedAtMs: null },
-    attention: null,
-    selected: { kind: 'none', reason: 'noPresentObservation' },
+    presence: { kind: 'present', observedAtMs: 1_000 },
+    attention: facts.attention == null ? null : {
+      level: facts.attention,
+      fromSourceInstanceId: INSTANCE,
+      reasonId: 'involvement/review-requested',
+      reasonLabel: 'Your review was requested',
+    },
+    selected: { kind: 'selected', sourceInstanceId: INSTANCE, reason: 'onlyPresent' },
     observations: [],
-  };
+  } as TriageListRowV1;
 }
 
 function pin(entryId: string, title = `Pinned ${entryId}`): TriagePinnedEntryV1 {
@@ -39,138 +61,62 @@ function pin(entryId: string, title = `Pinned ${entryId}`): TriagePinnedEntryV1 
   };
 }
 
-describe('planTriageListSections', () => {
-  it('cuts the window order into lanes without reordering it', () => {
-    // The window owner ordered these once. A section plan that re-sorted would
-    // move a row under the reader for no reason they could see.
-    const sections = planTriageListSections({
-      rows: [row('3', CORPUS_LANE.open), row('9', CORPUS_LANE.done), row('1', CORPUS_LANE.open)],
+const pullRequests = (ref: TriageListRowV1['entryRef']) => (ref.kindId === 'pull-request' ? 'pullRequest' as const : 'issue' as const);
+
+function byGroup(items: readonly TriageListItemV1[]): Readonly<Record<string, readonly string[]>> {
+  const groups: Record<string, string[]> = {};
+  for (const item of items) (groups[item.group] ??= []).push(item.row.entryRef.entryId);
+  return groups;
+}
+
+describe('the PRs & Issues grouping axis', () => {
+  it('files an entry by who acts next: you, an agent, someone else, or nobody', () => {
+    const subject = { workflowSubject: 'pullRequest' as const, agentActive: false };
+    expect(readTriageListGroupV1({ row: row('1', { attention: 'required' }), ...subject })).toBe('needsYou');
+    expect(readTriageListGroupV1({ row: row('2', { involvement: ['author'], attention: 'suggested' }), ...subject })).toBe('inReview');
+    expect(readTriageListGroupV1({ row: row('3', { attention: 'suggested', involvement: ['mentioned'] }), ...subject })).toBe('everythingElse');
+    expect(readTriageListGroupV1({ row: row('4'), workflowSubject: 'pullRequest', agentActive: true })).toBe('withAgent');
+  });
+
+  it('never asks you about a finished entry, and never puts an issue you opened "in review"', () => {
+    expect(readTriageListGroupV1({
+      row: row('1', { attention: 'required', lane: CORPUS_LANE.done }), workflowSubject: 'pullRequest', agentActive: false,
+    })).toBe('everythingElse');
+    expect(readTriageListGroupV1({
+      row: row('2', { involvement: ['author'], kindId: 'issue' }), workflowSubject: 'issue', agentActive: false,
+    })).toBe('everythingElse');
+  });
+
+  it('keeps the window order inside each group, the group being a cut of that order', () => {
+    const items = planTriageListItemsV1({
+      rows: [row('a'), row('b', { attention: 'required' }), row('c'), row('d', { attention: 'required' })],
       pins: [],
-      coverage: 'complete',
-      morePins: false,
+      workflowSubjectOf: pullRequests,
     });
-
-    expect(sections.map((section) => section.title)).toEqual(['Pinned', 'Open', 'Done']);
-    expect(entryIds(sections[1])).toEqual(['3', '1']);
-    expect(entryIds(sections[2])).toEqual(['9']);
+    expect(byGroup(items)).toEqual({ needsYou: ['b', 'd'], everythingElse: ['a', 'c'] });
+    expect(items.map((item) => item.row.entryRef.entryId)).toEqual(['a', 'b', 'c', 'd']);
   });
 
-  it('keeps a stable section identity when a lane empties', () => {
-    const sections = planTriageListSections({
-      rows: [], pins: [], coverage: 'complete', morePins: false,
+  it('lifts a pinned entry into Pinned instead of listing it twice, and keeps a pin the window never walked', () => {
+    const items = planTriageListItemsV1({
+      rows: [row('a', { attention: 'required' }), row('b')],
+      pins: [pin('a'), pin('z', 'Not walked yet')],
+      workflowSubjectOf: pullRequests,
     });
-    expect(sections.map((section) => section.key))
-      .toEqual([TRIAGE_PINNED_SECTION_KEY, CORPUS_LANE.open, CORPUS_LANE.done]);
-    expect(sections.every((section) => section.data.length === 0)).toBe(true);
+    expect(byGroup(items)).toEqual({ pinned: ['a', 'z'], everythingElse: ['b'] });
+    const unwalked = items.find((item) => item.row.entryRef.entryId === 'z')!;
+    expect(unwalked.row.materialized).toBe(false);
+    expect(unwalked.row.title).toBe('Not walked yet');
   });
 
-  it('lifts a pinned entry out of its lane instead of listing it twice', () => {
-    const sections = planTriageListSections({
-      rows: [row('3', CORPUS_LANE.open), row('9', CORPUS_LANE.done)],
-      pins: [pin('3')],
-      coverage: 'complete',
-      morePins: false,
-    });
-
-    // One entry is one row. The public List requires a unique key per row, and
-    // a reader who saw their pin twice would believe they pinned it twice.
-    expect(entryIds(sections[0])).toEqual(['3']);
-    expect(sections[1]?.data).toEqual([]);
-    expect(entryIds(sections[2])).toEqual(['9']);
-    const keys = sections.flatMap((section) => section.data.map((item) => item.key));
-    expect(new Set(keys).size).toBe(keys.length);
-  });
-
-  it('keeps a pinned entry the current window never walked', () => {
-    const sections = planTriageListSections({
-      rows: [row('9', CORPUS_LANE.done)],
-      pins: [pin('404', 'A change this device has not read')],
-      coverage: 'complete',
-      morePins: false,
-    });
-
-    // A stale or cold list must not swallow durable intent: the pin is still
-    // listed, still named, and still removable.
-    expect(sections[0]?.data).toMatchObject([{
-      kind: 'entry',
-      row: {
-        title: 'A change this device has not read',
-        materialized: false,
-        pinned: true,
-      },
-    }]);
-  });
-
-  it('ends an unfinished section with its labelled continuation row', () => {
-    // `core/SURFACE.md` §4.2/§4.3. The public `List` has no `onEndReached` and
-    // no per-section footer, so a section that is still walking states its own
-    // limit as its last row. Rendering the loaded rows with nothing after them
-    // would silently claim the section is complete, which is the exact wrong
-    // fix this case rejects.
-    const sections = planTriageListSections({
-      rows: [row('3', CORPUS_LANE.open), row('9', CORPUS_LANE.done)],
+  it('carries the source summary for the peek and the primary status fact as the signal', () => {
+    const [item] = planTriageListItemsV1({
+      rows: [row('a', {
+        facts: [{ id: 'checks', label: 'Checks', importance: 'primary', value: { kind: 'status', value: '2 failing', tone: 'danger' } }],
+      })],
       pins: [],
-      coverage: 'partial',
-      morePins: false,
+      workflowSubjectOf: pullRequests,
     });
-
-    for (const lane of [sections[1], sections[2]]) {
-      const data = lane?.data ?? [];
-      expect(data.at(-1)).toEqual({
-        kind: 'continuation',
-        key: triageContinuationRowKey(lane?.key ?? ''),
-      });
-      // It is the LAST row, not a header, a banner, or a row in the middle.
-      expect(data.slice(0, -1).every((item) => item.kind === 'entry')).toBe(true);
-    }
-    // Every key is still unique across the whole List, continuation rows
-    // included — the sectioned arm addresses one row by one key.
-    const keys = sections.flatMap((section) => section.data.map((item) => item.key));
-    expect(new Set(keys).size).toBe(keys.length);
-  });
-
-  it('drops the continuation row exactly when every applicable lane is exhausted', () => {
-    const rows = [row('3', CORPUS_LANE.open), row('9', CORPUS_LANE.done)];
-
-    const complete = planTriageListSections({
-      rows, pins: [pin('3')], coverage: 'complete', morePins: false,
-    });
-    expect(complete.flatMap((section) => section.data).every((item) => item.kind === 'entry'))
-      .toBe(true);
-
-    // Pinned pages from the marks cursor, not from the window walk, so the two
-    // continuation facts are independent. Blending them would tell a reader
-    // their pins are incomplete because a source was still walking.
-    const morePins = planTriageListSections({
-      rows, pins: [pin('3')], coverage: 'complete', morePins: true,
-    });
-    expect(morePins[0]?.data.at(-1))
-      .toEqual({ kind: 'continuation', key: triageContinuationRowKey(TRIAGE_PINNED_SECTION_KEY) });
-    expect(morePins[1]?.data.every((item) => item.kind === 'entry')).toBe(true);
-    expect(morePins[2]?.data.every((item) => item.kind === 'entry')).toBe(true);
-  });
-
-  it('leaves an empty section empty rather than making it a row of pure limit', () => {
-    // With no rows there is nothing for a continuation row to come after, and
-    // `List` drops the section outright — so a lone continuation row would be
-    // a labelled group whose entire content is the statement that it has none.
-    // The shell's coverage-aware empty state owns that case (§6.2).
-    const sections = planTriageListSections({
-      rows: [], pins: [], coverage: 'partial', morePins: true,
-    });
-    expect(sections.every((section) => section.data.length === 0)).toBe(true);
-  });
-
-  it('orders the pinned section by the marks query rather than the window', () => {
-    const sections = planTriageListSections({
-      rows: [row('1', CORPUS_LANE.open), row('2', CORPUS_LANE.open)],
-      // The marks index already returns newest pin first; re-ranking here would
-      // make one entry's position depend on which pass happened to run.
-      pins: [pin('2'), pin('1')],
-      coverage: 'complete',
-      morePins: false,
-    });
-
-    expect(entryIds(sections[0])).toEqual(['2', '1']);
+    expect(item!.signal).toEqual({ label: '2 failing', tone: 'danger' });
   });
 });

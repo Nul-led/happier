@@ -12,7 +12,7 @@ const request = DaemonPluginInvocationLogReadRequestV1Schema.parse({
   },
   query: {
     pluginId: 'acme.example',
-    generation: 'generation-1',
+    occurrenceId: 'generation-1',
     correlationId: 'correlation-1',
   },
 });

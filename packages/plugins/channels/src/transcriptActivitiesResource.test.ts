@@ -164,7 +164,6 @@ describe('Channels transcript Activities Resource', () => {
       providerPluginId: 'example.channel.provider',
       providerContributionSelection: {
         contributionId: 'transcript-test-provider',
-        immutableGenerationId: 'transcript-test-generation',
       },
       providerSetupInput: { source: 'transcript-resource-test' },
       credentialRef: null,

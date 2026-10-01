@@ -18,6 +18,7 @@ import type {
 } from '@/plugins/projection/registry/types';
 import type { PluginTargetActivationFact } from '@/plugins/runtime/lifecycle/activation/facts';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 
 import { executeContributedAction } from './actions/executeContributedAction';
@@ -25,8 +26,6 @@ import { buildTargetActionInvocationRegistry } from './buildTargetActionRegistry
 import { createAdmittedTargetedOperationExecutionHandle } from './services/actions';
 import { createProductionPluginInvocationServiceOwners } from './services/production';
 import { createUnavailablePluginServices } from './services/unavailable';
-
-const generation = '7';
 
 function permissiveTargetProtocol(role: string) {
     return Object.freeze({
@@ -170,19 +169,16 @@ function executableRegistry(params: Readonly<{
     contributes: ResolvedContributionRegistry;
     targetActionInvocations: ReturnType<typeof buildTargetActionInvocationRegistry>;
     resolveCurrentPluginMaterializationRef: (pluginId: string) => PluginMachineMaterializationRefV1 | null;
-    resolveCurrentPluginImmutableGenerationId?: (pluginId: string) => Promise<string | null>;
+    readPluginOccurrenceId?: (pluginId: string) => PluginRuntimeOccurrenceId | null;
     activateContributionsOnDemand: ResolvedExecutablePluginRuntimeRegistry['activateContributionsOnDemand'];
 }>): ResolvedExecutablePluginRuntimeRegistry {
     return {
         contributes: params.contributes,
         targetActionInvocations: params.targetActionInvocations,
         resolveCurrentPluginMaterializationRef: params.resolveCurrentPluginMaterializationRef,
-        ...(params.resolveCurrentPluginImmutableGenerationId === undefined
+        ...(params.readPluginOccurrenceId === undefined
             ? {}
-            : {
-                resolveCurrentPluginImmutableGenerationId:
-                    params.resolveCurrentPluginImmutableGenerationId,
-            }),
+            : { readPluginOccurrenceId: params.readPluginOccurrenceId }),
         hookHandlersByHookId: new Map(),
         agentRuntimesByAgentId: new Map(),
         scmHostingProvidersById: new Map(),
@@ -192,18 +188,22 @@ function executableRegistry(params: Readonly<{
         createAgentInvocationServices: async () => createUnavailablePluginServices(),
         resolvePromptAssetBlocks: async () => [],
         retireConsumers: () => {},
-        retainActivationRegistryComponentsExcluding: () => Object.freeze([]),
+        retainPluginActivationComponent: () => null,
         retainPreparedActivationRegistryComponents: () => Object.freeze([]),
         dispose: async () => {},
     };
 }
 
-function activationFact(pluginId: string, localId: string): PluginTargetActivationFact {
+function activationFact(
+    pluginId: string,
+    localId: string,
+    occurrenceId: PluginRuntimeOccurrenceId,
+): PluginTargetActivationFact {
     return {
         pluginId,
         pluginVersion: '1.0.0',
         source: 'localPath',
-        generation,
+        occurrenceId,
         host: 'daemon',
         platform: 'darwin',
         occurredAtMs: 1,
@@ -229,10 +229,11 @@ function registration(
     pluginId: string,
     localId: string,
     value: TargetActionHandler,
+    occurrenceId: PluginRuntimeOccurrenceId,
 ): TargetRegistration {
     return {
         pluginId,
-        generation,
+        occurrenceId,
         registration: {
             family: 'actions',
             localId,
@@ -252,10 +253,10 @@ describe('buildTargetActionInvocationRegistry caller currentness', () => {
         const alphaBefore = materialization('acme.alpha', 'alpha-before');
         const betaCurrent = materialization('acme.beta', 'beta-current');
         const gammaCurrent = materialization('acme.gamma', 'gamma-current');
-        const immutableGenerationIds = new Map<string, string>([
-            ['acme.alpha', 'immutable-alpha'],
-            ['acme.beta', 'immutable-beta'],
-            ['acme.gamma', 'immutable-gamma'],
+        const occurrenceIds = new Map<string, PluginRuntimeOccurrenceId>([
+            ['acme.alpha', 'immutable-alpha' as PluginRuntimeOccurrenceId],
+            ['acme.beta', 'immutable-beta' as PluginRuntimeOccurrenceId],
+            ['acme.gamma', 'immutable-gamma' as PluginRuntimeOccurrenceId],
         ]);
         const materializations = new Map<string, PluginMachineMaterializationRefV1>([
             ['acme.alpha', alphaBefore],
@@ -329,8 +330,13 @@ describe('buildTargetActionInvocationRegistry caller currentness', () => {
                         request.pluginId,
                         request.localId,
                         handler,
+                        occurrenceIds.get(request.pluginId)!,
                     ));
-                    targetActivationFacts.push(activationFact(request.pluginId, request.localId));
+                    targetActivationFacts.push(activationFact(
+                        request.pluginId,
+                        request.localId,
+                        occurrenceIds.get(request.pluginId)!,
+                    ));
                 }
             }
             targetActionInvocations.refresh();
@@ -388,21 +394,38 @@ describe('buildTargetActionInvocationRegistry caller currentness', () => {
                     };
             },
         });
-        targetRegistrations.push(registration('acme.alpha', 'start', alphaHandler));
-        targetActivationFacts.push(activationFact('acme.alpha', 'start'));
+        targetRegistrations.push(registration(
+            'acme.alpha',
+            'start',
+            alphaHandler,
+            occurrenceIds.get('acme.alpha')!,
+        ));
+        targetActivationFacts.push(activationFact(
+            'acme.alpha',
+            'start',
+            occurrenceIds.get('acme.alpha')!,
+        ));
         targetActionInvocations = buildTargetActionInvocationRegistry({
             contributes,
-            immutableGenerationIdsByPluginId: immutableGenerationIds,
-            resolveCurrentPluginImmutableGenerationId: async (pluginId) => (
-                immutableGenerationIds.get(pluginId) ?? null
+            readCurrentPluginOccurrenceId: (pluginId) => (
+                occurrenceIds.get(pluginId) ?? null
             ),
+            readCurrentPluginSourceCustody: (pluginId) => {
+                return occurrenceIds.has(pluginId)
+                    ? {
+                        kind: 'managed',
+                        immutableGenerationId: `custody-${pluginId}`,
+                        installSource: 'archive',
+                    }
+                    : null;
+            },
             targetRegistrations,
             targetActivationFacts,
             resolveAuthorizationFacts: (action) => ({
                 generation: {
-                    targetGeneration: action.generation,
-                    desiredGeneration: action.generation,
-                    appliedGeneration: action.generation,
+                    targetGeneration: action.occurrenceId,
+                    desiredGeneration: action.occurrenceId,
+                    appliedGeneration: action.occurrenceId,
                 },
                 resourceSelections: [],
                 scopedGrants: [],
@@ -421,9 +444,7 @@ describe('buildTargetActionInvocationRegistry caller currentness', () => {
             resolveCurrentPluginMaterializationRef: (pluginId) => (
                 materializations.get(pluginId) ?? null
             ),
-            resolveCurrentPluginImmutableGenerationId: async (pluginId) => (
-                immutableGenerationIds.get(pluginId) ?? null
-            ),
+            readPluginOccurrenceId: (pluginId) => occurrenceIds.get(pluginId) ?? null,
             activateContributionsOnDemand,
         });
         const committedRuntimeRegistry: ResolvedExecutablePluginRuntimeRegistry = runtimeRegistry;
@@ -442,7 +463,12 @@ describe('buildTargetActionInvocationRegistry caller currentness', () => {
             kind: 'plugin',
             pluginId: 'acme.alpha',
             contribution: { id: 'start', qualifiedId: 'acme.alpha/actions/start' },
-            immutableGenerationId: 'immutable-alpha',
+            occurrenceId: 'immutable-alpha',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'custody-acme.alpha',
+                installSource: 'archive',
+            },
             materialization: alphaBefore,
             originSurface: 'cli',
         });
@@ -450,7 +476,12 @@ describe('buildTargetActionInvocationRegistry caller currentness', () => {
             kind: 'plugin',
             pluginId: 'acme.beta',
             contribution: { id: 'continue', qualifiedId: 'acme.beta/actions/continue' },
-            immutableGenerationId: 'immutable-beta',
+            occurrenceId: 'immutable-beta',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'custody-acme.beta',
+                installSource: 'archive',
+            },
             materialization: betaCurrent,
             originSurface: 'cli',
         });
@@ -512,9 +543,9 @@ function createComposedAdmittedOperationFixture() {
         localId: 'publish',
         surfaces: ['plugin'],
     });
-    const currentImmutableGenerationIds = new Map<string, string>([
-        ['acme.caller', 'immutable-caller'],
-        ['acme.contributor', 'immutable-contributor-g'],
+    const currentOccurrenceIds = new Map<string, PluginRuntimeOccurrenceId>([
+        ['acme.caller', 'immutable-caller' as PluginRuntimeOccurrenceId],
+        ['acme.contributor', 'immutable-contributor-g' as PluginRuntimeOccurrenceId],
     ]);
     const materializations = new Map<string, PluginMachineMaterializationRefV1>([
         ['acme.caller', materialization('acme.caller', 'caller-current')],
@@ -538,10 +569,19 @@ function createComposedAdmittedOperationFixture() {
         );
     });
     const targetRegistrations: TargetRegistration[] = [
-        registration('acme.caller', 'request', callerHandler),
+        registration(
+            'acme.caller',
+            'request',
+            callerHandler,
+            currentOccurrenceIds.get('acme.caller')!,
+        ),
     ];
     const targetActivationFacts: PluginTargetActivationFact[] = [
-        activationFact('acme.caller', 'request'),
+        activationFact(
+            'acme.caller',
+            'request',
+            currentOccurrenceIds.get('acme.caller')!,
+        ),
     ];
     let runtimeRegistry: ResolvedExecutablePluginRuntimeRegistry | null = null;
     let targetActionInvocations!: ReturnType<typeof buildTargetActionInvocationRegistry>;
@@ -627,17 +667,25 @@ function createComposedAdmittedOperationFixture() {
     });
     targetActionInvocations = buildTargetActionInvocationRegistry({
         contributes,
-        immutableGenerationIdsByPluginId: currentImmutableGenerationIds,
-        resolveCurrentPluginImmutableGenerationId: async (pluginId: string) => (
-            currentImmutableGenerationIds.get(pluginId) ?? null
+        readCurrentPluginOccurrenceId: (pluginId: string) => (
+            currentOccurrenceIds.get(pluginId) ?? null
         ),
+        readCurrentPluginSourceCustody: (pluginId: string) => {
+            return currentOccurrenceIds.has(pluginId)
+                ? {
+                    kind: 'managed',
+                    immutableGenerationId: `custody-${pluginId}`,
+                    installSource: 'archive',
+                }
+                : null;
+        },
         targetRegistrations,
         targetActivationFacts,
         resolveAuthorizationFacts: (action) => ({
             generation: {
-                targetGeneration: action.generation,
-                desiredGeneration: action.generation,
-                appliedGeneration: action.generation,
+                targetGeneration: action.occurrenceId,
+                desiredGeneration: action.occurrenceId,
+                appliedGeneration: action.occurrenceId,
             },
             resourceSelections: [],
             scopedGrants: [],
@@ -664,14 +712,18 @@ function createComposedAdmittedOperationFixture() {
         resolveCurrentPluginMaterializationRef: (pluginId) => (
             materializations.get(pluginId) ?? null
         ),
-        resolveCurrentPluginImmutableGenerationId: async (pluginId: string) => (
-            currentImmutableGenerationIds.get(pluginId) ?? null
-        ),
+        readPluginOccurrenceId: (pluginId) => currentOccurrenceIds.get(pluginId) ?? null,
         activateContributionsOnDemand,
     });
 
     const publishContributor = (handler: TargetActionHandler): void => {
-        const next = registration('acme.contributor', 'publish', handler);
+        const contributorOccurrenceId = currentOccurrenceIds.get('acme.contributor')!;
+        const next = registration(
+            'acme.contributor',
+            'publish',
+            handler,
+            contributorOccurrenceId,
+        );
         const existingIndex = targetRegistrations.findIndex((entry) => (
             entry.pluginId === 'acme.contributor'
             && entry.registration.family === 'actions'
@@ -679,7 +731,11 @@ function createComposedAdmittedOperationFixture() {
         ));
         if (existingIndex === -1) {
             targetRegistrations.push(next);
-            targetActivationFacts.push(activationFact('acme.contributor', 'publish'));
+            targetActivationFacts.push(activationFact(
+                'acme.contributor',
+                'publish',
+                contributorOccurrenceId,
+            ));
         } else {
             targetRegistrations.splice(existingIndex, 1, next);
         }
@@ -687,10 +743,10 @@ function createComposedAdmittedOperationFixture() {
     };
 
     return {
-        admit(immutableGenerationId: string): AdmittedOperation {
+        admit(contributorOccurrenceId: string): AdmittedOperation {
             return createAdmittedTargetedOperationExecutionHandle({
                 action: { pluginId: 'acme.contributor', localId: 'publish' },
-                targetImmutableGenerationId: 'immutable-caller',
+                targetOccurrenceId: 'immutable-caller',
                 identity: {
                     target: { pluginId: 'acme.caller' },
                     point: {
@@ -700,7 +756,8 @@ function createComposedAdmittedOperationFixture() {
                     contributor: {
                         pluginId: 'acme.contributor',
                         contributionId: 'primary',
-                        immutableGenerationId,
+                        occurrenceId: contributorOccurrenceId,
+                        sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-contributor', installSource: 'archive' },
                     },
                     role: 'publish',
                 },
@@ -717,8 +774,8 @@ function createComposedAdmittedOperationFixture() {
             });
         },
         dispatchAdmittedTargetedOperation(params: Readonly<{
-            contributorImmutableGenerationId: string;
-            targetImmutableGenerationId: string;
+            contributorOccurrenceId: string;
+            targetOccurrenceId: string;
             targetProtocol: RehydratedPluginContributionPointOperationV1;
             input: unknown;
         }>) {
@@ -730,9 +787,9 @@ function createComposedAdmittedOperationFixture() {
                     action: { pluginId: 'acme.contributor', localId: 'publish' },
                     target: {
                         pluginId: 'acme.caller',
-                        immutableGenerationId: params.targetImmutableGenerationId,
+                        occurrenceId: params.targetOccurrenceId,
                     },
-                    contributorImmutableGenerationId: params.contributorImmutableGenerationId,
+                    contributorOccurrenceId: params.contributorOccurrenceId,
                     targetProtocol: params.targetProtocol,
                 },
                 context: {
@@ -744,19 +801,24 @@ function createComposedAdmittedOperationFixture() {
                             id: 'request',
                             qualifiedId: 'acme.caller/actions/request',
                         },
-                        immutableGenerationId: params.targetImmutableGenerationId,
+                        occurrenceId: params.targetOccurrenceId,
+                        sourceCustody: {
+                            kind: 'managed',
+                            immutableGenerationId: 'custody-acme.caller',
+                            installSource: 'archive',
+                        },
                         materialization: materializations.get('acme.caller')!,
                     },
                 },
             });
         },
-        setCurrentTargetGeneration(immutableGenerationId: string): void {
-            currentImmutableGenerationIds.set('acme.caller', immutableGenerationId);
+        setCurrentTargetOccurrence(occurrenceId: string): void {
+            currentOccurrenceIds.set('acme.caller', occurrenceId as PluginRuntimeOccurrenceId);
         },
-        setCurrentContributorGeneration(immutableGenerationId: string): void {
-            currentImmutableGenerationIds.set(
+        setCurrentContributorOccurrence(occurrenceId: string): void {
+            currentOccurrenceIds.set(
                 'acme.contributor',
-                immutableGenerationId,
+                occurrenceId as PluginRuntimeOccurrenceId,
             );
         },
         setDemandContributorActivation(callback: () => void): void {
@@ -772,7 +834,7 @@ function createComposedAdmittedOperationFixture() {
 }
 
 describe('admitted targeted-operation currentness through production Actions', () => {
-    it('rechecks the target generation after awaited Action binding and before the contributor handler starts', async () => {
+    it('rechecks the target occurrence after awaited Action binding and before the contributor handler starts', async () => {
         const fixture = createComposedAdmittedOperationFixture();
         const inputSchema = defineProtocolObject({
             kind: defineProtocolLiteral('accepted'),
@@ -791,13 +853,13 @@ describe('admitted targeted-operation currentness through production Actions', (
         const contributor = vi.fn<TargetActionHandler>(async () => ({ kind: 'accepted' }));
         fixture.publishContributor(contributor);
         fixture.setBeforeContributorHandler(() => {
-            fixture.setCurrentTargetGeneration('immutable-caller-h');
+fixture.setCurrentTargetOccurrence('immutable-caller-h');
         });
 
         try {
             await expect(fixture.dispatchAdmittedTargetedOperation({
-                targetImmutableGenerationId: 'immutable-caller',
-                contributorImmutableGenerationId: 'immutable-contributor-g',
+targetOccurrenceId: 'immutable-caller',
+contributorOccurrenceId: 'immutable-contributor-g',
                 targetProtocol,
                 input: { kind: 'accepted' },
             })).resolves.toMatchObject({
@@ -814,7 +876,7 @@ describe('admitted targeted-operation currentness through production Actions', (
         }
     });
 
-    it('validates an admitted target protocol at the canonical contributor dispatcher and fences exact target and contributor generations', async () => {
+    it('validates an admitted target protocol at the canonical contributor dispatcher and fences exact target and contributor occurrences', async () => {
         const fixture = createComposedAdmittedOperationFixture();
         const inputSchema = defineProtocolObject({
             kind: defineProtocolLiteral('accepted'),
@@ -831,7 +893,7 @@ describe('admitted targeted-operation currentness through production Actions', (
         const contributor = vi.fn<TargetActionHandler>(async () => {
             contributorInvocations += 1;
             if (contributorInvocations === 2) {
-                fixture.setCurrentTargetGeneration('immutable-caller-h');
+                fixture.setCurrentTargetOccurrence('immutable-caller-h');
                 return { kind: 'accepted' };
             }
             return { kind: 'unexpected' };
@@ -840,8 +902,8 @@ describe('admitted targeted-operation currentness through production Actions', (
 
         try {
             await expect(fixture.dispatchAdmittedTargetedOperation({
-                targetImmutableGenerationId: 'immutable-caller',
-                contributorImmutableGenerationId: 'immutable-contributor-g',
+                targetOccurrenceId: 'immutable-caller',
+                contributorOccurrenceId: 'immutable-contributor-g',
                 targetProtocol,
                 input: { kind: 'rejected' },
             })).resolves.toMatchObject({
@@ -855,8 +917,8 @@ describe('admitted targeted-operation currentness through production Actions', (
             expect(contributor).not.toHaveBeenCalled();
 
             await expect(fixture.dispatchAdmittedTargetedOperation({
-                targetImmutableGenerationId: 'immutable-caller',
-                contributorImmutableGenerationId: 'immutable-contributor-g',
+                targetOccurrenceId: 'immutable-caller',
+                contributorOccurrenceId: 'immutable-contributor-g',
                 targetProtocol,
                 input: { kind: 'accepted', contributorOnly: true },
             })).resolves.toMatchObject({
@@ -871,10 +933,10 @@ describe('admitted targeted-operation currentness through production Actions', (
                 expect.anything(),
             );
 
-            fixture.setCurrentTargetGeneration('immutable-caller-h');
+            fixture.setCurrentTargetOccurrence('immutable-caller-h');
             await expect(fixture.dispatchAdmittedTargetedOperation({
-                targetImmutableGenerationId: 'immutable-caller',
-                contributorImmutableGenerationId: 'immutable-contributor-g',
+                targetOccurrenceId: 'immutable-caller',
+                contributorOccurrenceId: 'immutable-contributor-g',
                 targetProtocol,
                 input: { kind: 'accepted' },
             })).resolves.toMatchObject({
@@ -887,10 +949,10 @@ describe('admitted targeted-operation currentness through production Actions', (
             });
             expect(contributor).toHaveBeenCalledOnce();
 
-            fixture.setCurrentTargetGeneration('immutable-caller');
+fixture.setCurrentTargetOccurrence('immutable-caller');
             await expect(fixture.dispatchAdmittedTargetedOperation({
-                targetImmutableGenerationId: 'immutable-caller',
-                contributorImmutableGenerationId: 'immutable-contributor-g',
+                targetOccurrenceId: 'immutable-caller',
+                contributorOccurrenceId: 'immutable-contributor-g',
                 targetProtocol,
                 input: { kind: 'accepted' },
             })).resolves.toMatchObject({
@@ -902,11 +964,11 @@ describe('admitted targeted-operation currentness through production Actions', (
             });
             expect(contributor).toHaveBeenCalledTimes(2);
 
-            fixture.setCurrentTargetGeneration('immutable-caller');
-            fixture.setCurrentContributorGeneration('immutable-contributor-h');
+            fixture.setCurrentTargetOccurrence('immutable-caller');
+fixture.setCurrentContributorOccurrence('immutable-contributor-h');
             await expect(fixture.dispatchAdmittedTargetedOperation({
-                targetImmutableGenerationId: 'immutable-caller',
-                contributorImmutableGenerationId: 'immutable-contributor-g',
+                targetOccurrenceId: 'immutable-caller',
+                contributorOccurrenceId: 'immutable-contributor-g',
                 targetProtocol,
                 input: { kind: 'accepted' },
             })).resolves.toMatchObject({
@@ -955,7 +1017,7 @@ describe('admitted targeted-operation currentness through production Actions', (
             });
             expect(preDemandFixture.activateContributionsOnDemand).not.toHaveBeenCalled();
 
-            preDemandFixture.setCurrentContributorGeneration('immutable-contributor-h');
+            preDemandFixture.setCurrentContributorOccurrence('immutable-contributor-h');
             await expect(preDemandFixture.invoke(originalG)).resolves.toMatchObject({
                 matched: true,
                 result: {
@@ -972,7 +1034,7 @@ describe('admitted targeted-operation currentness through production Actions', (
         const originalGAfterDemand = activationFixture.admit('immutable-contributor-g');
         const replacementHHandler = vi.fn<TargetActionHandler>(async () => ({ handledBy: 'H' }));
         activationFixture.setDemandContributorActivation(() => {
-            activationFixture.setCurrentContributorGeneration('immutable-contributor-h');
+            activationFixture.setCurrentContributorOccurrence('immutable-contributor-h');
             activationFixture.publishContributor(replacementHHandler);
         });
         try {
@@ -1000,7 +1062,7 @@ describe('admitted targeted-operation currentness through production Actions', (
         const freshH = fixture.admit('immutable-contributor-h');
         const replacementHHandler = vi.fn<TargetActionHandler>(async () => ({ handledBy: 'H' }));
         const originalGHandler = vi.fn<TargetActionHandler>(async () => {
-            fixture.setCurrentContributorGeneration('immutable-contributor-h');
+            fixture.setCurrentContributorOccurrence('immutable-contributor-h');
             fixture.publishContributor(replacementHHandler);
             return { handledBy: 'G' };
         });

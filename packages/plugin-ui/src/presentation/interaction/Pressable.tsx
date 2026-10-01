@@ -8,6 +8,7 @@ import {
 } from 'react-native';
 
 import { useHappierNativeMinimumInteractiveTargetSize } from '../../environment/interactiveTarget.js';
+import { isHappierFocusVisible } from './focusVisible.js';
 import type {
   HappierFocusable,
   HappierGestureResponderEvent,
@@ -86,6 +87,8 @@ export type HappierPressableProps = Readonly<{
    */
   onPress: (event?: HappierGestureResponderEvent) => unknown;
   onPressIn?: (event?: HappierGestureResponderEvent) => void;
+  /** Pairs with `onPressIn`: fires when the press releases or is cancelled. */
+  onPressOut?: (event?: HappierGestureResponderEvent) => void;
   /** Native touch context invocation; callers retain the semantic outcome. */
   onLongPress?: (event?: HappierGestureResponderEvent) => void;
   /** Web context invocation; this is absent from React Native's native prop model. */
@@ -126,6 +129,11 @@ export type HappierPressableProps = Readonly<{
   /** Visual/current-row state owned by a composite widget's roving selection. */
   highlighted?: boolean;
   selected?: boolean;
+  /**
+   * The navigation control for what the page shows now (a column row). The web announces it as
+   * `aria-current`; native assistive technology reads it as the selected state.
+   */
+  current?: 'page';
   expanded?: boolean;
   /** Position within a list-like composite role, projected to native/RNW ARIA. */
   accessibilityPositionInSet?: number;
@@ -200,24 +208,15 @@ function isKeyboardGeneratedClick(event: unknown): boolean {
 
 const anchorStyle: ViewStyle = { position: 'relative' };
 
-/**
- * Whether a focus should show its ring. On web the browser decides (`:focus-visible`): keyboard
- * focus shows it, focus left by a pointer press does not. Native focus is always keyboard focus.
- */
+/** Whether this focus shows its ring: {@link isHappierFocusVisible} for the focused element. */
 function isFocusVisible(event: unknown): boolean {
-  if (Platform.OS !== 'web') return true;
-  const target = (event as { target?: { matches?: (selector: string) => boolean } } | null)?.target;
-  if (typeof target?.matches !== 'function') return true;
-  try {
-    return target.matches(':focus-visible');
-  } catch {
-    return true;
-  }
+  return isHappierFocusVisible((event as { target?: unknown } | null)?.target);
 }
 
 export function HappierPressable({
   onPress,
   onPressIn,
+  onPressOut,
   onLongPress,
   onContextMenu,
   onKeyDown,
@@ -229,6 +228,7 @@ export function HappierPressable({
   describedById,
   highlighted,
   selected,
+  current,
   expanded,
   accessibilityPositionInSet,
   accessibilitySetSize,
@@ -372,7 +372,7 @@ export function HappierPressable({
     : { accessibilityRole: nativeAccessibilityRole };
   const semanticSelected = accessibilityRole === 'option' || accessibilityRole === 'tab'
     ? selected === true
-    : undefined;
+    : Platform.OS !== 'web' && current !== undefined ? true : undefined;
   // The `aria-posinset`/`aria-setsize` pair below is React Native Web only —
   // React Native maps neither on a device. Android's accessibility service reads
   // membership from `accessibilityCollectionItem`, which React Native's Android
@@ -432,7 +432,8 @@ export function HappierPressable({
       accessibilityState={{ busy: isBusy, checked, disabled: isDisabled, expanded, selected: semanticSelected }}
       aria-busy={isBusy || undefined}
       aria-disabled={isDisabled || undefined}
-      aria-selected={semanticSelected}
+      aria-selected={Platform.OS === 'web' && current !== undefined ? undefined : semanticSelected}
+      aria-current={current}
       aria-posinset={accessibilityPositionInSet}
       aria-setsize={accessibilitySetSize}
       // @ts-expect-error React Native's published types omit the Android-only collection-item prop its view config accepts.
@@ -452,6 +453,7 @@ export function HappierPressable({
       hitSlop={physicalHitSlop}
       onPress={handlePress}
       onPressIn={onPressIn}
+      onPressOut={onPressOut}
       onLongPress={isDisabled ? undefined : onLongPress}
       {...webContextMenuProps}
       onKeyDown={Platform.OS === 'web' ? handleKeyDown : undefined}

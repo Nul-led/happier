@@ -46,7 +46,11 @@ describe('Antigravity agent definition', () => {
     expect(PLUGIN_MANIFEST.contributes.agents[0]?.cli).toMatchObject({
       executable: { binaryName: 'agy', sourcePreference: 'system-first' },
       install: { manual: { kind: 'vendor_recipe' } },
-      auth: { support: 'login_terminal', machineLoginKey: 'antigravity-cli' },
+      auth: {
+        support: 'login_terminal',
+        machineLoginKey: 'antigravity-cli',
+        loginLaunches: [{ kind: 'primary', target: 'agent_acp', args: [] }],
+      },
     });
   });
 
@@ -64,6 +68,9 @@ describe('Antigravity agent definition', () => {
       transport: {
         kind: 'stdio',
         executable: { kind: 'managedDependency', id: 'agy-acp-server' },
+      },
+      definition: {
+        auth: { methodId: 'oauth-personal' },
       },
     });
     expect(agent?.runtime).not.toHaveProperty('definition.models');

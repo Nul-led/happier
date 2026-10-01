@@ -44,9 +44,9 @@ function projectLine(value: string | null, maxBytes: number): ProjectedText | nu
 /**
  * The lossy projection of Bitbucket's four-member pull-request state enum.
  *
- * `MERGED`, `DECLINED` and `SUPERSEDED` are all terminal on this forge and all project to `closed`;
- * the provider's own word survives in `nativeLabel` so the three stay distinguishable in
- * presentation. Bitbucket has no `resolved` or `suppressed` analogue for a pull request, and an
+ * `MERGED` completed the pull request and projects `resolved`; `DECLINED` and `SUPERSEDED` closed
+ * it without merging and project `closed` (`CONTRACT.md` §4, r0.42). The provider's own word
+ * survives in `nativeLabel`. Bitbucket has no `suppressed` analogue for a pull request, and an
  * unrecognised native state stays `unknown` — present, nonterminal, and never a closed substitute.
  */
 function toPresentationState(
@@ -56,6 +56,7 @@ function toPresentationState(
     case 'open':
       return { presentation: 'active', nativeLabel: state.nativeLabel };
     case 'merged':
+      return { presentation: 'resolved', nativeLabel: state.nativeLabel };
     case 'declined':
     case 'superseded':
       return { presentation: 'closed', nativeLabel: state.nativeLabel };

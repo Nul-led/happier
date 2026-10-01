@@ -8,6 +8,7 @@ import type {
 } from '@happier-dev/plugin-sdk/sessions/external';
 import { resolveTranscriptBodySessionMessageRole } from '@happier-dev/plugin-sdk/sessions';
 import { z } from 'zod';
+import type { CodexSessionThread } from '../../../rollout/discovery/sessionThread.js';
 
 export type CodexExternalSessionSource = Readonly<{
   kind: 'codexHome';
@@ -39,6 +40,7 @@ export type CodexExternalSessionCandidate = Readonly<{
   createdAtMs?: number;
   activity?: 'running' | 'active_recently' | 'idle' | 'unknown';
   archived?: boolean;
+  thread?: CodexSessionThread;
   details?: Readonly<Record<string, unknown>>;
 }>;
 
@@ -171,6 +173,7 @@ export function projectCodexExternalSessionCandidateToAgent(
     updatedAtMs: candidate.updatedAtMs,
     ...(candidate.createdAtMs !== undefined ? { createdAtMs: candidate.createdAtMs } : {}),
     ...(candidate.archived !== undefined ? { archived: candidate.archived } : {}),
+    ...(candidate.thread ? { thread: candidate.thread } : {}),
     ...(Object.keys(linkData).length > 0 ? { linkData } : {}),
   };
 }

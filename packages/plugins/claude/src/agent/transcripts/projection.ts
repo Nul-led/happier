@@ -38,6 +38,16 @@ function stableOffsetId(prefix: string, offset: number): string {
     return `${prefix}:${padded}`;
 }
 
+export function readClaudeJsonlLineIdentity(params: Readonly<{
+    lineStartOffsetBytes: number;
+    lineValue: unknown;
+}>): Readonly<{ id: string; createdAtMs: number }> {
+    return {
+        id: stableOffsetId('claude', params.lineStartOffsetBytes),
+        createdAtMs: extractEnvelopeTimestampMs(params.lineValue),
+    };
+}
+
 function parseClaudeExternalSessionRaw(
     value: unknown,
 ): AgentExternalSessionTranscriptItem['raw'] | null {
@@ -183,9 +193,8 @@ function projectClaudeJsonlLine(params: Readonly<{
     maxItems?: number;
 }>): ClaudeJsonlLineProjection {
     const noItems: ClaudeJsonlLineProjection = { items: [], withheldEveryPart: false };
-    const createdAtMs = extractEnvelopeTimestampMs(params.lineValue);
     // File paths stay private paging state; transcript item ids are source-local and recipient-safe.
-    const stableId = stableOffsetId('claude', params.lineStartOffsetBytes);
+    const { id: stableId, createdAtMs } = readClaudeJsonlLineIdentity(params);
 
     const classification = classifyClaudeNativeTranscriptRow(params.lineValue);
     const localId = classification.row

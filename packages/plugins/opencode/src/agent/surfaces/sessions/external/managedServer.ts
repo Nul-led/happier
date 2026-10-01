@@ -6,11 +6,16 @@ import {
 } from '@happier-dev/plugin-sdk/managed-services';
 import type {
   AgentExternalSessionsManagedEndpointServiceRequest,
+  AgentExternalSessionsManagedEndpointRead,
 } from '@happier-dev/plugin-sdk/sessions/external';
 
 import { buildOpenCodeManagedServerAttachSpec } from '../../../runtime/server/attachSpec.js';
 import { buildOpenCodeManagedServerSpawnSpec } from '../../../runtime/server/spawnSpec.js';
-import type { OpenCodeServerDialect } from '../../../runtime/server/dialect.js';
+import {
+  readsOpenCodeHealthyMarker,
+  readsOpenCodeV2ServerInfo,
+  type OpenCodeServerDialect,
+} from '../../../runtime/server/dialect.js';
 import {
   resolveOpenCodeManagedServerDialect,
   type OpenCodeSystemToolResolver,
@@ -19,6 +24,7 @@ import {
   projectOpenCodeExternalSessionSource,
   type OpenCodeExternalSessionSource,
 } from './client.js';
+import { OPEN_CODE_SYSTEM_TOOL_ID } from '../../../systemTool.js';
 
 export const OPENCODE_EXTERNAL_SESSIONS_SERVICE_ID = 'opencode-external-sessions-server';
 
@@ -80,12 +86,13 @@ function readOwnedBrowseServer(
  * - No configured base URL — Happier spawns a data-root-scoped server and
  *   mints its own credential. Its readiness route comes from the executable the
  *   host resolves for that spawn, through the same owner the Session runtime
- *   uses, because an `opencode2` child answers `/api/health` and mounts no
- *   `/global/*` at all.
+ *   uses, because preview `opencode2` and released `opencode` 2.x use distinct
+ *   `/api` readiness routes and neither mounts the V1 `/global/*` route.
  * - A configured base URL — the user's own process; Happier attaches to it and
- *   the host applies the password the user recorded, if any. Happier resolved no
- *   executable for it, so the attached declaration keeps the proven legacy route
- *   and this resolver is not consulted.
+ *   the host applies the password the user recorded, if any. With no trustworthy
+ *   local executable fact, readiness uses authenticated shaped responses from
+ *   the server itself: released V2 `/api/info` first, then retained V1
+ *   `/global/health`, within one managed-service deadline.
  */
 export async function resolveOpenCodeExternalSessionsManagedService(
   request: AgentExternalSessionsManagedEndpointServiceRequest,
@@ -99,17 +106,23 @@ export async function resolveOpenCodeExternalSessionsManagedService(
     return buildOpenCodeManagedServerAttachSpec({
       id: attachServiceId(normalizedBaseUrl),
       baseUrl: normalizedBaseUrl,
+      requestedDialect: 'auto',
+      autoReadiness: 'managedService',
     });
   }
   const owned = readOwnedBrowseServer(source);
   if (!owned.owned) return null;
+  const resolution = await resolveOpenCodeManagedServerDialect({
+    exec: request.exec,
+    systemToolId: OPEN_CODE_SYSTEM_TOOL_ID,
+    ...(owned.directory ? { cwd: owned.directory } : {}),
+    ...(request.signal ? { signal: request.signal } : {}),
+  });
   return buildOpenCodeManagedServerSpawnSpec({
     id: OPENCODE_EXTERNAL_SESSIONS_SERVICE_ID,
-    dialect: await resolveOpenCodeExternalSessionsDialect({
-      source,
-      exec: request.exec,
-      signal: request.signal,
-    }),
+    systemToolId: OPEN_CODE_SYSTEM_TOOL_ID,
+    dialect: resolution.dialect,
+    healthPath: resolution.healthPath,
     additionalEnv: {
       // A read-only browse surface must never prune the user's OpenCode
       // corpus, and `opencode serve` prunes on start by default.
@@ -125,22 +138,36 @@ export async function resolveOpenCodeExternalSessionsManagedService(
  * spawns, the resolved executable decides both, so a browse-owned `opencode2`
  * child is declared healthy on `/api/health` *and* read over `/api/*`.
  *
- * A server Happier did not spawn stays on V1. The `/api/*` surface also ships on
- * current stable servers, so its presence would not prove the V2 session engine
- * is behind it, and this surface has no launch-environment opt-in to say
- * otherwise — an attached server is read the one way that is proven against
- * every released OpenCode server.
+ * A server Happier did not spawn is identified through authenticated, shaped
+ * responses: released V2 exposes `/api/info`, while V1 exposes
+ * `/global/health`. A generic successful response is deliberately insufficient
+ * because an unrelated route may answer with HTML or another contract.
  */
 export async function resolveOpenCodeExternalSessionsDialect(params: Readonly<{
   source: OpenCodeExternalSessionSource;
-  exec: Readonly<{ systemTools: OpenCodeSystemToolResolver }>;
+  managedEndpointRead: AgentExternalSessionsManagedEndpointRead;
   signal?: AbortSignal;
 }>): Promise<OpenCodeServerDialect> {
-  const owned = readOwnedBrowseServer(params.source);
-  if (!owned.owned) return 'v1';
-  return await resolveOpenCodeManagedServerDialect({
-    exec: params.exec,
-    ...(owned.directory ? { cwd: owned.directory } : {}),
-    ...(params.signal ? { signal: params.signal } : {}),
-  });
+  const read = async (pathAndQuery: string): Promise<boolean> => {
+    try {
+      const response = await params.managedEndpointRead({
+        pathAndQuery,
+        ...(params.signal ? { signal: params.signal } : {}),
+      });
+      if (!response.ok) return false;
+      const body = await new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      }).json().catch(() => null);
+      return pathAndQuery === '/api/info'
+        ? readsOpenCodeV2ServerInfo(body)
+        : readsOpenCodeHealthyMarker(body);
+    } catch {
+      return false;
+    }
+  };
+  if (await read('/api/info')) return 'v2';
+  if (await read('/global/health')) return 'v1';
+  throw new Error('OpenCode managed endpoint answered neither /api/info nor /global/health');
 }

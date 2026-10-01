@@ -8,6 +8,12 @@ import {
 } from './permissionProfile.js';
 
 describe('Codex app-server permission profile params', () => {
+  test('keeps hands-off read-only on a turn when an older app-server lacks permission profiles', () => {
+    expect(buildCodexAppServerPermissionParams({
+      policy: { approvalPolicy: 'never', sandbox: 'read-only' }, support: 'legacy', target: 'turn',
+    })).toEqual({ approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly' } });
+  });
+
   test('builds native permission profiles from legacy thread policies', () => {
     expect(buildCodexAppServerPermissionParams({
       policy: {

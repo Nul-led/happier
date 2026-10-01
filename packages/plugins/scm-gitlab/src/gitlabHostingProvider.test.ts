@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { HostingProviderRuntimeRegistration, ScmHostingProviderRef } from '@happier-dev/plugin-sdk/scm/hosting';
 import { ingestPluginManifestV2 } from '@happier-dev/protocol';
 
 import { createGitlabScmHostingProviderAdapter, gitlabHostingProviderAdapter } from './adapter.js';
 import { PLUGIN_MANIFEST } from './manifest.js';
-import { gitlabCliPullRequestAdapter } from './pullRequests/index.js';
+import { gitlabRestPullRequestAdapter } from './pullRequests/index.js';
 
 type DetectionResult = Readonly<{
   id: string;
@@ -34,6 +35,48 @@ type Adapter = Readonly<{
 }>;
 
 describe('bundled GitLab SCM hosting provider plugin', () => {
+  it('creates drafts through the bound Connected Account at the exact deployment, without ambient CLI credentials', async () => {
+    const { activate } = await import('./activate.js');
+    let registration: HostingProviderRuntimeRegistration | undefined;
+    // The plugin host registration is the real external boundary under test.
+    activate({
+      scm: { registerHostingProvider(_id: string, value: HostingProviderRuntimeRegistration) { registration = value; return { dispose() {} }; } },
+      connectedAccounts: { register() { return { dispose() {} }; } },
+      actions: { register() {} },
+    } as unknown as Parameters<typeof activate>[0]);
+    const provider: ScmHostingProviderRef = {
+      id: 'happier.scm.forge.gitlab/gitlab', kind: 'gitlab', displayName: 'GitLab',
+      baseUrl: 'https://code.internal.test:8443/GitLab', nameWithOwner: 'platform/app',
+      urlSafety: { allowedSchemes: ['https:'] },
+    };
+    const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({
+      iid: 11, title: 'Draft: Review', web_url: `${provider.baseUrl}/platform/app/-/merge_requests/11`,
+      source_branch: 'feature', target_branch: 'main', state: 'opened', source_project_id: 1, target_project_id: 1,
+    }), { status: 201 }));
+    vi.stubGlobal('fetch', fetcher);
+    const executeCommand = vi.fn(async () => ({ ok: true, stdout: '[]', stderr: '', exitCode: 0 }));
+    const resolveScmHostingTokenMaterialization = vi.fn(async () => ({ kind: 'available' as const, token: 'test-bound-token' }));
+    try {
+      const adapter = registration?.adapter?.pullRequests;
+      if (!adapter) throw new Error('The active provider must register a pull-request capability');
+      await expect(adapter.createPullRequest({
+        provider, head: 'feature', base: 'main', title: 'Review', body: '', draft: true,
+        runtimeServices: { executeCommand, resolveScmHostingTokenMaterialization },
+      })).resolves.toMatchObject({ number: 11, headBranch: 'feature', baseBranch: 'main' });
+      expect(executeCommand).not.toHaveBeenCalled();
+      expect(resolveScmHostingTokenMaterialization).toHaveBeenCalledWith(expect.objectContaining({
+        providerId: provider.id, host: 'code.internal.test:8443', provider,
+      }), expect.anything());
+      expect(fetcher).toHaveBeenCalledWith(
+        `${provider.baseUrl}/api/v4/projects/platform%2Fapp/merge_requests`,
+        expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Authorization: 'Bearer test-bound-token' }), redirect: 'error' }),
+      );
+      const request = fetcher.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect(request?.body && JSON.parse(new TextDecoder().decode(request.body as Uint8Array)))
+        .toEqual({ source_branch: 'feature', target_branch: 'main', title: 'Draft: Review', description: '' });
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('declares a strict target SCM hosting-provider contribution with configured-origin access', async () => {
     expect(PLUGIN_MANIFEST).toMatchObject({
       id: 'happier.scm.forge.gitlab',
@@ -41,7 +84,6 @@ describe('bundled GitLab SCM hosting provider plugin', () => {
       hostAccess: { required: expect.arrayContaining([
         expect.objectContaining({ id: 'gitlab-cloud-api', capability: 'network', scope: expect.objectContaining({ targets: [{ kind: 'fixedOrigin', origin: 'https://gitlab.com' }] }) }),
         expect.objectContaining({ id: 'gitlab-account-api', capability: 'network', scope: expect.objectContaining({ targets: [{ kind: 'connectedAccountOrigin', service: 'gitlab-account' }], privateNetwork: true }) }),
-        expect.objectContaining({ id: 'gitlab-cli-process', capability: 'process', scope: { executables: [{ kind: 'systemTool', id: 'gitlab-cli' }] } }),
       ]), optional: [] },
       contributes: {
         scmHostingProviders: [
@@ -52,7 +94,6 @@ describe('bundled GitLab SCM hosting provider plugin', () => {
             capabilities: expect.arrayContaining(['detect', 'pullRequest']),
           },
         ],
-        systemTools: [{ id: 'gitlab-cli', executableNames: ['glab'] }],
       },
     });
     expect(PLUGIN_MANIFEST).not.toHaveProperty('source');
@@ -326,9 +367,9 @@ describe('bundled GitLab SCM hosting provider plugin', () => {
     expect(adapter[`list${'PullRequests'}`]).toBeUndefined();
     expect(adapter[`get${'PullRequest'}`]).toBeUndefined();
     expect(adapter[`get${'PullRequestAuthProfileKey'}`]).toBeUndefined();
-    expect(gitlabCliPullRequestAdapter.createPullRequest).toEqual(expect.any(Function));
-    expect(gitlabCliPullRequestAdapter.listPullRequests).toEqual(expect.any(Function));
-    expect(gitlabCliPullRequestAdapter.getPullRequest).toEqual(expect.any(Function));
-    expect(gitlabCliPullRequestAdapter.getPullRequestAuthProfileKey).toEqual(expect.any(Function));
+    expect(gitlabRestPullRequestAdapter.createPullRequest).toEqual(expect.any(Function));
+    expect(gitlabRestPullRequestAdapter.listPullRequests).toEqual(expect.any(Function));
+    expect(gitlabRestPullRequestAdapter.getPullRequest).toEqual(expect.any(Function));
+    expect(gitlabRestPullRequestAdapter.getPullRequestAuthProfileKey).toEqual(expect.any(Function));
   });
 });

@@ -22,19 +22,28 @@ import { resolveOpenCodeManagedServerDialect } from './managedServerDialect.js';
 import { buildOpenCodeManagedServerAttachSpec } from './attachSpec.js';
 import { buildOpenCodeManagedServerSpawnSpec } from './spawnSpec.js';
 import { readOpenCodeProviderConfigContent } from '../../providerBinding/runtime.js';
-import { scheduleOpenCodeMcpServerRegistration } from './mcpRegistration.js';
+import {
+  buildOpenCodeSessionMcpProjection,
+  disconnectOpenCodeMcpServers,
+  scheduleOpenCodeMcpServerRegistration,
+} from './mcpRegistration.js';
 import { createOpenCodeServerClient } from './openCodeServerClient.js';
 import { createOpenCodeServerTransport } from './transport.js';
 import { createOpenCodeServerRuntime } from './runtime.js';
 import { createOpenCodeSessionRuntime } from './sessionRuntime.js';
 import { createOpenCodeExecutionRunConversation } from './executionRunRuntime.js';
 import { projectOpenCodeSessionConfiguration } from './promptConfig.js';
+import { buildOpenCodeAgentRuntimeDescriptorV1 } from '../../identity/runtimeDescriptor.js';
 import {
   OPENCODE_CONNECTED_SERVICE_SELECTION_IDENTITY_ENV,
 } from './managedServerState.js';
 import type { OpenCodeActiveSkillsReaderRegistrar } from '../controls.js';
 import type { OpenCodeRuntimeContext } from './runtimeContext.js';
 import { OPEN_CODE_MANAGED_SERVER_STARTUP_TIMEOUT_MS } from './timeoutPolicy.js';
+import {
+  resolveOpenCodeSystemToolId,
+  type OpenCodeSystemToolId,
+} from '../../systemTool.js';
 
 type Disposable = Readonly<{ dispose?: () => void | Promise<void> }>;
 
@@ -99,8 +108,16 @@ async function resolveOpenCodeServer(params: Readonly<{
   providerConfigContent?: string;
   permissionMode?: string | null;
   signal?: AbortSignal;
+  systemToolId: OpenCodeSystemToolId;
+  requestedDialect: ReturnType<typeof resolveRequestedOpenCodeServerDialect>;
+  requestAuthRequested: boolean;
 }>): Promise<ResolvedOpenCodeServer> {
   if (params.endpoint.mode === 'external-attach') {
+    // Request-auth assets and their private capability are materialized for the owned child.
+    // Never reinterpret them as configuration for a user-managed external server.
+    if (params.requestAuthRequested) {
+      throw new Error('OpenCode request authentication requires a managed server');
+    }
     if (params.providerConfigContent !== undefined) {
       throw new Error('OpenCode Provider binding requires a managed server');
     }
@@ -113,6 +130,7 @@ async function resolveOpenCodeServer(params: Readonly<{
     const spec: ManagedServiceSpec = buildOpenCodeManagedServerAttachSpec({
       id: 'opencode-server',
       baseUrl: params.endpoint.baseUrl,
+      requestedDialect: params.requestedDialect,
     });
     const managedService = await params.ctx.managedServices.supervise(
       spec,
@@ -127,14 +145,17 @@ async function resolveOpenCodeServer(params: Readonly<{
     });
   }
 
-  const managedServerDialect = await resolveOpenCodeManagedServerDialect({
+  const managedServerResolution = await resolveOpenCodeManagedServerDialect({
     exec: params.ctx.exec,
     cwd: params.directory,
     logger: params.ctx.logger,
+    systemToolId: params.systemToolId,
   });
   const spec: ManagedServiceSpec = buildOpenCodeManagedServerSpawnSpec({
     id: 'opencode-server',
-    dialect: managedServerDialect,
+    dialect: managedServerResolution.dialect,
+    healthPath: managedServerResolution.healthPath,
+    systemToolId: params.systemToolId,
     ...(params.env ? { env: params.env } : {}),
     ...(params.permissionMode === undefined
       ? {}
@@ -152,7 +173,7 @@ async function resolveOpenCodeServer(params: Readonly<{
     managedService,
     signal: params.signal,
     failureLabel: 'managed server after startup failure',
-    managedServerDialect,
+    managedServerDialect: managedServerResolution.dialect,
   });
 }
 
@@ -165,6 +186,8 @@ type OpenCodeServerRuntimeAssemblyCommon = Readonly<{
   mcpServers?: unknown;
   signal?: AbortSignal;
   models?: AgentSessionRuntimeContext['session']['services']['models'];
+  modes?: AgentSessionRuntimeContext['session']['services']['modes'];
+  inputFiles?: NonNullable<AgentSessionRuntimeContext['session']['services']['inputFiles']>;
   bindActiveSkillsReader?: OpenCodeActiveSkillsReaderRegistrar;
 }>;
 
@@ -197,6 +220,19 @@ export async function createOpenCodeServerRuntimeAssembly(
   let disposed = false;
   try {
     const providerConfigContent = await readOpenCodeProviderConfigContent(params.request);
+    const launchValues: Readonly<Record<string, unknown>> = {
+      ...(params.ctx.config?.values ?? {}),
+      ...(params.env ?? {}),
+    };
+    const systemToolId = resolveOpenCodeSystemToolId(
+      params.request.configuration?.options.opencodeCliGeneration?.value,
+    );
+    const requestedDialect = resolveRequestedOpenCodeServerDialect({
+      configuredGeneration: params.request.configuration?.options.opencodeCliGeneration?.value,
+      values: launchValues,
+      managedServerDialect: null,
+    });
+    const requestAuthRequested = usesOpenCodeConnectedServiceRequestAuth(launchValues);
     const server = await resolveOpenCodeServer({
       ctx: params.ctx,
       directory: params.directory,
@@ -205,6 +241,9 @@ export async function createOpenCodeServerRuntimeAssembly(
       providerConfigContent,
       permissionMode: params.permissionMode,
       signal: params.signal,
+      systemToolId,
+      requestedDialect,
+      requestAuthRequested,
     });
     managedService = server.managedService;
     managedServiceObservation = server.observation;
@@ -215,23 +254,16 @@ export async function createOpenCodeServerRuntimeAssembly(
     // One dialect decision per server, taken after the managed service is
     // healthy and before any operation runs, so every call in this session
     // agrees on which OpenCode surface it is talking to.
-    const launchValues: Readonly<Record<string, unknown>> = {
-      ...(params.ctx.config?.values ?? {}),
-      ...(params.env ?? {}),
-    };
-    const dialectDetection = await detectOpenCodeServerDialect({
-      fetch: transport.request,
-      // Same resolution order as the server-URL override in `endpoint.ts`:
-      // the session's own launch environment wins over the launch-environment
-      // defaults the runtime context carries. A server Happier spawned itself
-      // additionally asks for the generation of the binary it resolved, so an
-      // owned `opencode2` child is not left requesting V1 root routes it never
-      // mounts.
-      requested: resolveRequestedOpenCodeServerDialect({
-        values: launchValues,
-        managedServerDialect: server.managedServerDialect,
-      }),
-    });
+    const dialectDetection = server.managedServerDialect === null
+      ? await detectOpenCodeServerDialect({
+          fetch: transport.request,
+          requested: requestedDialect,
+        })
+      : {
+          dialect: server.managedServerDialect,
+          requested: requestedDialect,
+          probe: null,
+        };
     params.ctx.logger.info('[OpenCodeServer] resolved OpenCode server dialect', {
       dialect: dialectDetection.dialect,
       requested: dialectDetection.requested,
@@ -245,32 +277,21 @@ export async function createOpenCodeServerRuntimeAssembly(
               : { probeError: dialectDetection.probe.error }),
           }),
     });
-    if (
-      dialectDetection.dialect === 'v2'
-      && usesOpenCodeConnectedServiceRequestAuth(launchValues)
-    ) {
-      // Happier's request-auth plugin is written against OpenCode's V1 plugin
-      // contract, which has no counterpart in the V2 plugin context. Report the
-      // exact unproven combination on a default-on signal instead of letting it
-      // surface later as an opaque upstream 401.
-      params.ctx.logger.warn(
-        '[OpenCodeServer] connected-account request auth is unproven on the OpenCode V2 beta transport',
-        {
-          dialect: dialectDetection.dialect,
-          reason: 'v1_auth_plugin_contract_has_no_v2_counterpart',
-        },
-      );
-    }
     const client = createOpenCodeServerClient({
       transport,
       directory: params.directory,
       dialect: dialectDetection.dialect,
+      signal: params.signal ?? params.ctx.abort.signal,
     });
+    const mcpProjection = buildOpenCodeSessionMcpProjection(
+      params.executionRunId ?? params.happierSessionId,
+      params.mcpServers,
+    );
     const mcpRegistration = scheduleOpenCodeMcpServerRegistration({
       ctx: params.ctx,
       client,
       directory: params.directory,
-      mcpServers: params.mcpServers,
+      mcpProjection,
     });
     const operations = createOpenCodeServerRuntime({
       ctx: params.ctx,
@@ -280,8 +301,11 @@ export async function createOpenCodeServerRuntimeAssembly(
         : { executionRunId: params.executionRunId }),
       client,
       env: params.env,
+      permissionMode: params.permissionMode,
+      dialect: dialectDetection.dialect,
       readManagedServiceSnapshot: () => server.readSnapshot(),
       mcpRegistration,
+      mcpProjection,
     });
     await operations.openSession(params.executionRunId === undefined
       ? params.request.kind === 'create'
@@ -314,6 +338,7 @@ export async function createOpenCodeServerRuntimeAssembly(
       if (disposed) return;
       disposed = true;
       await operations.resetOrDisposeRuntime();
+      await disconnectOpenCodeMcpServers({ ctx: params.ctx, client, registration: mcpRegistration });
       await disposeBestEffort(params.ctx, 'managed service observation', managedServiceObservation);
       await disposeBestEffort(params.ctx, 'managed service', managedService);
     };
@@ -322,7 +347,37 @@ export async function createOpenCodeServerRuntimeAssembly(
           operations,
           request: params.request,
           disposeOperations: dispose,
+          runtimeCapabilities: {
+            sessionCapabilities: {
+              sessionListing: 'supported',
+              sessionFork: {
+                conversation: 'supported',
+                fromMessage: 'unsupported',
+              },
+              sessionRollback: { conversation: 'unsupported' },
+              usageLimitRecovery: { checkNow: 'unsupported' },
+              compaction: {
+                manual: 'supported',
+              },
+            },
+            tools: { delivery: 'native_mcp', support: 'supported' },
+          },
+          prepareProviderCliAttach: async () => {
+            const providerSessionId = operations.readSessionIdentity().sessionId;
+            if (!providerSessionId) {
+              throw new Error('OpenCode provider session identity is unavailable for local CLI attach');
+            }
+            return {
+              path: params.directory,
+              runtimeDescriptorV1: buildOpenCodeAgentRuntimeDescriptorV1({
+                backendMode: 'server',
+                providerSessionId,
+              }),
+            };
+          },
           ...(params.models ? { models: params.models } : {}),
+          ...(params.modes ? { modes: params.modes } : {}),
+          ...(params.inputFiles ? { inputFiles: params.inputFiles } : {}),
           ...(params.bindActiveSkillsReader
             ? { bindActiveSkillsReader: params.bindActiveSkillsReader }
             : {}),

@@ -4,6 +4,7 @@ import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import { ensureWorkspacePackagesBuiltForComponent as ensureWorkspacePackagesBuiltForComponentDefault } from '../../stack/scripts/utils/proc/pm.mjs';
+import { ensureUiWorkspacePackagesBuilt as ensureUiWorkspacePackagesBuiltDefault } from './ensureWorkspacePackagesBuilt.mjs';
 
 function normalizeTargetTriple(rawValue) {
   const value = String(rawValue ?? '').trim().toLowerCase();
@@ -171,13 +172,14 @@ const bootstrapDir = join(repoRoot, 'apps', 'bootstrap');
 export async function prepareTauriSidecar({
   env = process.env,
   platform = process.platform,
+  ensureUiWorkspacePackagesBuilt = ensureUiWorkspacePackagesBuiltDefault,
   ensureWorkspacePackagesBuiltForComponent = ensureWorkspacePackagesBuiltForComponentDefault,
   ensureTauriSidecarBinaryFileImpl = ensureTauriSidecarBinaryFile,
   ensureTauriSidecarEntrypointFileImpl = ensureTauriSidecarEntrypointFile,
   ensureTauriSidecarRuntimeFilesImpl = ensureTauriSidecarRuntimeFiles,
   spawnSyncImpl = spawnSync,
 } = {}) {
-  await ensureWorkspacePackagesBuiltForComponent(uiDir, { quiet: false, env });
+  await ensureUiWorkspacePackagesBuilt({ uiPackageDir: uiDir, env, publicationMode: 'artifact' });
   await ensureWorkspacePackagesBuiltForComponent(bootstrapDir, { quiet: false, env });
   await ensureTauriWatcherIgnoreFile();
 

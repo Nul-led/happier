@@ -30,7 +30,10 @@ import {
     gitBranchMerge,
     gitBranchOperationAbort,
     gitBranchOperationContinue,
+    gitBranchOperationSkip,
     gitBranchRebase,
+    gitConflictAcceptSide,
+    gitConflictMarkResolved,
 } from './operations/branchIntegrationOperations.js';
 import { gitChangeExclude, gitChangeInclude } from './operations/changeApply.js';
 import { gitChangeDiscard } from './operations/changeDiscard.js';
@@ -42,7 +45,7 @@ import { gitRemoteFetch, gitRemotePull, gitRemotePush } from './operations/remot
 import { gitRemoveIndexLock } from './operations/removeIndexLockOperation.js';
 import { gitRepositoryClone } from './operations/repositoryCloneOperations.js';
 import { gitRepositoryInit } from './operations/repositoryInitOperations.js';
-import { gitStashApply, gitStashDrop, gitStashList, gitStashPop, gitStashShow } from './operations/stashOperations.js';
+import { gitStashApply, gitStashCreate, gitStashDrop, gitStashList, gitStashPop, gitStashShow } from './operations/stashOperations.js';
 import { gitWorktreeCreate, gitWorktreePrune, gitWorktreeRemove } from './operations/worktreeOperations.js';
 import { GIT_INSTALLABLE_DEP_ID } from './installables/gitInstallable.js';
 
@@ -118,6 +121,9 @@ export function createGitBackend(): ScmBackend {
         branchRebase: gitBranchRebase,
         branchOperationContinue: gitBranchOperationContinue,
         branchOperationAbort: gitBranchOperationAbort,
+        branchOperationSkip: gitBranchOperationSkip,
+        conflictAcceptSide: gitConflictAcceptSide,
+        conflictMarkResolved: gitConflictMarkResolved,
         worktreeCreate: gitWorktreeCreate,
         worktreeRemove: gitWorktreeRemove,
         worktreePrune: gitWorktreePrune,
@@ -168,6 +174,7 @@ export function createGitBackend(): ScmBackend {
         repositoryInit: gitRepositoryInit,
         removeIndexLock: gitRemoveIndexLock,
         stashList: gitStashList,
+        stashCreate: gitStashCreate,
         stashDrop: gitStashDrop,
         stashPop: gitStashPop,
         stashApply: gitStashApply,
@@ -223,6 +230,9 @@ export function createGitScmBackendRuntimeRegistration(): ScmBackendRuntimeRegis
                 rebase: backend.branchRebase,
                 operationContinue: backend.branchOperationContinue,
                 operationAbort: backend.branchOperationAbort,
+                operationSkip: backend.branchOperationSkip,
+                conflictAcceptSide: backend.conflictAcceptSide,
+                conflictMarkResolved: backend.conflictMarkResolved,
             },
             worktree: {
                 create: backend.worktreeCreate,
@@ -246,6 +256,7 @@ export function createGitScmBackendRuntimeRegistration(): ScmBackendRuntimeRegis
                 pullRequestRunStacked: backend.pullRequestRunStacked,
             },
             stash: {
+                create: backend.stashCreate,
                 drop: backend.stashDrop,
                 pop: backend.stashPop,
                 apply: backend.stashApply,

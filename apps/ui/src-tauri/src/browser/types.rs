@@ -48,20 +48,10 @@ pub enum DesktopBrowserProducer {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum DesktopBrowserDisabledReason {
-    /// The child-embedding primitive IS implemented for this platform
-    /// (`child_embedding_supported_for` returns true); what is missing is a recorded passing QA run
-    /// or a platform prerequisite for a persistent profile. Named *unverified*, not *unimplemented*:
-    /// the old name asserted a structural gap that does not exist and told every reader the
-    /// platform could never work.
+    /// The embedding primitive exists, but macOS lacks the persistent-profile data-store API.
     #[serde(rename = "desktop_webview_child_view_unverified")]
     NativeChildViewUnverified,
-    /// X11 child-embedding is spec-permitted by Wry and `build_as_child` is linked, but it is
-    /// unproven against our Tauri-window child handle and has no recorded manual-QA evidence. Until
-    /// that verification lands (see the BRW-12 spike docs) X11 stays honestly unavailable with this
-    /// reason rather than over-claiming `available`.
-    #[serde(rename = "desktop_webview_x11_child_unverified")]
-    LinuxX11ChildEmbeddingUnverified,
-    /// Genuinely unimplemented, unlike the two above: `build_as_child` returns
+    /// `build_as_child` returns
     /// `wry::Error::UnsupportedWindowHandle` for a Wayland parent, so no embedding primitive exists
     /// here at all.
     #[serde(rename = "desktop_webview_wayland_gtk_unimplemented")]
@@ -173,19 +163,19 @@ pub struct DesktopBrowserEvalScriptRequest {
     pub script: String,
 }
 
-/// Trusted navigation-control kind for `desktop_browser_dispatch_navigation`. The injected script
-/// is DERIVED from this kind in the command (never taken from the caller), so this seam can only
-/// ever issue `location.reload()` / `window.stop()` and can never become an arbitrary-eval surface.
+/// Trusted native history controls and fixed reload/stop scripts. No caller-provided script runs.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub enum DesktopBrowserNavigationDispatchKind {
     Reload,
     Stop,
+    GoBack,
+    GoForward,
 }
 
 /// Request for `desktop_browser_dispatch_navigation`. The optional `script` the UI sends is
-/// intentionally NOT modeled here (serde ignores it): the Rust side derives the script from `kind`
-/// so the command is a fixed, trusted reload/stop seam rather than a user-eval channel.
+/// intentionally NOT modeled here (serde ignores it): `kind` selects native history or a fixed
+/// reload/stop script rather than a caller-provided eval channel.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopBrowserDispatchNavigationRequest {
@@ -256,6 +246,8 @@ pub struct DesktopBrowserPageInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub loading_state: DesktopBrowserViewLoadingState,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<DesktopBrowserPageNavigationIssue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -3,12 +3,15 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
 import { formatPluginManifestIngestionDiagnostics, type PluginSourceSpecV1 } from '@happier-dev/protocol';
+import { assertHostCanExcludeBundledPlugin, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH, parseBundledPluginPublicationFailures } from '@happier-dev/cli-common/bundledPluginPublicationPolicy';
 
 import type { LoadedPlugin } from '@/plugins/discovery/load/installed';
 import { resolveCliRuntimeAssetPath } from '@/packagedRuntime/assets/resolveCliRuntimeAssetPath';
 import { readGeneratedPluginUiArtifactsManifestSync } from '@/plugins/install/ui/generatedArtifacts';
 import { ingestCanonicalPluginManifest } from '../../../manifest/ingest';
 import { pluginSourceProvenanceForKind } from '../../../manifest/sourceProvenance';
+import type { BundledPluginPublicationFailure } from '@/plugins/validation/diagnostics/types';
+import * as generatedBundledPluginManifests from '../sources/generatedBundledPluginManifests';
 
 export type BundledPluginLocator = Readonly<{
     pluginId: string;
@@ -27,6 +30,41 @@ function readBundledPluginRootPath(locator: BundledPluginLocator): string {
 }
 
 const requireFromCli = createRequire(import.meta.url);
+let admittedPublication: Readonly<{
+    bytes: string;
+    failures: readonly BundledPluginPublicationFailure[];
+}> | null = null;
+
+/** Runner staging consumes the publication admitted by this process, not later live writes. */
+export function readAdmittedBundledPluginPublicationFailures(): string | null {
+    return admittedPublication?.bytes ?? null;
+}
+
+export function readCurrentBundledPluginPublicationFailures(): readonly BundledPluginPublicationFailure[] {
+    if (admittedPublication) return admittedPublication.failures;
+    let raw: string;
+    try {
+        raw = readFileSync(resolveCliRuntimeAssetPath(
+            BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH,
+        ), 'utf8');
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            throw new Error('Bundled plugin publication state is unknown: the publication failure file is missing', { cause: error });
+        }
+        throw error;
+    }
+    const failures = parseBundledPluginPublicationFailures(raw);
+    for (const failure of failures) {
+        assertHostCanExcludeBundledPlugin('', failure.packageName, new Error(failure.diagnostic.message));
+    }
+    admittedPublication = Object.freeze({
+        bytes: raw,
+        failures: Object.freeze(failures.map((failure) => Object.freeze({
+            ...failure, diagnostic: Object.freeze({ ...failure.diagnostic }),
+        }))),
+    });
+    return admittedPublication.failures;
+}
 
 function managedProviderKey(pluginId: string, providerId: string): string {
     return `${pluginId}\u0000${providerId}`;
@@ -122,17 +160,27 @@ function resolveInstalledBundledPluginRootPath(packageName: string): string | nu
     return null;
 }
 
-export function loadBundledPluginLocators(
+export function loadBundledPluginLocatorResult(
     locators: readonly BundledPluginLocator[],
-): readonly LoadedPlugin[] {
+    publicationFailures: readonly BundledPluginPublicationFailure[] = [],
+): Readonly<{
+    loadedPlugins: readonly LoadedPlugin[];
+    pluginFailures: readonly BundledPluginPublicationFailure[];
+}> {
     const seenPluginIds = new Set<string>();
     const unavailableProviderKeys = readUnavailableManagedProviderKeys();
     const unmatchedProviderKeys = new Set(unavailableProviderKeys);
-    const loadedPlugins = locators.map((locator): LoadedPlugin => {
+    const loadedPlugins: LoadedPlugin[] = [];
+    const pluginFailures = [...publicationFailures];
+    const failedPluginIds = new Set(publicationFailures.map((failure) => failure.pluginId));
+    for (const locator of locators) {
         if (seenPluginIds.has(locator.pluginId)) {
             throw new Error(`Duplicate bundled plugin locator '${locator.pluginId}'`);
         }
         seenPluginIds.add(locator.pluginId);
+        if (failedPluginIds.has(locator.pluginId)) continue;
+
+        try {
 
         const manifest = projectManagedRuntimePublicationManifest(
             locator,
@@ -165,7 +213,7 @@ export function loadBundledPluginLocators(
             ? readGeneratedPluginUiArtifactsManifestSync(installedPluginRootPath)
             : null;
 
-        return Object.freeze({
+        loadedPlugins.push(Object.freeze({
             pluginId: locator.pluginId,
             pluginRootPath: generatedUiArtifactsManifest && installedPluginRootPath
                 ? installedPluginRootPath
@@ -176,12 +224,43 @@ export function loadBundledPluginLocators(
             manifest: ingestion.manifest,
             sourceSpec: locator.sourceSpec,
             ...(generatedUiArtifactsManifest ? { generatedUiArtifactsManifest } : {}),
-        });
-    });
+        }));
+        } catch (error) {
+            assertHostCanExcludeBundledPlugin('', locator.sourceSpec.locator, error);
+            pluginFailures.push(Object.freeze({
+                packageName: locator.sourceSpec.locator,
+                pluginId: locator.pluginId,
+                diagnostic: Object.freeze({
+                    code: 'plugin_manifest_invalid',
+                    message: error instanceof Error ? error.message : String(error),
+                }),
+            }));
+        }
+    }
     if (unmatchedProviderKeys.size > 0) {
         throw new Error(
             `CLI managed runtime publication references unknown provider facets: ${[...unmatchedProviderKeys].map((key) => key.replace('\u0000', ':')).join(', ')}`,
         );
     }
-    return Object.freeze(loadedPlugins);
+    return Object.freeze({
+        loadedPlugins: Object.freeze(loadedPlugins),
+        pluginFailures: Object.freeze(pluginFailures),
+    });
+}
+
+export function loadBundledPluginLocators(
+    locators: readonly BundledPluginLocator[],
+): readonly LoadedPlugin[] {
+    const result = loadBundledPluginLocatorResult(locators);
+    if (result.pluginFailures.length > 0) {
+        throw new Error(result.pluginFailures[0]!.diagnostic.message);
+    }
+    return result.loadedPlugins;
+}
+
+export function loadCurrentBundledPluginLocatorResult() {
+    return loadBundledPluginLocatorResult(
+        generatedBundledPluginManifests.BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS,
+        readCurrentBundledPluginPublicationFailures(),
+    );
 }

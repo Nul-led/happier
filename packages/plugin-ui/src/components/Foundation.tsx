@@ -18,6 +18,7 @@ import {
 } from './Focus.js';
 import { usePluginTheme, usePluginTranslation } from './PluginUiProvider.js';
 import { resolveAuthorText } from './resolveAuthorText.js';
+import { Icon } from './Icon.js';
 
 type AuthorText = Readonly<{ value?: string; valueKey?: string; fallback?: string }>;
 
@@ -169,6 +170,7 @@ export function Banner({ tone = 'info', title, titleKey, description, descriptio
       title={resolveAuthorText(translate, title, titleKey) ?? title}
       description={resolveAuthorText(translate, description, descriptionKey)}
       tone={tone}
+      icon={<Icon name={tone === 'warning' || tone === 'danger' ? 'warning' : 'info'} tone={tone} />}
       theme={usePluginTheme()}
     />
   );

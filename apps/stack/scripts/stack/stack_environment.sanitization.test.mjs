@@ -158,6 +158,78 @@ test('withStackEnv omits a stale caller browser Artifact origin when the stack h
   });
 });
 
+test('withStackEnv keeps a Codex home scoped to the selected stack', async () => {
+  await withTempStackEnvFixture(async ({ stackName, storageDir }) => {
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = '/tmp/other-stack/connected-services/materialized/codex/codex-home';
+
+    try {
+      await withStackEnv({
+        stackName,
+        fn: async ({ env }) => {
+          assert.equal(env.CODEX_HOME, undefined);
+        },
+      });
+
+      const configuredCodexHome = join(storageDir, stackName, 'native-codex-home');
+      await writeFile(
+        join(storageDir, stackName, 'env'),
+        [
+          'HAPPIER_STACK_REPO_DIR=/tmp/happier',
+          `HAPPIER_STACK_CLI_HOME_DIR=${join(storageDir, stackName, 'cli')}`,
+          'HAPPIER_STACK_SERVER_PORT=3555',
+          `CODEX_HOME=${configuredCodexHome}`,
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      await withStackEnv({
+        stackName,
+        fn: async ({ env }) => {
+          assert.equal(env.CODEX_HOME, configuredCodexHome);
+        },
+      });
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+    }
+  });
+});
+
+test('withStackEnv scrubs declared Agent homes while preserving stack-explicit homes', async () => {
+  await withTempStackEnvFixture(async ({ stackName, storageDir }) => {
+    const keys = ['CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR'];
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) process.env[key] = '/tmp/foreign-agent-home';
+
+    try {
+      await withStackEnv({
+        stackName,
+        fn: async ({ env }) => {
+          for (const key of keys) assert.ok(env[key] === undefined, `${key} must be scrubbed`);
+        },
+      });
+      await writeFile(join(storageDir, stackName, 'env'), [
+        `HAPPIER_STACK_CLI_HOME_DIR=${join(storageDir, stackName, 'cli')}`,
+        ...keys.map((key) => `${key}=${join(storageDir, stackName, key)}`),
+        '',
+      ].join('\n'), 'utf8');
+      await withStackEnv({
+        stackName,
+        fn: async ({ env }) => {
+          for (const key of keys) assert.ok(env[key] === join(storageDir, stackName, key), `${key} must be stack-scoped`);
+        },
+      });
+    } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    }
+  });
+});
+
 test('withStackEnv passes through a browser Artifact origin only from its stack env file', async () => {
   await withTempStackEnvFixture(async ({ stackName, storageDir }) => {
     const artifactOrigin = 'https://artifacts.sanitize.test';

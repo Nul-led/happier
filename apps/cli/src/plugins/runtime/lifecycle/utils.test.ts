@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { mapDaemonModuleLoadErrorToDiagnostic, projectPluginFailureText } from './utils';
+import { mapDaemonModuleLoadErrorToDiagnostic, projectPluginFailureText, remainingPluginInitializationTimeoutMs } from './utils';
+
+describe('plugin initialization budget', () => {
+    it('spends the containing daemon-start remainder without a shorter plugin cutoff', () => {
+        expect(remainingPluginInitializationTimeoutMs(Date.now() + 60_000)).toBeGreaterThan(59_000);
+        expect(remainingPluginInitializationTimeoutMs()).toBe(30_000);
+    });
+});
 
 describe('plugin lifecycle failure diagnostics', () => {
     it('retains a local development source location relative to its authenticated project root', () => {

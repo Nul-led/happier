@@ -7,6 +7,7 @@ import type {
   AgentSessionOpenRequest,
   AgentSessionRuntime,
   AgentSessionRuntimeContext,
+  AgentSessionRuntimeFactory,
   AgentTerminalSurface,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import { createExecutionRunHostBackendFromConversationRuntime } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -46,10 +47,11 @@ function readStringArray(value: unknown): readonly string[] | undefined {
 }
 
 function readCodexBackendMode(
-  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
+  request: Parameters<NonNullable<AgentSessionRuntimeFactory['supportsTerminalPresentation']>>[0],
 ): 'appServer' | 'acp' {
   const environment = request.launchEnvironment?.values ?? {};
   const resolved = resolveCanonicalCodexBackendModeFromCompatInput({
+    runtimeDescriptorV1: request.runtimeDescriptorV1,
     codexBackendMode: request.configuration?.options.codexBackendMode?.value
       ?? environment.HAPPIER_CODEX_BACKEND_MODE
       ?? environment.CODEX_BACKEND_MODE,
@@ -145,8 +147,8 @@ function createCodexNativeTerminalSurface(): AgentTerminalSurface {
         argv: buildCodexTerminalArgs({
           cwd: request.cwd,
           resumeId: runtimeDescriptor?.providerSessionId,
-          permissionMode,
-          resolvePermissionPolicy: resolveCodexTerminalPermissionPolicy,
+          permissionMode: request.configuration?.workspaceWrites === 'deny' ? 'read-only' : permissionMode,
+          resolvePermissionPolicy: (mode) => resolveCodexTerminalPermissionPolicy(mode, request.configuration?.workspaceWrites),
         }),
         process: { stdio: 'inherit', windowsHide: true },
         presentation: {
@@ -164,6 +166,7 @@ export const createCodexAgentRuntime: AgentRuntimeFactory = () => {
   return {
     sessions: {
       ...controls,
+      supportsTerminalPresentation: (selection) => readCodexBackendMode(selection) === 'appServer',
       open: async (request, context) => await openCodexSession(request, context, goalProjection),
       executionRunContextV1: {
         open: async (request, context) => await openCodexExecutionRun(request, context),

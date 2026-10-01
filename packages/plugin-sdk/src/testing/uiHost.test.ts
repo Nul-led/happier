@@ -57,14 +57,27 @@ function targetedSurfaceAdmissionFixture(input: Readonly<{
     const targetGeneration = input.targetGeneration ?? 'target-generation-a';
     const contributorPluginId = input.contributorPluginId ?? 'com.acme.external-contributor';
     const contributorGeneration = input.contributorGeneration ?? 'contributor-generation-a';
+    const targetSourceCustody = {
+        kind: 'development' as const,
+        registeredRootId: 'target-root',
+    };
+    const contributorSourceCustody = {
+        kind: 'development' as const,
+        registeredRootId: 'contributor-root',
+    };
     const point = { pointId: 'sources', protocol: { id: 'review-sources', version: 1 } } as const;
     const contributor = {
         pluginId: contributorPluginId,
         contributionId: 'review-source',
-        immutableGenerationId: contributorGeneration,
+        occurrenceId: contributorGeneration,
+        sourceCustody: contributorSourceCustody,
     } as const;
     return {
-        target: { pluginId: 'com.acme.target', immutableGenerationId: targetGeneration },
+        target: {
+            pluginId: 'com.acme.target',
+            occurrenceId: targetGeneration,
+            sourceCustody: targetSourceCustody,
+        },
         surface: {
             point,
             contributor,
@@ -73,7 +86,11 @@ function targetedSurfaceAdmissionFixture(input: Readonly<{
         },
         mount: {
             kind: 'targetedSurface',
-            target: { pluginId: 'com.acme.target', immutableGenerationId: targetGeneration },
+            target: {
+                pluginId: 'com.acme.target',
+                occurrenceId: targetGeneration,
+                sourceCustody: targetSourceCustody,
+            },
             point,
             contributor,
             role: 'detail',
@@ -126,7 +143,11 @@ function targetedSurfaceAdmissionFixture(input: Readonly<{
             },
             resourceCapability: { readable: true, dynamic: true },
             contributorTargetedContributions: {
-                target: { pluginId: contributorPluginId, immutableGenerationId: contributorGeneration },
+                target: {
+                    pluginId: contributorPluginId,
+                    occurrenceId: contributorGeneration,
+                    sourceCustody: contributorSourceCustody,
+                },
                 points: [],
             },
         },
@@ -285,7 +306,7 @@ describe('readPluginUiTestkitTargetedSurfaceAdmission', () => {
             contributorManifest: targetedSurfaceContributorManifest(fixture.surface.contributor.pluginId),
         });
 
-        expect(read({ target: { ...fixture.target, immutableGenerationId: 'stale-target' } })).toBeNull();
+        expect(read({ target: { ...fixture.target, occurrenceId: 'stale-target' } })).toBeNull();
         expect(read({ mounts: [fixture.mount, fixture.mount] })).toBeNull();
         expect(read({ launchInput: { entryId: '' } })).toBeNull();
         expect(read({
@@ -611,7 +632,8 @@ describe('createPluginUiTestkit', () => {
         );
         expect(targetedContributions.target).toEqual({
             pluginId: 'com.acme.fixture',
-            immutableGenerationId: 'target-generation-a',
+            occurrenceId: 'target-occurrence-a',
+            sourceCustody: { kind: 'development', registeredRootId: 'fixture-target-root' },
         });
         expect(targetedContributions.points).toEqual([]);
         await fixture.dispose();
@@ -884,7 +906,8 @@ describe('createPluginUiTestkit', () => {
             contributor: {
                 pluginId: 'com.acme.provider',
                 contributionId: 'github-connection',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-generation-a',
+                sourceCustody: { kind: 'development' as const, registeredRootId: 'provider-root' },
             },
             role: 'setup',
             action: { pluginId: 'com.acme.provider', localId: 'connection/prepare-v1' },
@@ -895,9 +918,16 @@ describe('createPluginUiTestkit', () => {
             action: operation.action,
             input: { repository: 'happier-dev/happier' },
             selection: {
-                target: targeted.target,
+                target: {
+                    pluginId: targeted.target.pluginId,
+                    sourceCustody: { kind: 'development' as const, registeredRootId: 'target-root' },
+                },
                 point: operation.point,
-                contributor: operation.contributor,
+                contributor: {
+                    pluginId: operation.contributor.pluginId,
+                    contributionId: operation.contributor.contributionId,
+                    sourceCustody: { kind: 'development' as const, registeredRootId: 'provider-root' },
+                },
             },
             connectedAccount: { kind: 'none' as const },
             presentation: {
@@ -923,7 +953,7 @@ describe('createPluginUiTestkit', () => {
     it('projects the literal no-invoke Session draft through the public testkit', async () => {
         const serverStartDraft = {
             executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-            directory: '/workspace',
+            directory: { kind: 'path' as const, path: '/workspace' },
             agentTarget: {
                 kind: 'agent' as const,
                 identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
@@ -1007,7 +1037,8 @@ describe('createPluginUiTestkit', () => {
             contributor: {
                 pluginId: 'com.acme.scm',
                 contributionId: 'github',
-                immutableGenerationId: 'scm-generation-1',
+                occurrenceId: 'scm-generation-1',
+                sourceCustody: { kind: 'development' as const, registeredRootId: 'scm-root' },
             },
             role: 'prepareReviewWorkspace',
             action: { pluginId: 'com.acme.scm', localId: 'prepare-review-workspace' },
@@ -1018,9 +1049,16 @@ describe('createPluginUiTestkit', () => {
             action: operation.action,
             input: { repository: 'acme/widgets' },
             selection: {
-                target: targeted.target,
+                target: {
+                    pluginId: targeted.target.pluginId,
+                    sourceCustody: { kind: 'development' as const, registeredRootId: 'target-root' },
+                },
                 point: operation.point,
-                contributor: operation.contributor,
+                contributor: {
+                    pluginId: operation.contributor.pluginId,
+                    contributionId: operation.contributor.contributionId,
+                    sourceCustody: { kind: 'development' as const, registeredRootId: 'scm-root' },
+                },
             },
             connectedAccount: { kind: 'none' as const },
             presentation: {
@@ -1235,7 +1273,8 @@ describe('createPluginUiTestkit', () => {
                 contributor: {
                     pluginId: 'com.acme.provider',
                     contributionId: 'provider',
-                    immutableGenerationId: 'provider-generation-a',
+                    occurrenceId: 'provider-generation-a',
+                    sourceCustody: { kind: 'development' as const, registeredRootId: 'provider-root' },
                 },
                 role: 'setup',
                 action: { pluginId: 'com.acme.provider', localId: 'setup' },

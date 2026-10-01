@@ -9,7 +9,7 @@ import { createStablePluginResourcesOwner } from './resources';
 import { createProductionPluginInvocationServiceOwners } from './production';
 
 describe('plugin resources invocation factory seam', () => {
-    it('advertises and binds resources only when the exact generation owner is installed', async () => {
+    it('advertises and binds resources only when the exact occurrenceId owner is installed', async () => {
         const resources = await createStablePluginResourcesOwner({
             registry: { resources: [] },
             generations: new Map([['acme.alpha', {
@@ -28,11 +28,11 @@ describe('plugin resources invocation factory seam', () => {
         const seed = Object.freeze({
             plugin: Object.freeze({ id: 'acme.alpha', version: '1.0.0' }),
             contribution: Object.freeze({ id: 'run', qualifiedId: 'acme.alpha/run' }),
-            generation: 'registry:7',
+            occurrenceId: 'registry:7',
             correlationId: 'correlation',
             surface: 'cli' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const binding = createLoggerAndEventsAvailablePluginInvocationServiceBinding('registry:7', 'binding');
 
@@ -55,11 +55,12 @@ describe('plugin resources invocation factory seam', () => {
         const seed = Object.freeze({
             plugin: Object.freeze({ id: 'acme.alpha', version: '1.0.0' }),
             contribution: Object.freeze({ id: 'run', qualifiedId: 'acme.alpha/run' }),
-            generation: 'registry:7', correlationId: 'correlation', surface: 'cli' as const,
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            occurrenceId: 'registry:7', correlationId: 'correlation', surface: 'cli' as const,
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         });
         const resolved = await owners.resolveHostBinding(Object.freeze({
-            qualifiedId: 'acme.alpha/run', pluginId: 'acme.alpha', localId: 'run', generation: 'registry:7',
+            qualifiedId: 'acme.alpha/run', pluginId: 'acme.alpha', localId: 'run', occurrenceId: 'registry:7',
+            sourceCustody: { kind: 'development' as const, registeredRootId: 'acme-alpha-root' },
             dangerLevel: 'safe', scopes: Object.freeze(['global']), surfaces: Object.freeze(['cli']),
             hostAccess: Object.freeze([]), input: Object.freeze({}), policyFingerprint: 'a'.repeat(64),
         }), { hostAccessRequests: [], surface: 'cli' });
@@ -68,7 +69,8 @@ describe('plugin resources invocation factory seam', () => {
         expect(owners.createServices(seed, resolved.serviceBinding).availability('resources'))
             .toEqual({ status: 'available' });
         const uncommitted = await owners.resolveHostBinding(Object.freeze({
-            qualifiedId: 'acme.beta/run', pluginId: 'acme.beta', localId: 'run', generation: 'registry:7',
+            qualifiedId: 'acme.beta/run', pluginId: 'acme.beta', localId: 'run', occurrenceId: 'registry:7',
+            sourceCustody: { kind: 'development' as const, registeredRootId: 'acme-beta-root' },
             dangerLevel: 'safe', scopes: Object.freeze(['global']), surfaces: Object.freeze(['cli']),
             hostAccess: Object.freeze([]), input: Object.freeze({}), policyFingerprint: 'b'.repeat(64),
         }), { hostAccessRequests: [], surface: 'cli' });

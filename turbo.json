@@ -16,12 +16,14 @@
       "dependsOn": ["^build:finite"],
       "inputs": [
         "$TURBO_DEFAULT$",
-        "$TURBO_ROOT$/scripts/workspaces/**"
+        "$TURBO_ROOT$/scripts/workspaces/**",
+        "$TURBO_ROOT$/packages/protocol/src/**",
+        "$TURBO_ROOT$/apps/stack/scripts/utils/proc/**"
       ],
       "outputs": []
     },
     "build:finite": {
-      "dependsOn": ["generated:finite", "prepare:finite", "^build:finite"],
+      "dependsOn": ["prepare:finite", "^build:finite"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/scripts/workspaces/**"
@@ -54,7 +56,7 @@
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/scripts/workspaces/**",
-        "$TURBO_ROOT$/packages/{privacy-kit,protocol,peer-mediation,transfers,voice-modelpacks,agents,cli-common,release-runtime,channels-protocol,support,connection-supervisor,triage-protocol,triage-sources,plugin-sdk}/dist/**/*.d.ts",
+        "$TURBO_ROOT$/packages/{privacy-kit,protocol,peer-mediation,transfers,voice-modelpacks,agents,cli-common,release-runtime,channels-protocol,support,connection-supervisor,session-core,triage-protocol,triage-sources,plugin-sdk}/dist/**/*.d.ts",
         "$TURBO_ROOT$/packages/{privacy-kit,cli-common}/*.{d.ts,d.mts,d.cts}",
         "$TURBO_ROOT$/packages/{audio-stream-native,sherpa-native,ssh-native,terminal-native}/src/**/*.ts"
       ],

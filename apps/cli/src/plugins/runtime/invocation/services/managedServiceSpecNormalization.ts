@@ -5,6 +5,7 @@ import {
 } from '@happier-dev/protocol';
 import type {
     ManagedServiceHealthCheck,
+    ManagedServiceHttpHealthResponse,
     ManagedServiceSpec,
 } from '@happier-dev/plugin-sdk/managed-services';
 
@@ -142,6 +143,73 @@ function normalizedStaticHealthHeaders(
     }
 }
 
+const MANAGED_SERVICE_HTTP_HEALTH_JSON_REQUIREMENTS = new Set([
+    'true',
+    'nonEmptyString',
+    'nonNegativeInteger',
+    'array',
+    'object',
+]);
+
+export function isManagedServiceHttpHealthResponse(
+    value: unknown,
+): value is ManagedServiceHttpHealthResponse {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return false;
+    }
+    const candidate = value as Readonly<{
+        kind?: unknown;
+        required?: unknown;
+    }>;
+    if (
+        candidate.kind !== 'jsonObject'
+        || typeof candidate.required !== 'object'
+        || candidate.required === null
+        || Array.isArray(candidate.required)
+    ) {
+        return false;
+    }
+    const requiredEntries = Object.entries(candidate.required);
+    return requiredEntries.length > 0
+        && requiredEntries.every(([name, requirement]) => (
+            name.length > 0
+            && typeof requirement === 'string'
+            && MANAGED_SERVICE_HTTP_HEALTH_JSON_REQUIREMENTS.has(requirement)
+        ));
+}
+
+function normalizedHttpHealthAlternatives(
+    healthCheck: Extract<ManagedServiceHealthCheck, Readonly<{ kind: 'http' }>>,
+): Extract<ManagedServiceHealthCheck, Readonly<{ kind: 'http' }>>['alternatives'] {
+    const alternatives = healthCheck.alternatives;
+    if (alternatives === undefined) return undefined;
+    if (healthCheck.target !== undefined || alternatives.length === 0) {
+        return specInvalid(
+            'Managed-service HTTP health alternatives must be non-empty and mutually exclusive with target',
+        );
+    }
+    return Object.freeze(alternatives.map((alternative) => {
+        if (
+            alternative.target.kind !== 'servicePath'
+            || typeof alternative.target.path !== 'string'
+            || alternative.target.path.length === 0
+            || !isManagedServiceHttpHealthResponse(alternative.response)
+        ) {
+            return specInvalid(
+                'Managed-service HTTP health alternative is invalid',
+            );
+        }
+        const requiredEntries = Object.entries(alternative.response.required);
+        return Object.freeze({
+            target: Object.freeze({ ...alternative.target }),
+            response: Object.freeze({
+                kind: 'jsonObject' as const,
+                required: Object.freeze(Object.fromEntries(requiredEntries)),
+            }),
+        });
+    }));
+}
+
 export function normalizeManagedServiceHealthyWaitTimeout(
     timeoutMs: number | undefined,
     startupTimeoutMs: number,
@@ -190,6 +258,14 @@ export function normalizeManagedServiceSpec(
         ? spec.healthCheck
         : Object.freeze({
             ...spec.healthCheck,
+            ...(spec.healthCheck.kind === 'http'
+                && spec.healthCheck.alternatives !== undefined
+                ? {
+                    alternatives: normalizedHttpHealthAlternatives(
+                        spec.healthCheck,
+                    ),
+                }
+                : {}),
             ...(spec.healthCheck.kind === 'http'
                 && spec.healthCheck.headers !== undefined
                 ? {

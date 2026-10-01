@@ -7,6 +7,7 @@ import { createUnavailablePluginServicesFactory } from '@/plugins/runtime/invoca
 import { createTargetActionInvocationRegistry } from '@/plugins/runtime/invocation/targetActionRegistry';
 import { executeContributedAction } from '@/plugins/runtime/invocation/actions/executeContributedAction';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import { processClaimedPluginWebhookDeliveryV1 } from './webhookDeliveryWorker';
 
@@ -40,7 +41,7 @@ describe('webhook delivery canonical Action admission', () => {
     const effects: number[] = [];
     const target = createTargetActionInvocationRegistry({
       actions: [{
-        pluginId: 'acme.github', pluginVersion: '1.0.0', generation: '1', localId: 'handle-webhook',
+        pluginId: 'acme.github', pluginVersion: '1.0.0', occurrenceId: createPluginRuntimeOccurrenceId('acme.github'), localId: 'handle-webhook',
         definition: { id: 'handle-webhook', dangerLevel: 'safe', scopes: ['global'], surfaces: ['plugin'] },
         handler: async (input) => {
           const delivery = (input as { delivery: { attempt: number } }).delivery;
@@ -49,7 +50,7 @@ describe('webhook delivery canonical Action admission', () => {
         },
       }],
       resolveAuthorizationFacts: (action) => ({
-        generation: { targetGeneration: action.generation, desiredGeneration: available ? action.generation : '2', appliedGeneration: action.generation },
+        generation: { targetGeneration: action.occurrenceId, desiredGeneration: available ? action.occurrenceId : '2', appliedGeneration: action.occurrenceId },
         resourceSelections: [], scopedGrants: [], operatingSystemAuthorization: [],
       }),
       resolveHostBinding: createTargetActionHostBindingResolver(),

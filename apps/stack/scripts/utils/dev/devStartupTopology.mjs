@@ -9,6 +9,24 @@ export function resolveDevWatchEnabled({
   return Boolean(watchRequested || (!noWatchRequested && interactive));
 }
 
+export function shouldResolveAdoptedServerRuntimePid({
+  serverRequested = false,
+  stackMode = false,
+  runtimeStatePath,
+  serverProcessPid,
+  runtimeProxyAlreadyOwned = false,
+  adoptedServer = false,
+} = {}) {
+  return Boolean(
+    serverRequested
+    && stackMode
+    && runtimeStatePath
+    && !serverProcessPid
+    && !runtimeProxyAlreadyOwned
+    && adoptedServer
+  );
+}
+
 function coerceRuntimePid(pid) {
   const value = Number(pid);
   return Number.isFinite(value) && value > 1 ? value : null;

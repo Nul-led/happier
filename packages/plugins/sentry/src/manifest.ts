@@ -160,6 +160,16 @@ const SENTRY_SOURCE_DESCRIPTOR = {
     workflowSubject: 'errorIssue' as const,
     displayName: 'Error issue',
     pluralDisplayName: 'Error issues',
+    // r0.42: the Triage detail frame draws these tabs and asks this source for
+    // each as a panel. Files and Checks come from the linked fix PR; this
+    // source's own views follow the shared tabs.
+    detailTabs: [
+      { kind: 'shared' as const, id: 'overview' as const },
+      { kind: 'shared' as const, id: 'activity' as const },
+      { kind: 'source' as const, id: 'stack-trace', title: 'Stack trace' },
+      { kind: 'source' as const, id: 'occurrences', title: 'Occurrences' },
+      { kind: 'source' as const, id: 'release', title: 'Release' },
+    ],
   }],
 };
 
@@ -320,14 +330,12 @@ export const SENTRY_PLUGIN = definePlugin({
     [SENTRY_ACTION_IDS.listInstances]: {
       title: 'Discover Sentry organizations',
       description: 'Lists the Sentry organizations each connected Sentry account can reach.',
-      scopes: ['global'],
       surfaces: sources.operations.listInstances.declaration.surfaces,
       // Mounted-only placement. `plugin` stays because the Triage daemon
       // consumes it and `ui` because this source's own mounted surfaces hold
       // present-user authority; the explicit empty list only withdraws the
       // Action from global placement discovery — it disables no invocation.
       placementBindings: [],
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.listInstances.declaration.dangerLevel,
       inputSchema: sources.operations.listInstances.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.listInstances.declaration.resultSchema.jsonSchema,
@@ -337,9 +345,7 @@ export const SENTRY_PLUGIN = definePlugin({
     [SENTRY_ACTION_IDS.scan]: {
       title: 'Scan Sentry issues',
       description: 'Reads one page of the configured Sentry organization issue walk.',
-      scopes: ['global'],
       surfaces: sources.operations.scan.declaration.surfaces,
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.scan.declaration.dangerLevel,
       inputSchema: sources.operations.scan.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.scan.declaration.resultSchema.jsonSchema,
@@ -351,15 +357,12 @@ export const SENTRY_PLUGIN = definePlugin({
       title: 'Read one Sentry issue projection',
       description: 'Reads the live summary, the tag distribution, or the recorded activity of'
         + ' one Sentry issue.',
-      scopes: ['global'],
       // Only this source's own mounted detail body invokes these source-native
       // reads, through the mounted Plugin UI host — present-user authority.
       // The explicit empty list keeps global placement discovery from offering
       // them a destination while the mounted invocation stays untouched.
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: SentryReadIssueInputV1Schema.jsonSchema,
       resultSchema: SentryReadIssueResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -370,11 +373,8 @@ export const SENTRY_PLUGIN = definePlugin({
       title: 'Read retained Sentry occurrences',
       description: 'Reads one page of the events Sentry retained for one issue in the queried'
         + ' window.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: SentryIssueEventsInputV1Schema.jsonSchema,
       resultSchema: SentryIssueEventsResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -385,11 +385,8 @@ export const SENTRY_PLUGIN = definePlugin({
       title: 'Read one Sentry occurrence',
       description: 'Reads the representative or one selected occurrence of a Sentry issue as a'
         + ' redacted projection.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: SentryReadEventInputV1Schema.jsonSchema,
       resultSchema: SentryReadEventResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -399,11 +396,8 @@ export const SENTRY_PLUGIN = definePlugin({
     [SENTRY_ACTION_IDS.listTagValues]: {
       title: 'Read one Sentry tag distribution',
       description: 'Reads one page of the value distribution of a single tag key on one issue.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: SentryTagValuesInputV1Schema.jsonSchema,
       resultSchema: SentryTagValuesResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -413,14 +407,12 @@ export const SENTRY_PLUGIN = definePlugin({
     [SENTRY_ACTION_IDS.get]: {
       title: 'Read a Sentry issue',
       description: 'Reads one Sentry issue authoritatively through its configured organization.',
-      scopes: ['global'],
       surfaces: sources.operations.get.declaration.surfaces,
       // Mounted-only placement. `plugin` stays because the Triage daemon
       // consumes it and `ui` because this source's own mounted surfaces hold
       // present-user authority; the explicit empty list only withdraws the
       // Action from global placement discovery — it disables no invocation.
       placementBindings: [],
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.get.declaration.dangerLevel,
       inputSchema: sources.operations.get.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.get.declaration.resultSchema.jsonSchema,

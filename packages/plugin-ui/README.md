@@ -91,6 +91,63 @@ Subpath exports are available for narrower imports:
 import { usePluginHostApi, usePluginResource } from '@happier-dev/plugin-ui';
 ```
 
+### Responsive composition
+
+Use `ListDetailLayout` for a collection and its selected detail in a bounded
+fill region. Supply the readable minimum width of each pane and your preferred
+list ratio; account for your content's text scale and inner padding in those
+minimums. The component measures its own width, reserves the gap, and shows both
+panes only when they fit. Until measured, an active detail occupies the region.
+
+```tsx
+<ListDetailLayout
+  minListWidth={320}
+  minDetailWidth={480}
+  preferredListRatio={0.4}
+  gap="small"
+  list={listContent}
+  detail={selectedDetail}
+/>
+```
+
+Selection, navigation and loading remain with the caller. Set `detail` to `null`
+to show only the list, or keep a route outlet supplied and control its visibility
+with `detailActive`. For a collection index that shows an introduction beside
+the list on wide screens, set `detailActive` and `stackedPane="list"`; the list
+then stays visible alone when the panes cannot fit. Both pane hosts retain their
+identity across resizing and
+visibility changes; inactive content stays mounted, hidden from layout and
+assistive technology. The caller still owns the identity of the content it
+supplies. A `list` render function can read the same measured layout for local
+composition; it receives `null` before the first measurement. Put outer padding
+around the component and pane padding in `listStyle` or `detailStyle` so its
+measurement represents the available pane region.
+
+Use `Columns` with `Column` children for a wrapping layout of up to four columns
+per row. `minColumnWidth` determines how many columns fit in the measured
+container, `columns` requests their maximum count, and `span` assigns a child
+that many column slots, capped at the current count. Children keep their
+identity when the container changes width. These components share Happier
+core's column implementation; collection selection and data-grid semantics
+remain with the caller.
+
+### Settings and detail pages
+
+A plugin page that configures something uses Happier's configuration-page
+anatomy through the same presentation owners Happier's own settings use:
+`PageHeader` (title, purpose, identity mark, meta line, actions; the host places
+its back arrow and hides the title under a native header), `ItemGroup` with a
+sentence-case `title`, `description` and optional section `action` (one hairline
+sheet, rows divided by full-width hairlines), `Item` rows with one control in
+`accessory`, `Toggle`, `Select` with `presentation="segmented"` or `"field"`,
+`TextField presentation="field"` (typed in place, saved on leaving with `onCommit`),
+`SelectionTiles`, and `EmptyState` with `layout="page"` or `"line"`. Page
+geometry and type come from one owner (`HAPPIER_PAGE_METRICS`,
+`HAPPIER_PAGE_TEXT` in `./presentation`); a same-realm host also installs its
+exact page colours (`HappierUiPalette`) and page chrome, and without them the
+colours resolve from the public theme snapshot. See the published guide
+"Settings and detail pages" (`apps/docs/content/docs/plugins/ui/configuration-pages.mdx`).
+
 ### Advanced trusted-author tier
 
 Use the root tier for ordinary surfaces. When a curated component does not fit
@@ -171,6 +228,7 @@ copy. Graduated so far:
 
 | Family | Status |
 |---|---|
+| `ListDetailLayout`, `Columns`, `Column` | Shared measured composition used by Happier core and plugin surfaces; pane and column children retain their identity across responsive layout changes |
 | `Text` | Real React Native semantics: projected theme typography and tone, user text scale, selectability scope, accessibility identity |
 | `Spinner`, `Status`, `State`, `LoadingState`, `EmptyState`, `ErrorState` | Real components over one shared state/feedback implementation Happier's own empty, spinner and status surfaces render too |
 | `Button` | Real pressable semantics over the shared press→pending owner Happier's own buttons render: async pending, reentry guard, hover/focus, accessible busy/disabled state |
@@ -179,6 +237,7 @@ copy. Graduated so far:
 | `List`, `List.Section`, `List.Item`, `Item`, `ItemGroup` | Real list and row semantics over the shared collection owner. Virtualized `List` owns its bounded search/filter/selected-option state before rows reach the native virtualizer; authors retain match semantics and controlled values. Authors mark independently interactive accessories with `accessoryOutsidePressable`; theme injection, touch-target policy, overflow placement and group indexing remain adapter-owned |
 | `Form`, `Form.Field`, `Form.TextField`, `Form.Toggle`, `Form.Select`, `Form.ValidationMessage`, `Form.Actions` | Real form semantics over the canonical action-form owner. Authors provide static already-resolved options; host option sources and account inventory remain host-owned |
 | `Popover`, `Menu`, `Dropdown`, `ContextMenu` | Controlled overlay semantics over the incumbent presentation host. It owns anchoring, focus return, Escape, outside dismissal and Android Back; authors supply only semantic state and items |
+| `SessionProvider`, `SessionTranscript`, `SessionComposer`, `SessionChat` | In progress. A host-mediated live Session (transcript, composer, approvals) rendered by Happier's own session view. One controller per provider and at most one of each part; parts fill a bounded region. RN/RNW only: isolated tests and hosted web render the author's `fallback` |
 
 `./presentation` and `./environment` are the advanced public tier over the
 shared implementation and its environment seam. They exist so Happier core and
@@ -203,8 +262,8 @@ source-owned inclusion contract is:
 | `package.json` | Package metadata and the declared entry points |
 | `README.md` | This file |
 | `API.md` | The generated public API inventory |
-| `api-surface.json` | The machine-readable public surface the API governance check compares against |
-| `api-declarations.md` | The generated declaration listing behind that check |
+| `api-surface.json` | The machine-readable public surface, generated at pack time |
+| `api-declarations.md` | The generated declaration listing, generated at pack time |
 
 The three API-governance artifacts ship deliberately: they are the published
 record of the public surface, and an author reads `API.md` from

@@ -93,7 +93,7 @@ describe('GitHub triage entry mapping', () => {
 
     expect(
       requireProjection(projectGithubEntry(merged!, GITHUB_FIXTURE_REPOSITORY_ID)).snapshot.state,
-    ).toEqual({ presentation: 'closed', nativeLabel: 'Merged' });
+    ).toEqual({ presentation: 'resolved', nativeLabel: 'Merged' });
     expect(
       requireProjection(projectGithubEntry(closed!, GITHUB_FIXTURE_REPOSITORY_ID)).snapshot.state,
     ).toEqual({ presentation: 'closed', nativeLabel: 'Closed' });

@@ -1,10 +1,15 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import {
   createCurrentGlobalExternalSessionsRouter,
   type CurrentGlobalExternalSessionsRouter,
 } from '@/session/external/currentGlobalRouting';
 import type { ProvidersService } from '@happier-dev/plugin-sdk/providers';
+
+import { projectPath } from '@/projectPath';
 
 import type { PluginReloadController } from '@/plugins/runtime/reload/controller';
 import type { StablePluginConnectedAccountsOwner } from '@/plugins/runtime/invocation/services/connectedAccounts';
@@ -16,7 +21,8 @@ import type { PluginChangeRequest, PreparedDaemonPluginChange } from './changeCo
 const unusedTargetedContributionsOwner = createTargetedContributionsService({
   subscribeToCatalogChanges: () => () => undefined,
   readAdmittedSnapshot: async () => Object.freeze({
-    generation: 'unused-target-generation',
+    occurrenceId: 'unused-target-occurrence',
+    sourceCustody: { kind: 'development' as const, registeredRootId: 'unused-root' },
     contributions: Object.freeze([]),
   }),
 });
@@ -30,10 +36,12 @@ const ownerMocks = vi.hoisted(() => ({
   pathPreparerParams: null as null | Readonly<Record<string, unknown>>,
   npmPreparerParams: null as null | Readonly<Record<string, unknown>>,
   archivePreparerParams: null as null | Readonly<Record<string, unknown>>,
-  bundledSourceOverlayGenerationIds: null as null | readonly string[],
   prepareNpm: vi.fn(),
   preparePath: vi.fn(),
   prepareArchive: vi.fn(),
+  decidePluginChange: vi.fn(),
+  statusPluginChange: vi.fn(),
+  listPendingPluginChanges: vi.fn(),
   readStore: vi.fn(),
   initializeStore: vi.fn(async () => undefined),
   readAvailabilityInventory: vi.fn(async (): Promise<PluginRegistryAvailabilityInventory> => Object.freeze({
@@ -61,7 +69,9 @@ vi.mock('@/plugins/daemon/changeService', () => ({
     ownerMocks.changeServiceParams = params;
     return Object.freeze({
       requestPluginChange: vi.fn(),
-      decidePluginChange: vi.fn(),
+      decidePluginChange: ownerMocks.decidePluginChange,
+      statusPluginChange: ownerMocks.statusPluginChange,
+      listPendingPluginChanges: ownerMocks.listPendingPluginChanges,
       runHardRevocationCurrentnessChange: vi.fn(),
       quiesceForHandoff: vi.fn(),
       shutdown: vi.fn(),
@@ -98,37 +108,9 @@ vi.mock('@/plugins/runtime/resolveExecutablePluginRuntimeRegistry', () => ({
     });
   }),
 }));
-vi.mock('@/plugins/projection/registry/sources/generatedBundledPluginArtifacts', async (importOriginal) => {
-  const actual = await importOriginal<
-    typeof import('@/plugins/projection/registry/sources/generatedBundledPluginArtifacts')
-  >();
-  const sourceOverlayRunnerPluginIds = new Set([
-    'happier.agent.codex',
-    'happier.agent.cursor',
-    'happier.agent.ohmypi',
-    'happier.agent.pi',
-  ]);
-  const artifacts = actual.BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS.filter((artifact) => (
-    sourceOverlayRunnerPluginIds.has(artifact.record.pluginId)
-  ));
-  if (artifacts.length !== sourceOverlayRunnerPluginIds.size) {
-    throw new Error('Expected every source-overlay runner bundled artifact');
-  }
-  ownerMocks.bundledSourceOverlayGenerationIds = Object.freeze(
-    artifacts.map((artifact) => artifact.record.immutableGenerationId),
-  );
-  return {
-    // The generated projection is a boundary. Keep the four source overlays
-    // real so this owner cannot mistake activation-source selection for custody retention.
-    BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS: Object.freeze(artifacts),
-  };
-});
 vi.mock('@/plugins/projection/registry/sources/generatedBundledPlugins', () => ({
   // Registry construction is mocked below; loading bundled plugin packages is not part of this owner test.
   BUNDLED_FIRST_PARTY_PLUGINS: Object.freeze([]),
-}));
-vi.mock('@/plugins/projection/registry/sources/generatedBundledPluginManifests', () => ({
-  BUNDLED_FIRST_PARTY_PLUGIN_PACKAGE_NAMES: Object.freeze([]),
 }));
 vi.mock('@/plugins/projection/registry/createResolvedContributionRegistry', () => ({
   // Recovery-mode contribution projection is separately owned; this test only
@@ -156,6 +138,7 @@ vi.mock('@/ui/logger', () => ({
 type CreateDaemonPluginRuntimeOwner = typeof import('./runtimeOwner').createDaemonPluginRuntimeOwner;
 
 let createDaemonPluginRuntimeOwner: CreateDaemonPluginRuntimeOwner;
+let happyHomeDir: string;
 
 function createUnusedConnectedAccountsOwner(): StablePluginConnectedAccountsOwner {
   return Object.freeze({
@@ -181,7 +164,8 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
     ({ createDaemonPluginRuntimeOwner } = await import('./runtimeOwner'));
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-runtime-owner-test-'));
     ownerMocks.runtimeLifecycleParams = null;
     ownerMocks.resolveRuntimeRegistryParams = null;
     ownerMocks.resolveRuntimeRegistryOverride = null;
@@ -193,6 +177,12 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
     ownerMocks.prepareNpm.mockReset();
     ownerMocks.preparePath.mockReset();
     ownerMocks.prepareArchive.mockReset();
+    ownerMocks.decidePluginChange.mockReset();
+    ownerMocks.statusPluginChange.mockReset();
+    ownerMocks.listPendingPluginChanges.mockReset();
+    ownerMocks.decidePluginChange.mockResolvedValue({ kind: 'expired' });
+    ownerMocks.statusPluginChange.mockResolvedValue({ kind: 'expired' });
+    ownerMocks.listPendingPluginChanges.mockResolvedValue({ changes: [] });
     ownerMocks.readStore.mockReset();
     ownerMocks.initializeStore.mockClear();
     ownerMocks.readAvailabilityInventory.mockClear();
@@ -200,23 +190,17 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
     ownerMocks.releaseInitialLease.mockClear();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
+    await rm(happyHomeDir, { recursive: true, force: true });
   });
 
-  it('retains every executable source-overlay generation for custody cleanup', async () => {
+  it('projects workspace discovery through the existing project-trust decision corridor', async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), 'happier-runtime-owner-workspace-trust-'));
+    await mkdir(join(projectRoot, '.happier', 'plugins'), { recursive: true });
     const reloadController: PluginReloadController = {
       adoptPreparedRuntimeRegistry: vi.fn(),
-      acquireRuntimeRegistry: vi.fn(async (params = {}) => {
-        const registry = await params.resolveRuntimeRegistry?.();
-        if (!registry) throw new Error('missing initial registry');
-        return Object.freeze({
-          registry,
-          source: 'active' as const,
-          durableRevision: registry.durableRevision ?? -1,
-          release: ownerMocks.releaseInitialLease,
-        });
-      }),
+      acquireRuntimeRegistry: vi.fn(),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => true),
       invalidateRuntimeProjection: vi.fn(),
@@ -226,35 +210,45 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       subscribe: vi.fn(() => () => undefined),
       getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
-      currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
-        () => null,
-      ),
+      currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(() => null),
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
     };
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-source-overlay-retention-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
     });
 
-    await owner.initialize();
-
-    const expectedGenerationIds = ownerMocks.bundledSourceOverlayGenerationIds;
-    if (!expectedGenerationIds) {
-      throw new Error('Expected source-overlay runner generation identities');
-    }
-    expect(expectedGenerationIds).toHaveLength(4);
-    expect(ownerMocks.stateStoreParams?.retainedCurrentHostGenerationIds).toEqual(
-      expectedGenerationIds,
-    );
-    expect(ownerMocks.stateStoreParams?.bundledArtifacts).toEqual(
-      expect.arrayContaining(expectedGenerationIds.map((immutableGenerationId) => (
+    try {
+      await expect(owner.changeService.controlPluginDevelopment?.({
+        kind: 'registerWorkspace',
+        projectRoot,
+      })).resolves.toMatchObject({ kind: 'trustRequired' });
+      const listed = await owner.changeService.listPendingPluginChanges();
+      expect(listed.changes).toEqual([
         expect.objectContaining({
-          record: expect.objectContaining({ immutableGenerationId }),
-        })
-      ))),
-    );
+          kind: 'reviewRequired',
+          reviewKind: 'projectTrust',
+          review: { source: { kind: 'path', locator: await realpath(projectRoot) } },
+        }),
+      ]);
+      const pending = listed.changes[0];
+      if (!pending || pending.kind !== 'reviewRequired') throw new Error('Expected workspace project trust');
+      await expect(owner.changeService.statusPluginChange({
+        pendingChangeId: pending.pendingChangeId,
+      })).resolves.toEqual(pending);
+      await expect(owner.changeService.decidePluginChange({
+        pendingChangeId: pending.pendingChangeId,
+        decision: 'installAndTrust',
+        optionalSelections: [],
+      })).resolves.toEqual({ kind: 'projectTrustAccepted', projectRoot: await realpath(projectRoot) });
+      await expect(owner.changeService.listPendingPluginChanges()).resolves.toEqual({ changes: [] });
+      expect(ownerMocks.decidePluginChange).not.toHaveBeenCalled();
+    } finally {
+      await owner.changeService.shutdown();
+      await rm(projectRoot, { recursive: true, force: true });
+    }
   });
 
   it('publishes the initial registry before gating its one-time background activation', async () => {
@@ -322,7 +316,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
     const onDurableRegistryApplied = vi.fn();
     const onRuntimeProjectionInvalidated = vi.fn();
     const ownerParams = {
-      happyHomeDir: '/tmp/happier-runtime-owner-provider-order-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled' as const,
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -393,7 +387,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
     };
     const ownerParams = {
-      happyHomeDir: '/tmp/happier-runtime-owner-applied-notification-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled' as const,
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -452,7 +446,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
     };
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-origin-context-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -467,11 +461,59 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       .toBe(resolveCurrentMachineExecutionOriginContext);
   });
 
+  it('admits bundled source custody through the initial registry before root initialization', async () => {
+    const reloadController: PluginReloadController = {
+      adoptPreparedRuntimeRegistry: vi.fn(),
+      acquireRuntimeRegistry: vi.fn(async (params = {}) => {
+        const registry = await params.resolveRuntimeRegistry?.();
+        if (!registry) throw new Error('missing initial registry');
+        return Object.freeze({
+          registry,
+          source: 'active' as const,
+          durableRevision: registry.durableRevision ?? -1,
+          release: ownerMocks.releaseInitialLease,
+        });
+      }),
+      tryAcquireRuntimeRegistry: vi.fn(() => null),
+      isRuntimeRegistryCurrent: vi.fn(() => true),
+      invalidateRuntimeProjection: vi.fn(),
+      applyResourceSessionAccessWitness: vi.fn(),
+      shutdown: vi.fn(),
+      getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
+      subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
+      publishDurableRunningSessionDisposition: vi.fn(),
+      currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(() => null),
+      subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
+    };
+    const owner = createDaemonPluginRuntimeOwner({
+      happyHomeDir,
+      staleCandidateCleanup: 'disabled',
+      reloadController,
+      connectedAccounts: createUnusedConnectedAccountsOwner(),
+    });
+
+    await owner.initialize();
+
+    const resolveAuthority = ownerMocks.resolveRuntimeRegistryParams?.resolveDevelopmentSourceAuthority;
+    expect(typeof resolveAuthority).toBe('function');
+    const sourceRoot = await realpath(resolve(projectPath(), '..', '..', 'packages', 'plugins', 'antigravity'));
+    expect((resolveAuthority as (input: { pluginId: string; rootPath: string }) => unknown)({
+      pluginId: 'happier.agent.antigravity',
+      rootPath: sourceRoot,
+    })).toMatchObject({
+      kind: 'development',
+      registeredRootId: sourceRoot,
+      observedRevision: 0,
+    });
+  });
+
   it('threads the controller-owned targeted contribution observer into the initial registry', async () => {
     const targetedContributions = createTargetedContributionsService({
       subscribeToCatalogChanges: () => () => undefined,
       readAdmittedSnapshot: async () => Object.freeze({
-        generation: 'unused-target-generation',
+        occurrenceId: 'unused-target-occurrence',
+        sourceCustody: { kind: 'development' as const, registeredRootId: 'unused-root' },
         contributions: Object.freeze([]),
       }),
     });
@@ -503,7 +545,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
     };
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-targeted-observer-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -557,7 +599,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
     };
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-current-global-router-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -610,7 +652,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
     };
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-session-access-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -711,7 +753,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
     });
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-database-preparation-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -846,7 +888,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       dispose,
     });
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-database-isolation-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController: createColdStartReloadController(events),
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -920,7 +962,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       dispose,
     });
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-readiness-isolation-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController: createColdStartReloadController(events),
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -1020,7 +1062,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       dispose,
     });
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-bundled-readiness-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController: createColdStartReloadController(events),
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -1050,7 +1092,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       dispose,
     });
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-readiness-custody-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController: createColdStartReloadController([]),
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -1133,7 +1175,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
     };
 
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -1190,7 +1232,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
     };
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-availability-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -1264,7 +1306,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
     };
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-availability-reconnect-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -1301,7 +1343,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
           install: {
             mode: 'managed_install',
             manifestVersion: '1.0.0',
-            updatePolicy: 'reviewSensitiveChanges',
+            updatePolicy: 'allowed',
             trust: {
               pluginId: 'acme.plugin',
               state: 'trusted',
@@ -1325,7 +1367,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
     }) as unknown as PreparedDaemonPluginChange;
     ownerMocks.prepareNpm.mockResolvedValue(prepared);
     createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController: {
         adoptPreparedRuntimeRegistry: vi.fn(),
@@ -1361,8 +1403,97 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
     }, {
       installedUpdate: {
         pluginId: 'acme.plugin',
-        updatePolicy: 'reviewSensitiveChanges',
+        updatePolicy: 'allowed',
       },
+    });
+  });
+
+  it.each([
+    {
+      source: {
+        kind: 'archive' as const,
+        locator: '/tmp/acme-plugin.tgz',
+        distribution: {
+          kind: 'archive' as const,
+          source: { kind: 'localFile' as const, canonicalPath: '/tmp/acme-plugin.tgz' },
+        },
+      },
+      expectedRequest: { kind: 'installArchive' as const, locator: '/tmp/acme-plugin.tgz' },
+      prepareMock: ownerMocks.prepareArchive,
+    },
+    {
+      source: {
+        kind: 'path' as const,
+        locator: '/tmp/acme-plugin',
+        distribution: { kind: 'localPath' as const, canonicalPath: '/tmp/acme-plugin' },
+      },
+      expectedRequest: { kind: 'installPath' as const, locator: '/tmp/acme-plugin' },
+      prepareMock: ownerMocks.preparePath,
+    },
+  ])('marks an explicit $source.kind update so the preparer can apply authority-neutral bytes without review', async ({ source, expectedRequest, prepareMock }) => {
+    ownerMocks.readStore.mockResolvedValue({
+      t: 'happier_plugin_state_v1',
+      schemaVersion: 1,
+      plugins: {
+        'acme.plugin': {
+          source: {
+            kind: source.kind,
+            locator: source.locator,
+            trustPolicy: 'prompt',
+            installPolicy: source.kind === 'archive' ? 'managed_install' : 'link',
+            resolvedPath: '/tmp/installed',
+            manifestPath: '/tmp/installed/.happier-plugin/plugin.json',
+          },
+          compatibility: { status: 'compatible', diagnostics: [] },
+          install: {
+            mode: source.kind === 'archive' ? 'managed_install' : 'link',
+            manifestVersion: '1.0.0',
+            updatePolicy: 'allowed',
+            trust: {
+              pluginId: 'acme.plugin',
+              state: 'trusted',
+              approvedAtMs: 1,
+              distribution: source.distribution,
+            },
+          },
+          state: { enabled: true },
+        },
+      },
+    });
+    const prepared = Object.freeze({
+      pluginId: 'acme.plugin',
+      apply: vi.fn(),
+      cleanup: vi.fn(),
+    }) as unknown as PreparedDaemonPluginChange;
+    prepareMock.mockResolvedValue(prepared);
+    createDaemonPluginRuntimeOwner({
+      happyHomeDir,
+      staleCandidateCleanup: 'disabled',
+      reloadController: {
+        adoptPreparedRuntimeRegistry: vi.fn(),
+        acquireRuntimeRegistry: vi.fn(),
+        tryAcquireRuntimeRegistry: vi.fn(() => null),
+        isRuntimeRegistryCurrent: vi.fn(() => false),
+        invalidateRuntimeProjection: vi.fn(),
+        applyResourceSessionAccessWitness: vi.fn(),
+        shutdown: vi.fn(),
+        getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
+        subscribe: vi.fn(() => () => undefined),
+        getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
+        publishDurableRunningSessionDisposition: vi.fn(),
+        currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(() => null),
+        subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
+      },
+      connectedAccounts: createUnusedConnectedAccountsOwner(),
+    });
+    const prepare = ownerMocks.changeServiceParams?.prepare as
+      | ((request: PluginChangeRequest) => Promise<PreparedDaemonPluginChange>)
+      | undefined;
+    if (!prepare) throw new Error('Expected daemon change preparation owner');
+
+    await expect(prepare({ kind: 'update', pluginId: 'acme.plugin' })).resolves.toBe(prepared);
+    expect(prepareMock).toHaveBeenCalledWith(expectedRequest, {
+      installedUpdate: { pluginId: 'acme.plugin' },
     });
   });
 
@@ -1405,7 +1536,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
     };
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -1467,7 +1598,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
     };
     const recoveryInput = {
-      happyHomeDir: '/tmp/happier-runtime-owner-plugin-recovery-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled' as const,
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),
@@ -1519,7 +1650,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
     };
     const owner = createDaemonPluginRuntimeOwner({
-      happyHomeDir: '/tmp/happier-runtime-owner-test',
+      happyHomeDir,
       staleCandidateCleanup: 'disabled',
       reloadController,
       connectedAccounts: createUnusedConnectedAccountsOwner(),

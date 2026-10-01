@@ -43,7 +43,12 @@ function mountedUiCaller() {
             id: 'dashboard',
             qualifiedId: 'acme.target/dashboard',
         },
-        immutableGenerationId: 'acme-target-generation-1',
+        occurrenceId: 'acme-target-occurrence-1',
+        sourceCustody: {
+            kind: 'managed' as const,
+            immutableGenerationId: 'acme-target-generation-1',
+            installSource: 'archive' as const,
+        },
         materialization: { machineId: 'machine-1', materializationId: 'materialization-1', pluginId: 'acme.target' },
         originSurface: 'ui' as const,
     };
@@ -293,7 +298,7 @@ describe('executeContributedAction lazy activation failures', () => {
         }
     });
 
-    it('keeps a failed target settlement after the admitted generation retires', async () => {
+    it('keeps a failed target settlement after the admitted occurrence retires', async () => {
         const action = {
             pluginId: 'acme.target',
             definition: {
@@ -320,15 +325,13 @@ describe('executeContributedAction lazy activation failures', () => {
                     };
                 },
             },
-            resolveCurrentPluginImmutableGenerationId: async () => (
-                current ? 'immutable-generation-1' : null
-            ),
+            readPluginOccurrenceId: () => current ? 'occurrence-1' : null,
         } as unknown as ResolvedExecutablePluginRuntimeRegistry;
 
         await expect(executeContributedAction({
             runtimeRegistry: registry,
             actionId: 'acme.target/commit',
-            expectedContributorImmutableGenerationId: 'immutable-generation-1',
+            expectedContributorOccurrenceId: 'occurrence-1',
             context: { surface: 'cli' },
         })).resolves.toEqual({
             matched: true,

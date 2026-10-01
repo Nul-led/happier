@@ -117,8 +117,6 @@ export async function gitWorktreeCreate(input: {
     if (explicitDisplayName.trim() && hasForbiddenGitRefName(explicitDisplayName)) {
         return {
             success: false,
-            worktreePath: '',
-            branchName: '',
             error: 'Invalid Git worktree name',
             errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
         };
@@ -130,8 +128,6 @@ export async function gitWorktreeCreate(input: {
     if (input.request.baseRef != null && String(input.request.baseRef).trim() && explicitBaseRef == null) {
         return {
             success: false,
-            worktreePath: '',
-            branchName: '',
             error: 'Invalid Git base ref',
             errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
         };
@@ -147,8 +143,6 @@ export async function gitWorktreeCreate(input: {
     if (!gitCheck.success) {
         return {
             success: false,
-            worktreePath: '',
-            branchName: '',
             error: 'Not a Git repository',
             errorCode: SCM_OPERATION_ERROR_CODES.NOT_REPOSITORY,
         };
@@ -176,8 +170,6 @@ export async function gitWorktreeCreate(input: {
         const message = error instanceof Error ? error.message : String(error);
         return {
             success: false,
-            worktreePath: '',
-            branchName: '',
             error: message || 'Failed to create worktree',
             errorCode: mapGitErrorCode(message),
         };

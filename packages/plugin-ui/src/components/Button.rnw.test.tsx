@@ -489,6 +489,34 @@ describe('plugin-ui Button renders real React Native pressable semantics', () =>
     mount.unmount();
   });
 
+  it('reports the pointer press lifecycle to a caller, symmetric on press-in and press-out', async () => {
+    const onPressIn = vi.fn();
+    const onPressOut = vi.fn();
+    const mount = mountSurface(
+      <HappierPressable
+        accessibilityLabel="Tactile action"
+        onPress={() => {}}
+        onPressIn={onPressIn}
+        onPressOut={onPressOut}
+      />,
+    );
+    const button = findButton(mount.container);
+
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1 }));
+      // React Native Web defers press-in past its default press delay.
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+    expect(onPressIn).toHaveBeenCalledOnce();
+    expect(onPressOut).not.toHaveBeenCalled();
+
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
+    });
+    expect(onPressOut).toHaveBeenCalledOnce();
+    mount.unmount();
+  });
+
   it('keeps a declared selection in the shared pressable style state', () => {
     let observedSelection: boolean | undefined;
     const mount = mountSurface(

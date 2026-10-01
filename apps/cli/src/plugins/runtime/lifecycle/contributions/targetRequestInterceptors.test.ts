@@ -38,10 +38,9 @@ describe('target request interceptor bindings', () => {
             },
         } as unknown as ActivationTarget;
         const [binding] = createTargetRequestInterceptorBindings({
-            generation: 4,
             activationTargets: [target],
-            targetRegistrations: [{ pluginId: 'acme.policy', generation: '4', registration }],
-            isGenerationActive: () => active,
+            targetRegistrations: [{ pluginId: 'acme.policy', occurrenceId: '4', registration }],
+            isOccurrenceCurrent: () => active,
         });
         const request = { url: 'https://api.example.test', method: 'GET' as const, headers: {} };
         const context = {} as PluginInvocationContext;
@@ -69,14 +68,13 @@ describe('target request interceptor bindings', () => {
             },
         } as unknown as ActivationTarget;
         const [binding] = createTargetRequestInterceptorBindings({
-            generation: 4,
             activationTargets: [target],
             targetRegistrations: [{
                 pluginId: 'acme.policy',
-                generation: '4',
+                occurrenceId: '4',
                 registration: { family: 'requestInterceptors', localId: 'policy', value: handler },
             }],
-            isGenerationActive: () => active,
+            isOccurrenceCurrent: () => active,
         });
         const pending = binding!.handler(
             { url: 'https://api.example.test', method: 'GET', headers: {} },

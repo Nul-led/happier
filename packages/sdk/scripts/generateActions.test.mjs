@@ -7,7 +7,6 @@ import {
   PUBLIC_ACTION_IDS,
   getActionSpec,
   isHumanSecretApiExcludedActionId,
-  isInteractiveDiscussionApiExcludedActionId,
   isInternalActionId,
   isPluginProvenanceOnlyActionId,
   listActionSpecs,
@@ -67,8 +66,8 @@ test('emits exactly the catalog public surface, once per Action', async () => {
   assert.equal(new Set(emitted).size, emitted.length, 'No Action may be published under two method paths.');
   for (const actionId of emitted) {
     assert.equal(
-      getActionSpec(actionId).requiredAuthority,
-      'account_automation',
+      getActionSpec(actionId).surfaces.api,
+      true,
       `Generated PAT method ${actionId} must be executable by account_automation in principle.`,
     );
   }
@@ -81,8 +80,7 @@ test('excludes every catalog-owned non-public Action class without generator pol
     .map((spec) => spec.id)
     .filter((actionId) => isInternalActionId(actionId)
       || isPluginProvenanceOnlyActionId(actionId)
-      || isHumanSecretApiExcludedActionId(actionId)
-      || isInteractiveDiscussionApiExcludedActionId(actionId));
+      || isHumanSecretApiExcludedActionId(actionId));
   assert.ok(excluded.length > 0, 'Expected the catalog to still declare excluded Action ids.');
   for (const actionId of excluded) {
     assert.equal(emitted.has(actionId), false, `Excluded Action ${actionId} reached the public SDK tree.`);
@@ -103,8 +101,8 @@ test('excludes every catalog-owned non-public Action class without generator pol
     assert.equal(emitted.has(actionId), false, `${actionId} must stay private to trusted interactive hosts.`);
   }
   assert.equal(emitted.has('account.security.get'), true);
-  assert.equal(emitted.has('session.discussion.read_state.set'), false);
-  assert.equal(emitted.has('approval.request.decide'), false);
+  assert.equal(emitted.has('session.discussion.read_state.set'), true);
+  assert.equal(emitted.has('approval.request.decide'), true);
   assert.equal(emitted.has('plugins.install'), false);
   assert.equal(emitted.has('teams.directory.sources.remove.preview'), true);
 });

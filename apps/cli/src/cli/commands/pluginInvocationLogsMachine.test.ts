@@ -102,7 +102,7 @@ describe('plugin invocation log exact-machine transport', () => {
       target,
       request: {
         pluginId: 'acme.example',
-        generation: 'generation-1',
+        occurrenceId: 'generation-1',
         correlationId: 'correlation-1',
       },
     })).resolves.toEqual({ kind: 'unavailable', code: 'daemon_plugin_log_read_unsupported' });
@@ -116,7 +116,7 @@ describe('plugin invocation log exact-machine transport', () => {
         },
         query: {
           pluginId: 'acme.example',
-          generation: 'generation-1',
+          occurrenceId: 'generation-1',
           correlationId: 'correlation-1',
         },
       }),

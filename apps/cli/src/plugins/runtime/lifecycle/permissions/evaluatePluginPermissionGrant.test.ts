@@ -6,16 +6,12 @@ import {
   CredentialAccessSelectedRawAccessDigestSchema,
   GENERAL_PLUGIN_PERMISSION_SUBJECT_V1,
   PluginCredentialAccessSlotIdSchema,
-  PluginInstallReviewPrincipalDigestSchema,
-  PluginPermissionInstalledGenerationIdSchema,
   type PluginPermissionGrantAuthoritySourceV1,
   type PluginPermissionGrantV1,
   type PluginPermissionSubjectV1,
 } from '@happier-dev/protocol';
 
 import { evaluatePluginPermissionGrant } from './evaluatePluginPermissionGrant';
-
-const currentPrincipal = PluginInstallReviewPrincipalDigestSchema.parse('a'.repeat(64));
 
 const machineA = {
   kind: 'machine_installation',
@@ -64,8 +60,6 @@ const credentialSubject = {
   accessDeclarationDigest: CredentialAccessDeclarationDigestSchema.parse('b'.repeat(64)),
   selectedAuthorityDigest: CredentialAccessSelectedAuthorityDigestSchema.parse('c'.repeat(64)),
   selectedRawAccessDigest: CredentialAccessSelectedRawAccessDigestSchema.parse('d'.repeat(64)),
-  installedGenerationId: PluginPermissionInstalledGenerationIdSchema.parse('generation-1'),
-  installReviewPrincipalDigest: currentPrincipal,
 } as const satisfies PluginPermissionSubjectV1;
 
 describe('plugin permission grant evaluator', () => {
@@ -81,7 +75,7 @@ describe('plugin permission grant evaluator', () => {
     })).toBe(true);
   });
 
-  it('requires exact credential subject and the current install-review principal', () => {
+  it('requires the exact disclosed credential authority', () => {
     const existing = grant(credentialSubject);
     const base = {
       grant: existing,
@@ -89,15 +83,10 @@ describe('plugin permission grant evaluator', () => {
       capability: existing.capability,
       targetScope: existing.targetScope,
       subject: credentialSubject,
-      currentInstallReviewPrincipalDigest: currentPrincipal,
       currentAuthoritySource: machineA,
     } as const;
 
     expect(evaluatePluginPermissionGrant(base)).toBe(true);
-    expect(evaluatePluginPermissionGrant({
-      ...base,
-      currentInstallReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema.parse('c'.repeat(64)),
-    })).toBe(false);
     expect(evaluatePluginPermissionGrant({
       ...base,
       subject: {
@@ -119,13 +108,6 @@ describe('plugin permission grant evaluator', () => {
         selectedRawAccessDigest: CredentialAccessSelectedRawAccessDigestSchema.parse('f'.repeat(64)),
       },
     })).toBe(false);
-    expect(evaluatePluginPermissionGrant({
-      ...base,
-      subject: {
-        ...credentialSubject,
-        installedGenerationId: PluginPermissionInstalledGenerationIdSchema.parse('generation-2'),
-      },
-    })).toBe(false);
   });
 
   it('refuses a grant approved under another machine or a replaced installation', () => {
@@ -136,7 +118,6 @@ describe('plugin permission grant evaluator', () => {
       capability: approvedOnMachineA.capability,
       targetScope: approvedOnMachineA.targetScope,
       subject: credentialSubject,
-      currentInstallReviewPrincipalDigest: currentPrincipal,
     } as const;
 
     expect(evaluatePluginPermissionGrant({ ...base, currentAuthoritySource: machineA })).toBe(true);
@@ -156,7 +137,6 @@ describe('plugin permission grant evaluator', () => {
       capability: approvedOnMachineA.capability,
       targetScope: approvedOnMachineA.targetScope,
       subject: credentialSubject,
-      currentInstallReviewPrincipalDigest: currentPrincipal,
       currentAuthoritySource: machineA,
     })).toBe(false);
   });

@@ -65,10 +65,21 @@ export function definePluginProjectionFamilyCatalogV2(
     return Object.freeze(familyIds.map((family) => descriptorsByFamily.get(family)!));
 }
 
-function freezeProjectedFamilyV2<Family extends PluginProjectedFamilyV2>(projected: Family): Family {
+function freezeProjectedFamilyV2<Family extends PluginProjectedFamilyV2>(
+    projected: Family,
+    occurrenceIdsByPluginId: ResolvedContributionRegistry['occurrenceIdsByPluginId'],
+): Family {
+    const entriesById = Object.fromEntries(Object.entries(projected.entriesById).flatMap(([entryId, entry]) => {
+        const pluginId = typeof entry.pluginId === 'string' ? entry.pluginId : null;
+        if (!pluginId) return [[entryId, entry] as const];
+        const occurrenceId = occurrenceIdsByPluginId?.[pluginId];
+        return occurrenceId
+            ? [[entryId, Object.freeze({ ...entry, occurrenceId })] as const]
+            : [];
+    }));
     return Object.freeze({
         ...projected,
-        entriesById: Object.freeze({ ...projected.entriesById }),
+        entriesById: Object.freeze(entriesById),
     }) as Family;
 }
 
@@ -84,7 +95,10 @@ export function buildPluginProjectionFamiliesByIdV2(
                 `Plugin projection family descriptor '${descriptor.family}' returned '${projected.family}'`,
             );
         }
-        familiesById[descriptor.family] = freezeProjectedFamilyV2(projected);
+        familiesById[descriptor.family] = freezeProjectedFamilyV2(
+            projected,
+            context.registry.occurrenceIdsByPluginId,
+        );
     }
     return Object.freeze(familiesById);
 }

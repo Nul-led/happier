@@ -1,10 +1,14 @@
 import type { PluginAgentCliMetadata } from '@happier-dev/protocol';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createTempDirSync, removeTempDirSync } from '@/testkit/fs/tempDir';
 import { createNativeAgentCliAuthSpec } from './agentCliMetadata';
 
 function metadata(params: Readonly<{
   environmentVariables?: readonly string[];
+  credentialPaths?: readonly string[];
   missingCredentialState?: 'logged_out' | 'unknown';
   nonInteractiveStatusProbe?: true;
 }>): PluginAgentCliMetadata {
@@ -20,6 +24,7 @@ function metadata(params: Readonly<{
     auth: {
       support: 'status_only',
       ...(params.environmentVariables ? { environmentVariables: [...params.environmentVariables] } : {}),
+      ...(params.credentialPaths ? { credentialPaths: [...params.credentialPaths] } : {}),
       ...(params.missingCredentialState
         ? { missingCredentialState: params.missingCredentialState }
         : {}),
@@ -34,6 +39,35 @@ afterEach(() => {
 });
 
 describe('native Agent CLI auth metadata', () => {
+  it('reads credentials only from the supplied environment and home', async () => {
+    const ambientHome = createTempDirSync('happier-auth-ambient-');
+    const launchHome = createTempDirSync('happier-auth-launch-');
+    try {
+      vi.stubEnv('HOME', ambientHome);
+      vi.stubEnv('USERPROFILE', ambientHome);
+      vi.stubEnv('HAPPIER_AUTH_METADATA_KEY', 'ambient-key');
+      writeFileSync(join(ambientHome, 'auth.json'), JSON.stringify({ token: 'ambient-token' }));
+      const spec = createNativeAgentCliAuthSpec(metadata({
+        environmentVariables: ['HAPPIER_AUTH_METADATA_KEY'], credentialPaths: ['~\\auth.json'],
+      }));
+      const args = { resolvedPath: '/unused', processEnv: {
+        HOME: launchHome, USERPROFILE: launchHome, HAPPIER_AUTH_METADATA_KEY: undefined,
+      } };
+      await expect(spec.detectAuthStatus?.(args)).resolves.toMatchObject({ state: 'logged_out' });
+      writeFileSync(join(launchHome, 'auth.json'), JSON.stringify({ token: 'launch-token' }));
+      await expect(spec.detectAuthStatus?.(args)).resolves.toEqual({
+        state: 'logged_in', method: 'credentials_file', source: 'file',
+      });
+      await expect(spec.detectAuthStatus?.({ ...args, processEnv: {
+        ...args.processEnv, HAPPIER_AUTH_METADATA_KEY: 'launch-key',
+      } })).resolves.toEqual({ state: 'logged_in', method: 'api_key_env', source: 'env' });
+      expect(process.env.HAPPIER_AUTH_METADATA_KEY).toBe('ambient-key');
+    } finally {
+      removeTempDirSync(ambientHome);
+      removeTempDirSync(launchHome);
+    }
+  });
+
   it('uses host-owned declared environment facts and preserves both absent-credential semantics', async () => {
     const loggedOutSpec = createNativeAgentCliAuthSpec(metadata({
       environmentVariables: ['HAPPIER_AUTH_METADATA_LOGGED_OUT'],

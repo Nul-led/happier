@@ -30,7 +30,7 @@ export type ManagedServiceCredentialFileLease =
 export type ManagedServiceCredentialFileOwner = Readonly<{
     materialize(input: Readonly<{
         scope: Readonly<{
-            generation: string;
+            occurrenceId: string;
             pluginId: string;
             contributionQualifiedId: string;
             sessionId?: string;
@@ -100,7 +100,7 @@ export type ManagedProviderEndpointAccessProjection = Readonly<{
 export type ManagedServicesInvocationBindingContext = Readonly<{
     connectedAccounts: ConnectedAccountsService | null;
     credentialFiles: ManagedServiceCredentialFileOwner | null;
-    /** Exact caller-generation secret declaration/custody, if one was admitted. */
+    /** Exact caller-occurrenceId secret declaration/custody, if one was admitted. */
     declaredSecretReadPort: DeclaredPluginSecretReadPort | null;
     managedProvider: ManagedProviderRuntimeInvocationBinding | null;
     requestAuth: ManagedProviderRequestAuthCapabilityPathBinding | null;
@@ -108,7 +108,7 @@ export type ManagedServicesInvocationBindingContext = Readonly<{
 
 export type ManagedServicesInvocationOwner = Readonly<{
     isAvailable(input: Readonly<{
-        generation: string;
+        occurrenceId: string;
         contributionQualifiedId: string;
     }>): boolean;
     bind(seed: PluginInvocationServicesSeed): PluginServices['managedServices'];
@@ -118,7 +118,7 @@ export type ManagedServicesInvocationOwner = Readonly<{
         context: ManagedServicesInvocationBindingContext,
     ): PluginServices['managedServices'];
     retireGeneration?(
-        generation: string,
+        occurrenceId: string,
         pluginId: string,
     ): Promise<void>;
     projectManagedProviderEndpointAccess?(input: Readonly<{
@@ -176,10 +176,10 @@ export function createManagedServicesInvocationAdapter(
         ...(retireGeneration
             ? {
                 async retireGeneration(
-                    generation: string,
+                    occurrenceId: string,
                     pluginId: string,
                 ) {
-                    await retireGeneration(generation, pluginId);
+                    await retireGeneration(occurrenceId, pluginId);
                 },
             }
             : {}),

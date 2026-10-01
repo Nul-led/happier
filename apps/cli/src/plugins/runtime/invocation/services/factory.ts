@@ -15,7 +15,7 @@ import {
 } from './unavailable';
 
 export function createLoggerAndFilesystemServiceBinding(
-    generation: string,
+    occurrenceId: string,
     id: string,
     hostAccessRequests: readonly Readonly<{ request: import('@happier-dev/protocol').PluginHostAccessRequestV2 }>[]=[],
     filesystemRoots: PluginFileSystemRoots,
@@ -35,7 +35,7 @@ export function createLoggerAndFilesystemServiceBinding(
         access: Object.freeze([...request.scope.access]),
     })));
     const binding = withPluginInvocationServiceBindingAvailability(
-        createPluginInvocationServiceBinding(generation, id),
+        createPluginInvocationServiceBinding(occurrenceId, id),
         { serviceId: 'logger', availability: 'available' },
         { serviceId: 'fs', availability: 'available' },
     );
@@ -47,28 +47,28 @@ export function createLoggerAndFilesystemServiceBinding(
 }
 
 export function createUnavailablePluginInvocationServiceBinding(
-    generation: string,
+    occurrenceId: string,
     id: string,
 ): PluginInvocationServiceBinding {
-    return createPluginInvocationServiceBinding(generation, id);
+    return createPluginInvocationServiceBinding(occurrenceId, id);
 }
 
 export function createLoggerAvailablePluginInvocationServiceBinding(
-    generation: string,
+    occurrenceId: string,
     id: string,
 ): PluginInvocationServiceBinding {
     return withPluginInvocationServiceBindingAvailability(
-        createPluginInvocationServiceBinding(generation, id),
+        createPluginInvocationServiceBinding(occurrenceId, id),
         { serviceId: 'logger', availability: 'available' },
     );
 }
 
 export function createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-    generation: string,
+    occurrenceId: string,
     id: string,
     hostAccessRequests: readonly Readonly<{ request: PluginHostAccessRequestV2; required: boolean }>[] = [],
 ): PluginInvocationServiceBinding {
-    const binding = createLoggerAvailablePluginInvocationServiceBinding(generation, id);
+    const binding = createLoggerAvailablePluginInvocationServiceBinding(occurrenceId, id);
     return addNetworkHttpServiceBinding(
         withPluginInvocationServiceBindingAvailability(
             binding,
@@ -195,12 +195,12 @@ export function addConnectedAccountsAvailablePluginInvocationServiceBinding(
 }
 
 export function createLoggerFilesystemAndEventsServiceBinding(
-    generation: string,
+    occurrenceId: string,
     id: string,
     hostAccessRequests: readonly Readonly<{ request: PluginHostAccessRequestV2; required: boolean }>[] = [],
     filesystemRoots: PluginFileSystemRoots,
 ): PluginInvocationServiceBinding {
-    const binding = createLoggerAndFilesystemServiceBinding(generation, id, hostAccessRequests, filesystemRoots);
+    const binding = createLoggerAndFilesystemServiceBinding(occurrenceId, id, hostAccessRequests, filesystemRoots);
     return addNetworkHttpServiceBinding(
         withPluginInvocationServiceBindingAvailability(
             binding,
@@ -255,7 +255,7 @@ export function addExecServiceBinding(
 }
 
 export function createLoggerFilesystemEventsAndExecServiceBinding(
-    generation: string,
+    occurrenceId: string,
     id: string,
     hostAccessRequests: readonly Readonly<{ request: PluginHostAccessRequestV2; required: boolean }>[] = [],
     filesystemRoots: PluginFileSystemRoots,
@@ -263,7 +263,7 @@ export function createLoggerFilesystemEventsAndExecServiceBinding(
     publicExecAvailable = true,
 ): PluginInvocationServiceBinding {
     const binding = createLoggerFilesystemAndEventsServiceBinding(
-        generation,
+        occurrenceId,
         id,
         hostAccessRequests,
         filesystemRoots,
@@ -277,13 +277,13 @@ export function createLoggerFilesystemEventsAndExecServiceBinding(
 }
 
 export function createLoggerEventsAndExecServiceBinding(
-    generation: string,
+    occurrenceId: string,
     id: string,
     hostAccessRequests: readonly Readonly<{ request: PluginHostAccessRequestV2; required: boolean }>[] = [],
     managedServicesAvailable = false,
     publicExecAvailable = true,
 ): PluginInvocationServiceBinding {
-    const binding = createLoggerAndEventsAvailablePluginInvocationServiceBinding(generation, id, hostAccessRequests);
+    const binding = createLoggerAndEventsAvailablePluginInvocationServiceBinding(occurrenceId, id, hostAccessRequests);
     return addExecServiceBinding(
         binding,
         hostAccessRequests,
@@ -294,8 +294,8 @@ export function createLoggerEventsAndExecServiceBinding(
 
 export function createUnavailablePluginServicesFactory(): CreatePluginInvocationServices {
     return (seed, binding) => {
-        if (binding.generation !== seed.generation) {
-            throw new Error('Plugin invocation service binding generation does not match the invocation context');
+        if (binding.occurrenceId !== seed.occurrenceId) {
+            throw new Error('Plugin invocation service binding occurrence does not match the invocation context');
         }
         if (PLUGIN_SERVICE_IDS.some((serviceId) => binding.availability[serviceId] !== 'unavailable')) {
             throw new Error('Plugin invocation service binding availability does not match the unavailable services factory');

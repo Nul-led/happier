@@ -1,12 +1,21 @@
 import type { ReactElement, ReactNode } from 'react';
 import { View } from 'react-native';
 
-import { HAPPIER_DEFAULT_MINIMUM_INTERACTIVE_TARGET_SIZE } from '../environment/interactiveTarget.js';
+import { useOptionalHappierUiAccessibility } from '../environment/context.js';
 import { HappierPressable, type HappierPressableStyleState } from '../presentation/interaction/Pressable.js';
+import {
+  happierDiscretePressStyle,
+  happierPressTransitionStyle,
+} from '../presentation/interaction/pressFeedback.js';
 import type { HappierPortableStyle } from '../presentation/portableTypes.js';
-import { HAPPIER_TONE_COLOR_TOKEN } from '../presentation/semantics.js';
+import {
+  HAPPIER_BUTTON_DISABLED_OPACITY,
+  resolveHappierButtonChrome,
+} from '../presentation/interaction/buttonChrome.js';
 import { HappierSpinner, iconMatchedSpinnerSize } from '../presentation/feedback/Spinner.js';
 import { HappierText } from '../presentation/text/Text.js';
+import { HAPPIER_ICON_BUTTON_SIZE, resolveHappierIconButtonChrome } from '../presentation/interaction/iconButtonChrome.js';
+import { useHappierNativeMinimumInteractiveTargetSize } from '../environment/interactiveTarget.js';
 import {
   type PluginUiFocusTarget,
   usePluginUiFocusTargetBindingInternal,
@@ -26,8 +35,9 @@ import { resolveAuthorText } from './resolveAuthorText.js';
  * `primary` fills with the host's accent; `secondary` uses the host's control
  * fill; `plain` drops the chrome for a dense row. All three are the same
  * geometry, because a plugin's actions should read as the host's actions.
+ * `destructive` keeps the secondary surface and uses the theme's danger tone.
  */
-export type ButtonVariant = 'primary' | 'secondary' | 'plain';
+export type ButtonVariant = 'primary' | 'secondary' | 'plain' | 'destructive';
 
 type ButtonCommonProps = Readonly<{
   /** Literal label. It provides the accessible name when no override is supplied. */
@@ -69,11 +79,7 @@ type ButtonWithExplicitAccessibleNameProps = ButtonCommonProps & Readonly<{
 
 export type ButtonProps = ButtonWithVisibleTitleProps | ButtonWithExplicitAccessibleNameProps;
 
-const BUTTON_PADDING_VERTICAL = 8;
-const BUTTON_PRESSED_OPACITY = 0.9;
-const BUTTON_DISABLED_OPACITY = 0.35;
 const BUTTON_HIT_SLOP = 8;
-const BUTTON_FOCUS_RING_WIDTH = 2;
 
 function requireAccessibleButtonName(
   accessibilityLabel: string | undefined,
@@ -111,33 +117,15 @@ export function Button({
   const accessibleName = requireAccessibleButtonName(resolvedAccessibilityLabel, label);
   const focusBinding = usePluginUiFocusTargetBindingInternal(focusTarget);
 
-  const foreground = variant === 'primary'
-    ? theme.colors.onAccent
-    : theme.colors[HAPPIER_TONE_COLOR_TOKEN.neutral];
-
-  const background = variant === 'plain'
-    ? 'transparent'
-    : disabled === true
-      ? theme.colors.controlDisabled
-      : (variant === 'primary' ? theme.colors.accent : theme.colors.control);
-
+  const reducedMotion = useOptionalHappierUiAccessibility()?.reducedMotion ?? false;
+  const { foreground } = resolveHappierButtonChrome({ theme, variant, disabled: disabled === true, focused: false });
   const resolveStyle = (state: HappierPressableStyleState): HappierPortableStyle => ({
-    minHeight: HAPPIER_DEFAULT_MINIMUM_INTERACTIVE_TARGET_SIZE,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.small,
-    paddingHorizontal: theme.spacing.large,
-    paddingVertical: BUTTON_PADDING_VERTICAL,
-    borderRadius: theme.radii.control,
-    backgroundColor: background,
-    // A focus ring is drawn as a border rather than an outline so the control
-    // keeps its box on every platform React Native renders to.
-    borderWidth: BUTTON_FOCUS_RING_WIDTH,
-    borderColor: state.focused ? theme.colors.focus : 'transparent',
-    opacity: state.disabled && !state.busy
-      ? BUTTON_DISABLED_OPACITY
-      : (state.pressed ? BUTTON_PRESSED_OPACITY : 1),
+    ...resolveHappierButtonChrome({ theme, variant, disabled: disabled === true, focused: state.focused }).style,
+    opacity: state.disabled && !state.busy ? HAPPIER_BUTTON_DISABLED_OPACITY : 1,
+    // The shared press vocabulary: a discrete control scales under the finger
+    // (an opacity dip under reduced motion), eased on web.
+    ...happierDiscretePressStyle(state.pressed && !state.disabled, reducedMotion),
+    ...happierPressTransitionStyle(state.pressed, ['transform', 'opacity'], reducedMotion),
   });
 
   return (
@@ -210,10 +198,15 @@ export function IconButton({
     resolveAuthorText(usePluginTranslation(), accessibilityLabel, accessibilityLabelKey),
     undefined,
   );
-  const size = Math.max(
-    HAPPIER_DEFAULT_MINIMUM_INTERACTIVE_TARGET_SIZE,
-    theme.typography.label.lineHeight + theme.spacing.large * 2,
-  );
+  const size = HAPPIER_ICON_BUTTON_SIZE;
+  const minimumTarget = useHappierNativeMinimumInteractiveTargetSize() ?? size;
+  const chrome = (state: HappierPressableStyleState) => resolveHappierIconButtonChrome({
+    size, variant: 'plain', selected: state.selected, hovered: state.hovered,
+    pressed: state.pressed, focused: state.focused, disabled: state.disabled && !state.busy,
+    colors: { background: theme.colors.control, border: theme.colors.border,
+      hover: theme.colors.control, pressed: theme.colors.control,
+      selected: theme.colors.control, focus: theme.colors.focus },
+  });
   const focusBinding = usePluginUiFocusTargetBindingInternal(focusTarget);
   return (
     <HappierPressable
@@ -226,20 +219,16 @@ export function IconButton({
       onPress={onPress}
       controlRef={focusBinding}
       style={(state) => ({
-        width: size,
-        height: size,
+        ...chrome(state).frame,
+        minWidth: minimumTarget,
+        minHeight: minimumTarget,
         borderRadius: size / 2,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderWidth: 2,
-        borderColor: state.focused ? theme.colors.focus : 'transparent',
-        backgroundColor: state.selected ? theme.colors.control : 'transparent',
-        opacity: state.disabled && !state.busy ? 0.35 : state.pressed ? 0.8 : 1,
       })}
     >
-      {(state) => state.busy
-        ? <HappierSpinner size="small" color={theme.colors.secondaryText} />
-        : icon}
+      {/* Press state belongs to the outer frame; the visible focus surface reads only focus. */}
+      {(state) => <View style={chrome({ ...state, pressed: false }).surface}>
+        {state.busy ? <HappierSpinner size="small" color={theme.colors.secondaryText} /> : icon}
+      </View>}
     </HappierPressable>
   );
 }

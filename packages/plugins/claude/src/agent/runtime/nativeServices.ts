@@ -145,6 +145,12 @@ export function createClaudeNativeAgentSdkContext(
         },
       },
       transcripts: {
+        async followSource(input) {
+          if (!services.transcripts.followSource) {
+            throw new Error('Claude terminal requires ordered source transcript following');
+          }
+          return await services.transcripts.followSource(input);
+        },
         fileFollow: {
           async follow(input) {
             return await services.transcripts.fileFollow.follow(input);
@@ -165,6 +171,7 @@ export function createClaudeNativeAgentSdkContext(
         },
       },
       ...(services.nativeHome ? { nativeHome: services.nativeHome } : {}),
+      ...(services.inputFiles ? { inputFiles: services.inputFiles } : {}),
       toolExecution: services.toolExecution,
     },
     sessions: {

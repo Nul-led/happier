@@ -6,18 +6,20 @@ import type {
   ScmBranchListEntry,
   ScmBranchListRequest,
   ScmBranchListResponse,
+  ScmOperationOutcome,
 } from '@happier-dev/plugin-sdk/scm';
 import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/plugin-sdk/scm';
 
 import type { ScmBackendContext } from '../types.js';
-import { runScmCommand } from '../runtime.js';
+import { getScmCommandIndeterminateErrorCode, runScmCommand, type ScmExecResult } from '../runtime.js';
 import { buildScmNonInteractiveEnv } from '../providers/shared/nonInteractiveEnv.js';
 import { mapGitErrorCode } from '../remote.js';
 import {
     buildHappierBranchStashMarker,
     buildHappierTransientStashMarker,
     createGitStashPush,
-    dropGitStashRef,
+    dropGitStashOid,
+    gitStashPop,
     listGitManagedStashes,
 } from './stashOperations.js';
 import { invalidatePrStatusCacheAfterSuccessfulScmMutation } from '../hostingProviders/prStatusCacheInvalidation.js';
@@ -38,10 +40,30 @@ function isLocalChangesOverwrittenError(stderr: string): boolean {
     return LOCAL_CHANGES_OVERWRITTEN_ERROR_REGEX.test(stderr.toLowerCase());
 }
 
+function branchMutationFailure(input: {
+    context: ScmBackendContext;
+    result: ScmExecResult;
+    fallback: string;
+    recoveryStash?: NonNullable<ScmOperationOutcome['recoveryStash']>;
+}): ScmBranchCreateResponse {
+    const indeterminateErrorCode = getScmCommandIndeterminateErrorCode(input.result);
+    const errorCode = indeterminateErrorCode ?? mapGitErrorCode(input.result.stderr);
+    return {
+        success: false,
+        errorCode,
+        error: input.result.stderr || input.fallback,
+        stdout: input.result.stdout,
+        stderr: input.result.stderr,
+        outcome: indeterminateErrorCode
+            ? { v: 1, kind: 'outcome_unknown', errorCode, reconciliation: { kind: 'repository_status', cwd: input.context.cwd }, recoveryStash: input.recoveryStash, nextActions: [{ kind: 'refresh' }] }
+            : { v: 1, kind: 'failed', errorCode, recoveryStash: input.recoveryStash, nextActions: input.recoveryStash ? [{ kind: 'refresh' }] : [] },
+    };
+}
+
 async function runGitSwitch(input: {
     cwd: string;
     name: string;
-}): Promise<{ success: boolean; stdout: string; stderr: string }> {
+}): Promise<ScmExecResult> {
     const switchResult = await runScmCommand({
         bin: 'git',
         cwd: input.cwd,
@@ -51,11 +73,11 @@ async function runGitSwitch(input: {
     });
 
     if (switchResult.success) {
-        return { success: true, stdout: switchResult.stdout, stderr: switchResult.stderr };
+        return switchResult;
     }
 
     // Fallback for older git installs without `switch`.
-    if (/unknown subcommand: switch|is not a git command/i.test(switchResult.stderr)) {
+    if (!getScmCommandIndeterminateErrorCode(switchResult) && /unknown subcommand: switch|is not a git command/i.test(switchResult.stderr)) {
         const checkoutResult = await runScmCommand({
             bin: 'git',
             cwd: input.cwd,
@@ -63,21 +85,17 @@ async function runGitSwitch(input: {
             timeoutMs: GIT_BRANCH_SWITCH_TIMEOUT_MS,
             env: buildScmNonInteractiveEnv(),
         });
-        return {
-            success: checkoutResult.success,
-            stdout: checkoutResult.stdout,
-            stderr: checkoutResult.stderr,
-        };
+        return checkoutResult;
     }
 
-    return { success: false, stdout: switchResult.stdout, stderr: switchResult.stderr };
+    return switchResult;
 }
 
 async function runGitSwitchCreate(input: {
     cwd: string;
     name: string;
     startPoint?: string | null;
-}): Promise<{ success: boolean; stdout: string; stderr: string }> {
+}): Promise<ScmExecResult> {
     const startPoint = typeof input.startPoint === 'string' ? input.startPoint.trim() : '';
     const args = startPoint
         ? ['switch', '-c', input.name, startPoint]
@@ -92,11 +110,11 @@ async function runGitSwitchCreate(input: {
     });
 
     if (switchResult.success) {
-        return { success: true, stdout: switchResult.stdout, stderr: switchResult.stderr };
+        return switchResult;
     }
 
     // Fallback for older git installs without `switch`.
-    if (/unknown subcommand: switch|is not a git command/i.test(switchResult.stderr)) {
+    if (!getScmCommandIndeterminateErrorCode(switchResult) && /unknown subcommand: switch|is not a git command/i.test(switchResult.stderr)) {
         const checkoutArgs = startPoint
             ? ['checkout', '-b', input.name, startPoint]
             : ['checkout', '-b', input.name];
@@ -107,14 +125,10 @@ async function runGitSwitchCreate(input: {
             timeoutMs: GIT_BRANCH_SWITCH_TIMEOUT_MS,
             env: buildScmNonInteractiveEnv(),
         });
-        return {
-            success: checkoutResult.success,
-            stdout: checkoutResult.stdout,
-            stderr: checkoutResult.stderr,
-        };
+        return checkoutResult;
     }
 
-    return { success: false, stdout: switchResult.stdout, stderr: switchResult.stderr };
+    return switchResult;
 }
 
 function validateStartPoint(startPoint: string | undefined): { ok: true } | { ok: false; error: string } {
@@ -264,13 +278,7 @@ export async function gitBranchCreate(input: {
 
         const response: ScmBranchCreateResponse = switched.success
             ? { success: true, stdout: switched.stdout, stderr: switched.stderr }
-            : {
-                success: false,
-                errorCode: mapGitErrorCode(switched.stderr),
-                error: switched.stderr || 'Branch creation failed',
-                stdout: switched.stdout,
-                stderr: switched.stderr,
-            };
+            : branchMutationFailure({ context: input.context, result: switched, fallback: 'Branch creation failed' });
         invalidateAfterBranchMutation({
             response,
             context: input.context,
@@ -291,13 +299,7 @@ export async function gitBranchCreate(input: {
 
     const response: ScmBranchCreateResponse = result.success
         ? { success: true, stdout: result.stdout, stderr: result.stderr }
-        : {
-            success: false,
-            errorCode: mapGitErrorCode(result.stderr),
-            error: result.stderr || 'Branch creation failed',
-            stdout: result.stdout,
-            stderr: result.stderr,
-        };
+        : branchMutationFailure({ context: input.context, result, fallback: 'Branch creation failed' });
     invalidateAfterBranchMutation({ response, context: input.context });
     return response;
 }
@@ -343,19 +345,6 @@ export async function gitBranchCheckout(input: {
             };
         }
 
-        for (const entry of existing) {
-            const dropped = await dropGitStashRef({ context: input.context, stashRef: entry.stashRef });
-            if (!dropped.ok) {
-                return {
-                    success: false,
-                    errorCode: dropped.errorCode,
-                    error: dropped.error,
-                    stdout: dropped.stdout,
-                    stderr: dropped.stderr,
-                };
-            }
-        }
-
         const created = await createGitStashPush({
             context: input.context,
             message: buildHappierBranchStashMarker(currentBranch),
@@ -367,21 +356,30 @@ export async function gitBranchCheckout(input: {
                 error: created.error,
                 stdout: created.stdout,
                 stderr: created.stderr,
+                outcome: created.outcome,
             };
         }
 
         const switched = await runGitSwitch({ cwd: input.context.cwd, name: input.request.name });
         if (!switched.success) {
             return {
-                success: false,
-                errorCode: mapGitErrorCode(switched.stderr),
-                error: switched.stderr || 'Branch checkout failed',
+                ...branchMutationFailure({ context: input.context, result: switched, fallback: 'Branch checkout failed', ...(created.stashOid ? { recoveryStash: { stashOid: created.stashOid, ...(created.stashRef ? { stashRef: created.stashRef } : {}) } } : {}) }),
                 stdout: `${created.stdout}\n${switched.stdout}`.trim() || undefined,
                 stderr: `${created.stderr}\n${switched.stderr}`.trim() || undefined,
                 didCreateStash: created.stashCreated,
                 didPopStash: false,
                 stashRef: created.stashRef,
+                ...(created.stashOid ? { stashOid: created.stashOid } : {}),
             };
+        }
+
+        // Keep the superseded recovery objects until a replacement exists and the switch succeeded.
+        if (created.stashCreated && created.stashOid) {
+            for (const entry of existing) {
+                if (!entry.stashOid) continue;
+                const dropped = await dropGitStashOid({ context: input.context, stashOid: entry.stashOid });
+                if (!dropped.ok) return { success: false, errorCode: dropped.errorCode, error: dropped.error, stdout: dropped.stdout, stderr: dropped.stderr, didCreateStash: true, didPopStash: false, stashRef: created.stashRef, stashOid: created.stashOid, outcome: { v: 1, kind: 'effect_applied_with_warning', errorCode: dropped.errorCode, effect: { kind: 'branch', name: input.request.name }, recoveryStash: { stashOid: created.stashOid, ...(created.stashRef ? { stashRef: created.stashRef } : {}) }, nextActions: [{ kind: 'refresh' }] } };
+            }
         }
 
         const response: ScmBranchCheckoutResponse = {
@@ -391,6 +389,7 @@ export async function gitBranchCheckout(input: {
             didCreateStash: created.stashCreated,
             didPopStash: false,
             stashRef: created.stashRef,
+            ...(created.stashOid ? { stashOid: created.stashOid } : {}),
         };
         invalidateAfterBranchMutation({
             response,
@@ -418,15 +417,7 @@ export async function gitBranchCheckout(input: {
         return response;
     }
 
-    if (!isLocalChangesOverwrittenError(switched.stderr)) {
-        return {
-            success: false,
-            errorCode: mapGitErrorCode(switched.stderr),
-            error: switched.stderr || 'Branch checkout failed',
-            stdout: switched.stdout,
-            stderr: switched.stderr,
-        };
-    }
+    if (getScmCommandIndeterminateErrorCode(switched) || !isLocalChangesOverwrittenError(switched.stderr)) return branchMutationFailure({ context: input.context, result: switched, fallback: 'Branch checkout failed' });
 
     const transientMarker = buildHappierTransientStashMarker(input.request.name);
     const created = await createGitStashPush({
@@ -440,20 +431,20 @@ export async function gitBranchCheckout(input: {
             error: created.error,
             stdout: created.stdout,
             stderr: created.stderr,
+            outcome: created.outcome,
         };
     }
 
     const switchedAfterStash = await runGitSwitch({ cwd: input.context.cwd, name: input.request.name });
     if (!switchedAfterStash.success) {
         return {
-            success: false,
-            errorCode: mapGitErrorCode(switchedAfterStash.stderr),
-            error: switchedAfterStash.stderr || 'Branch checkout failed',
+            ...branchMutationFailure({ context: input.context, result: switchedAfterStash, fallback: 'Branch checkout failed', ...(created.stashOid ? { recoveryStash: { stashOid: created.stashOid, ...(created.stashRef ? { stashRef: created.stashRef } : {}) } } : {}) }),
             stdout: `${created.stdout}\n${switchedAfterStash.stdout}`.trim() || undefined,
             stderr: `${created.stderr}\n${switchedAfterStash.stderr}`.trim() || undefined,
             didCreateStash: created.stashCreated,
             didPopStash: false,
             stashRef: created.stashRef,
+            ...(created.stashOid ? { stashOid: created.stashOid } : {}),
         };
     }
 
@@ -475,7 +466,7 @@ export async function gitBranchCheckout(input: {
         return response;
     }
 
-    if (!created.stashRef) {
+    if (!created.stashOid) {
         return {
             success: false,
             errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
@@ -488,13 +479,7 @@ export async function gitBranchCheckout(input: {
         };
     }
 
-    const pop = await runScmCommand({
-        bin: 'git',
-        cwd: input.context.cwd,
-        args: ['stash', 'pop', created.stashRef],
-        timeoutMs: GIT_BRANCH_SWITCH_TIMEOUT_MS,
-        env: buildScmNonInteractiveEnv(),
-    });
+    const pop = await gitStashPop({ context: input.context, request: { stashRef: created.stashOid } });
 
     if (!pop.success) {
         return {
@@ -506,6 +491,8 @@ export async function gitBranchCheckout(input: {
             didCreateStash: created.stashCreated,
             didPopStash: false,
             stashRef: created.stashRef,
+            stashOid: created.stashOid,
+            outcome: pop.outcome,
         };
     }
 
@@ -516,6 +503,8 @@ export async function gitBranchCheckout(input: {
         didCreateStash: created.stashCreated,
         didPopStash: true,
         stashRef: created.stashRef,
+        stashOid: created.stashOid,
+        outcome: pop.outcome,
     };
     invalidateAfterBranchMutation({
         response,

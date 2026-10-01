@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { PluginSourceCustodyV1 } from '@happier-dev/protocol';
 
 import {
     createDaemonManagedServiceEndpointReadOwner,
@@ -15,9 +16,14 @@ import {
 
 const pluginId = 'happier.agent.opencode';
 const contributionId = `${pluginId}/agents/opencode`;
-const immutableGenerationId = 'immutable-opencode-generation';
+const immutableGenerationId = 'immutable-opencode-occurrenceId';
+const sourceCustody = Object.freeze({
+    kind: 'managed' as const,
+    immutableGenerationId,
+    installSource: 'localPath' as const,
+});
 function endpointProjection(
-    generation = immutableGenerationId,
+    custody: PluginSourceCustodyV1 = sourceCustody,
 ) {
     return createManagedServiceEndpointProjectionV1({
         sessionId: 'session-one',
@@ -25,7 +31,7 @@ function endpointProjection(
         contributionId,
         serverId: 'opencode-server',
         instanceId: 'opencode-instance',
-        immutableGenerationId: generation,
+        sourceCustody: custody,
         custodyOwner: 'sessionRunner',
         mode: 'managedSpawn',
         endpoint: {
@@ -48,7 +54,7 @@ function replacementEndpointProjection() {
         contributionId,
         serverId: 'opencode-server',
         instanceId: 'opencode-instance-two',
-        immutableGenerationId,
+        sourceCustody,
         custodyOwner: 'sessionRunner',
         mode: 'managedSpawn',
         endpoint: {
@@ -69,9 +75,9 @@ const projection = endpointProjection();
 const identity = Object.freeze({
     pluginId,
     agentId: 'opencode',
-    generation: 'mutable-generation-alias',
+    occurrenceId: 'opencode-occurrence',
     contributionQualifiedId: contributionId,
-    immutableGenerationId,
+    sourceCustody,
 });
 type BindHostInput = Parameters<
     ReturnType<
@@ -90,10 +96,13 @@ const invalidBindings: readonly (readonly [string, BindingOverride])[] = [
             contributionQualifiedId: `${pluginId}/agents/other`,
         },
     }],
-    ['wrong generation', {
+    ['wrong source custody', {
         identity: {
             ...identity,
-            immutableGenerationId: 'other-generation',
+            sourceCustody: {
+                ...sourceCustody,
+                immutableGenerationId: 'other-occurrenceId',
+            },
         },
     }],
     ['missing marker', { source: { kind: 'opencodeServer' } }],
@@ -110,6 +119,78 @@ const invalidBindings: readonly (readonly [string, BindingOverride])[] = [
 ];
 
 describe('daemon managed-service endpoint read owner', () => {
+    it('materializes only the exact requested client credential environment key', async () => {
+        let returnedEnvironment: Record<string, string> = {
+            OPENCODE_SERVER_PASSWORD: 'exact-password',
+        };
+        let owner: ReturnType<
+            typeof createDaemonManagedServiceEndpointReadOwner
+        >;
+        const runnerCall = vi.fn(async (rpcInput: Readonly<{
+            method: string;
+            request: unknown;
+        }>) => {
+            expect(rpcInput.method).toBe(
+                MANAGED_SERVICE_ENDPOINT_READ_RPC_METHODS.OPEN,
+            );
+            const request = ManagedServiceEndpointReadOpenRequestV1Schema
+                .parse(rpcInput.request);
+            expect(request.route).toMatchObject({
+                kind: 'endpointClientEnvironment',
+                environmentKey: 'OPENCODE_SERVER_PASSWORD',
+            });
+            expect(owner.claim({
+                requestId: request.requestId,
+                projectionToken: projection.projectionToken,
+                sessionId: projection.sessionId,
+                pluginId,
+            })).toBe(true);
+            return {
+                v: 1 as const,
+                requestId: request.requestId,
+                status: 'clientEnvironment' as const,
+                environment: returnedEnvironment,
+            };
+        });
+        owner = createDaemonManagedServiceEndpointReadOwner({
+            credentials: { token: 'test-token', encryption: null },
+            resolveProjection: async (query) => (
+                query.pluginId === pluginId
+                && query.sessionId === projection.sessionId
+                && query.contributionId === contributionId
+                && query.selector.kind === 'baseUrl'
+                && query.selector.baseUrl === projection.endpoint.baseUrl
+                    ? projection
+                    : null
+            ),
+            resolveRunnerEndpointReadRpc: async () => ({
+                sessionId: projection.sessionId,
+                call: runnerCall,
+            }),
+        });
+
+        const access = await owner.resolveSessionClientAccess({
+            pluginId,
+            sessionId: projection.sessionId,
+            contributionId,
+            targetBaseUrl: projection.endpoint.baseUrl,
+            environmentKey: 'OPENCODE_SERVER_PASSWORD',
+        });
+        expect(access?.childEnvironment).toEqual({
+            OPENCODE_SERVER_PASSWORD: 'exact-password',
+        });
+
+        returnedEnvironment = { PATH: 'wrong-destination' };
+        await expect(owner.resolveSessionClientAccess({
+            pluginId,
+            sessionId: projection.sessionId,
+            contributionId,
+            targetBaseUrl: projection.endpoint.baseUrl,
+            environmentKey: 'OPENCODE_SERVER_PASSWORD',
+        })).resolves.toBeNull();
+        await owner.dispose();
+    });
+
     it('binds one exact marked current contribution for the bounded operation', async () => {
         const queries: ManagedServiceEndpointProjectionResolveQuery[] = [];
         const resolveProjection = vi.fn(async (
@@ -126,7 +207,7 @@ describe('daemon managed-service endpoint read owner', () => {
             if (
                 query.pluginId !== pluginId
                 || query.contributionId !== contributionId
-                || query.immutableGenerationId !== immutableGenerationId
+                || query.sourceCustody !== sourceCustody
             ) return null;
             if (query.selector.kind === 'currentContribution') return projection;
             return null;
@@ -147,7 +228,7 @@ describe('daemon managed-service endpoint read owner', () => {
         expect(queries).toEqual([{
             pluginId,
             contributionId,
-            immutableGenerationId,
+            sourceCustody,
             selector: { kind: 'currentContribution' },
         }]);
 
@@ -156,7 +237,7 @@ describe('daemon managed-service endpoint read owner', () => {
         expect(queries).toEqual(Array.from({ length: 2 }, () => ({
             pluginId,
             contributionId,
-            immutableGenerationId,
+            sourceCustody,
             selector: { kind: 'currentContribution' },
         })));
         await owner.dispose();
@@ -262,7 +343,10 @@ describe('daemon managed-service endpoint read owner', () => {
         expect(resolveRunnerEndpointReadRpc).toHaveBeenCalledOnce();
         expect(runnerCall).toHaveBeenCalledTimes(2);
 
-        currentProjection = endpointProjection('mismatched-generation');
+        currentProjection = endpointProjection({
+            ...sourceCustody,
+            immutableGenerationId: 'mismatched-occurrenceId',
+        });
         await expect(read({ pathAndQuery: '/global/event' }))
             .rejects.toThrow('Managed server endpoint read owner is unavailable');
         expect(resolveRunnerEndpointReadRpc).toHaveBeenCalledOnce();
@@ -284,7 +368,7 @@ describe('daemon managed-service endpoint read owner', () => {
         expect(queries).toEqual(Array.from({ length: 7 }, () => ({
             pluginId,
             contributionId,
-            immutableGenerationId,
+            sourceCustody,
             selector: { kind: 'currentContribution' },
         })));
         await owner.dispose();
@@ -397,7 +481,7 @@ describe('daemon managed-service endpoint read owner', () => {
         expect(queries).toEqual(Array.from({ length: 3 }, () => ({
             pluginId,
             contributionId,
-            immutableGenerationId,
+            sourceCustody,
             selector: { kind: 'currentContribution' },
         })));
         await owner.dispose();
@@ -696,10 +780,13 @@ describe('daemon managed-service endpoint read owner', () => {
         expect(runnerCall).not.toHaveBeenCalled();
     });
 
-    it('uses the mutable generation only when no immutable generation identity exists', async () => {
-        const fallbackGeneration = 'fallback-generation';
-        const fallbackProjection = endpointProjection(fallbackGeneration);
-        const resolveProjection = vi.fn(async () => fallbackProjection);
+    it('authorizes the exact non-managed source custody without a occurrenceId alias', async () => {
+        const otherSourceCustody = Object.freeze({
+            kind: 'development' as const,
+            registeredRootId: 'other-source-root',
+        });
+        const otherProjection = endpointProjection(otherSourceCustody);
+        const resolveProjection = vi.fn(async () => otherProjection);
         const owner = createDaemonManagedServiceEndpointReadOwner({
             credentials: { token: 'test-token', encryption: null },
             resolveProjection,
@@ -708,8 +795,7 @@ describe('daemon managed-service endpoint read owner', () => {
         await expect(owner.bindHost({
             identity: {
                 ...identity,
-                generation: fallbackGeneration,
-                immutableGenerationId: null,
+                sourceCustody: otherSourceCustody,
             },
             source: { kind: 'opencodeServer', managedEndpoint: true },
             signal: new AbortController().signal,
@@ -717,7 +803,7 @@ describe('daemon managed-service endpoint read owner', () => {
         expect(resolveProjection).toHaveBeenCalledWith({
             pluginId,
             contributionId,
-            immutableGenerationId: fallbackGeneration,
+            sourceCustody: otherSourceCustody,
             selector: { kind: 'currentContribution' },
         });
         await owner.dispose();
@@ -731,7 +817,7 @@ describe('daemon managed-service endpoint read owner', () => {
             ) => (
                 query.pluginId === pluginId
                 && query.contributionId === contributionId
-                && query.immutableGenerationId === immutableGenerationId
+                && query.sourceCustody === sourceCustody
                 && query.selector.kind === 'currentContribution'
                     ? projection
                     : null

@@ -1,8 +1,8 @@
 import {
     PluginHostedWebRuntimeModeV1Schema,
-    PluginUiArtifactsManifestV1Schema,
+    PluginUiArtifactsManifestV2Schema,
     type PluginHostedWebRuntimeModeV1,
-    type PluginUiArtifactsManifestV1,
+    type PluginUiArtifactsManifestV2,
 } from '@happier-dev/protocol/plugins/ui';
 
 export function defineHostedWebRuntimeMode<const TRuntimeMode extends PluginHostedWebRuntimeModeV1>(
@@ -11,13 +11,13 @@ export function defineHostedWebRuntimeMode<const TRuntimeMode extends PluginHost
     return PluginHostedWebRuntimeModeV1Schema.parse(runtimeMode) as TRuntimeMode;
 }
 
-export function defineUiArtifactsManifest<const TManifest extends PluginUiArtifactsManifestV1>(
+export function defineUiArtifactsManifest<const TManifest extends PluginUiArtifactsManifestV2>(
     manifest: TManifest,
 ): TManifest {
-    return PluginUiArtifactsManifestV1Schema.parse(manifest) as TManifest;
+    return PluginUiArtifactsManifestV2Schema.parse(manifest) as TManifest;
 }
 
 export type {
     PluginHostedWebRuntimeModeV1,
-    PluginUiArtifactsManifestV1,
+    PluginUiArtifactsManifestV2,
 } from '@happier-dev/protocol/plugins/ui';

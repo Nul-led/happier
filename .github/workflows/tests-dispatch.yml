@@ -22,7 +22,7 @@ on:
           - blacksmith-linux-4vcpu
       custom_checks:
         description: "Custom — Comma-separated checks used only when profile=custom (ui,ui_e2e,workspace_sync_real,mobile_e2e_android,mobile_e2e_ios,plugin_workspaces,server,home_iroh_real,cli,stack,typecheck,daemon_e2e,e2e_core,e2e_core_slow,server_db_contract,providers,stress,release_contracts,installers_smoke,binary_smoke,cli_update_continuity,daemon_continuity,session_continuity,release_assets_docker,self_host_systemd,self_host_launchd,self_host_schtasks,self_host_daemon)"
-        required: true
+        required: false
         default: ""
         type: string
       workspace_sync_performance:
@@ -44,6 +44,16 @@ on:
           - stable
           - preview
           - dev
+      cli_update_to_source:
+        description: "CLI update — Target source for explicit continuity checks"
+        required: false
+        default: local-build
+        type: string
+      cli_update_to_ref:
+        description: "CLI update — Target ref for explicit continuity checks"
+        required: false
+        default: "."
+        type: string
       providers_preset:
         description: "Providers — Preset (when providers enabled)"
         required: true
@@ -98,192 +108,27 @@ jobs:
       run_self_host_schtasks: ${{ steps.flags.outputs.run_self_host_schtasks }}
       run_self_host_daemon: ${{ steps.flags.outputs.run_self_host_daemon }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.x
       - name: Compute flags
         id: flags
         env:
           PROFILE: ${{ inputs.profile }}
           CUSTOM: ${{ inputs.custom_checks }}
           UI_E2E_SPECS: ${{ inputs.ui_e2e_specs }}
-        run: |
-          set -euo pipefail
-          profile="${PROFILE}"
-          custom="${CUSTOM}"
-          ui_e2e_specs="${UI_E2E_SPECS}"
-
-          has() {
-            local key="$1"
-            echo ",${custom}," | grep -qi ",${key},"
-          }
-
-          if [ "${profile}" = "custom" ] && [ -z "${custom}" ]; then
-            echo "::error::profile=custom requires custom_checks" >&2
-            exit 1
-          fi
-          if [ -n "${ui_e2e_specs}" ] && [ "${profile}" != "custom" ]; then
-            echo "::error::profile=custom is required when ui_e2e_specs is set" >&2
-            exit 1
-          fi
-          if [ -n "${ui_e2e_specs}" ] && ! has ui_e2e; then
-            echo "::error::custom_checks must include ui_e2e when ui_e2e_specs is set" >&2
-            exit 1
-          fi
-          case "${ui_e2e_specs}" in
-            *$'\n'*|*$'\r'*) echo "::error::ui_e2e_specs must be a single comma-separated line" >&2; exit 1 ;;
-          esac
-
-          if [ "${profile}" = "full" ]; then
-            run_ui_e2e=true
-            run_workspace_sync_real=true
-            run_mobile_e2e_android=false
-            run_mobile_e2e_ios=false
-            run_ui=true
-            run_plugin_workspaces=true
-            run_server=true
-            run_home_iroh_real=true
-            run_cli=true
-            run_stack=true
-            run_typecheck=true
-            run_cli_daemon_e2e=true
-            run_e2e_core=true
-            run_e2e_core_slow=true
-            run_server_db_contract=true
-            run_providers=false
-            run_stress=false
-            run_release_contracts=true
-            run_installers_smoke=true
-            run_binary_smoke=true
-            run_cli_update_continuity=false
-            run_daemon_continuity=false
-            run_session_continuity=false
-            run_release_assets_docker=false
-            run_self_host_systemd=false
-            run_self_host_launchd=false
-            run_self_host_schtasks=false
-            run_self_host_daemon=false
-          elif [ "${profile}" = "fast" ]; then
-            run_ui_e2e=true
-            run_workspace_sync_real=false
-            run_mobile_e2e_android=false
-            run_mobile_e2e_ios=false
-            run_ui=true
-            run_plugin_workspaces=true
-            run_server=true
-            run_home_iroh_real=false
-            run_cli=true
-            run_stack=true
-            run_typecheck=true
-            run_cli_daemon_e2e=false
-            run_e2e_core=true
-            run_e2e_core_slow=false
-            run_server_db_contract=false
-            run_providers=false
-            run_stress=false
-            run_release_contracts=true
-            run_installers_smoke=true
-            run_binary_smoke=true
-            run_cli_update_continuity=false
-            run_daemon_continuity=false
-            run_session_continuity=false
-            run_release_assets_docker=false
-            run_self_host_systemd=false
-            run_self_host_launchd=false
-            run_self_host_schtasks=false
-            run_self_host_daemon=false
-          else
-            run_ui_e2e=false
-            run_workspace_sync_real=false
-            run_mobile_e2e_android=false
-            run_mobile_e2e_ios=false
-            run_ui=false
-            run_plugin_workspaces=false
-            run_server=false
-            run_home_iroh_real=false
-            run_cli=false
-            run_stack=false
-            run_typecheck=false
-            run_cli_daemon_e2e=false
-            run_e2e_core=false
-            run_e2e_core_slow=false
-            run_server_db_contract=false
-            run_providers=false
-            run_stress=false
-            run_release_contracts=false
-            run_installers_smoke=false
-            run_binary_smoke=false
-            run_cli_update_continuity=false
-            run_daemon_continuity=false
-            run_session_continuity=false
-            run_release_assets_docker=false
-            run_self_host_systemd=false
-            run_self_host_launchd=false
-            run_self_host_schtasks=false
-            run_self_host_daemon=false
-
-            if has ui; then run_ui=true; fi
-            if has plugin_workspaces; then run_plugin_workspaces=true; fi
-            if has ui_e2e; then run_ui_e2e=true; fi
-            if has workspace_sync_real; then run_workspace_sync_real=true; fi
-            if has mobile_e2e_android; then run_mobile_e2e_android=true; fi
-            if has mobile_e2e_ios; then run_mobile_e2e_ios=true; fi
-            if has server; then run_server=true; fi
-            if has home_iroh_real; then run_home_iroh_real=true; fi
-            if has cli; then run_cli=true; fi
-            if has stack; then run_stack=true; fi
-            if has typecheck; then run_typecheck=true; fi
-            if has daemon_e2e; then run_cli_daemon_e2e=true; fi
-            if has e2e_core; then run_e2e_core=true; fi
-            if has e2e_core_slow; then run_e2e_core=true; run_e2e_core_slow=true; fi
-            if has server_db_contract; then run_server_db_contract=true; fi
-            if has providers; then run_providers=true; fi
-            if has stress; then run_stress=true; fi
-            if has release_contracts; then run_release_contracts=true; fi
-            if has installers_smoke; then run_installers_smoke=true; fi
-            if has binary_smoke; then run_binary_smoke=true; fi
-            if has cli_update_continuity; then run_cli_update_continuity=true; fi
-            if has daemon_continuity; then run_daemon_continuity=true; fi
-            if has session_continuity; then run_session_continuity=true; fi
-            if has release_assets_docker; then run_release_assets_docker=true; fi
-            if has self_host_systemd; then run_self_host_systemd=true; fi
-            if has self_host_launchd; then run_self_host_launchd=true; fi
-            if has self_host_schtasks; then run_self_host_schtasks=true; fi
-            if has self_host_daemon; then run_self_host_daemon=true; fi
-          fi
-
-          {
-            echo "run_ui_e2e=${run_ui_e2e}"
-            echo "ui_e2e_specs=${ui_e2e_specs}"
-            echo "run_workspace_sync_real=${run_workspace_sync_real}"
-            echo "run_mobile_e2e_android=${run_mobile_e2e_android}"
-            echo "run_mobile_e2e_ios=${run_mobile_e2e_ios}"
-            echo "run_ui=${run_ui}"
-            echo "run_plugin_workspaces=${run_plugin_workspaces}"
-            echo "run_server=${run_server}"
-            echo "run_home_iroh_real=${run_home_iroh_real}"
-            echo "run_cli=${run_cli}"
-            echo "run_stack=${run_stack}"
-            echo "run_typecheck=${run_typecheck}"
-            echo "run_cli_daemon_e2e=${run_cli_daemon_e2e}"
-            echo "run_e2e_core=${run_e2e_core}"
-            echo "run_e2e_core_slow=${run_e2e_core_slow}"
-            echo "run_server_db_contract=${run_server_db_contract}"
-            echo "run_providers=${run_providers}"
-            echo "run_stress=${run_stress}"
-            echo "run_release_contracts=${run_release_contracts}"
-            echo "run_installers_smoke=${run_installers_smoke}"
-            echo "run_binary_smoke=${run_binary_smoke}"
-            echo "run_cli_update_continuity=${run_cli_update_continuity}"
-            echo "run_daemon_continuity=${run_daemon_continuity}"
-            echo "run_session_continuity=${run_session_continuity}"
-            echo "run_release_assets_docker=${run_release_assets_docker}"
-            echo "run_self_host_systemd=${run_self_host_systemd}"
-            echo "run_self_host_launchd=${run_self_host_launchd}"
-            echo "run_self_host_schtasks=${run_self_host_schtasks}"
-            echo "run_self_host_daemon=${run_self_host_daemon}"
-          } >> "$GITHUB_OUTPUT"
+        run: node scripts/pipeline/checks/resolve-checks-plan.mjs --target hosted
 
   tests:
     name: Tests (reusable)
     needs: [resolve]
+    permissions:
+      contents: read
     uses: ./.github/workflows/tests.yml
     with:
       select_jobs_explicitly: true
@@ -316,6 +161,8 @@ jobs:
       installers_ref: .
       run_binary_smoke: ${{ needs.resolve.outputs.run_binary_smoke == 'true' }}
       run_cli_update_continuity: ${{ needs.resolve.outputs.run_cli_update_continuity == 'true' }}
+      cli_update_to_source: ${{ inputs.cli_update_to_source }}
+      cli_update_to_ref: ${{ inputs.cli_update_to_ref }}
       run_daemon_continuity: ${{ needs.resolve.outputs.run_daemon_continuity == 'true' }}
       run_session_continuity: ${{ needs.resolve.outputs.run_session_continuity == 'true' }}
       run_release_assets_docker: ${{ needs.resolve.outputs.run_release_assets_docker == 'true' }}

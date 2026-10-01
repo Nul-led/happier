@@ -12,6 +12,10 @@ test('the Iroh package owns one pinned Rust command and existing CI consumes it'
   const packageJson = JSON.parse(await read('packages/iroh-native/package.json'));
   const workflow = await read('.github/workflows/tests.yml');
   assert.match(packageJson.scripts['test:rust:local'], /cargo test --locked[\s\S]*--workspace --all-targets/u);
+  assert.match(
+    packageJson.scripts['test:rust:local'],
+    /cargo test --locked[\s\S]*-p happier-iroh-core --all-targets --features test-relay-fixture/u,
+  );
   assert.match(packageJson.scripts['test:rust:local'], /verify-browser-iroh-wasm\.mjs/u);
   assert.match(workflow, /cargo install wasm-bindgen-cli[\s\S]*Run the canonical pinned Rust suite[\s\S]*yarn workspace @happier-dev\/iroh-native test:rust/u);
 });

@@ -641,6 +641,9 @@
           "headerActions": [],
           "id": "inspector-app",
           "instancePolicy": "singleton",
+          "placement": {
+            "kind": "rail"
+          },
           "renderer": "inspector-renderer",
           "target": {
             "kind": "app"
@@ -655,6 +658,9 @@
           "headerActions": [],
           "id": "inspector-page",
           "instancePolicy": "singleton",
+          "placement": {
+            "kind": "rail"
+          },
           "renderer": "inspector-renderer",
           "target": {
             "kind": "app"

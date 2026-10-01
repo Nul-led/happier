@@ -99,21 +99,35 @@ test('resolveCliDistEntrypointFromBin falls back to package-dist when dist lacks
   }
 });
 
-test('readCliDistBuildManifest returns the promoted identity without rehashing changed payload bytes', async () => {
+test('readCliDistBuildManifest rejects changed payload bytes', async () => {
   const tmp = await mkdtemp(join(tmpdir(), 'happy-cli-dist-stale-manifest-'));
   try {
     const entrypoint = join(tmp, 'index.mjs');
     await writeFile(entrypoint, 'export const ready = true;\n', 'utf-8');
-    const written = writeCliDistBuildManifest(entrypoint, {
+    writeCliDistBuildManifest(entrypoint, {
       builtAt: '2026-07-09T00:00:00.000Z',
     });
 
     await writeFile(entrypoint, "import './missing-chunk.mjs';\n", 'utf-8');
 
     const integrity = readCliDistBuildManifest(entrypoint);
-    assert.equal(integrity.ok, true);
-    assert.equal(integrity.reason, 'manifest');
-    assert.equal(integrity.fingerprint, written.manifest.fingerprint);
+    assert.equal(integrity.ok, false);
+    assert.match(integrity.reason, /^(?:incomplete:missing_module:|build_manifest_fingerprint_mismatch)/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('readCliDistBuildManifest rejects a manifest from an unsupported tool version', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'happy-cli-dist-manifest-version-'));
+  try {
+    const entrypoint = join(tmp, 'index.mjs');
+    await writeFile(entrypoint, 'export const ready = true;\n', 'utf-8');
+    writeManifest(tmp);
+    const manifestPath = join(tmp, '.build-manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+    await writeFile(manifestPath, JSON.stringify({ ...manifest, toolVersion: 'unknown' }), 'utf-8');
+    assert.equal(readCliDistBuildManifest(entrypoint).reason, 'unsupported_build_manifest_version');
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

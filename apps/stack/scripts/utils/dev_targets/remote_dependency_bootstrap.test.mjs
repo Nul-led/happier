@@ -12,6 +12,50 @@ import {
 
 const runDependencyRefreshImmediately = async (_options, refresh) => await refresh({});
 
+test('source-test bootstrap admits installed tools without requiring a compiled Stack owner', async (t) => {
+  const repoDir = await mkdtemp(join(tmpdir(), 'happier-source-test-bootstrap-'));
+  t.after(async () => rm(repoDir, { recursive: true, force: true }));
+  await mkdir(join(repoDir, 'apps/stack'), { recursive: true });
+  for (const name of ['ui', 'cli', 'server']) {
+    await mkdir(join(repoDir, 'apps', name), { recursive: true });
+    await writeFile(join(repoDir, 'apps', name, 'package.json'), JSON.stringify({ name: `@fixture/${name}`, version: '1.0.0' }));
+  }
+  await writeFile(join(repoDir, 'package.json'), JSON.stringify({ private: true, workspaces: ['apps/*', 'packages/*'] }));
+  await writeFile(join(repoDir, 'apps/stack/package.json'), '{"name":"@fixture/stack","version":"1.0.0","dependencies":{"@fixture/emitted":"1.0.0"}}');
+  await mkdir(join(repoDir, 'packages/emitted/src'), { recursive: true });
+  await writeFile(join(repoDir, 'packages/emitted/package.json'), JSON.stringify({ name: '@fixture/emitted', version: '1.0.0', main: './dist/index.js', scripts: { build: 'node compile.mjs' } }));
+  await writeFile(join(repoDir, 'packages/emitted/compile.mjs'), 'import { mkdirSync, writeFileSync } from "node:fs"; const out = process.env.HAPPIER_WORKSPACE_DIST_OUTPUT_DIR; mkdirSync(out, { recursive: true }); writeFileSync(out + "/index.js", "export {};\\n");');
+  await writeFile(join(repoDir, 'yarn.lock'), '# first\n');
+  let installs = 0;
+  const options = {
+    repoDir, validationKind: 'source-test',
+    // Package installation is the OS boundary; freshness/locking remains real.
+    installInitialDependencies: async () => {
+      installs += 1;
+      await mkdir(join(repoDir, 'node_modules'), { recursive: true });
+      await writeFile(join(repoDir, 'node_modules/.yarn-integrity'), '{}');
+    },
+  };
+  await bootstrapRemoteDependencies(options);
+  await assert.rejects(stat(join(repoDir, 'packages/emitted/dist/index.js')), { code: 'ENOENT' });
+  await bootstrapRemoteDependencies(options);
+  assert.equal(installs, 1);
+  await writeFile(join(repoDir, 'yarn.lock'), '# second\n');
+  await bootstrapRemoteDependencies(options);
+  assert.equal(installs, 2);
+  await assert.rejects(stat(join(repoDir, 'packages/cli-common/dist')), { code: 'ENOENT' });
+  for (const domain of ['workspaces', 'process']) {
+    await mkdir(join(repoDir, 'packages/cli-common/dist', domain), { recursive: true });
+    await writeFile(join(repoDir, 'packages/cli-common/dist', domain, 'index.js'), 'export {};\n');
+  }
+  await bootstrapRemoteDependencies({ ...options, validationKind: 'runtime', componentRelativeDir: 'apps/ui' });
+  await assert.rejects(stat(join(repoDir, 'packages/emitted/dist/index.js')), { code: 'ENOENT' },
+    'non-Stack validation must not publish the Stack closure');
+  await bootstrapRemoteDependencies({ ...options, validationKind: 'runtime', componentRelativeDir: 'apps/stack' });
+  assert.equal((await stat(join(repoDir, 'packages/emitted/dist/index.js'))).isFile(), true,
+    'Stack-native validation keeps its emitted-package contract');
+});
+
 test('remote stage-zero dependency install materializes dependencies without workspace lifecycle scripts', () => {
   assert.deepEqual(REMOTE_INITIAL_DEPENDENCY_INSTALL_ARGS, [
     'install',
@@ -76,6 +120,7 @@ test('remote dependency bootstrap serializes stage-zero installs through the can
   };
   const loadDependencyOwner = async () => ({
     ensureDepsInstalled: async () => {},
+    ensureWorkspacePackagesBuiltForComponent: async () => {},
   });
   const options = {
     repoDir,
@@ -101,6 +146,7 @@ test('remote dependency bootstrap builds the dependency-owner closure before loa
 
   await bootstrapRemoteDependencies({
     repoDir: '/remote/happier',
+    componentRelativeDir: 'apps/stack',
     env: { HAPPIER_STACK_PM_CACHE_BASE_DIR: '/remote/cache' },
     packageExists: () => false,
     installInitialDependencies: async (options) => calls.push(['initial', options]),
@@ -116,6 +162,9 @@ test('remote dependency bootstrap builds the dependency-owner closure before loa
             env: options.env,
             hasDependencyReadyAction: typeof options.onDependenciesReady === 'function',
           }]);
+        },
+        ensureWorkspacePackagesBuiltForComponent: async (componentDir, options) => {
+          calls.push(['workspace', componentDir, options]);
         },
       };
     },
@@ -135,10 +184,13 @@ test('remote dependency bootstrap builds the dependency-owner closure before loa
       env: { HAPPIER_STACK_PM_CACHE_BASE_DIR: '/remote/cache' },
       hasDependencyReadyAction: false,
     }],
+    ['workspace', '/remote/happier/apps/stack', {
+      env: { HAPPIER_STACK_PM_CACHE_BASE_DIR: '/remote/cache' },
+    }],
   ]);
 });
 
-test('remote dependency bootstrap does not run component-owned UI preparation for an arbitrary command', async () => {
+test('remote dependency bootstrap leaves unrelated workspace publication to component preparation', async () => {
   const calls = [];
 
   await bootstrapRemoteDependencies({
@@ -155,6 +207,9 @@ test('remote dependency bootstrap does not run component-owned UI preparation fo
         calls.push(['ensure:begin']);
         assert.equal(options.onDependenciesReady, undefined);
         calls.push(['ensure:end']);
+      },
+      ensureWorkspacePackagesBuiltForComponent: async (componentDir, options) => {
+        calls.push(['workspace', componentDir, options]);
       },
     }),
   });
@@ -205,6 +260,7 @@ test('remote dependency bootstrap skips stage zero when the canonical dependency
   let initialInstallCalled = false;
   let workspaceBuildOwnerLoaded = false;
   let ensured = false;
+  let workspacePrepared = false;
 
   await bootstrapRemoteDependencies({
     repoDir: '/remote/happier',
@@ -229,12 +285,40 @@ test('remote dependency bootstrap skips stage zero when the canonical dependency
       ensureDepsInstalled: async () => {
         ensured = true;
       },
+      ensureWorkspacePackagesBuiltForComponent: async () => {
+        workspacePrepared = true;
+      },
     }),
   });
 
   assert.equal(initialInstallCalled, false);
   assert.equal(workspaceBuildOwnerLoaded, false);
   assert.equal(ensured, true);
+  assert.equal(workspacePrepared, false);
+});
+
+test('remote dependency bootstrap refreshes the Stack component workspace closure before returning', async () => {
+  const calls = [];
+
+  await bootstrapRemoteDependencies({
+    repoDir: '/remote/happier',
+    componentRelativeDir: 'apps/stack',
+    env: { HAPPIER_STACK_PM_CACHE_BASE_DIR: '/remote/cache' },
+    packageExists: () => true,
+    loadDependencyOwner: async () => ({
+      ensureDepsInstalled: async () => calls.push('dependencies'),
+      ensureWorkspacePackagesBuiltForComponent: async (componentDir, options) => {
+        calls.push(['workspace', componentDir, options]);
+      },
+    }),
+  });
+
+  assert.deepEqual(calls, [
+    'dependencies',
+    ['workspace', '/remote/happier/apps/stack', {
+      env: { HAPPIER_STACK_PM_CACHE_BASE_DIR: '/remote/cache' },
+    }],
+  ]);
 });
 
 test('remote dependency bootstrap repairs a scriptless install whose dependency owner was not built', async () => {
@@ -252,6 +336,9 @@ test('remote dependency bootstrap repairs a scriptless install whose dependency 
     loadDependencyOwner: async () => ({
       ensureDepsInstalled: async () => {
         calls.push(['ensure']);
+      },
+      ensureWorkspacePackagesBuiltForComponent: async (componentDir, options) => {
+        calls.push(['workspace', componentDir, options]);
       },
     }),
   });

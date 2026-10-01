@@ -1,21 +1,39 @@
 import { mkdir, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 
 import { ensureMinimalMonorepoLayout } from './core/minimal_monorepo_layout.mjs';
-import { writeStubHappierCliFiles } from './core/stub_happier_cli_files.mjs';
+import { writeStubCliDistBuildManifest, writeStubHappierCliFiles } from './core/stub_happier_cli_files.mjs';
 import { createTempFixture } from './core/temp_fixture.mjs';
+import { readHappyCliRuntimeInputFreshness } from '../utils/proc/cli_runtime_inputs.mjs';
 import { sanitizeStackTestRunnerEnv } from '../utils/test/test_env.mjs';
+
+async function allocateAvailableLocalhostPort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    await new Promise((resolve) => server.close(resolve));
+    throw new Error('expected an allocated localhost TCP port');
+  }
+  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return address.port;
+}
 
 export async function createStackHappierCliCommandFixture(
   t,
   {
     prefix,
     stackName = 'exp-test',
-    serverPort = 4101,
+    serverPort,
     distIndexScript,
     binHappierScript = "import '../dist/index.mjs';\n",
   } = {},
 ) {
+  const resolvedServerPort = serverPort ?? await allocateAvailableLocalhostPort();
   const fixture = await createTempFixture(t, { prefix });
   const tmp = fixture.root;
   const storageDir = join(tmp, 'storage');
@@ -25,16 +43,22 @@ export async function createStackHappierCliCommandFixture(
   const stackCliHome = join(storageDir, stackName, 'cli');
 
   await ensureMinimalMonorepoLayout(monoRoot);
-  await writeStubHappierCliFiles(monoRoot, {
+  const { cliDir } = await writeStubHappierCliFiles(monoRoot, {
     distIndexScript,
     binHappierScript,
+    distBuildManifest: false,
   });
+  // These command fixtures exercise lifecycle behavior with a current CLI publication.
+  // A manifest without its real input fingerprint only exercises degraded-build fallback.
+  const inputFreshness = await readHappyCliRuntimeInputFreshness(cliDir);
+  if (!inputFreshness) throw new Error('could not fingerprint stub CLI inputs');
+  writeStubCliDistBuildManifest(cliDir, { inputFingerprint: inputFreshness.fingerprint });
   await mkdir(stackCliHome, { recursive: true });
 
   async function writeStackEnv({
     name = stackName,
     cliHomeDir = stackCliHome,
-    port = serverPort,
+    port = resolvedServerPort,
     repoDir = monoRoot,
   } = {}) {
     const envPath = join(storageDir, name, 'env');
@@ -62,6 +86,7 @@ export async function createStackHappierCliCommandFixture(
     workspaceDir,
     monoRoot,
     stackName,
+    serverPort: resolvedServerPort,
     stackCliHome,
     envPath,
     writeStackEnv,

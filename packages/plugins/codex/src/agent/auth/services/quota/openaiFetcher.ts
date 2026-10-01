@@ -20,6 +20,8 @@ import {
 } from './rateLimitResetCreditsClient.js';
 import { resolveCodexUsageSubjectRef } from '../usage/identity.js';
 import { mapCodexProviderHttpUsageSnapshot } from '../usage/snapshot.js';
+import { fetchCodexSubscription, OPENAI_CODEX_DEFAULT_SUBSCRIPTION_URL } from './subscription.js';
+import type { AgentAccountUsageSubscription } from '@happier-dev/plugin-sdk/agents/runtime';
 
 export const OPENAI_CODEX_DEFAULT_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 
@@ -158,6 +160,7 @@ function buildCodexProviderHttpQuotaSnapshot(input: Readonly<{
   planLabel?: string | null;
   accountLabel?: string | null;
   recoveryCredits?: AgentAccountUsageRecoveryCredits;
+  subscription?: AgentAccountUsageSubscription;
   meters: readonly AgentAccountUsageMeter[];
 }>): AgentAccountUsageSnapshot {
   return mapCodexProviderHttpUsageSnapshot({
@@ -168,6 +171,7 @@ function buildCodexProviderHttpQuotaSnapshot(input: Readonly<{
     planLabel: input.planLabel,
     accountLabel: input.accountLabel,
     ...(input.recoveryCredits ? { recoveryCredits: input.recoveryCredits } : {}),
+    ...(input.subscription ? { subscription: input.subscription } : {}),
     meters: input.meters,
   });
 }
@@ -176,6 +180,7 @@ export function createOpenAiCodexQuotaFetcher(params?: Readonly<{
   usageUrl?: string;
   resetCreditsUrl?: string;
   resetCreditConsumeUrl?: string;
+  subscriptionUrl?: string;
   staleAfterMs?: number;
   userAgent?: string;
   /**
@@ -205,6 +210,8 @@ export function createOpenAiCodexQuotaFetcher(params?: Readonly<{
   const staleAfterMs = typeof params?.staleAfterMs === 'number' && Number.isFinite(params.staleAfterMs)
     ? Math.max(1, Math.trunc(params.staleAfterMs))
     : 300_000;
+  const subscriptionUrl = params?.subscriptionUrl?.trim()
+    || (usageUrl === OPENAI_CODEX_DEFAULT_USAGE_URL ? OPENAI_CODEX_DEFAULT_SUBSCRIPTION_URL : null);
   const userAgent = params?.userAgent ?? 'happier';
   const runtimeFetch = params?.runtimeFetch ?? defaultRuntimeFetch();
 
@@ -297,6 +304,17 @@ export function createOpenAiCodexQuotaFetcher(params?: Readonly<{
         rawUsage: data,
         rawResetCredits,
       });
+      const subscription = subscriptionUrl
+        ? await fetchCodexSubscription({
+            accessToken: record.oauth.accessToken,
+            accountId: record.oauth.providerAccountId,
+            now,
+            staleAfterMs,
+            subscriptionUrl,
+            signal,
+            runtimeFetch,
+          })
+        : undefined;
 
       const planLabel = normalizeNonEmptyString(data.plan_type);
       return buildCodexProviderHttpQuotaSnapshot({
@@ -306,6 +324,7 @@ export function createOpenAiCodexQuotaFetcher(params?: Readonly<{
         planLabel,
         accountLabel: resolveConnectedServiceQuotaAccountLabel(record),
         ...(recoveryCredits ? { recoveryCredits } : {}),
+        ...(subscription ? { subscription } : {}),
         meters: mapOpenAiCodexConnectedAccountUsageMeters(data),
       });
     },
@@ -339,6 +358,7 @@ export const openAiCodexQuotaFetcherDescriptor: CodexQuotaFetcherDescriptor = {
     usageUrl: readNonEmptyEnv(env, 'HAPPIER_CONNECTED_SERVICES_OPENAI_CODEX_USAGE_URL'),
     resetCreditsUrl: readNonEmptyEnv(env, 'HAPPIER_CONNECTED_SERVICES_OPENAI_CODEX_RESET_CREDITS_URL'),
     resetCreditConsumeUrl: readNonEmptyEnv(env, 'HAPPIER_CONNECTED_SERVICES_OPENAI_CODEX_RESET_CREDIT_CONSUME_URL'),
+    subscriptionUrl: readNonEmptyEnv(env, 'HAPPIER_CONNECTED_SERVICES_OPENAI_CODEX_SUBSCRIPTION_URL'),
     staleAfterMs,
     userAgent,
     disablePrivateEndpoint: readDisableCodexQuotaEndpointEnv(env),

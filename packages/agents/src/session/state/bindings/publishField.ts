@@ -18,6 +18,7 @@ import { externalAgentObservationBinding } from './externalAgent.js';
 import { externalSessionOperationBinding } from './externalSessionOperation.js';
 import { sessionRunnerRuntimeBinding } from './sessionRunnerRuntime.js';
 import { sessionWorkStateBinding } from './workState.js';
+import { sessionRoleBinding, sessionRoleConfigurationBinding } from './role.js';
 import { sessionUsageLimitRecoveryBinding } from './usageLimitRecovery.js';
 import { summaryTextBinding } from './summaryText.js';
 import {
@@ -30,6 +31,8 @@ const SESSION_STATE_METADATA_BINDINGS = {
   'identity.runtimeDescriptor': runtimeDescriptorBinding,
   'identity.providerSessionId': providerSessionIdBinding,
   'intent.model': modelIntentBinding,
+  'intent.role': sessionRoleBinding,
+  'intent.sessionRoles': sessionRoleConfigurationBinding,
   'intent.permissionMode': permissionModeIntentBinding,
   'intent.acpSessionMode': acpSessionModeIntentBinding,
   'intent.acpConfigOption': acpConfigOptionIntentBinding,
@@ -107,6 +110,10 @@ export function clearSessionStateFieldFromMetadata(
       delete next.modelSelectionIntentV1;
       delete next.modelOverrideV1;
       break;
+    case 'intent.role':
+      return sessionRoleBinding.write(metadata, { value: null });
+    case 'intent.sessionRoles':
+      return sessionRoleConfigurationBinding.write(metadata, { value: { overrides: {}, sessionRoles: {}, notes: '' } });
     case 'intent.acpConfigOption':
       delete next.sessionConfigOptionOverridesV1;
       delete next.acpConfigOptionOverridesV1;

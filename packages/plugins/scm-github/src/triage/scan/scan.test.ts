@@ -119,6 +119,19 @@ async function runWalk(input: Readonly<{
 }
 
 describe('GitHub triage scan', () => {
+  it('preserves merged lifecycle from the search item pull_request envelope', async () => {
+    // /search/issues shape from githubResponses.ts provenance: merged_at is nested.
+    const { result } = await runScan({ respond: (request) => laneOf(request) === 'authored'
+      ? { status: 200, body: githubSearchResponse({ items: [{
+        ...GITHUB_SEARCH_PULL_REQUEST_ITEM,
+        state: 'closed',
+        pull_request: { url: 'https://api.github.com/repos/octo-org/example-app/pulls/1284', merged_at: '2026-08-13T10:00:00Z' },
+      }] }) }
+      : emptyPage() });
+    expect(result.kind).toBe('complete');
+    if (result.kind === 'failed') throw new Error('scan failed');
+    expect(result.observations[0]?.snapshot.state).toEqual({ presentation: 'resolved', nativeLabel: 'Merged' });
+  });
   it('sends one request per involvement lane with explicit base qualifiers and no since window', async () => {
     const { transport } = await runScan({ respond: () => emptyPage() });
 

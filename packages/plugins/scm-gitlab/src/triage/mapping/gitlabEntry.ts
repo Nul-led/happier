@@ -11,7 +11,7 @@
  * large.
  */
 
-import { MAX_TRIAGE_ROW_FACTS_V1 } from '@happier-dev/triage-protocol/v1';
+import { MAX_TRIAGE_ROW_FACTS_V1, type TriagePullRequestStatusV1 } from '@happier-dev/triage-protocol/v1';
 
 import { buildGitlabEntryIdentity } from '../identity.js';
 import type { GitlabConfiguredOrigin } from '../origin.js';
@@ -98,7 +98,9 @@ export function projectGitlabMergeRequestState(
     return { presentation: 'active', nativeLabel: draft ? 'Draft' : 'Open' };
   }
   if (state === 'locked') return { presentation: 'active', nativeLabel: 'Locked' };
-  if (state === 'merged') return { presentation: 'closed', nativeLabel: 'Merged' };
+  // Merged completed the merge request; closed without merging stays `closed`
+  // (`CONTRACT.md` §4, r0.42).
+  if (state === 'merged') return { presentation: 'resolved', nativeLabel: 'Merged' };
   if (state === 'closed') return { presentation: 'closed', nativeLabel: 'Closed' };
   return {
     presentation: 'unknown',
@@ -131,12 +133,14 @@ export function projectGitlabIssueState(
 export function projectGitlabMergeStatusFact(
   detailedMergeStatus: string | null,
 ): GitlabRowFact | null {
+  const merge = projectGitlabMergeStatus(detailedMergeStatus);
+  if (merge.state === 'mergeable') {
+    return { id: 'gitlab/merge-status', importance: 'secondary', value: { kind: 'status', label: 'Mergeable', tone: 'success' } };
+  }
+  if (merge.state === 'conflicts') {
+    return { id: 'gitlab/merge-status', importance: 'secondary', value: { kind: 'status', label: 'Conflicts', tone: 'danger' } };
+  }
   switch (detailedMergeStatus) {
-    case 'mergeable':
-      return { id: 'gitlab/merge-status', importance: 'secondary', value: { kind: 'status', label: 'Mergeable', tone: 'success' } };
-    case 'conflict':
-    case 'broken_status':
-      return { id: 'gitlab/merge-status', importance: 'secondary', value: { kind: 'status', label: 'Conflicts', tone: 'danger' } };
     case 'draft_status':
       return { id: 'gitlab/merge-status', importance: 'secondary', value: { kind: 'status', label: 'Draft', tone: 'warning' } };
     case 'checking':
@@ -149,6 +153,31 @@ export function projectGitlabMergeStatusFact(
       // An unrecognized value is omitted rather than guessed. Omitted means *this
       // provider did not report it here*, which is not the same as a blocked merge.
       return null;
+  }
+}
+
+/** GitLab's documented detailed status, shared by row facts and the expanded status read. */
+export function projectGitlabMergeStatus(status: string | null): NonNullable<TriagePullRequestStatusV1['merge']> {
+  if (status === 'mergeable') return { state: 'mergeable', blocker: null };
+  if (status === 'conflict' || status === 'broken_status') return { state: 'conflicts', blocker: status };
+  switch (status) {
+    case 'ci_must_pass':
+    case 'ci_still_running':
+    case 'commits_status':
+    case 'discussions_not_resolved':
+    case 'draft_status':
+    case 'jira_association_missing':
+    case 'merge_request_blocked':
+    case 'merge_time':
+    case 'need_rebase':
+    case 'not_approved':
+    case 'not_open':
+    case 'requested_changes':
+    case 'security_policy_violations':
+    case 'status_checks_must_pass':
+      return { state: 'blocked', blocker: status };
+    default:
+      return { state: 'unknown', blocker: null };
   }
 }
 

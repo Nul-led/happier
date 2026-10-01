@@ -488,7 +488,7 @@ describe('plugin webhook claimed delivery worker', () => {
     const action = createPluginActionInvocation({
       pluginId: 'acme.github',
       localId: 'handle-webhook',
-      generationSignal: generation.signal,
+      occurrenceSignal: generation.signal,
       isCurrent: () => true,
     });
     const execute = vi.fn(async (_actionId, input, options?: Readonly<{ signal?: AbortSignal }>) => {
@@ -558,7 +558,7 @@ describe('plugin webhook claimed delivery worker', () => {
     const action = createPluginActionInvocation({
       pluginId: 'acme.github',
       localId: 'handle-webhook',
-      generationSignal: generation.signal,
+      occurrenceSignal: generation.signal,
       isCurrent: () => true,
     });
     const execute = vi.fn(async (_actionId, input, options?: Readonly<{ signal?: AbortSignal }>) => {

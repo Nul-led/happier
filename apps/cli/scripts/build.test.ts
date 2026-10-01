@@ -182,9 +182,6 @@ describe('buildCliDist', () => {
         packageRoot,
         repoRoot: packageRoot,
         skipLock: true,
-        env: {
-          HAPPIER_CLI_BUILD_INPUT_FINGERPRINT: initialFingerprint,
-        },
         rmDistImpl: async () => {},
         resolveTypeScriptCliInvocationImpl: () => ({
           argsPrefix: ['/canonical/runTypeScriptCli.mjs'],
@@ -225,7 +222,6 @@ describe('buildCliDist', () => {
     const packageRoot = createTempDirSync('happier-cli-build-prebuild-fingerprint-');
     try {
       writeBuildPackageManifest(packageRoot);
-      const admittedFingerprint = 'a'.repeat(64);
       const postPrebuildFingerprint = 'b'.repeat(64);
       const workspaceRuntimeFingerprint = 'c'.repeat(64);
       const workspaceRuntimePackages = ['@happier-dev/protocol'] as const;
@@ -237,9 +233,6 @@ describe('buildCliDist', () => {
         packageRoot,
         repoRoot: packageRoot,
         skipLock: true,
-        env: {
-          HAPPIER_CLI_BUILD_INPUT_FINGERPRINT: admittedFingerprint,
-        },
         rmDistImpl: async () => {},
         resolveTypeScriptCliInvocationImpl: () => ({
           argsPrefix: ['/canonical/runTypeScriptCli.mjs'],

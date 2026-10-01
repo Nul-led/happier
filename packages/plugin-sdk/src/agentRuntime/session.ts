@@ -1,5 +1,6 @@
 import type {
   AgentSessionCapabilitySupportLevel,
+  AttachSessionMetadataV1,
   RuntimeCapabilities,
 } from '@happier-dev/agents';
 
@@ -627,10 +628,14 @@ export type AgentSessionConfigurationSnapshot = Readonly<{
   mode: TimestampedAgentValue<string | null>;
   model: TimestampedAgentValue<string | null>;
   permissionIntent: TimestampedAgentValue<AgentPermissionIntent | null>;
+  /** Host-resolved role restriction. An Agent that cannot enforce deny must refuse before effects. */
+  workspaceWrites?: 'allow' | 'deny';
   options: Readonly<Record<string, TimestampedAgentValue<AgentConfigurationScalar>>>;
 }>;
 
 export type AgentSessionStartupInstructions = Readonly<{
+  // Unsupported installed native transports reject before effects with PluginError
+  // code 'agent_session_startup_instructions_unsupported'; the host owns prefix fallback.
   v: 1;
   id: string;
   revision: number;
@@ -641,6 +646,8 @@ export type AgentSessionOpenRequest =
   Readonly<{
     sessionId: string;
     cwd: string;
+    /** Informational host directory classification; absence means path, not filesystem authority. */
+    sessionDirectoryKind?: 'path' | 'managed';
     launchEnvironment?: AgentLaunchEnvironment;
     /** Agent-owned runtime identity, interpreted only by the target Agent. */
     runtimeDescriptorV1?: RuntimeDescriptorV1;
@@ -771,8 +778,22 @@ export interface AgentSessionRuntime extends Disposable {
    */
   readonly runtimeDescriptorV1?: RuntimeDescriptorV1;
   readonly runtimeCapabilities?: AgentSessionRuntimeCapabilities;
+  /** Per-open active goal support; false suppresses manifest-declared live goal controls. */
+  readonly nativeGoalControlsSupported?: boolean;
   readonly conversationRollback?: AgentSessionConversationRollbackControl;
   readonly runtimeAuth?: AgentSessionRuntimeAuthControl;
+  /**
+   * Resolves the live, launch-scoped metadata needed to attach the Provider's
+   * own CLI to this exact runtime. The host owns process launch and never
+   * persists this projection merely because a local TUI was opened.
+   */
+  prepareProviderCliAttach?(): Promise<AttachSessionMetadataV1>;
+  /** Receives current native source evidence after all preceding transcript output has durable custody. */
+  observeSourceTranscript?(input: Readonly<{
+    providerSessionId: string;
+    sourceId: string;
+    row: JsonValue;
+  }>): Promise<void>;
   connectedServiceApplicationSettled?(request: Readonly<{
     serviceId: string;
     groupId: string;

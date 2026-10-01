@@ -1,7 +1,7 @@
 import {
     PublicToolchainCompatibilityV1Schema as canonicalPublicToolchainCompatibilityV1Schema,
     assertCoherentPublicToolchainCompatibilityV1,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/plugins/public-toolchain-compatibility';
 import type {
     PluginUiSchema,
     PublicToolchainAuthoringDependencyV1,
@@ -49,44 +49,17 @@ export type PublicToolchainScaffoldBindingsV1 = Readonly<{
         string
     >>;
     devDependencies: Readonly<Record<
-        '@callstack/repack'
-        | '@react-native-community/cli'
-        | '@rspack/core'
-        | '@swc/helpers'
-        | '@types/node'
+        '@types/node'
         | '@types/react'
         | 'typescript'
-        | '@typescript/native'
-        | '@vitejs/plugin-react'
-        | 'vite',
+        | '@typescript/native',
         string
     >>;
-    reactNativeCompatibility: Readonly<{
-        hostUiApiVersion: string;
-        reactVersion: string;
-        reactNativeVersion: string;
-        viteVersion: string;
-    }>;
     toolchain: Readonly<{
         expo: string;
-        repack: string;
         runtime: string;
     }>;
 }>;
-
-function findRequiredBuildTool(
-    packet: PublicToolchainCompatibilityV1,
-    packageName: string,
-    executable: string,
-): Readonly<{ packageVersion: string }> {
-    const tool = packet.buildTools.find((candidate) => (
-        candidate.packageName === packageName && candidate.executable === executable
-    ));
-    if (!tool) {
-        throw new Error(`Public toolchain packet is missing ${packageName}/${executable}.`);
-    }
-    return tool;
-}
 
 /**
  * The sole package-json/config projection used by generated author projects.
@@ -97,15 +70,6 @@ export function createPublicToolchainScaffoldBindingsV1(
     candidate: unknown,
 ): PublicToolchainScaffoldBindingsV1 {
     const packet = createPublicToolchainCompatibilityV1(candidate);
-    const vite = findRequiredBuildTool(packet, 'vite', 'vite');
-    const repack = findRequiredBuildTool(packet, '@callstack/repack', 'react-native');
-    if (vite.packageVersion !== packet.framework.vite) {
-        throw new Error('Public toolchain packet Vite build-tool version disagrees with the framework fact.');
-    }
-    if (repack.packageVersion !== packet.framework.repack) {
-        throw new Error('Public toolchain packet Re.Pack build-tool version disagrees with the framework fact.');
-    }
-
     return Object.freeze({
         dependencies: Object.freeze({
             '@happier-dev/plugin-sdk': packet.pluginSdk.version,
@@ -116,26 +80,13 @@ export function createPublicToolchainScaffoldBindingsV1(
             'react-native-web': packet.framework.reactNativeWeb,
         }),
         devDependencies: Object.freeze({
-            '@callstack/repack': packet.framework.repack,
-            '@react-native-community/cli': packet.authoringDependencies.reactNativeCommunityCli.dependencySpec,
-            '@rspack/core': packet.authoringDependencies.rspack.dependencySpec,
-            '@swc/helpers': packet.authoringDependencies.swcHelpers.dependencySpec,
             '@types/node': packet.authoringDependencies.nodeTypes.dependencySpec,
             '@types/react': packet.authoringDependencies.reactTypes.dependencySpec,
             typescript: packet.authoringDependencies.typescript.dependencySpec,
             '@typescript/native': packet.authoringDependencies.typescriptNative.dependencySpec,
-            '@vitejs/plugin-react': packet.authoringDependencies.viteReactPlugin.dependencySpec,
-            vite: packet.framework.vite,
-        }),
-        reactNativeCompatibility: Object.freeze({
-            hostUiApiVersion: packet.ui.hostApiVersion,
-            reactVersion: packet.framework.react,
-            reactNativeVersion: packet.framework.reactNative,
-            viteVersion: packet.framework.vite,
         }),
         toolchain: Object.freeze({
             expo: packet.framework.expo,
-            repack: packet.framework.repack,
             runtime: packet.framework.runtime,
         }),
     });

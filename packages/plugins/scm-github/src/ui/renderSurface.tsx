@@ -66,6 +66,7 @@ import {
   ScrollArea,
   Stack,
   Status,
+  Step,
   Tabs,
   Text,
   defineUiSurface,
@@ -86,6 +87,7 @@ import {
 } from '@happier-dev/triage-protocol/v1';
 import {
   completeTriagePostMutationIfNeeded,
+  TriageDetailPanel,
   useTriagePostMutationCompletion,
 } from '@happier-dev/triage-sources/ui';
 // The presentation rules used below are projections of the Triage contract's own
@@ -160,6 +162,7 @@ import {
   type GithubOverviewControllerV1,
   type GithubPagedControllerV1,
 } from './detail/panelReaders.js';
+import { githubChangeSummaryV1, githubCheckToneV1 as checkTone, githubChecksStepV1 } from './detail/story.js';
 import type { GithubPagedStateV1, GithubReadStateV1 } from './detail/panelState.js';
 import {
   GITHUB_ISSUE_CLOSE_REASONS_V1,
@@ -650,7 +653,8 @@ const STATIC_OPEN_MERGE_SIGNATURE: GithubMergeSignatureStateV1 = Object.freeze({
 function isGithubMergedState(
   state: TriageDetailSurfaceInputV1['observation']['snapshot']['state'],
 ): boolean {
-  return state.presentation === 'closed' && state.nativeLabel === 'Merged';
+  // A merged pull request projects `resolved` (`CONTRACT.md` §4, r0.42).
+  return state.presentation === 'resolved';
 }
 
 /**
@@ -1613,6 +1617,33 @@ function UnavailableOperationWrite({
   );
 }
 
+/**
+ * The write controls as their own panel (r0.42): the Triage detail places them
+ * in its header, beside its entry actions, rather than inside Overview. The
+ * current overview read they depend on is this panel's own.
+ */
+function GithubActionsPanel(props: Readonly<{
+  input: TriageDetailSurfaceInputV1;
+  kindId: GithubTriageKindIdV1;
+  mergeSignature: GithubMergeSignatureStateV1;
+  onObserved: GithubObservedEntryHandlerV1;
+  publicationProposals: ReviewCommentProposalReadV1;
+  capabilities: GithubReadStateV1<GithubRepositoryCapabilitiesV1>;
+}>): React.ReactElement | null {
+  const overview = useGithubOverview(props.input);
+  return (
+    <WritesSection
+      input={props.input}
+      kindId={props.kindId}
+      mergeSignature={props.mergeSignature}
+      onObserved={props.onObserved}
+      publicationProposals={props.publicationProposals}
+      capabilities={props.capabilities}
+      overview={overview.value}
+    />
+  );
+}
+
 function WritesSection({
   input,
   kindId,
@@ -2401,12 +2432,6 @@ function FilesPanel({
 }
 
 /* ----------------------------------------------------------------------- Checks */
-
-function checkTone(row: GithubProjectedCheckRowV1): 'success' | 'danger' | 'warning' | 'neutral' {
-  if (row.status !== 'completed') return 'warning';
-  if (row.conclusion === undefined) return 'neutral';
-  return row.conclusion === 'success' ? 'success' : 'danger';
-}
 
 function checksRollup(view: GithubChecksViewV1): readonly MetadataEntry[] {
   // A count is shown only where the source could compute one over a suite it
@@ -3540,6 +3565,161 @@ function WorkSessionsPanel({
 
 /* ------------------------------------------------------------------ detail body */
 
+/* ------------------------------------------------------------ Story rail (r0.42) */
+
+/** How many of the largest changed files the story draws before "N smaller files". */
+const GITHUB_STORY_SHOWN_FILES_V1 = 4;
+
+/**
+ * ② What changed: the largest files by lines changed and the running totals of
+ * the changed-file pages read, through the same reader the Files panel owns.
+ */
+function GithubChangeStep({ input }: Readonly<{ input: TriageDetailSurfaceInputV1 }>): React.ReactElement {
+  const text = usePluginTranslation();
+  const files = useGithubChangedFiles(input);
+  const summary = githubChangeSummaryV1({
+    rows: files.state.rows,
+    more: files.state.canLoadMore,
+    shown: GITHUB_STORY_SHOWN_FILES_V1,
+  });
+  const totals = text(
+    summary.more ? 'plugins.github.ui.story.totalsPartial' : 'plugins.github.ui.story.totals',
+    summary.more ? '+{additions} −{deletions} in {files}+ files' : '+{additions} −{deletions} in {files} files',
+    { additions: String(summary.additions), deletions: String(summary.deletions), files: String(summary.fileCount) },
+  );
+  return (
+    <Step
+      marker={{ kind: 'number', value: 2 }}
+      title="What changed"
+      titleKey="plugins.github.ui.story.changed"
+      trailing={files.state.rows.length === 0 ? undefined : <Text variant="caption" tone="secondary" value={totals} />}
+    >
+      {files.state.kind === 'loading' || files.state.kind === 'idle'
+        ? <Text variant="caption" tone="secondary" valueKey="plugins.github.ui.readingFiles" fallback="Reading the changed files from GitHub" />
+        : null}
+      {files.state.failure === null ? null : (
+        <Text
+          variant="caption"
+          tone="warning"
+          value={failureDescription(files.state.failure, text('plugins.github.ui.readFailed', 'GitHub could not complete this read.'))}
+        />
+      )}
+      {summary.files.map((file) => (
+        <Row key={file.path} gap="small" align="center">
+          <Stack style={{ flex: 1, minWidth: 0 }}>
+            <Text variant="code" value={file.path} />
+          </Stack>
+          <Text variant="caption" tone="success" value={`+${file.additions}`} />
+          <Text variant="caption" tone="danger" value={`−${file.deletions}`} />
+        </Row>
+      ))}
+      {summary.smallerCount === 0 ? null : (
+        <Text
+          variant="caption"
+          tone="secondary"
+          value={text('plugins.github.ui.story.smallerFiles', '{count} smaller files', { count: String(summary.smallerCount) })}
+        />
+      )}
+    </Step>
+  );
+}
+
+/** The checks state marker: ✕ failing, the spinner while running, ✓ all passing. */
+function GithubChecksStep({ input }: Readonly<{ input: TriageDetailSurfaceInputV1 }>): React.ReactElement | null {
+  const text = usePluginTranslation();
+  const checks = useGithubChecks(input);
+  if (checks.state.kind !== 'ready') return null;
+  const step = githubChecksStepV1(checks.state.value);
+  if (step === null) return null;
+  const label = step.state === 'failed'
+    ? text('plugins.github.ui.story.checksFailing', '{count} failing', { count: String(step.count) })
+    : step.state === 'running'
+      ? text('plugins.github.ui.story.checksRunning', 'Running')
+      : text('plugins.github.ui.story.checksPassing', 'All passing');
+  return (
+    <Step
+      marker={{ kind: 'state', state: step.state, label }}
+      title="Checks"
+      titleKey="plugins.github.ui.story.checks"
+      trailing={<Text variant="caption" tone={step.state === 'failed' ? 'danger' : 'secondary'} value={label} />}
+    />
+  );
+}
+
+/**
+ * The Overview panel as the story rail's source half (r0.42): ① the ask (a
+ * pull request) or the report (an issue), with GitHub's current details, then
+ * ② what changed and the checks state for a pull request. Triage draws ③.
+ */
+function GithubStoryOverview({
+  input,
+  kindId,
+  locale,
+  nowMs,
+}: Readonly<{
+  input: TriageDetailSurfaceInputV1;
+  kindId: GithubTriageKindIdV1;
+  locale: string;
+  nowMs: number;
+}>): React.ReactElement {
+  const text = usePluginTranslation();
+  const overview = useGithubOverview(input);
+  const exact = overview.value;
+  const currentEntries = React.useMemo(
+    () => githubOverviewEntries(input, exact, locale, nowMs),
+    [exact, input, locale, nowMs],
+  );
+  // The observation's own summary is the ask until the reader re-reads the
+  // current description; neither is invented when both are absent.
+  const ask = exact?.body ?? input.observation.snapshot.summary;
+  return (
+    <Stack gap="large">
+      <Step
+        marker={{ kind: 'number', value: 1 }}
+        title={kindId === 'issue' ? 'The report' : 'The ask'}
+        titleKey={kindId === 'issue' ? 'plugins.github.ui.story.report' : 'plugins.github.ui.story.ask'}
+        trailing={(
+          <RefreshRow
+            onRefresh={overview.refresh}
+            pending={overview.refreshing}
+            accessibilityLabel={text('plugins.github.ui.overview.reread', 'Re-read this overview from GitHub')}
+          />
+        )}
+      >
+        <GithubOverviewReadFailure controller={overview} />
+        {ask === undefined || ask === null || ask.length === 0
+          ? <Text variant="caption" tone="secondary" valueKey="plugins.github.ui.story.noDescription" fallback="No description." />
+          : <GithubOverviewMarkdown body={ask} />}
+        {currentEntries.length === 0 ? null : <Metadata entries={currentEntries} />}
+      </Step>
+      {kindId === 'pull-request' ? <GithubChangeStep input={input} /> : null}
+      {kindId === 'pull-request' ? <GithubChecksStep input={input} /> : null}
+    </Stack>
+  );
+}
+
+/**
+ * Activity (r0.42): the entry's timeline with its conversation folded in —
+ * a pull request's feedback (reviews, threads, requests) or an issue's
+ * comments, above the event timeline.
+ */
+function GithubActivityPanel(props: Readonly<{
+  input: TriageDetailSurfaceInputV1;
+  kindId: GithubTriageKindIdV1;
+  locale: string;
+  nowMs: number;
+  conversation: React.ReactNode;
+}>): React.ReactElement {
+  return (
+    <Stack gap="large" style={{ flex: 1, minHeight: 0 }}>
+      <Stack style={{ flex: 1, minHeight: 0 }}>{props.conversation}</Stack>
+      <Stack style={{ flex: 1, minHeight: 0 }}>
+        <TimelinePanel input={props.input} locale={props.locale} nowMs={props.nowMs} />
+      </Stack>
+    </Stack>
+  );
+}
+
 function GithubDetailBody({
   input: launched,
   kindId,
@@ -3650,6 +3830,42 @@ function GithubDetailBody({
     'work-sessions': <WorkSessionsPanel sessions={body.linkedSessions} />,
   };
 
+  // The Triage detail asked for exactly one panel (r0.42): its frame draws the
+  // tab strip, and this body renders that panel inside its own active interval.
+  if (input.panel !== undefined) {
+    return (
+      <Screen safeArea>
+        <TriageDetailPanel
+          panel={input.panel}
+          ariaLabel={text('plugins.github.ui.detailTabs', 'GitHub entry detail')}
+          panels={{
+            overview: <GithubStoryOverview input={input} kindId={kindId} locale={locale} nowMs={nowMs} />,
+            activity: (
+              <GithubActivityPanel
+                input={input}
+                kindId={kindId}
+                locale={locale}
+                nowMs={nowMs}
+                conversation={kindId === 'pull-request' ? panels.feedback : panels.comments}
+              />
+            ),
+            ...(kindId === 'pull-request' ? { files: panels.files, checks: panels.checks } : {}),
+            actions: (
+              <GithubActionsPanel
+                input={input}
+                kindId={kindId}
+                mergeSignature={mergeSignature}
+                onObserved={onObserved}
+                publicationProposals={publicationProposals}
+                capabilities={capabilities}
+              />
+            ),
+          }}
+        />
+      </Screen>
+    );
+  }
+
   return (
     <Screen safeArea>
       <Tabs
@@ -3713,7 +3929,6 @@ function GithubDetailSurface(context: RenderContext): React.ReactElement {
 }
 
 /**
- * The exact export name the build target's Module Federation identity names. Renaming it breaks
- * the native artifact contract, not just this file.
+ * The manifest names this exact universal CommonJS export.
  */
 export const renderSurface = defineUiSurface(GithubDetailSurface);

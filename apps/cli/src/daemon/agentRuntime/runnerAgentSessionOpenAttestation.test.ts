@@ -21,7 +21,11 @@ function createFixture() {
     pluginVersion: '1.2.3',
     agentId: 'acme-agent',
     localAgentId: 'acme-agent',
-    immutableGenerationId: `sha256:${'1'.repeat(64)}`,
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: `sha256:${'1'.repeat(64)}`,
+      installSource: 'localPath',
+    },
     locator: {
       module: './runtime.mjs',
       export: 'createRuntime',
@@ -34,8 +38,7 @@ function createFixture() {
     startedBy: 'daemon',
     pid: runner.pid,
     happySessionId: 'session-child',
-    runnerAgentImmutableGenerationId:
-      binding.immutableGenerationId,
+    runnerAgentSourceCustodyV1: binding.sourceCustody,
     processStartTimeMs: runner.processStartTimeMs,
     processCommandHash: runner.processCommandHash,
     agentRuntimeDaemonServiceAuthorityFilePath:
@@ -137,6 +140,7 @@ describe('runner-owned Agent session-open attestation', () => {
 
   it('keeps a validated prepare out of opened currentness until commit', async () => {
     const { runner, binding, tracked } = createFixture();
+    tracked.processCommandHash = 'b'.repeat(64);
     const updateMarker = vi.fn(async () => true);
     const request = {
       kind: 'create' as const,

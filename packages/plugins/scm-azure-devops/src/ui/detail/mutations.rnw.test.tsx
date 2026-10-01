@@ -414,15 +414,14 @@ describe('the mounted Azure DevOps pull-request writes', () => {
       ...FIXTURE.detailInput,
       observation: {
         ...FIXTURE.detailInput.observation,
-        snapshot: { ...snapshot, state: { presentation: 'closed', nativeLabel: 'Completed' } },
+        snapshot: { ...snapshot, state: { presentation: 'resolved', nativeLabel: 'Completed' } },
       },
     } as unknown as JsonValue);
 
     await expect(detail.queryByRole('button', { name: 'Complete' })).resolves.toBeUndefined();
     await expect(detail.queryByRole('button', { name: 'Abandon' })).resolves.toBeUndefined();
-    // A completed pull request is `closed` exactly as an abandoned one is, and reactivating it
-    // would be offering to undo a merge that already landed. The native label is what separates
-    // them, and this is the case that proves the panel reads it.
+    // A completed pull request is `resolved`, and reactivating it would be offering to undo a
+    // merge that already landed. Only the abandoned label offers Reactivate.
     await expect(detail.queryByRole('button', { name: 'Reactivate' })).resolves.toBeUndefined();
   });
 });

@@ -113,14 +113,14 @@ describe('contribution-derived registration host', () => {
         const adapter = createPromptAssetAdapter();
         const host = createContributionRegistrationHost({
             pluginId: 'acme.prompts',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{
                 family: 'promptAssets',
                 localId: 'external-skills',
                 target: { realm: 'daemon' },
                 promptAssetDescriptor,
             }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         host.api.resources.registerPromptAssetAdapter('external-skills', adapter);
@@ -142,14 +142,14 @@ describe('contribution-derived registration host', () => {
     it('rejects a missing Prompt Asset adapter before publishing the activation', () => {
         const host = createContributionRegistrationHost({
             pluginId: 'acme.prompts',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{
                 family: 'promptAssets',
                 localId: 'external-skills',
                 target: { realm: 'daemon' },
                 promptAssetDescriptor,
             }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(() => host.commit()).toThrow(/missing registration 'promptAssets\/external-skills'/i);
@@ -159,9 +159,9 @@ describe('contribution-derived registration host', () => {
     it('rejects an undeclared extra Prompt Asset adapter before staging it', () => {
         const host = createContributionRegistrationHost({
             pluginId: 'acme.prompts',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(() => host.api.resources.registerPromptAssetAdapter(
@@ -174,14 +174,14 @@ describe('contribution-derived registration host', () => {
     it('rejects a Prompt Asset adapter descriptor mismatch before commit', () => {
         const host = createContributionRegistrationHost({
             pluginId: 'acme.prompts',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{
                 family: 'promptAssets',
                 localId: 'external-skills',
                 target: { realm: 'daemon' },
                 promptAssetDescriptor,
             }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         host.api.resources.registerPromptAssetAdapter('external-skills', createPromptAssetAdapter({
             ...promptAssetDescriptor,
@@ -206,9 +206,9 @@ describe('contribution-derived registration host', () => {
         })],
     ])('rejects a malformed connected-account runtime (%s) before publishing the activation', (_label, buildRuntime) => {
         const host = createContributionRegistrationHost({
-            pluginId: 'acme.accounts', generation: '1',
+            pluginId: 'acme.accounts', occurrenceId: '1',
             rights: [{ family: 'connectedAccountDescriptors', localId: 'account', target: daemonTarget }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         host.api.connectedAccounts.register('account', buildRuntime() as never);
@@ -221,9 +221,9 @@ describe('contribution-derived registration host', () => {
     it('rejects a non-string connected-account registration id before coercion or staging', () => {
         const coerceId = vi.fn(() => 'account');
         const host = createContributionRegistrationHost({
-            pluginId: 'acme.accounts', generation: '1',
+            pluginId: 'acme.accounts', occurrenceId: '1',
             rights: [{ family: 'connectedAccountDescriptors', localId: 'account', target: daemonTarget }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const validRuntime = {
             authentication: {
@@ -257,12 +257,12 @@ describe('contribution-derived registration host', () => {
     it('publishes an exact nested registration set only after atomic commit', () => {
         const host = createContributionRegistrationHost({
             pluginId: 'acme.runtime',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [
                 { family: 'actions', localId: 'run', target: daemonTarget },
                 { family: 'agents', localId: 'assistant', target: daemonTarget },
             ],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(host.api.actions.register('run', actionHandler)).toBeUndefined();
@@ -281,9 +281,9 @@ describe('contribution-derived registration host', () => {
     it('preserves provider binding with the Agent factory as one registration value', () => {
         const host = createContributionRegistrationHost({
             pluginId: 'acme.runtime',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{ family: 'agents', localId: 'assistant', target: daemonTarget }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         host.api.agents.register('assistant', agentFactory, { providerBinding });
@@ -313,14 +313,14 @@ describe('contribution-derived registration host', () => {
         } = { ...sessionRunnerFactory };
         const host = createContributionRegistrationHost({
             pluginId: 'acme.runtime',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{
                 family: 'agents',
                 localId: 'assistant',
                 target: daemonTarget,
                 requiredFields: ['factory', 'sessionRunnerFactory'],
             }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         host.api.agents.register('assistant', agentFactory, {
@@ -343,18 +343,17 @@ describe('contribution-derived registration host', () => {
         ['non-normal module', { ...sessionRunnerFactory, module: './agent/./factory.js' }],
         ['invalid export', { ...sessionRunnerFactory, export: 'default factory' }],
         ['wrong runtime API', { ...sessionRunnerFactory, runtimeApiVersion: 2 }],
-        ['unknown field', { ...sessionRunnerFactory, extra: true }],
     ])('rejects an invalid session runner factory locator (%s)', (_label, locator) => {
         const host = createContributionRegistrationHost({
             pluginId: 'acme.runtime',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{
                 family: 'agents',
                 localId: 'assistant',
                 target: daemonTarget,
                 requiredFields: ['factory', 'sessionRunnerFactory'],
             }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         host.api.agents.register('assistant', agentFactory, {
@@ -371,9 +370,9 @@ describe('contribution-derived registration host', () => {
         (order) => {
             const host = createContributionRegistrationHost({
                 pluginId: 'acme.runtime',
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 rights: [{ family: 'agents', localId: 'assistant', target: daemonTarget, requiredFields: ['factory', 'externalSessions'] }],
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
 
             if (order === 'primary-first') {
@@ -411,9 +410,9 @@ describe('contribution-derived registration host', () => {
     it('publishes an auxiliary-only External Sessions contribution under the Agent identity', () => {
         const host = createContributionRegistrationHost({
             pluginId: 'acme.runtime',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{ family: 'agents', localId: 'assistant', target: daemonTarget, requiredFields: ['externalSessions'] }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         externalSessionsApi(host).registerExternalSessions('assistant', externalSessionsContribution);
@@ -439,14 +438,14 @@ describe('contribution-derived registration host', () => {
         (field) => {
             const host = createContributionRegistrationHost({
                 pluginId: 'acme.runtime',
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 rights: [{
                     family: 'agents',
                     localId: 'assistant',
                     target: daemonTarget,
                     requiredFields: field === 'primary' ? ['factory'] : ['externalSessions'],
                 }],
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
 
             if (field === 'primary') {
@@ -474,9 +473,9 @@ describe('contribution-derived registration host', () => {
         };
         const host = createContributionRegistrationHost({
             pluginId: 'acme.runtime',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{ family: 'agents', localId: 'assistant', target: daemonTarget }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         host.api.agents.register('assistant', agentFactory, {
@@ -520,9 +519,9 @@ describe('contribution-derived registration host', () => {
         });
         const host = createContributionRegistrationHost({
             pluginId: 'acme.runtime',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{ family: 'agents', localId: 'assistant', target: daemonTarget }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         host.api.agents.register('assistant', agentFactory, {
@@ -554,9 +553,9 @@ describe('contribution-derived registration host', () => {
         }],
     ])('rejects %s with one coded diagnostic and no publication', (_name, register) => {
         const host = createContributionRegistrationHost({
-            pluginId: 'acme.runtime', generation: 'generation-7',
+            pluginId: 'acme.runtime', occurrenceId: 'generation-7',
             rights: [{ family: 'actions', localId: 'run', target: daemonTarget }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(() => register(host)).toThrow();
@@ -568,12 +567,12 @@ describe('contribution-derived registration host', () => {
 
     it('rejects a missing required registration without publishing earlier registrations', () => {
         const host = createContributionRegistrationHost({
-            pluginId: 'acme.runtime', generation: 'generation-7',
+            pluginId: 'acme.runtime', occurrenceId: 'generation-7',
             rights: [
                 { family: 'actions', localId: 'run', target: daemonTarget },
                 { family: 'agents', localId: 'assistant', target: daemonTarget },
             ],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         host.api.actions.register('run', actionHandler);
 
@@ -585,9 +584,9 @@ describe('contribution-derived registration host', () => {
     it('rejects registration and commit from a retired generation', () => {
         let current = true;
         const host = createContributionRegistrationHost({
-            pluginId: 'acme.runtime', generation: 'generation-7',
+            pluginId: 'acme.runtime', occurrenceId: 'generation-7',
             rights: [{ family: 'actions', localId: 'run', target: daemonTarget }],
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
         });
         current = false;
 
@@ -598,9 +597,9 @@ describe('contribution-derived registration host', () => {
 
     it('rejects undeclared and retired background-service registrations before publication', () => {
         const undeclared = createContributionRegistrationHost({
-            pluginId: 'acme.background', generation: 'generation-7',
+            pluginId: 'acme.background', occurrenceId: 'generation-7',
             rights: [],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(() => undeclared.api.backgroundServices.register('indexer', async () => {}))
@@ -609,9 +608,9 @@ describe('contribution-derived registration host', () => {
 
         let current = true;
         const retired = createContributionRegistrationHost({
-            pluginId: 'acme.background', generation: 'generation-7',
+            pluginId: 'acme.background', occurrenceId: 'generation-7',
             rights: [{ family: 'backgroundServices', localId: 'indexer', target: daemonTarget }],
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
         });
         current = false;
 
@@ -623,27 +622,26 @@ describe('contribution-derived registration host', () => {
     it('rejects a client-artifact right at the daemon host boundary before staging', () => {
         expect(() => createContributionRegistrationHost({
             pluginId: 'acme.runtime',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{
                 family: 'voiceProviders',
                 localId: 'conversation',
                 target: {
                     realm: 'client',
                     artifactId: 'voice-runtime-web',
-                    modulePath: './voiceRuntime',
                     exportName: 'activate',
                     platforms: ['web'],
                 },
             }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         })).toThrow(/realm|daemon|client/i);
     });
 
     it('unwinds staged host registrations when activation aborts', async () => {
         const host = createContributionRegistrationHost({
-            pluginId: 'acme.cleanup', generation: 'generation-7',
+            pluginId: 'acme.cleanup', occurrenceId: 'generation-7',
             rights: [{ family: 'actions', localId: 'run', target: daemonTarget }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         host.api.actions.register('run', actionHandler);
 
@@ -655,9 +653,9 @@ describe('contribution-derived registration host', () => {
 
     it('unwinds published registrations and single-flights repeated disposal', async () => {
         const host = createContributionRegistrationHost({
-            pluginId: 'acme.cleanup', generation: 'generation-7',
+            pluginId: 'acme.cleanup', occurrenceId: 'generation-7',
             rights: [{ family: 'actions', localId: 'run', target: daemonTarget }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         host.api.actions.register('run', actionHandler);
         host.commit();

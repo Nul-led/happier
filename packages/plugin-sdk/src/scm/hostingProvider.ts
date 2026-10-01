@@ -330,6 +330,7 @@ export type HostingProviderRoutingCapability = Readonly<{
 }>;
 
 export type HostingProviderPullRequestsCapability = Readonly<{
+    supportsDraftCreate?: true;
     getPullRequestAuthProfileKey: (input: Readonly<{ provider: ScmHostingProviderRef }>) => string | null;
     listPullRequests: (input: HostingProviderPullRequestListInput) => Promise<readonly ScmPullRequestSummary[]>;
     getPullRequest: (input: HostingProviderPullRequestGetInput) => Promise<ScmPullRequestSummary | null>;

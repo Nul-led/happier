@@ -9,7 +9,9 @@ import {
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 
 import {
-  hasReviewSensitivePluginUpdate,
+  evaluatePluginAuthorityReview,
+  hasPluginAuthorityExpansion,
+  listPluginAuthorityExpansions,
   preserveValidPluginOptionalSelections,
 } from './updateReviewPolicy';
 
@@ -173,7 +175,6 @@ function rawCredentialManifest(options: Readonly<{
         },
         client: {
           artifactId: 'raw-voice-client',
-          modulePath: './voiceRuntime',
           exportName: 'activate',
         },
       }],
@@ -183,7 +184,7 @@ function rawCredentialManifest(options: Readonly<{
   return result.manifest;
 }
 
-describe('hasReviewSensitivePluginUpdate is directional', () => {
+describe('hasPluginAuthorityExpansion is directional', () => {
   it('does not reopen review for disclosure copy that grants no new authority', () => {
     const previous = networkManifest({ origins: ['https://api.example.test'] });
     const reworded = networkManifest({
@@ -191,23 +192,28 @@ describe('hasReviewSensitivePluginUpdate is directional', () => {
       reason: 'Talk to the Example API on your behalf',
     });
 
-    expect(hasReviewSensitivePluginUpdate(previous, reworded, [])).toBe(false);
+    expect(hasPluginAuthorityExpansion(previous, reworded, [])).toBe(false);
   });
 
   it('reopens review for a new or widened required host-access declaration', () => {
     const previous = networkManifest({ origins: ['https://api.example.test'] });
 
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       networkManifest({ origins: ['https://api.example.test', 'https://accounts.example.test'] }),
       [],
     )).toBe(true);
-    expect(hasReviewSensitivePluginUpdate(
+    expect(listPluginAuthorityExpansions(
+      previous,
+      networkManifest({ origins: ['https://api.example.test', 'https://accounts.example.test'] }),
+      [],
+    )).toEqual(['requiredHostAccess']);
+    expect(hasPluginAuthorityExpansion(
       networkManifest({ origins: ['https://api.example.test'], methods: ['GET'] }),
       previous,
       [],
     )).toBe(true);
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       networkManifest({ origins: ['https://api.example.test'], omitRequired: true }),
       previous,
       [],
@@ -219,17 +225,17 @@ describe('hasReviewSensitivePluginUpdate is directional', () => {
       origins: ['https://api.example.test', 'https://accounts.example.test'],
     });
 
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       networkManifest({ origins: ['https://api.example.test'] }),
       [],
     )).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       networkManifest({ origins: ['https://api.example.test'], omitRequired: true }),
       [],
     )).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       networkManifest({
         origins: ['https://api.example.test', 'https://accounts.example.test'],
@@ -242,12 +248,12 @@ describe('hasReviewSensitivePluginUpdate is directional', () => {
   it('does not reopen review for an added or widened optional declaration the user never selected', () => {
     const previous = sessionsOptionalManifest(['read']);
 
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       sessionsOptionalManifest(['read', 'write', 'control']),
       [],
     )).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       sessionsOptionalManifest(['read'], true),
       [],
@@ -257,7 +263,7 @@ describe('hasReviewSensitivePluginUpdate is directional', () => {
   it('reopens review when a selected optional declaration widens beyond the granted scope', () => {
     const selections = [sessionsSelection(['read'])];
 
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       sessionsOptionalManifest(['read']),
       sessionsOptionalManifest(['read', 'write']),
       selections,
@@ -267,7 +273,7 @@ describe('hasReviewSensitivePluginUpdate is directional', () => {
   it('does not reopen review when a selected optional declaration narrows inside the granted scope', () => {
     const selections = [sessionsSelection(['read', 'write'])];
 
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       sessionsOptionalManifest(['read', 'write']),
       sessionsOptionalManifest(['read']),
       selections,
@@ -278,10 +284,10 @@ describe('hasReviewSensitivePluginUpdate is directional', () => {
     const wide = agentPurposeManifest(['environment', 'files']);
     const narrow = agentPurposeManifest(['environment']);
 
-    expect(hasReviewSensitivePluginUpdate(narrow, wide, [])).toBe(true);
-    expect(hasReviewSensitivePluginUpdate(wide, narrow, [])).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(wide, agentPurposeManifest(), [])).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(narrow, agentPurposeManifest(['environment'], true), []))
+    expect(hasPluginAuthorityExpansion(narrow, wide, [])).toBe(true);
+    expect(hasPluginAuthorityExpansion(wide, narrow, [])).toBe(false);
+    expect(hasPluginAuthorityExpansion(wide, agentPurposeManifest(), [])).toBe(false);
+    expect(hasPluginAuthorityExpansion(narrow, agentPurposeManifest(['environment'], true), []))
       .toBe(true);
   });
 
@@ -292,12 +298,12 @@ describe('hasReviewSensitivePluginUpdate is directional', () => {
       priority: 10,
     });
 
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       interceptorManifest({ origins: ['https://api.example.test'], methods: ['GET'], priority: 20 }),
       [],
     )).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       interceptorManifest({
         origins: ['https://api.example.test', 'https://accounts.example.test', 'https://cdn.example.test'],
@@ -306,7 +312,7 @@ describe('hasReviewSensitivePluginUpdate is directional', () => {
       }),
       [],
     )).toBe(true);
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       interceptorManifest({
         origins: ['https://api.example.test', 'https://accounts.example.test'],
@@ -314,7 +320,7 @@ describe('hasReviewSensitivePluginUpdate is directional', () => {
       }),
       [],
     )).toBe(true);
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       interceptorManifest({
         origins: ['https://api.example.test', 'https://accounts.example.test'],
@@ -328,22 +334,22 @@ describe('hasReviewSensitivePluginUpdate is directional', () => {
   it('reopens review only when raw-credential reach expands', () => {
     const previous = rawCredentialManifest();
 
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       rawCredentialManifest({ headerNames: ['authorization'], secretKinds: ['apiKey'] }),
       [],
     )).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       rawCredentialManifest({ slotTitle: 'Voice credential (v2)' }),
       [],
     )).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       rawCredentialManifest({ headerNames: ['authorization', 'x-tenant', 'x-admin'] }),
       [],
     )).toBe(true);
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       previous,
       rawCredentialManifest({ secretKinds: ['apiKey', 'token', 'password'] }),
       [],
@@ -368,5 +374,73 @@ describe('preserveValidPluginOptionalSelections follows a narrowed declaration',
       sessionsOptionalManifest(['read', 'write']),
       [sessionsSelection(['read'])],
     )).toBeNull();
+  });
+
+  it('reopens review when a stale optional selection cannot be preserved', () => {
+    expect(evaluatePluginAuthorityReview({
+      previous: sessionsOptionalManifest(['read']),
+      candidate: sessionsOptionalManifest(['read', 'write']),
+      selectedOptionalAccess: [sessionsSelection(['read'])],
+    })).toMatchObject({
+      requiresReview: true,
+      authorityExpansion: expect.arrayContaining(['selectedOptionalHostAccess']),
+      preservedOptionalAccess: null,
+    });
+  });
+});
+
+describe('evaluatePluginAuthorityReview applies the user update review mode', () => {
+  const previous = networkManifest({ origins: ['https://api.example.test'] });
+  const widened = networkManifest({ origins: ['https://api.example.test', 'https://accounts.example.test'] });
+
+  it('confirms a reach expansion by default and when the Account setting asks to confirm', () => {
+    expect(evaluatePluginAuthorityReview({
+      previous,
+      candidate: widened,
+      selectedOptionalAccess: [],
+      readAccountSettings: () => null,
+    })).toMatchObject({ requiresReview: true, authorityExpansion: ['requiredHostAccess'] });
+    expect(evaluatePluginAuthorityReview({
+      previous,
+      candidate: widened,
+      selectedOptionalAccess: [],
+      readAccountSettings: () => ({ pluginUpdateReviewModeV1: 'confirmAccessChanges' }),
+    })).toMatchObject({ requiresReview: true, authorityExpansion: ['requiredHostAccess'] });
+  });
+
+  it('applies a reach expansion without review in auto-apply mode', () => {
+    expect(evaluatePluginAuthorityReview({
+      previous,
+      candidate: widened,
+      selectedOptionalAccess: [],
+      readAccountSettings: () => ({ pluginUpdateReviewModeV1: 'autoApply' }),
+    })).toEqual({ requiresReview: false, authorityExpansion: [], preservedOptionalAccess: [] });
+  });
+
+  it('keeps each still-valid optional grant and drops only the widened one in auto-apply mode', () => {
+    expect(evaluatePluginAuthorityReview({
+      previous: sessionsOptionalManifest(['read']),
+      candidate: sessionsOptionalManifest(['read', 'write']),
+      selectedOptionalAccess: [sessionsSelection(['read'])],
+      readAccountSettings: () => ({ pluginUpdateReviewModeV1: 'autoApply' }),
+    })).toEqual({ requiresReview: false, authorityExpansion: [], preservedOptionalAccess: [] });
+    expect(evaluatePluginAuthorityReview({
+      previous: sessionsOptionalManifest(['read', 'write']),
+      candidate: sessionsOptionalManifest(['read']),
+      selectedOptionalAccess: [sessionsSelection(['read', 'write'])],
+      readAccountSettings: () => ({ pluginUpdateReviewModeV1: 'autoApply' }),
+    })).toMatchObject({ requiresReview: false, preservedOptionalAccess: [sessionsSelection(['read'])] });
+  });
+
+  it('never asks on a development plugin change, in either mode', () => {
+    for (const mode of ['confirmAccessChanges', 'autoApply'] as const) {
+      expect(evaluatePluginAuthorityReview({
+        previous,
+        candidate: widened,
+        selectedOptionalAccess: [],
+        development: true,
+        readAccountSettings: () => ({ pluginUpdateReviewModeV1: mode }),
+      })).toMatchObject({ requiresReview: false, authorityExpansion: [] });
+    }
   });
 });

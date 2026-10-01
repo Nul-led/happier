@@ -13,6 +13,7 @@ import {
 import type { PluginDaemonModuleNamespace } from '../../types';
 import {
     DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS,
+    remainingPluginInitializationTimeoutMs,
     normalizePositiveTimeoutMs,
     projectPluginFailureDiagnostic,
     projectPluginFailureText,
@@ -208,12 +209,13 @@ async function validateSessionRunnerFactoryRegistrations(params: Readonly<{
 export async function activateContributionModule(params: Readonly<{
     pluginId: string;
     manifestAuthority?: 'external' | 'bundled_first_party';
-    generation: string;
+    occurrenceId: string;
     manifest: CanonicalPluginManifest;
     moduleNamespace: PluginDaemonModuleNamespace;
-    isGenerationCurrent(): boolean;
+    isOccurrenceCurrent(): boolean;
     forceActivation?: boolean;
     cleanupTimeoutMs?: number;
+    startupDeadlineAtMs?: number;
     /**
      * The author's authenticated project root, supplied by the activation
      * owner ONLY for a locally trusted development plugin. Its presence is
@@ -254,6 +256,12 @@ export async function activateContributionModule(params: Readonly<{
             diagnostics: Object.freeze([]), dispose: NOOP_DISPOSE,
         });
     }
+    if (
+        params.startupDeadlineAtMs !== undefined
+        && remainingPluginInitializationTimeoutMs(params.startupDeadlineAtMs) === 0
+    ) {
+        return unavailable(`Plugin '${params.pluginId}' activation was not attempted after the daemon startup deadline`);
+    }
 
     const registeredExternalSessionsByAgent = new Map<string, unknown>();
     const cleanupTimeoutMs = normalizePositiveTimeoutMs(
@@ -261,9 +269,9 @@ export async function activateContributionModule(params: Readonly<{
     ) ?? DEFAULT_FAILED_ACTIVATION_CLEANUP_TIMEOUT_MS;
     const host = createContributionRegistrationHost({
         pluginId: params.pluginId,
-        generation: params.generation,
+        occurrenceId: params.occurrenceId,
         rights,
-        isGenerationCurrent: params.isGenerationCurrent,
+        isOccurrenceCurrent: params.isOccurrenceCurrent,
         cleanupTimeoutMs,
         onAgentExternalSessionsRegistration(localAgentId, contribution) {
             registeredExternalSessionsByAgent.set(localAgentId, contribution);
@@ -328,9 +336,15 @@ export async function activateContributionModule(params: Readonly<{
     // External Sessions companion validation, and retained-fact persistence.
     // Synchronous work cannot be preempted by an asynchronous deadline; this
     // bounds every asynchronous await of the transaction.
-    const activationDeadlineAt = Date.now() + DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS;
+    const activationDeadlineAt = Date.now()
+        + remainingPluginInitializationTimeoutMs(params.startupDeadlineAtMs);
     const remainingActivationBudgetMs = (): number =>
         Math.max(0, activationDeadlineAt - Date.now());
+    let activationDeadlineExceeded = false;
+    const activationTimeoutError = (): ActivationDeadlineExceededError => {
+        activationDeadlineExceeded = true;
+        return new ActivationDeadlineExceededError(params.pluginId);
+    };
     // Currentness guard for the transaction's retained-fact choke point.
     // Checked atomically with each side-effecting call (no await in between):
     // a transaction that lost the absolute deadline — or whose generation the
@@ -339,13 +353,13 @@ export async function activateContributionModule(params: Readonly<{
     // late transaction's settlement stays observed by the catch-path
     // observer; this error only decides what that settlement may still do.
     const assertActivationTransactionCurrent = (): void => {
-        if (remainingActivationBudgetMs() <= 0) {
+        if (activationDeadlineExceeded) {
             throw new ActivationTransactionSupersededError(
                 params.pluginId,
-                'its absolute activation deadline elapsed',
+                'its activation deadline fired',
             );
         }
-        if (!params.isGenerationCurrent()) {
+        if (!params.isOccurrenceCurrent()) {
             throw new ActivationTransactionSupersededError(
                 params.pluginId,
                 'its generation is no longer current',
@@ -358,7 +372,7 @@ export async function activateContributionModule(params: Readonly<{
         const result: unknown = await runWithOptionalTimeout(
             remainingActivationBudgetMs(),
             () => activationPromise,
-            () => new ActivationDeadlineExceededError(params.pluginId),
+            activationTimeoutError,
         );
         authorSettled = true;
         if (result !== undefined && typeof result !== 'function') {
@@ -430,7 +444,7 @@ export async function activateContributionModule(params: Readonly<{
         const published = await runWithOptionalTimeout(
             remainingActivationBudgetMs(),
             () => transaction!,
-            () => new ActivationDeadlineExceededError(params.pluginId),
+            activationTimeoutError,
         );
         return Object.freeze({
             status: 'active',

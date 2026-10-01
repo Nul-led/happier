@@ -15,7 +15,7 @@ describe('readAgentSurfaceRuntimeDescriptorV1FromSessionMetadata', () => {
       agentId: 'opencode',
       agent: {
         backendMode: 'server',
-        providerSessionId: 'opencode-legacy-1',
+        providerSessionId: ' opencode-legacy-1 ',
         serverBaseUrl: 'http://127.0.0.1:49196/',
         serverBaseUrlExplicit: true,
       },

@@ -53,6 +53,7 @@ vi.mock('@/plugins/store/registry/currentState', () => ({
 }));
 vi.mock('@/ui/logger', () => ({
   logger: {
+    debug: vi.fn(),
     warn: vi.fn(),
   },
 }));
@@ -67,7 +68,8 @@ const temporaryHomes = new Set<string>();
 const unusedTargetedContributionsOwner = createTargetedContributionsService({
   subscribeToCatalogChanges: () => () => undefined,
   readAdmittedSnapshot: async () => Object.freeze({
-    generation: 'unused-target-generation',
+    occurrenceId: 'unused-target-occurrence',
+    sourceCustody: { kind: 'development' as const, registeredRootId: 'unused-root' },
     contributions: Object.freeze([]),
   }),
 });

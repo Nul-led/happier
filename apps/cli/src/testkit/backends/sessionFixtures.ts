@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { projectSessionAccessCapabilitiesV1 } from '@happier-dev/protocol';
 
 import type { AcpRuntimeSessionClient } from '@/agent/acp/sessionClient';
 import { createRpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
@@ -263,6 +264,26 @@ export function createCurrentSessionProjectionRecordFixture(
         responsibleAccount: null,
         ...overrides,
     };
+}
+
+/** Authenticated current-owner Session detail returned by notification HTTP fixtures. */
+export function createSessionNotificationContextFixture(sessionId: string): CurrentSessionProjectionRecordFixture {
+    return createCurrentSessionProjectionRecordFixture({
+        id: sessionId,
+        effectiveAccess: {
+            v: 1,
+            level: 'owner',
+            sources: [{ kind: 'owner' }],
+            capabilities: projectSessionAccessCapabilitiesV1({ owner: true, grants: [] }),
+        },
+        viewer: {
+            readState: { state: 'not_started' },
+            relevance: { relevant: true, reasons: ['owned_by_me'] },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+            follow: { follows: false, notificationLevel: null },
+            notification: { level: 'important', source: 'owner' },
+        },
+    });
 }
 
 /**

@@ -1,0 +1,87 @@
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
+
+function isWorkspaceBuildConfigFile(name) {
+  if (name === 'package.json') return true;
+  if (/^tsconfig(?:\.[^.]+)*\.json$/.test(name)) {
+    return !/\.(?:test|tests|type-tests)\.json$/.test(name);
+  }
+  return /^(?:rollup|vite|esbuild|babel|swc|rspack|tsup|happier-plugin-ui)\.config\.(?:js|cjs|mjs|ts|json)$/.test(name);
+}
+
+// Both package admission and Stack source identities consume this input set.
+export function readWorkspaceBuildInputs(packageDir, {
+  readDir = readdirSync,
+  stat = lstatSync,
+  includeShippedFiles = false,
+  excludeGeneratedPluginManifest = false,
+} = {}) {
+  const inputs = new Set();
+  const visit = (path, { ignoreTests = true } = {}) => {
+    const relativePath = relative(packageDir, path).split(sep).join('/');
+    if (excludeGeneratedPluginManifest && relativePath === '.happier-plugin/plugin.json') return;
+    const name = path.split(sep).at(-1) ?? '';
+    if (
+      ignoreTests && (
+      name === '__tests__'
+      || name === 'test'
+      || name === 'tests'
+      || name === 'fixtures'
+      || /\.(?:test|spec)\.[^.]+$/.test(name)
+      )
+    ) return;
+
+    let entryStat;
+    try {
+      entryStat = stat(path, { bigint: true });
+    } catch {
+      return;
+    }
+    if (entryStat.isDirectory()) {
+      for (const childName of readDir(path)) visit(join(path, childName), { ignoreTests });
+      return;
+    }
+    inputs.add(relativePath);
+  };
+
+  let entries = [];
+  try {
+    entries = readDir(packageDir, { withFileTypes: true });
+  } catch {
+    return [...inputs];
+  }
+  for (const entry of entries) {
+    if (
+      (entry.isDirectory() && ['src', 'sources', 'scripts'].includes(entry.name))
+      || (entry.isFile() && (isWorkspaceBuildConfigFile(entry.name) || /\.(?:mjs|cjs|js)$/.test(entry.name)))
+    ) visit(join(packageDir, entry.name));
+  }
+  visit(join(packageDir, '.happier-plugin', 'plugin.json'));
+  visit(join(packageDir, '.happier-plugin', 'ui', 'hosted-web'), { ignoreTests: false });
+  if (includeShippedFiles) {
+    const packageJson = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
+    for (const entry of ['README.md', '.happier-plugin', ...(packageJson.files ?? [])]) {
+      if (
+        typeof entry !== 'string' || !entry || entry.includes('\\') || entry.startsWith('/')
+        || entry.split('/').some((segment) => !segment || segment === '.' || segment === '..')
+        || /[*?{}[\]]/.test(entry)
+      ) throw new Error(`[workspace-build] invalid shipped package file: ${entry}`);
+      if (entry === 'dist' || entry.startsWith('dist/') || entry === 'package.json') continue;
+      visit(join(packageDir, entry), { ignoreTests: false });
+    }
+  }
+  return [...inputs].sort();
+}
+
+export function resolveWorkspaceBuildInputWatchPaths(packageDir, {
+  existsSyncImpl = existsSync,
+  excludeGeneratedPluginManifest = true,
+} = {}) {
+  const membershipRoots = ['src', 'sources', 'scripts', '.happier-plugin/ui/hosted-web'];
+  return [...new Set([
+    ...membershipRoots.map((path) => join(packageDir, path)),
+    ...readWorkspaceBuildInputs(packageDir, { excludeGeneratedPluginManifest })
+      .filter((path) => !membershipRoots.some((root) => path.startsWith(`${root}/`)))
+      .map((path) => join(packageDir, path)),
+  ])].filter((path) => existsSyncImpl(path));
+}

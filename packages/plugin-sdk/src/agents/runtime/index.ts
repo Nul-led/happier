@@ -23,6 +23,7 @@ export type { AgentAccountUsageService } from '../../agentRuntime/projections.js
 export type { AgentAccountUsageSnapshot } from '../../agentRuntime/projections.js';
 export type { AgentAccountUsageSourceContext } from '../../agentRuntime/projections.js';
 export type { AgentAccountUsageSourceContextInput } from '../../agentRuntime/projections.js';
+export type { AgentAccountUsageSubscription } from '../../agentRuntime/projections.js';
 export type { AgentAcpAuthenticationContext } from '../../agentRuntime/projections.js';
 export type { AgentAcpAuthenticationDefinition } from '../../agentRuntime/projections.js';
 export type { AgentAcpAuthenticationSelection } from '../../agentRuntime/projections.js';
@@ -153,6 +154,7 @@ export type { AgentProviderBindingPrepared } from '../../agentRuntime/projection
 export type { AgentProviderBindingResolvedFacts } from '../../agentRuntime/projections.js';
 export type { AgentProviderBindingSourceKey } from '../../agentRuntime/projections.js';
 export type { AgentProviderCliAttachDeclarationV1 } from '../../agentRuntime/projections.js';
+export type { AgentProviderCliAttachHostFactsV1 } from '../../agentRuntime/projections.js';
 export type { AgentProviderCliAttachReachabilityV1 } from '../../agentRuntime/projections.js';
 export type { AgentProviderCliAttachTargetResolutionV1 } from '../../agentRuntime/projections.js';
 export type { AgentProviderCliAttachTargetV1 } from '../../agentRuntime/projections.js';
@@ -214,6 +216,7 @@ export type { AgentSessionHooksService } from '../../agentRuntime/projections.js
 export type { AgentSessionHostServices } from '../../agentRuntime/projections.js';
 export type { AgentSessionInFlightConfigurationOutcome } from '../../agentRuntime/projections.js';
 export type { AgentSessionInput } from '../../agentRuntime/projections.js';
+export type { AgentSessionInputFilesService } from '../../agentRuntime/projections.js';
 export type { AgentSessionLaunchHintsV1 } from '../../agentRuntime/projections.js';
 export type { AgentSessionMcpLaunchConfig } from '../../agentRuntime/projections.js';
 export type { AgentSessionMcpServer } from '../../agentRuntime/projections.js';
@@ -225,6 +228,9 @@ export type { AgentSessionModelOptionChoice } from '../../agentRuntime/projectio
 export type { AgentSessionModelsService } from '../../agentRuntime/projections.js';
 export type { AgentSessionModelsSnapshot } from '../../agentRuntime/projections.js';
 export type { AgentSessionModelsSource } from '../../agentRuntime/projections.js';
+export type { AgentSessionModesService } from '../../agentRuntime/projections.js';
+export type { AgentSessionModesSnapshot } from '../../agentRuntime/projections.js';
+export type { AgentSessionModesSource } from '../../agentRuntime/projections.js';
 export type { AgentSessionNativeHomeService } from '../../agentRuntime/projections.js';
 export type { AgentSessionNativeToolBridgeConfig } from '../../agentRuntime/projections.js';
 export type { AgentSessionNativeToolDescriptor } from '../../agentRuntime/projections.js';
@@ -271,7 +277,10 @@ export type { AgentSessionUsageLimitRecoveryControl } from '../../agentRuntime/p
 export type { AgentSessionUsageLimitRecoveryRequest } from '../../agentRuntime/projections.js';
 export type { AgentSessionUsageLimitRecoveryResult } from '../../agentRuntime/projections.js';
 export type { AgentSessionVendorPluginCatalogItem } from '../../agentRuntime/projections.js';
+export type { AgentSessionVerifiedImageInput } from '../../agentRuntime/projections.js';
 export type { AgentSessionWorkflowActivityService } from '../../agentRuntime/projections.js';
+export type { AgentSettingsSelectedSystemToolInputV1 } from '../../agentRuntime/projections.js';
+export type { AgentSettingsSelectedSystemToolV1 } from '../../agentRuntime/projections.js';
 export type { AgentSurfaceAvailabilityV1 } from '../../agentRuntime/projections.js';
 export type { AgentSurfaceBaseFailureCodeV1 } from '../../agentRuntime/projections.js';
 export type { AgentSurfaceDiagnosticV1 } from '../../agentRuntime/projections.js';

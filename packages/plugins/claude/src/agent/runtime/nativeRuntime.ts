@@ -19,7 +19,7 @@ import { createExecutionRunHostBackendFromConversationRuntime } from '@happier-d
 import { claudeHandoffSurface } from '../surfaces/sessions/handoff/providerOps.js';
 import { isDeepStrictEqual } from 'node:util';
 import { AgentRuntimeJsonValueSchema } from '@happier-dev/plugin-sdk/agents/runtime';
-import type { PluginDiagnosticData } from '@happier-dev/plugin-sdk';
+import { PluginError, type PluginDiagnosticData } from '@happier-dev/plugin-sdk';
 import type { AgentModelDescriptor } from '@happier-dev/plugin-sdk/agents';
 import {
   createAgentSessionPreAdmissionBuffer,
@@ -72,7 +72,7 @@ import {
   isClaudeUltracodeSupportedModelId,
   resolveClaudeEffortForModel,
 } from './reasoningEffort.js';
-import { probeClaudeSupportsEffortRaw } from '../preflight/models.js';
+import { probeClaudeSupportsEffortRaw, probeClaudeSupportsSystemPromptSnapshotOffRaw, probeClaudeSupportsStartupInstructionsRaw } from '../preflight/models.js';
 
 export {
   claudeExternalSessionsContribution,
@@ -118,6 +118,7 @@ type ClaudeTerminalPromptDelivery = {
 type ClaudeNativePromptCustodyOperations =
   | Readonly<{
     promptCustody: 'unified_terminal';
+    retirePendingInputs(localIds: readonly string[], turnId: string): void;
     setOnPromptAcceptedByProvider: (
       handler: (info: ClaudeUnifiedPromptDeliveryIdentity) => void,
     ) => void;
@@ -134,6 +135,7 @@ type ClaudeNativePromptCustodyOperations =
 
 export type ClaudeNativeSessionOperations = ClaudeRuntimeTurnOperations & Readonly<{
   supportsEffort?: boolean;
+  observeSourceTranscript?: AgentSessionRuntime['observeSourceTranscript'];
   subscribeEffectiveModel?: ClaudeEffectiveModelEvidenceSubscription;
   subscribeUsageObservation?: ClaudeUsageObservationSubscription;
   subscribeCanonicalAgentSessionEvents?: (
@@ -180,9 +182,10 @@ export type ClaudeNativeSessionFactory = (input: Readonly<{
   request: AgentSessionOpenRequest;
   context: AgentSessionRuntimeContext;
   supportsEffort?: boolean;
+  supportsSystemPromptSnapshotOff?: boolean;
 }>) => ClaudeNativeSessionOperations | Promise<ClaudeNativeSessionOperations>;
 
-type ClaudeSupportsEffortResolver = (input: Readonly<{
+type ClaudeInstalledLaunchControlSupportResolver = (input: Readonly<{
   request: Readonly<{
     cwd: string;
     launchEnvironment?: AgentLaunchEnvironment;
@@ -197,7 +200,8 @@ export type CreateClaudeNativeRuntimeOptions = Readonly<{
     request: Extract<AgentExecutionRunOpenRequest, { kind: 'create' | 'resume' }>;
     context: AgentExecutionRunRuntimeContextV1;
   }>) => AgentExecutionRunConversationRuntimeV1 | Promise<AgentExecutionRunConversationRuntimeV1>;
-  resolveSupportsEffort?: ClaudeSupportsEffortResolver;
+  resolveSupportsEffort?: ClaudeInstalledLaunchControlSupportResolver;
+  resolveSupportsSystemPromptSnapshotOff?: ClaudeInstalledLaunchControlSupportResolver;
 }>;
 
 export function createClaudeNativeSessionOpener(openers: Readonly<{
@@ -218,8 +222,20 @@ export function createClaudeNativeSessionOpener(openers: Readonly<{
   };
 }
 
-export async function resolveClaudeInstalledEffortSupport(input: Parameters<ClaudeSupportsEffortResolver>[0]) {
+export async function resolveClaudeInstalledEffortSupport(input: Parameters<ClaudeInstalledLaunchControlSupportResolver>[0]) {
   return await probeClaudeSupportsEffortRaw({
+    exec: input.context.services.exec,
+    cwd: input.request.cwd,
+    timeoutMs: 5_000,
+    env: resolveClaudeNativeBaseLaunchEnvironment({
+      launchEnvironment: input.request.launchEnvironment,
+      processEnv: process.env,
+    }),
+  });
+}
+
+export async function resolveClaudeInstalledSystemPromptSnapshotOffSupport(input: Parameters<ClaudeInstalledLaunchControlSupportResolver>[0]) {
+  return await probeClaudeSupportsSystemPromptSnapshotOffRaw({
     exec: input.context.services.exec,
     cwd: input.request.cwd,
     timeoutMs: 5_000,
@@ -263,6 +279,9 @@ function committedMessage(
 
 function mapEvent(event: ClaudeProviderEvent): AgentExecutionRunConversationEventV1 | null {
   switch (event.kind) {
+    case 'context-compaction':
+      return { kind: event.kind, compactionId: event.compactionId, phase: event.phase, trigger: event.trigger,
+        ...(event.turnId ? { turnId: event.turnId } : {}) };
     case 'turn-start':
       return {
         kind: event.kind,
@@ -357,21 +376,29 @@ function sendFailure(
   status: 'rejected' | 'unavailable' | 'unsupported',
   message?: string,
   retryable = status === 'unavailable',
+  code?: string,
 ): Exclude<Awaited<ReturnType<AgentSessionRuntime['send']>>, { status: 'admitted' }> {
   return {
     status,
     retryable,
-    diagnostic: diagnostic(`claude_send_${status}`, message ?? `Claude input was ${status}.`),
+    diagnostic: diagnostic(code ?? `claude_send_${status}`, message ?? `Claude input was ${status}.`),
   };
 }
 
 async function submitClaudeProviderInput(
-  operations: ClaudeRuntimeTurnOperations,
+  operations: ClaudeNativeSessionOperations,
   request: Parameters<AgentSessionRuntime['send']>[0],
 ): Promise<ClaudeRuntimePromptSubmissionOutcome> {
+  const structuredInput = request.input.structuredInput;
+  const structured = structuredInput && typeof structuredInput === 'object' && !Array.isArray(structuredInput)
+    ? structuredInput as Readonly<Record<string, unknown>> : null;
+  if (operations.promptCustody === 'unified_terminal' && Array.isArray(structured?.imageInputs) && structured.imageInputs.length > 0) {
+    return { kind: 'rejected_before_effect', code: 'claude_image_input_unsupported', reason: 'The terminal text transport cannot deliver image content.' };
+  }
   const meta = {
     localId: request.inputIds[0] ?? null,
     localIds: [...request.inputIds],
+    ...(structuredInput === undefined ? {} : { structuredInput }),
   };
   if (request.delivery.kind === 'steer') {
     return await operations.steerProviderTurn(request.input.text, meta);
@@ -437,6 +464,7 @@ export function createClaudeNativeSessionRuntimeFromOperations(
   function readModels() {
     return {
       models,
+      observedAt: 0,
       currentModelId,
     };
   }
@@ -587,6 +615,13 @@ export function createClaudeNativeSessionRuntimeFromOperations(
     canSteer: () => operations.canSteerPrompt?.() === true,
     canInterruptForPendingInput: () => operations.canInterruptForPendingInput?.() !== false,
     onPromptQueued: () => { operations.notifyPromptQueuedDuringTurn?.(); },
+    onInputRetired: (inputId) => {
+      const delivery = terminalPromptDeliveriesByInputId.get(inputId);
+      if (!delivery || delivery.decision !== null) return;
+      terminalPromptDeliveriesByInputId.delete(inputId);
+      if (delivery.inputIds.some((id) => terminalPromptDeliveriesByInputId.has(id))) return;
+      unifiedPromptAcceptanceOperations?.retirePendingInputs(delivery.inputIds, delivery.delivery.turnId);
+    },
     applyPermissionIntentDuringTurn: async (permissionIntent) => {
       const apply = operations.applyConfigDeltaInFlight;
       return apply
@@ -651,7 +686,13 @@ export function createClaudeNativeSessionRuntimeFromOperations(
     : undefined;
 
   return {
+    nativeGoalControlsSupported: typeof operations.setGoal === 'function' && typeof operations.clearGoal === 'function',
     ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
+    ...(unifiedPromptAcceptanceOperations?.observeSourceTranscript ? {
+      observeSourceTranscript: async (input: Parameters<NonNullable<AgentSessionRuntime['observeSourceTranscript']>>[0]) => {
+        if (!disposed) await unifiedPromptAcceptanceOperations.observeSourceTranscript?.(input);
+      },
+    } : {}),
     async connectedServiceApplicationSettled() {
       await operations.releaseConnectedServiceUsageLimitDialog?.();
     },
@@ -721,7 +762,7 @@ export function createClaudeNativeSessionRuntimeFromOperations(
         });
       } else if (submissionOutcome.kind === 'rejected_before_effect') {
         if (terminalPromptDelivery) clearTerminalPromptDelivery(terminalPromptDelivery);
-        const failure = sendFailure('rejected', submissionOutcome.reason, true);
+        const failure = sendFailure(submissionOutcome.code === 'claude_image_input_unsupported' ? 'unsupported' : 'rejected', submissionOutcome.reason, true, submissionOutcome.code);
         emit({
           kind: 'input-rejected',
           inputIds: nativeRequest.inputIds,
@@ -902,6 +943,7 @@ export function createClaudeNativeSessionRuntimeFromOperations(
         }
       }
       const result = await operations.updateProviderConfiguration({
+        ...(configuration.workspaceWrites !== undefined ? { workspaceWrites: configuration.workspaceWrites } : {}),
         ...(configuration.permissionIntent.value === null
           ? {}
           : { permissionMode: configuration.permissionIntent.value }),
@@ -922,13 +964,14 @@ export function createClaudeNativeSessionRuntimeFromOperations(
           changed: [
             'permissionIntent',
             'model',
+            ...(configuration.workspaceWrites !== undefined ? ['workspaceWrites'] : []),
             ...(effectiveConfigOption ? [`options.${effectiveConfigOption.id}`] : []),
           ],
         };
       }
       return {
         status: result?.status === 'unsupported' ? 'unsupported' : 'rejected',
-        diagnostic: diagnostic('claude_configuration_rejected', 'Claude rejected the configuration update.'),
+        diagnostic: diagnostic(result?.reason ?? 'claude_configuration_rejected', 'Claude rejected the configuration update.'),
       };
     },
     watch(listener) {
@@ -1071,6 +1114,7 @@ function terminalSurface(): NonNullable<AgentRuntime['surfaces']>['terminal'] {
           interactionKind: 'interactive_terminal',
           permissionMode: permissionMode ? mapToClaudePermissionMode(permissionMode) : null,
           launchSettings: {},
+          workspaceWrites: request.configuration?.workspaceWrites,
         }),
         process: { stdio: 'inherit', windowsHide: true },
         presentation: {
@@ -1090,9 +1134,23 @@ export function createClaudeNativeRuntime(
     request: AgentSessionOpenRequest,
     context: AgentSessionRuntimeContext,
   ): Promise<AgentSessionRuntime> => {
-    const supportsEffort = await (options.resolveSupportsEffort
-      ?? resolveClaudeInstalledEffortSupport)({ request, context });
-    const operations = await options.openSession({ request, context, supportsEffort });
+    if (request.kind !== 'fork' && request.startupInstructions
+      && !await probeClaudeSupportsStartupInstructionsRaw({
+        exec: context.services.exec, cwd: request.cwd, timeoutMs: 5_000,
+        env: resolveClaudeNativeBaseLaunchEnvironment({
+          launchEnvironment: request.launchEnvironment, processEnv: process.env,
+        }),
+      })) {
+      throw new PluginError({
+        code: 'agent_session_startup_instructions_unsupported', retryable: false,
+        message: 'Installed Claude cannot apply file-based startup instructions on resume.',
+      });
+    }
+    const [supportsEffort, supportsSystemPromptSnapshotOff] = await Promise.all([
+      (options.resolveSupportsEffort ?? resolveClaudeInstalledEffortSupport)({ request, context }),
+      (options.resolveSupportsSystemPromptSnapshotOff ?? resolveClaudeInstalledSystemPromptSnapshotOffSupport)({ request, context }),
+    ]);
+    const operations = await options.openSession({ request, context, supportsEffort, supportsSystemPromptSnapshotOff });
     const releaseGoals = goals.bind(request.sessionId, operations);
     try {
       const runtime = createClaudeNativeSessionRuntimeFromOperations(
@@ -1121,11 +1179,14 @@ export function createClaudeNativeRuntime(
           }
           const openConversation = options.openExecutionRunConversation
             ?? (async (input) => {
-              const supportsEffort = await (options.resolveSupportsEffort
-                ?? resolveClaudeInstalledEffortSupport)({ request: input.request, context: input.context });
+              const [supportsEffort, supportsSystemPromptSnapshotOff] = await Promise.all([
+                (options.resolveSupportsEffort ?? resolveClaudeInstalledEffortSupport)({ request: input.request, context: input.context }),
+                (options.resolveSupportsSystemPromptSnapshotOff ?? resolveClaudeInstalledSystemPromptSnapshotOffSupport)({ request: input.request, context: input.context }),
+              ]);
               return await openClaudeNativeAgentSdkExecutionRunConversation({
                 ...input,
                 supportsEffort,
+                supportsSystemPromptSnapshotOff,
               });
             });
           return await createExecutionRunHostBackendFromConversationRuntime({
@@ -1156,6 +1217,7 @@ async function openClaudeNativeAgentSdkSession(input: Readonly<{
   request: AgentSessionOpenRequest;
   context: AgentSessionRuntimeContext;
   supportsEffort?: boolean;
+  supportsSystemPromptSnapshotOff?: boolean;
 }>): Promise<ClaudeNativeSessionOperations> {
   const sdkContext = createClaudeNativeAgentSdkContext(input.context);
   const launchSettings = await resolveClaudeNativeLaunchSettings({
@@ -1188,7 +1250,11 @@ async function openClaudeNativeAgentSdkSession(input: Readonly<{
     launchEnv: launchSettings.launchEnv,
     advancedOptions: launchSettings.advancedOptions,
     permissionMode: input.request.configuration?.permissionIntent.value ?? 'default',
+    workspaceWrites: input.request.configuration?.workspaceWrites,
     supportsEffort: input.supportsEffort === true,
+    supportsSystemPromptSnapshotOff: input.supportsSystemPromptSnapshotOff === true,
+    ...(input.request.kind !== 'fork' && input.request.startupInstructions
+      ? { startupInstructions: input.request.startupInstructions.instructions } : {}),
     initialModelId,
     ...(initialEffort ? { initialEffort } : {}),
     ...(initialUltracode ? { initialUltracode: true } : {}),
@@ -1209,6 +1275,7 @@ async function openClaudeNativeAgentSdkExecutionRunConversation(input: Readonly<
   request: Extract<AgentExecutionRunOpenRequest, { kind: 'create' | 'resume' }>;
   context: AgentExecutionRunRuntimeContextV1;
   supportsEffort: boolean;
+  supportsSystemPromptSnapshotOff: boolean;
 }>): Promise<AgentExecutionRunConversationRuntimeV1> {
   const sdkContext = createClaudeNativeExecutionRunAgentSdkContext(input.context);
   const launchSettings = await resolveClaudeNativeLaunchSettings({
@@ -1241,7 +1308,9 @@ async function openClaudeNativeAgentSdkExecutionRunConversation(input: Readonly<
     launchEnv: launchSettings.launchEnv,
     advancedOptions: launchSettings.advancedOptions,
     permissionMode: input.request.configuration?.permissionIntent.value ?? 'default',
+    workspaceWrites: input.request.configuration?.workspaceWrites,
     supportsEffort: input.supportsEffort,
+    supportsSystemPromptSnapshotOff: input.supportsSystemPromptSnapshotOff,
     initialModelId,
     ...(initialEffort ? { initialEffort } : {}),
     ...(initialUltracode ? { initialUltracode: true } : {}),
@@ -1261,4 +1330,5 @@ export const createClaudeAgentRuntime: AgentRuntimeFactory = () => createClaudeN
     openUnifiedTerminalSession: openClaudeNativeUnifiedTerminalSession,
   }),
   resolveSupportsEffort: resolveClaudeInstalledEffortSupport,
+  resolveSupportsSystemPromptSnapshotOff: resolveClaudeInstalledSystemPromptSnapshotOffSupport,
 });

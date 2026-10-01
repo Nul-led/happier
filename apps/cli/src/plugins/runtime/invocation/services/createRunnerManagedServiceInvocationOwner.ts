@@ -26,6 +26,8 @@ import {
     type AgentProviderBindingMaterializationV1,
     type PluginAgentContributionV2,
     type PluginHostAccessRequestV2,
+    pluginSourceCustodyV1Equal,
+    type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 
 import type {
@@ -285,6 +287,11 @@ export function createRunnerManagedServiceEndpointProjectionBinding(
         ) => ((
             request: ManagedServiceRequest,
         ) => Promise<ManagedServiceResponse>) | null;
+        materializeProjectedManagedServiceClientEnvironment?: (
+            projection: ManagedServiceEndpointProjectionV1,
+            environmentKey: string,
+            signal?: AbortSignal,
+        ) => Promise<Readonly<Record<string, string>> | null>;
     }> = {},
 ) {
     type ProjectionEndpointAccess = Readonly<{
@@ -430,6 +437,49 @@ export function createRunnerManagedServiceEndpointProjectionBinding(
                 requestId: request.requestId,
                 status: 'unavailable' as const,
             });
+            if (request.route.kind === 'endpointClientEnvironment') {
+                const projection = request.route.projection;
+                if (
+                    projection.custodyOwner !== 'sessionRunner'
+                    || !accessMatches(projection)
+                    || !options.claimEndpointRead
+                    || !options.validateEndpointRead
+                    || !options.materializeProjectedManagedServiceClientEnvironment
+                ) return unavailable();
+                try {
+                    const claim = await options.claimEndpointRead({
+                        requestId: request.requestId,
+                        projectionToken: projection.projectionToken,
+                        ...(signal ? { signal } : {}),
+                    });
+                    const environment = await options
+                        .materializeProjectedManagedServiceClientEnvironment(
+                            projection,
+                            request.route.environmentKey,
+                            signal,
+                        );
+                    if (
+                        !environment
+                        || signal?.aborted
+                        || !accessMatches(projection)
+                        || !await options.validateEndpointRead({
+                            requestId: request.requestId,
+                            projectionToken: projection.projectionToken,
+                            daemonCapability: claim.daemonCapability,
+                            ...(signal ? { signal } : {}),
+                        })
+                    ) return unavailable();
+                    return {
+                        v: 1 as const,
+                        requestId: request.requestId,
+                        status: 'clientEnvironment' as const,
+                        environment,
+                    };
+                } catch {
+                    return unavailable();
+                }
+            }
+            if (!('headers' in request)) return unavailable();
             if (
                 activeReads.has(request.requestId)
                 || activeReads.size
@@ -726,7 +776,7 @@ export function createRunnerManagedServiceEndpointProjectionBinding(
                 pluginId: string;
                 contributionId: string;
                 sessionId: string;
-                immutableGenerationId: string;
+                sourceCustody: PluginSourceCustodyV1;
             }>;
             signal: AbortSignal;
         }>): AgentExternalSessionsManagedEndpointRead | null {
@@ -741,8 +791,10 @@ export function createRunnerManagedServiceEndpointProjectionBinding(
                             === bindInput.identity.contributionId
                         && projection.sessionId
                             === bindInput.identity.sessionId
-                        && projection.immutableGenerationId
-                            === bindInput.identity.immutableGenerationId
+                        && pluginSourceCustodyV1Equal(
+                            projection.sourceCustody,
+                            bindInput.identity.sourceCustody,
+                        )
                         && accessMatches(projection) === access;
                 });
             if (matches.length !== 1) return null;
@@ -797,6 +849,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
     paths: PluginStorePaths;
     authority: AgentRuntimeDaemonServiceAuthorityExpectedInput;
     retainedAgent: AgentSessionRunnerBindingV1;
+    developmentOccurrenceId?: string;
 }>): Promise<Readonly<{
     owners: RunnerLocalPluginInvocationServiceOwners;
     verifiedAgentDeclaration: Readonly<{
@@ -861,9 +914,9 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
         identity: Readonly<{
             pluginId: string;
             agentId: string;
-            generation: string;
+            occurrenceId: string;
             contributionQualifiedId: string;
-            immutableGenerationId: string | null;
+            sourceCustody: PluginSourceCustodyV1;
         }>;
         signal: AbortSignal;
     }>): AgentExternalSessionsManagedEndpointRead;
@@ -876,6 +929,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
     const attested = await verifyRunnerAgentBindingAgainstGeneration({
         paths: input.paths,
         binding: input.retainedAgent,
+        developmentOccurrenceId: input.developmentOccurrenceId,
     });
     const verifiedAgentDeclaration = Object.freeze({
         definition: attested.declaredAgent,
@@ -1002,17 +1056,52 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
                     || projection.pluginId !== binding.pluginId
                     || projection.contributionId
                         !== contributionQualifiedId
-                    || projection.immutableGenerationId
-                        !== binding.immutableGenerationId
+                    || !pluginSourceCustodyV1Equal(
+                        projection.sourceCustody,
+                        binding.sourceCustody,
+                    )
                 ) return null;
                 return managedServicesOwner
                     .bindSessionManagedServiceRequest({
                         sessionId: projection.sessionId,
-                        generation: binding.immutableGenerationId,
+                        occurrenceId: projection.projectionToken,
                         pluginId: projection.pluginId,
                         contributionQualifiedId:
                             projection.contributionId,
                         serviceId: projection.serverId,
+                    });
+            },
+            materializeProjectedManagedServiceClientEnvironment: async (
+                projection,
+                environmentKey,
+                signal,
+            ) => {
+                const binding = input.retainedAgent;
+                const contributionQualifiedId =
+                    resolveAgentContributionQualifiedId({
+                        pluginId: binding.pluginId,
+                        localId: binding.localAgentId,
+                    });
+                if (
+                    projection.sessionId !== input.authority.sessionId
+                    || projection.pluginId !== binding.pluginId
+                    || projection.contributionId
+                        !== contributionQualifiedId
+                    || !pluginSourceCustodyV1Equal(
+                        projection.sourceCustody,
+                        binding.sourceCustody,
+                    )
+                ) return null;
+                return await managedServicesOwner
+                    .materializeSessionManagedServiceClientEnvironment({
+                        sessionId: projection.sessionId,
+                        occurrenceId: projection.projectionToken,
+                        pluginId: projection.pluginId,
+                        contributionQualifiedId:
+                            projection.contributionId,
+                        serviceId: projection.serverId,
+                        environmentKey,
+                        ...(signal ? { signal } : {}),
                     });
             },
         });
@@ -1147,7 +1236,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
     const registerRawForRedaction = (
         scope: Readonly<{
             pluginId: string;
-            generation: string;
+            occurrenceId: string;
             correlationId: string;
         }>,
         value: string,
@@ -1159,7 +1248,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
      * device-local key material and never decrypts a declared secret: every
      * read and pre-dispatch revalidation is answered by the CURRENT daemon
      * over the existing authenticated runner↔daemon services channel, from
-     * that daemon's retained-generation declaration and canonical custody
+     * that daemon's retained-occurrenceId declaration and canonical custody
      * owner. Losing daemon authority therefore yields no credential at all.
      */
     const bindManagedServiceSecretReadPort = (
@@ -1180,7 +1269,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
             !signal?.aborted
             && !revalidationSignal?.aborted
             && !seed.signal.aborted
-            && readsCurrent(seed.isGenerationCurrent)
+            && readsCurrent(seed.isOccurrenceCurrent)
         );
         if (!isBoundCurrent()) return null;
         const observed =
@@ -1194,7 +1283,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
         if (observed.value !== null) {
             registerRawForRedaction({
                 pluginId: seed.plugin.id,
-                generation: seed.generation,
+                occurrenceId: seed.occurrenceId,
                 correlationId: seed.correlationId,
             }, observed.value);
         }
@@ -1231,7 +1320,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
             }
             registerRawForRedaction({
                 pluginId: scope.pluginId,
-                generation: scope.generation,
+                occurrenceId: scope.occurrenceId,
                 correlationId,
             }, value);
         },
@@ -1244,13 +1333,12 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
                 });
             if (
                 seed.pluginId !== binding.pluginId
-                || seed.generation
-                    !== binding.immutableGenerationId
                 || seed.contributionQualifiedId
                     !== contributionQualifiedId
             ) return null;
             return Object.freeze({
                 ...seed,
+                sourceCustody: binding.sourceCustody,
                 ...(context?.declaredSecretReadPort
                     ? {
                         declaredSecretReadPort:
@@ -1294,20 +1382,20 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
     });
     const invocationScopes = new Map<
         string,
-        Readonly<{ generation: string; pluginId: string }>
+        Readonly<{ occurrenceId: string; pluginId: string }>
     >();
     let disposeOwnersPromise: Promise<void> | null = null;
     const owners: RunnerLocalPluginInvocationServiceOwners = Object.freeze({
         createOperationServices(seed, operation) {
             const managedServicesAvailable =
                 managedServicesOwner.isAvailable({
-                    generation: seed.generation,
+                    occurrenceId: seed.occurrenceId,
                     contributionQualifiedId:
                         seed.contribution.qualifiedId,
                 }) === true;
             const binding = addExecServiceBinding(
                 createLoggerAvailablePluginInvocationServiceBinding(
-                    seed.generation,
+                    seed.occurrenceId,
                     seed.contribution.qualifiedId,
                 ),
                 operation.hostAccessRequests,
@@ -1315,7 +1403,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
             );
             const scope = Object.freeze({
                 pluginId: seed.plugin.id,
-                generation: seed.generation,
+                occurrenceId: seed.occurrenceId,
                 correlationId: seed.correlationId,
             });
             secretRedactor.beginInvocation(
@@ -1323,9 +1411,9 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
                 seed.redactionLifetimeSignal ?? seed.signal,
             );
             invocationScopes.set(
-                `${seed.generation}\u0000${seed.plugin.id}`,
+                `${seed.occurrenceId}\u0000${seed.plugin.id}`,
                 Object.freeze({
-                    generation: seed.generation,
+                    occurrenceId: seed.occurrenceId,
                     pluginId: seed.plugin.id,
                 }),
             );
@@ -1372,7 +1460,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
         registerRawForRedaction(seed, value) {
             registerRawForRedaction({
                 pluginId: seed.plugin.id,
-                generation: seed.generation,
+                occurrenceId: seed.occurrenceId,
                 correlationId: seed.correlationId,
             }, value);
         },
@@ -1383,7 +1471,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
                 invocationScopes.clear();
                 for (const scope of scopes) {
                     secretRedactor.retireGeneration(
-                        scope.generation,
+                        scope.occurrenceId,
                         scope.pluginId,
                     );
                 }
@@ -1510,8 +1598,8 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
             );
             const services = managedServicesOwner.bindScope(
                 Object.freeze({
-                    generation:
-                        bootstrap.scope.immutableGenerationId,
+                    occurrenceId: bootstrap.scope.occurrenceId,
+                    sourceCustody: bootstrap.scope.sourceCustody,
                     pluginId: bootstrap.scope.pluginId,
                     contributionQualifiedId:
                         `${bootstrap.scope.pluginId}/providers/${bootstrap.scope.providerLocalId}`,
@@ -1519,7 +1607,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
                     operationId:
                         bootstrap.scope.operationClaimId,
                     signal: bindingInput.seed.signal,
-                    isGenerationCurrent: isCurrent,
+                    isOccurrenceCurrent: isCurrent,
                 }),
                 managedProvider.exec,
                 Object.freeze({
@@ -1668,12 +1756,8 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
             if (
                 readInput.identity.pluginId !== runnerBinding.pluginId
                 || readInput.identity.agentId !== runnerBinding.localAgentId
-                || readInput.identity.generation
-                    !== runnerBinding.immutableGenerationId
                 || readInput.identity.contributionQualifiedId
                     !== contributionQualifiedId
-                || readInput.identity.immutableGenerationId
-                    !== runnerBinding.immutableGenerationId
             ) {
                 return fail(
                     'plugin_managed_server_endpoint_unavailable',
@@ -1685,8 +1769,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
                     pluginId: runnerBinding.pluginId,
                     contributionId: contributionQualifiedId,
                     sessionId: input.authority.sessionId,
-                    immutableGenerationId:
-                        runnerBinding.immutableGenerationId,
+                    sourceCustody: runnerBinding.sourceCustody,
                 },
                 signal: readInput.signal,
             }) ?? fail(

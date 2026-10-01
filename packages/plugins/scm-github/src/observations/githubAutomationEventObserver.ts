@@ -1966,6 +1966,7 @@ export function createGithubAutomationEventCheckpointedPullObserver(
       || caller.contribution.qualifiedId
         !== `${GITHUB_PLUGIN_ID}/backgroundServices/${GITHUB_AUTOMATION_REPOSITORY_EVENT_BACKGROUND_SERVICE_ID}`
       || caller.originSurface !== 'background'
+      || !caller.materialization
     ) {
       throw new GithubRepositoryEventsSourceContractError(
         'GitHub source attempt did not come from its current observer materialization',

@@ -5,7 +5,7 @@
  * CLI 0.2.0/0.2.1 builds. It is not a current descriptor or plugin-authoring seam.
  *
  * This file is emitted by:
- * - `scripts/migrations/extensions/generateBundledPluginEntries.ts`
+ * - `apps/cli/scripts/build-owned/generateBundledPluginEntries.ts`
  */
 
 import {
@@ -30,6 +30,11 @@ const CODEX_GENERATED_RUNTIME_DESCRIPTOR_READER = createGeneratedRuntimeDescript
     },
     {
       "key": "appServerEndpoint",
+      "kind": "trimmedString",
+      "runtimeHandle": "whenPresent"
+    },
+    {
+      "key": "appServerTransport",
       "kind": "trimmedString",
       "runtimeHandle": "whenPresent"
     },
@@ -75,6 +80,11 @@ const CODEX_GENERATED_RUNTIME_DESCRIPTOR_READER = createGeneratedRuntimeDescript
       },
       {
         "key": "appServerEndpoint",
+        "kind": "trimmedString",
+        "runtimeHandle": "whenPresent"
+      },
+      {
+        "key": "appServerTransport",
         "kind": "trimmedString",
         "runtimeHandle": "whenPresent"
       },

@@ -6394,6 +6394,31 @@
           "displayName": "Sentry",
           "kinds": [
             {
+              "detailTabs": [
+                {
+                  "id": "overview",
+                  "kind": "shared"
+                },
+                {
+                  "id": "activity",
+                  "kind": "shared"
+                },
+                {
+                  "id": "stack-trace",
+                  "kind": "source",
+                  "title": "Stack trace"
+                },
+                {
+                  "id": "occurrences",
+                  "kind": "source",
+                  "title": "Occurrences"
+                },
+                {
+                  "id": "release",
+                  "kind": "source",
+                  "title": "Release"
+                }
+              ],
               "displayName": "Error issue",
               "id": "error-issue",
               "pluralDisplayName": "Error issues",

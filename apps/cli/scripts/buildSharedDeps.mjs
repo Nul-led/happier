@@ -3,9 +3,12 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  BUILD_INPUT_RECORD,
+  collectWorkspacePackageFingerprintDependencyNames,
   ensureWorkspacePackagesBuiltByName,
-  readNewestWorkspaceBuildInputChangeTimeNs,
-  readWorkspaceBuildInputs,
+  isWorkspacePackageOutputCurrent,
+  readWorkspaceBuildFileDigest,
+  readWorkspacePackageInputFingerprint,
 } from '../../../scripts/workspaces/ensureWorkspacePackagesBuilt.mjs';
 import {
   collectPackageBuildOutputTargets,
@@ -37,6 +40,11 @@ import {
 } from '../../../scripts/workspaces/workspaceBundlePublication.mjs';
 import { hasMissingLocalImportsSync } from '../../../scripts/workspaces/distLocalImports.mjs';
 import {
+  createBundledPluginPublicationFailure,
+  readBundledPluginPublicationFailures,
+  writeBundledPluginPublicationFailures,
+} from '../../../scripts/workspaces/bundledPluginPublicationFailure.mjs';
+import {
   assertBundledPluginPackageCorrespondence,
 } from './build-owned/bundledPluginPackageCorrespondence.mjs';
 import {
@@ -47,10 +55,9 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_BUNDLED_HOST_APPS = ['cli'];
 const PLUGINS_WORKSPACE_PREFIX = 'plugins-';
-// v6 records closures published with host-wide bundled runtime dependency
-// refresh. Earlier stamps may describe current root dists while a host's nested
-// bundled workspace copy still contains the predecessor bytes.
-const SOURCE_DEV_SHARED_DEPS_STAMP_VERSION = 6;
+// v7 binds source-dev readiness to package input and output contents. Older
+// timestamp-based stamps cannot admit a current package after an input deletion.
+const SOURCE_DEV_SHARED_DEPS_STAMP_VERSION = 7;
 const SOURCE_DEV_SHARED_DEPS_PROGRESS_ENV = 'HAPPIER_SOURCE_DEV_SHARED_DEPS_PROGRESS';
 const SOURCE_DEV_SHARED_DEPS_LOCK_TIMEOUT_ENV = 'HAPPIER_SOURCE_DEV_SHARED_DEPS_LOCK_TIMEOUT_MS';
 const SOURCE_DEV_SHARED_DEPS_WORKSPACE_BUILD_TIMEOUT_ENV = 'HAPPIER_SOURCE_DEV_SHARED_DEPS_WORKSPACE_BUILD_TIMEOUT_MS';
@@ -60,7 +67,6 @@ const SOURCE_DEV_SHARED_DEPS_PROGRESS_PREFIX = '[happier-source-dev-shared-deps-
 const GENERATED_PLUGIN_UI_ARTIFACTS_MANIFEST_RELATIVE_PATH = 'dist/happier-plugin-ui/ui-artifacts.json';
 const BUNDLED_PLUGIN_MANIFEST_ARTIFACT_RELATIVE_PATH = '.happier-plugin/plugin.json';
 const BUNDLED_PLUGIN_GENERATOR_RELATIVE_PATH = 'apps/cli/scripts/build-owned/generateBundledPluginEntries.ts';
-const PLUGIN_SDK_GENERATED_INPUTS_RELATIVE_PATH = 'packages/plugin-sdk/scripts/generateActionTypeMap.mjs';
 const CHILD_FAILURE_DIAGNOSTIC_MAX_BYTES = 8_000;
 const SECRET_ENV_KEY_PATTERN = /(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL)/i;
 
@@ -217,6 +223,8 @@ export async function runCanonicalBundledPluginArtifactPublisher({
   aggregateOnly = false,
   compilerInputsOnly = false,
   targetOwnedOnly = false,
+  pluginFailures = [],
+  publicationMode = 'live',
 }) {
   const generatorPath = resolve(repoRoot, BUNDLED_PLUGIN_GENERATOR_RELATIVE_PATH);
   if (!existsSync(generatorPath)) {
@@ -233,6 +241,7 @@ export async function runCanonicalBundledPluginArtifactPublisher({
     repoRoot,
     '--mode',
     mode,
+    ...(pluginFailures.length > 0 ? ['--inherited-failures-stdin'] : []),
     ...(compilerInputsOnly
       ? ['--compiler-inputs']
       : aggregateOnly
@@ -248,9 +257,15 @@ export async function runCanonicalBundledPluginArtifactPublisher({
     const captureMaxBytes = resolveChildFailureDiagnosticCaptureMaxBytes(env);
     const child = spawn(command, args, {
       cwd: repoRoot,
-      env,
-      stdio: quiet ? ['ignore', 'ignore', 'pipe'] : 'inherit',
+      env: {
+        ...env,
+        HAPPIER_WORKSPACE_BUNDLE_PUBLICATION_MODE: publicationMode,
+      },
+      stdio: pluginFailures.length > 0
+        ? ['pipe', quiet ? 'ignore' : 'inherit', quiet ? 'pipe' : 'inherit']
+        : quiet ? ['ignore', 'ignore', 'pipe'] : 'inherit',
     });
+    if (pluginFailures.length > 0) child.stdin.end(JSON.stringify(pluginFailures));
     child.stderr?.on('data', (chunk) => {
       stderrTruncated ||= Buffer.byteLength(`${stderr}${String(chunk)}`, 'utf8') > captureMaxBytes;
       stderr = appendChildFailureDiagnostic(stderr, chunk, captureMaxBytes);
@@ -313,50 +328,6 @@ export async function runCanonicalGeneratedCompilerInputs({
     quiet,
     mode,
     compilerInputsOnly: true,
-  });
-  return true;
-}
-
-export async function runCanonicalPluginSdkGeneratedCompilerInputs({
-  repoRoot,
-  env = process.env,
-  quiet = false,
-  mode = String(env?.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1' ? 'check' : 'write',
-} = {}) {
-  const resolvedRepoRoot = resolveRepoRootOption(repoRoot);
-  const generatorPath = resolve(resolvedRepoRoot, PLUGIN_SDK_GENERATED_INPUTS_RELATIVE_PATH);
-  if (!existsSync(generatorPath)) return false;
-
-  const args = [generatorPath, mode === 'check' ? '--check' : '--write'];
-  await new Promise((resolvePromise, reject) => {
-    let stderr = '';
-    let stderrTruncated = false;
-    const captureMaxBytes = resolveChildFailureDiagnosticCaptureMaxBytes(env);
-    const child = spawn(process.execPath, args, {
-      cwd: resolvedRepoRoot,
-      env,
-      stdio: quiet ? ['ignore', 'ignore', 'pipe'] : 'inherit',
-    });
-    child.stderr?.on('data', (chunk) => {
-      stderrTruncated ||= Buffer.byteLength(`${stderr}${String(chunk)}`, 'utf8')
-        > captureMaxBytes;
-      stderr = appendChildFailureDiagnostic(stderr, chunk, captureMaxBytes);
-    });
-    child.once('error', reject);
-    child.once('close', (status, signal) => {
-      if (status === 0 && signal === null) {
-        resolvePromise();
-        return;
-      }
-      const diagnostic = formatChildFailureDiagnostic(stderr, env, stderrTruncated);
-      const error = new Error(
-        `Command failed: ${process.execPath} ${args.join(' ')} ` +
-        `(code=${status ?? 'null'}, sig=${signal ?? 'null'})${diagnostic}`,
-      );
-      error.status = status;
-      error.signal = signal;
-      reject(error);
-    });
   });
   return true;
 }
@@ -427,6 +398,7 @@ async function ensureWorkspacePackagesBuiltWithPluginIsolation({
       builtWorkspaceNames.push(
         ...normalizeSourceDevSharedDepsWorkspaceNames(result?.built),
       );
+      failedPluginBuilds.push(...(result?.pluginFailures ?? []));
       return null;
     } catch (error) {
       await onBatchFailure?.({ workspaceNames: batchWorkspaceNames, error });
@@ -460,7 +432,11 @@ async function ensureWorkspacePackagesBuiltWithPluginIsolation({
     ));
     for (let index = 0; index < pluginWorkspaceNames.length; index += 1) {
       const error = pluginBuildResults[index];
-      if (error) failedPluginBuilds.push({ workspaceName: pluginWorkspaceNames[index], error });
+      if (error) failedPluginBuilds.push(createBundledPluginPublicationFailure({
+        repoRoot,
+        packageName: `@happier-dev/${pluginWorkspaceNames[index]}`,
+        error,
+      }));
     }
   }
 
@@ -469,7 +445,7 @@ async function ensureWorkspacePackagesBuiltWithPluginIsolation({
     builtWorkspaceNames: normalizedWorkspaceNames.filter((workspaceName) => (
       builtWorkspaceNameSet.has(workspaceName)
     )),
-    failedPluginBuilds,
+      failedPluginBuilds,
   };
 }
 
@@ -484,24 +460,33 @@ async function ensureWorkspacePackagesBuiltWithPluginIsolation({
  * publisher does not complete for a non-empty selection.
  */
 export async function publishBundledPluginArtifactsAfterWorkspaceBuild(opts = {}) {
+  const pluginFailures = opts.pluginFailures ?? [];
+  // A failed package was evaluated too. Keep it in the selector scope even
+  // though the generator excludes its executable artifacts via pluginFailures.
   const pluginWorkspaceNames = resolveSelectedBundledPluginWorkspaceNames({
     repoRoot: opts.repoRoot,
-    workspaceNames: opts.pluginWorkspaceNames ?? opts.workspaceNames,
+    workspaceNames: [
+      ...(opts.pluginWorkspaceNames ?? opts.workspaceNames ?? []),
+      ...pluginFailures.map((failure) => failure.packageName.replace(/^@happier-dev\//, '')),
+    ],
   });
-  if (pluginWorkspaceNames.length === 0) return false;
+  if (pluginWorkspaceNames.length === 0 && pluginFailures.length === 0) return false;
 
   const repoRoot = resolveRepoRootOption(opts.repoRoot);
   const publish = opts.publishBundledPluginArtifactsImpl ?? runCanonicalBundledPluginArtifactPublisher;
   const published = await publish({
     repoRoot,
     workspaceNames: pluginWorkspaceNames,
+    pluginFailures,
+    publicationMode: opts.publicationMode ?? 'live',
     env: opts.env ?? process.env,
     quiet: opts.quiet === true,
     mode: opts.bundledPluginArtifactPublication?.mode
       ?? (String(opts.env?.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1'
         ? 'check'
         : 'write'),
-    aggregateOnly: opts.bundledPluginArtifactPublication?.aggregateOnly === true,
+    aggregateOnly: pluginWorkspaceNames.length === 0
+      || opts.bundledPluginArtifactPublication?.aggregateOnly === true,
     targetOwnedOnly: opts.bundledPluginArtifactPublication?.targetOwnedOnly === true,
   });
   if (published === false) {
@@ -990,6 +975,7 @@ function readTreeSignature(rootPath, { exists = existsSync, readDir = readdirSyn
     }
 
     for (const child of children.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (child.name === BUILD_INPUT_RECORD) continue;
       const childPath = resolve(dir, child.name);
       const childRelativePath = prefix ? `${prefix}/${child.name}` : child.name;
       let stats;
@@ -1001,7 +987,7 @@ function readTreeSignature(rootPath, { exists = existsSync, readDir = readdirSyn
       }
 
       if (stats.isDirectory()) {
-        entries.push([childRelativePath, 'dir', Number(stats.mtimeMs ?? 0)]);
+        entries.push([childRelativePath, 'dir']);
         visit(childPath, childRelativePath);
         continue;
       }
@@ -1010,7 +996,9 @@ function readTreeSignature(rootPath, { exists = existsSync, readDir = readdirSyn
         childRelativePath,
         stats.isFile() ? 'file' : 'other',
         Number(stats.size ?? 0),
-        Number(stats.mtimeMs ?? 0),
+        stats.isFile()
+          ? readWorkspaceBuildFileDigest(childPath)
+          : String(stats.mode),
       ]);
     }
   };
@@ -1026,19 +1014,6 @@ function readRuntimeDistTreeSignature(rootPath, fsOps = {}) {
     entries: signature.entries.filter(([relativePath]) =>
       !String(relativePath).replaceAll('\\', '/').endsWith('.tsbuildinfo')),
   };
-}
-
-function readOldestExistingPathMtimeMs(paths, { exists = existsSync, stat = statSync } = {}) {
-  let oldestMtimeMs = Number.POSITIVE_INFINITY;
-  for (const candidatePath of paths) {
-    if (!exists(candidatePath)) return 0;
-    try {
-      oldestMtimeMs = Math.min(oldestMtimeMs, Number(stat(candidatePath).mtimeMs ?? 0));
-    } catch {
-      return 0;
-    }
-  }
-  return Number.isFinite(oldestMtimeMs) ? oldestMtimeMs : 0;
 }
 
 function resolveWorkspaceExpectedOutputPaths({
@@ -1083,11 +1058,10 @@ function resolveWorkspaceExpectedOutputPaths({
 
 function isSourceDevWorkspaceBuildStale({
   packageDir,
+  dependencyDirs = [],
   includeUiArtifacts = true,
   exists = existsSync,
   readFile = readFileSync,
-  readDir = readdirSync,
-  stat = statSync,
 }) {
   if (!exists(resolve(packageDir, 'src')) && !exists(resolve(packageDir, 'sources'))) {
     return false;
@@ -1114,19 +1088,32 @@ function isSourceDevWorkspaceBuildStale({
     return true;
   }
 
-  const oldestRuntimeOutputMtimeMs = readOldestExistingPathMtimeMs(expectedOutputPaths, { exists, stat });
-  if (oldestRuntimeOutputMtimeMs <= 0) {
-    return true;
-  }
+  return !isWorkspacePackageOutputCurrent(packageDir, { dependencyDirs });
+}
 
-  const newestSourceMtimeMs = Number(readNewestWorkspaceBuildInputChangeTimeNs(packageDir, {
-    readDir, stat,
-  }) ?? 0n) / 1e6;
-  if (newestSourceMtimeMs <= 0) {
-    return false;
-  }
-
-  return newestSourceMtimeMs > oldestRuntimeOutputMtimeMs;
+function resolveSourceDevWorkspaceDependencyDirs({ repoRoot, workspaceNames, workspaceName, readFile }) {
+  const packageDir = resolveBundledWorkspacePackageDir({ repoRoot, workspaceName });
+  const packageJson = readJsonFile(resolve(packageDir, 'package.json'), readFile);
+  const currentPackageName = `@happier-dev/${workspaceName}`;
+  const packageNames = new Set([
+    ...workspaceNames.map((name) => `@happier-dev/${name}`),
+    ...Object.keys(packageJson.peerDependencies ?? {}).filter((name) => (
+      name.startsWith('@happier-dev/')
+      && existsSync(resolve(resolveBundledWorkspacePackageDir({
+        repoRoot,
+        workspaceName: name.replace(/^@happier-dev\//, ''),
+      }), 'package.json'))
+    )),
+  ]);
+  const dependencyNames = collectWorkspacePackageFingerprintDependencyNames(
+    packageJson,
+    currentPackageName,
+    packageNames,
+  );
+  return [...dependencyNames].map((name) => resolveBundledWorkspacePackageDir({
+    repoRoot,
+    workspaceName: name.replace(/^@happier-dev\//, ''),
+  }));
 }
 
 function collectStaleSourceDevWorkspaceBuilds({
@@ -1145,6 +1132,9 @@ function collectStaleSourceDevWorkspaceBuilds({
     if (!exists(tsconfigPath)) continue;
     if (!isSourceDevWorkspaceBuildStale({
       packageDir,
+      dependencyDirs: resolveSourceDevWorkspaceDependencyDirs({
+        repoRoot, workspaceNames, workspaceName, readFile,
+      }),
       includeUiArtifacts,
       exists,
       readFile,
@@ -1177,7 +1167,11 @@ export function computeSourceDevSharedDepsSignature(opts = {}) {
       const packageDir = resolveBundledWorkspacePackageDir({ repoRoot, workspaceName });
       return {
         workspaceName,
-        buildInputs: readWorkspaceBuildInputs(packageDir, { readDir, stat }),
+        buildInputs: readWorkspacePackageInputFingerprint({ packageDir }),
+        buildRecord: readSmallFileSignature(
+          resolve(packageDir, 'dist', BUILD_INPUT_RECORD),
+          { exists, readFile },
+        ),
         rootRuntimeTargets: readPublishedPackageRootTargetSignatures(packageDir, {
           exists,
           readFile,
@@ -1774,8 +1768,6 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
   // recursively invoke its own publisher while holding that invocation's
   // workspace lock.
   const shouldPublishBundledPluginArtifacts = opts.publishBundledPluginArtifacts !== false;
-  const prepareGeneratedCompilerInputs = opts.prepareGeneratedCompilerInputsImpl
-    ?? runCanonicalPluginSdkGeneratedCompilerInputs;
   const prepareBundledPluginCompilerInputs = opts.prepareBundledPluginCompilerInputsImpl
     ?? runCanonicalGeneratedCompilerInputs;
   const generatedCompilerInputMode = opts.generatedCompilerInputMode
@@ -1787,8 +1779,9 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
       ?? opts.lockOptions?.heldLockPath,
   });
   // Bundled Agent ids reach `packages/agents` and `packages/protocol`, which are
-  // upstream of `cli-common` and therefore of the Plugin SDK Action map below.
-  // Both generated inputs must precede every workspace build in this closure.
+  // upstream of `cli-common`. Action declarations are type-only and their
+  // drift check belongs to the SDK declaration/package consumers, not runtime
+  // readiness admission (which can reuse already-current package outputs).
   //
   // A caller that makes several bounded passes over one unchanged set of
   // committed plugin manifests opts later passes out: the projection reads only
@@ -1806,17 +1799,6 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
     )
   ) {
     await prepareBundledPluginCompilerInputs({
-      repoRoot,
-      env: childBuildEnv,
-      quiet: opts.quiet === true,
-      mode: generatedCompilerInputMode,
-    });
-  }
-  if (
-    opts.prepareGeneratedCompilerInputsImpl
-    || exists(resolve(repoRoot, PLUGIN_SDK_GENERATED_INPUTS_RELATIVE_PATH))
-  ) {
-    await prepareGeneratedCompilerInputs({
       repoRoot,
       env: childBuildEnv,
       quiet: opts.quiet === true,
@@ -1899,7 +1881,7 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
     event: 'done',
     workspaceCount: workspaceNames.length,
   });
-  if (isCurrentRuntimeClosure(signature)) {
+  if (isCurrentRuntimeClosure(signature) && !(opts.pluginFailures?.length)) {
     reportSourceDevSharedDepsProgress(reportProgress, {
       stage: 'complete',
       event: 'done',
@@ -1942,6 +1924,7 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
         force: false,
         includeDevDependencies: false,
         timeoutMs: workspaceBuildTimeoutMs,
+        isolatePluginFailures: true,
         onPackageBuildStart: (context) => {
           const activeBuild = describePackageBuild(context);
           activeBuilds.set(activeBuild.workspaceName, activeBuild);
@@ -2012,8 +1995,14 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
   const rebuiltWorkspaceNames = prebuildResult.builtWorkspaceNames.filter(
     (workspaceName) => !sourceChangedWorkspaceNames.has(workspaceName),
   );
+  const pluginFailures = [
+    ...(opts.pluginFailures ?? []),
+    ...prebuildResult.failedPluginBuilds.filter((failure) => (
+      !(opts.pluginFailures ?? []).some((prior) => prior.packageName === failure.packageName)
+    )),
+  ];
   const failedPluginWorkspaceNames = new Set(
-    prebuildResult.failedPluginBuilds.map(({ workspaceName }) => workspaceName),
+    pluginFailures.map(({ packageName }) => packageName.replace(/^@happier-dev\//, '')),
   );
   const rebuiltPluginWorkspaceNames = resolveSelectedBundledPluginWorkspaceNames({
     repoRoot,
@@ -2034,7 +2023,7 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
   // re-entrant dependency sync (`publishBundledPluginArtifacts: false`) is exempt.
   if (
     shouldPublishBundledPluginArtifacts
-    && (includeRuntimeDependencies || bundledPluginWorkspaceNamesToPublish.length > 0)
+    && (includeRuntimeDependencies || bundledPluginWorkspaceNamesToPublish.length > 0 || pluginFailures.length > 0)
   ) {
     reportSourceDevSharedDepsProgress(reportProgress, {
       stage: 'bundled-plugin-publish',
@@ -2046,6 +2035,7 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
       // post-lock currentness checks, so a plugin another owner made current
       // while we waited is not treated as changed.
       pluginWorkspaceNames: bundledPluginWorkspaceNamesToPublish,
+      pluginFailures,
       syncId: `source-dev-publish.${process.pid}`,
       syncBundledWorkspaceDistImpl: opts.syncBundledWorkspaceDistImpl,
       // Generated source publication owns the CLI distribution lock. Never
@@ -2132,7 +2122,7 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
       event: 'done-after-lock',
       workspaceCount: workspaceNames.length,
     });
-    if (isCurrentRuntimeClosure(signature)) {
+    if (isCurrentRuntimeClosure(signature) && pluginFailures.length === 0) {
       reportSourceDevSharedDepsProgress(reportProgress, {
         stage: 'complete',
         event: 'done',
@@ -2344,22 +2334,16 @@ export async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
     : resolveCliBundledWorkspacePackageNames({ repoRoot: resolvedRepoRoot });
   const publicationMode = resolveSharedDepsPublicationMode(opts);
   const publishesArtifact = isArtifactPublicationMode(publicationMode);
-  // Bootstrap-built outputs (for example the cli-common helpers materialized to
-  // load this script) are usable for loading but are not derivation evidence for
-  // the final artifact closure: their recreated timestamps cannot prove the
-  // bytes were derived from current source. Names the caller declares
-  // bootstrap-built therefore switch the closure to this owner's `force`
-  // admission, exactly like a publication build.
-  const bootstrapBuiltWorkspaceNames = typeof opts.alreadyBuiltWorkspaceNames?.has === 'function'
-    ? opts.alreadyBuiltWorkspaceNames
-    : null;
-  const mustRebuildBootstrapOutputs = bootstrapBuiltWorkspaceNames !== null
-    && workspaceNames.some((workspaceName) => bootstrapBuiltWorkspaceNames.has(workspaceName));
   const ensureWorkspacePackagesBuilt =
     opts.ensureWorkspacePackagesBuiltByNameImpl ?? ensureWorkspacePackagesBuiltByName;
   const buildResult = await ensureWorkspacePackagesBuiltWithPluginIsolation({
     repoRoot: resolvedRepoRoot,
-    workspaceNames,
+    // The runtime entrypoint defers Plugin builds until the generator has
+    // serialized source manifests. The generator then calls this preparation
+    // owner directly to compile the selected Plugins once.
+    workspaceNames: opts.deferPluginBuildToGenerator === true
+      ? workspaceNames.filter((name) => !name.startsWith(PLUGINS_WORKSPACE_PREFIX))
+      : workspaceNames,
     ensureWorkspacePackagesBuiltByNameImpl: ensureWorkspacePackagesBuilt,
     isolatePluginBuildFailures: !publishesArtifact,
     maxConcurrentPluginBuilds: opts.maxConcurrentPluginBuilds,
@@ -2368,24 +2352,20 @@ export async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
       env: opts.env ?? process.env,
       includeDevDependencies: false,
       publicationMode,
-      // The canonical per-package owner rechecks source/output currentness under
-      // each package lock. Reuse current published package outputs instead of
-      // recompiling the entire CLI bundle closure for every daemon refresh. A
-      // publication build cannot delegate that judgement: it compiles every
-      // included package so the artifact carries this run's outputs. The same
-      // holds when the caller reports bootstrap-built outputs for this closure.
-      force: publishesArtifact || mustRebuildBootstrapOutputs,
+      isolatePluginFailures: !publishesArtifact,
+      // Both live and artifact publication use the package owner's content
+      // identity, including deleted inputs and changed build scripts.
     },
   });
   // Publication consumes exactly the plugin packages compiled by this run. Direct
   // source-to-installed correspondence below owns runtime-tree currentness without
   // a second committed output inventory.
   const failedPluginWorkspaceNames = new Set(
-    buildResult.failedPluginBuilds.map(({ workspaceName }) => workspaceName),
+    buildResult.failedPluginBuilds.map(({ packageName }) => packageName.replace(/^@happier-dev\//, '')),
   );
   const rebuiltPluginWorkspaceNames = resolveSelectedBundledPluginWorkspaceNames({
     repoRoot: resolvedRepoRoot,
-    workspaceNames: publishesArtifact
+    workspaceNames: (opts.deferPluginBuildToGenerator === true || publishesArtifact)
       ? workspaceNames
       : buildResult.builtWorkspaceNames,
   }).filter((workspaceName) => !failedPluginWorkspaceNames.has(workspaceName));
@@ -2479,38 +2459,17 @@ function syncPreparedRuntimeWorkspacePackages({
       // package. Keep that exact previous package as last-green while unrelated plugins
       // continue to publish. The complete installed closure is verified below before it
       // can receive a daemon-readiness stamp.
-      pluginFailures.push({
-        workspaceName,
-        error,
-        retainedLastGreen: pluginAdmission?.isPackageCurrent({
-          packageName,
-          packageDir: installedPackageDir,
-        }) === true,
-      });
+      pluginFailures.push(createBundledPluginPublicationFailure({ repoRoot, packageName, error }));
     }
   }
 
   const recordedPluginFailures = new Set(
-    pluginFailures.map(({ workspaceName }) => workspaceName),
+    pluginFailures.map((failure) => failure.packageName),
   );
-  for (const { workspaceName, error } of failedPluginBuilds) {
-    if (recordedPluginFailures.has(workspaceName)) continue;
-    const packageName = `@happier-dev/${workspaceName}`;
-    const installedPackageDir = resolve(
-      repoRoot,
-      'apps',
-      'cli',
-      'node_modules',
-      ...packageName.split('/'),
-    );
-    pluginFailures.push({
-      workspaceName,
-      error,
-      retainedLastGreen: pluginAdmission?.isPackageCurrent({
-        packageName,
-        packageDir: installedPackageDir,
-      }) === true,
-    });
+  for (const failure of failedPluginBuilds) {
+    const packageName = failure.packageName;
+    if (recordedPluginFailures.has(packageName)) continue;
+    pluginFailures.push(failure);
   }
 
   if (syncedWorkspaceNames.length > 0) {
@@ -2520,6 +2479,15 @@ function syncPreparedRuntimeWorkspacePackages({
     });
   }
   return pluginFailures;
+}
+
+export function reconcilePostSyncBundledPluginFailures(repoRoot, syncFailures) {
+  if (syncFailures.length === 0) return;
+  const failures = new Map(
+    readBundledPluginPublicationFailures(repoRoot).map((failure) => [failure.packageName, failure]),
+  );
+  for (const failure of syncFailures) failures.set(failure.packageName, failure);
+  writeBundledPluginPublicationFailures(repoRoot, [...failures.values()]);
 }
 
 async function publishPreparedBundledWorkspaceDependenciesForCli(prepared, opts = {}) {
@@ -2537,6 +2505,8 @@ async function publishPreparedBundledWorkspaceDependenciesForCli(prepared, opts 
     bundledPluginPublicationAttempted = await publishBundledPluginArtifactsAfterWorkspaceBuild({
       repoRoot: resolvedRepoRoot,
       workspaceNames: rebuiltPluginWorkspaceNames,
+      pluginFailures: prepared.failedPluginBuilds,
+      publicationMode: prepared.publicationMode,
       syncId: opts.syncId ?? `build-shared-publish.${process.pid}`,
       syncBundledWorkspaceDistImpl: opts.syncBundledWorkspaceDistImpl,
       env: publicationEnv,
@@ -2603,8 +2573,8 @@ export async function main(options = {}) {
     });
   }
 
-  // A publication build never reuses a previously stamped closure: the stamp only proves
-  // that some earlier run completed, not that every included package compiles now.
+  // The source-dev stamp describes the installed closure. Package derivation
+  // remains owned by the content identity at ensureWorkspacePackagesBuilt.
   const publicationMode = resolveSharedDepsPublicationMode(options);
   const publishesArtifact = isArtifactPublicationMode(publicationMode);
   const canReuseCurrentRuntimeClosure = () => (
@@ -2624,6 +2594,7 @@ export async function main(options = {}) {
   const prepared = await prepareBundledWorkspaceDependenciesForCli({
     ...options,
     publicationMode,
+    deferPluginBuildToGenerator: true,
   });
   const buildRepoRoot = prepared.resolvedRepoRoot;
   let bundledPluginPublicationError = null;
@@ -2633,6 +2604,9 @@ export async function main(options = {}) {
       bundledPluginPublicationError = error;
     },
   });
+  if (publishesArtifact && bundledPluginPublicationError) {
+    throw bundledPluginPublicationError;
+  }
   const withLock = options.withBuildSharedDepsLockImpl ?? withBuildSharedDepsLock;
   return withLock(async () => {
     // The closure may have become current before this caller acquired the
@@ -2704,30 +2678,27 @@ export async function main(options = {}) {
       syncBundledRuntimeDependencies,
     });
     syncCliDependencies({ repoRoot: buildRepoRoot, ...cliCommonWorkspacesModule });
-    // Live/dev preparation keeps a coherent installed package through one failed
-    // refresh. A publication build has no last-green: the artifact must carry
-    // this run's outputs for every included plugin.
+    // Release publication requires every included package. Live publication
+    // projects failed plugins as catalog diagnostics and keeps the host closure.
     const unrecoveredPluginFailures = publishesArtifact
       ? pluginSyncFailures
-      : pluginSyncFailures.filter(({ retainedLastGreen }) => !retainedLastGreen);
+      : [];
     if (unrecoveredPluginFailures.length > 0) {
-      const failureDetails = unrecoveredPluginFailures.map(({ error, workspaceName }) => (
-        error instanceof Error ? error.message : `${workspaceName}: ${String(error)}`
+      const failureDetails = unrecoveredPluginFailures.map((failure) => (
+        `${failure.packageName}: ${failure.diagnostic.message}`
       ));
       throw new AggregateError(
-        unrecoveredPluginFailures.map(({ error }) => error),
-        (publishesArtifact
-          ? '[build-shared] bundled plugin publication build failed: '
-          : '[build-shared] bundled plugin refresh failed without a coherent installed last-green: ')
-          + failureDetails.join('; '),
+        unrecoveredPluginFailures.map((failure) => new Error(failure.diagnostic.message)),
+        '[build-shared] bundled plugin publication build failed: ' + failureDetails.join('; '),
       );
     }
+    reconcilePostSyncBundledPluginFailures(buildRepoRoot, pluginSyncFailures);
     if (bundledPluginPublicationError || pluginSyncFailures.length > 0) {
       const reportFallback = options.reportBundledPluginRuntimeFallback
         ?? ((message) => console.warn(message));
-      const failedWorkspaceNames = pluginSyncFailures.map(({ workspaceName }) => workspaceName);
+      const failedWorkspaceNames = pluginSyncFailures.map((failure) => failure.packageName);
       reportFallback(
-        '[build-shared] retained last-green bundled plugin packages after a partial plugin refresh'
+        '[build-shared] excluded failed bundled plugin packages after a partial plugin refresh'
         + (failedWorkspaceNames.length > 0
           ? `: ${failedWorkspaceNames.join(', ')}`
           : ''),

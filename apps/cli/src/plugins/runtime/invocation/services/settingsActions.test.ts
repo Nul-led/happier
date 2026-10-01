@@ -44,18 +44,18 @@ function nestedJson(depth: number): JsonValue {
 }
 
 function seed(params: Readonly<{
-    generation?: string;
-    isGenerationCurrent?: () => boolean;
+    occurrenceId?: string;
+    isOccurrenceCurrent?: () => boolean;
 }> = {}): PluginInvocationServicesSeed {
     const controller = new AbortController();
     return {
         plugin: { id: 'acme.plugin', version: '1.0.0' },
         contribution: { id: 'preferences', qualifiedId: 'acme.plugin/settings/preferences' },
-        generation: params.generation ?? 'generation-1',
+        occurrenceId: params.occurrenceId ?? 'occurrenceId-1',
         correlationId: 'correlation-1',
         surface: 'ui',
         signal: controller.signal,
-        isGenerationCurrent: params.isGenerationCurrent ?? (() => true),
+        isOccurrenceCurrent: params.isOccurrenceCurrent ?? (() => true),
     };
 }
 
@@ -219,7 +219,7 @@ describe('generic plugin settings actions', () => {
         await expect(first).resolves.toMatchObject({ revision: '1' });
     });
 
-    it('does not let a retired generation that ignores cancellation block its replacement', async () => {
+    it('does not let a retired occurrenceId that ignores cancellation block its replacement', async () => {
         let oldCurrent = true;
         let releaseOld!: () => void;
         let enteredOld!: () => void;
@@ -257,7 +257,7 @@ describe('generic plugin settings actions', () => {
             declaration: contribution.actions![0]!,
             contributionId: contribution.id,
             model,
-            seed: seed({ generation: 'generation-old', isGenerationCurrent: () => oldCurrent }),
+            seed: seed({ occurrenceId: 'occurrenceId-old', isOccurrenceCurrent: () => oldCurrent }),
             userGesture: true,
             context: 'old',
         });
@@ -268,7 +268,7 @@ describe('generic plugin settings actions', () => {
             declaration: contribution.actions![0]!,
             contributionId: contribution.id,
             model,
-            seed: seed({ generation: 'generation-new' }),
+            seed: seed({ occurrenceId: 'occurrenceId-new' }),
             userGesture: true,
             context: 'new',
         })).resolves.toMatchObject({ revision: '1' });

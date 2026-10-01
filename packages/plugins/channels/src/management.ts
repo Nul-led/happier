@@ -440,7 +440,7 @@ function areAdmittedTargetedOperationIdentitiesEqual(
     && left.identity.point.protocol.version === right.identity.point.protocol.version
     && left.identity.contributor.pluginId === right.identity.contributor.pluginId
     && left.identity.contributor.contributionId === right.identity.contributor.contributionId
-    && left.identity.contributor.immutableGenerationId === right.identity.contributor.immutableGenerationId
+    && left.identity.contributor.occurrenceId === right.identity.contributor.occurrenceId
     && left.identity.role === right.identity.role;
 }
 
@@ -463,11 +463,11 @@ function isSameCurrentProviderContributionWitnessIdentity(input: Readonly<{
   before: CurrentProviderContributionWitness;
   after: CurrentProviderContributionWitness;
 }>): boolean {
-  return input.before.targetGeneration === input.after.targetGeneration
+  return input.before.targetOccurrenceId === input.after.targetOccurrenceId
     && input.before.contribution.contributor.pluginId === input.after.contribution.contributor.pluginId
     && input.before.contribution.contributor.contributionId === input.after.contribution.contributor.contributionId
-    && input.before.contribution.contributor.immutableGenerationId
-      === input.after.contribution.contributor.immutableGenerationId;
+    && input.before.contribution.contributor.occurrenceId
+      === input.after.contribution.contributor.occurrenceId;
 }
 
 function readEndpointResolveRequest(input: Readonly<{
@@ -934,8 +934,7 @@ function hasSamePersistedProviderContributionSelection(input: Readonly<{
   persisted: ConversationConnectionUpdateRow['providerContributionSelection'];
   requested: ConversationConnectionTransferInputV1['providerSelection'];
 }>): boolean {
-  return input.persisted.contributionId === input.requested.contributor.contributionId
-    && input.persisted.immutableGenerationId === input.requested.contributor.immutableGenerationId;
+  return input.persisted.contributionId === input.requested.contributor.contributionId;
 }
 
 /**
@@ -2038,7 +2037,6 @@ function connectionRows(input: Readonly<{
       providerPluginId: input.providerPluginId,
       providerContributionSelection: {
         contributionId: input.createInput.providerSelection.contributor.contributionId,
-        immutableGenerationId: input.createInput.providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: input.createInput.providerSetupInput,
       credentialRef: input.createInput.credentialRef,
@@ -5179,7 +5177,6 @@ function transferConnectionValue(input: Readonly<{
       providerPluginId: input.providerPluginId,
       providerContributionSelection: {
         contributionId: input.transferInput.providerSelection.contributor.contributionId,
-        immutableGenerationId: input.transferInput.providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: input.transferInput.providerSetupInput,
       credentialRef: input.transferInput.credentialRef,
@@ -5212,7 +5209,6 @@ function transferConnectionValue(input: Readonly<{
     providerPluginId: input.providerPluginId,
     providerContributionSelection: {
       contributionId: input.transferInput.providerSelection.contributor.contributionId,
-      immutableGenerationId: input.transferInput.providerSelection.contributor.immutableGenerationId,
     },
     providerSetupInput: input.transferInput.providerSetupInput,
     transportOrigin: input.prepared.transportOrigin,

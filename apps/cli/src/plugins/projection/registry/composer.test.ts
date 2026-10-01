@@ -3,6 +3,7 @@ import { PluginProjectionV2Schema } from '@happier-dev/protocol';
 
 import type { LoadedPlugin } from '@/plugins/discovery/load/installed';
 import { normalizePluginManifestV2 } from '@/plugins/manifest/normalize';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import { createResolvedContributionRegistry } from './createResolvedContributionRegistry';
 import { buildPluginContributionRegistry } from './normalize/package';
@@ -10,11 +11,8 @@ import { buildPluginProjectionV2 } from './projection/v2';
 import {
     projectDaemonEmbeddedPluginUiRenderer,
     projectDaemonComposerSurfaceCatalog,
-    readCurrentAutomationEventSetupReactNativeCrashStateBindings,
-    readCurrentComposerReactNativeCrashStateBindings,
 } from './composer';
 import { projectLoadedPluginContributes } from './resolvePluginContributions';
-import { createReactNativeCrashStateBindingKey } from '@/plugins/runtime/ui/reactNativeCrashDisableState';
 import type {
     ResolvedComposerAttachmentContribution,
     ResolvedComposerControlContribution,
@@ -107,7 +105,7 @@ function loadedComposerPlugin(): LoadedPlugin {
 }
 
 describe('composer contribution projection families', () => {
-    it('refuses an embedded renderer request outside the registry current immutable generation', () => {
+    it('refuses an embedded renderer request outside the registry current occurrence', () => {
         const pluginId = 'acme.composer';
         const renderer = {
             provenance: 'external',
@@ -125,7 +123,9 @@ describe('composer contribution projection families', () => {
         const registry = createResolvedContributionRegistry({
             agents: [],
             uiRenderersV2: [renderer],
-            immutableGenerationIdsByPluginId: { [pluginId]: 'generation-current' },
+            occurrenceIdsByPluginId: {
+                [pluginId]: createPluginRuntimeOccurrenceId('occurrence-current'),
+            },
             activationTargets: [],
         });
 
@@ -135,7 +135,7 @@ describe('composer contribution projection families', () => {
             pluginUiHostRuntime: {},
             modelsByRendererKey: {},
             contributor: { pluginId, localId: 'event' },
-            immutableGenerationId: 'generation-retired',
+            occurrenceId: createPluginRuntimeOccurrenceId('occurrence-retired'),
             renderer: { renderer: 'setup' },
         })).toBeNull();
     });
@@ -172,9 +172,12 @@ describe('composer contribution projection families', () => {
             loadResult: { loadedPlugins: [plugin], diagnosticsByPluginId: {} },
             provenance: 'external',
         });
+        const occurrenceId = createPluginRuntimeOccurrenceId('composer-occurrence-7');
         const registry = createResolvedContributionRegistry({
             ...resolved,
-            immutableGenerationIdsByPluginId: { [plugin.pluginId]: 'immutable-composer-7' },
+            occurrenceIdsByPluginId: {
+                [plugin.pluginId]: occurrenceId,
+            },
         });
         const projection = PluginProjectionV2Schema.parse(buildPluginProjectionV2({
             registry,
@@ -208,7 +211,7 @@ describe('composer contribution projection families', () => {
                 entriesById: {
                     'acme.composer/issue': expect.objectContaining({
                         identity: { pluginId: plugin.pluginId, localId: 'issue' },
-                        immutableGenerationId: 'immutable-composer-7',
+                        occurrenceId,
                     }),
                 },
             },
@@ -216,7 +219,7 @@ describe('composer contribution projection families', () => {
                 entriesById: {
                     'acme.composer/create': expect.objectContaining({
                         identity: { pluginId: plugin.pluginId, localId: 'create' },
-                        immutableGenerationId: 'immutable-composer-7',
+                        occurrenceId,
                     }),
                 },
             },
@@ -224,7 +227,7 @@ describe('composer contribution projection families', () => {
                 entriesById: {
                     'acme.composer/summary': expect.objectContaining({
                         identity: { pluginId: plugin.pluginId, localId: 'summary' },
-                        immutableGenerationId: 'immutable-composer-7',
+                        occurrenceId,
                     }),
                 },
             },
@@ -232,7 +235,7 @@ describe('composer contribution projection families', () => {
         expect(projection.familiesById).not.toHaveProperty('composerReferences');
     });
 
-    it('projects admitted static attachments, controls, and regions by qualified identity and immutable generation', () => {
+    it('projects admitted static attachments, controls, and regions by qualified identity and occurrence', () => {
         const pluginId = 'acme.composer';
         const attachment = {
             provenance: 'external',
@@ -287,12 +290,15 @@ describe('composer contribution projection families', () => {
                 renderer: { renderer: 'composer-summary' },
             },
         } as const satisfies ResolvedComposerRegionContribution;
+        const occurrenceId = createPluginRuntimeOccurrenceId('composer-occurrence-7');
         const registry: ResolvedContributionRegistry = {
             ...emptyRegistry(),
             composerAttachments: [attachment],
             composerControls: [control],
             composerRegions: [region],
-            immutableGenerationIdsByPluginId: { [pluginId]: 'immutable-composer-7' },
+            occurrenceIdsByPluginId: {
+                [pluginId]: occurrenceId,
+            },
         };
 
         const projection = buildPluginProjectionV2({ registry, generation: 19 });
@@ -304,7 +310,7 @@ describe('composer contribution projection families', () => {
                     'acme.composer/issue': {
                         id: 'acme.composer/issue',
                         identity: attachment.identity,
-                        immutableGenerationId: 'immutable-composer-7',
+                        occurrenceId,
                         definition: attachment.definition,
                     },
                 },
@@ -315,7 +321,7 @@ describe('composer contribution projection families', () => {
                     'acme.composer/create': {
                         id: 'acme.composer/create',
                         identity: control.identity,
-                        immutableGenerationId: 'immutable-composer-7',
+                        occurrenceId,
                         definition: control.definition,
                     },
                 },
@@ -326,7 +332,7 @@ describe('composer contribution projection families', () => {
                     'acme.composer/summary': {
                         id: 'acme.composer/summary',
                         identity: region.identity,
-                        immutableGenerationId: 'immutable-composer-7',
+                        occurrenceId,
                         definition: region.definition,
                     },
                 },
@@ -368,6 +374,9 @@ describe('composer contribution projection families', () => {
             uiRenderersV2: [forgedRenderer],
             composerRegions: [region],
             immutableGenerationIdsByPluginId: { [pluginId]: 'composer-generation' },
+            occurrenceIdsByPluginId: {
+                [pluginId]: createPluginRuntimeOccurrenceId(pluginId),
+            },
             activationTargets: [],
         });
 
@@ -387,13 +396,22 @@ describe('composer contribution projection families', () => {
                 },
             },
             resourceCapabilityForPlugin: () => ({ readable: true, dynamic: true }),
-            readContributorTargetedContributions: (target) => ({ target, points: [] }),
+            readContributorTargetedContributions: (target) => ({
+                target: {
+                    ...target,
+                    sourceCustody: {
+                        kind: 'development',
+                        registeredRootId: 'composer-root',
+                    },
+                },
+                points: [],
+            }),
         });
 
         expect(catalog).toEqual([]);
     });
 
-    it('does not project a static composer contribution without its current immutable generation', () => {
+    it('does not project a static composer contribution without its current occurrence', () => {
         const pluginId = 'acme.composer';
         const attachment = {
             provenance: 'external',
@@ -413,7 +431,7 @@ describe('composer contribution projection families', () => {
         const registry: ResolvedContributionRegistry = {
             ...emptyRegistry(),
             composerAttachments: [attachment],
-            immutableGenerationIdsByPluginId: {},
+            occurrenceIdsByPluginId: {},
         };
 
         const projection = buildPluginProjectionV2({ registry, generation: 20 });
@@ -425,242 +443,4 @@ describe('composer contribution projection families', () => {
         });
     });
 
-    it('projects a disabled exact Composer React Native crash state through the selected renderer', () => {
-        const pluginId = 'acme.composer';
-        const immutableGenerationId = 'immutable-composer-7';
-        const rendererId = 'composer-region';
-        const region = {
-            provenance: 'external',
-            source: { kind: 'path' },
-            pluginId,
-            pluginVersion: '1.0.0',
-            identity: { pluginId, localId: 'summary' },
-            manifestPath: '/fixtures/acme.composer/plugin.json',
-            definition: {
-                id: 'summary',
-                placement: 'beforeComposer',
-                renderer: { renderer: rendererId },
-            },
-        } as const satisfies ResolvedComposerRegionContribution;
-        const renderer = {
-            provenance: 'external',
-            source: { kind: 'path' },
-            pluginId,
-            pluginVersion: '1.0.0',
-            identity: { pluginId, localId: rendererId },
-            manifestPath: '/fixtures/acme.composer/plugin.json',
-            definition: {
-                id: rendererId,
-                kind: 'reactNative',
-                artifact: 'composer-region-bundle',
-                requiredHostMethods: [],
-            },
-        } as const satisfies ResolvedUiRendererV2Contribution;
-        const registry: ResolvedContributionRegistry = {
-            ...emptyRegistry(),
-            composerRegions: [region],
-            uiRenderersV2: [renderer],
-            immutableGenerationIdsByPluginId: { [pluginId]: immutableGenerationId },
-            automationEligibleEvents: [{
-                event: {
-                    id: `${pluginId}/repository-updated`,
-                    identity: { pluginId, localId: 'repository-updated' },
-                    immutableGenerationId,
-                    title: 'Repository updated',
-                    description: null,
-                    automation: {
-                        v: 1,
-                        eligible: true,
-                        source: {
-                            sourceContractVersion: 1,
-                            supportedObservationTransports: ['checkpointedPull'],
-                            sourceConfigSchema: { type: 'object', additionalProperties: false },
-                            setupActionRef: { pluginId, localId: 'configure-source' },
-                            setupSurface: { renderer: rendererId },
-                        },
-                    },
-                },
-                setupAction: {
-                    id: `${pluginId}/configure-source`,
-                    identity: { pluginId, localId: 'configure-source' },
-                    immutableGenerationId,
-                    title: 'Configure source',
-                    description: null,
-                    inputSchema: { type: 'object', additionalProperties: false },
-                    inputHints: null,
-                },
-            }],
-        };
-        const mount = {
-            kind: 'composer' as const,
-            contribution: region.identity,
-            immutableGenerationId,
-            role: 'region' as const,
-        };
-        const artifactDigest = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const;
-        const crashState = {
-            token: {
-                mount,
-                renderer: renderer.identity,
-                artifactDigest,
-                crashStateEpoch: 0,
-            },
-            disabled: true,
-        };
-        const projection = PluginProjectionV2Schema.parse({
-            v: 2,
-            generation: 31,
-            familiesById: {
-                pluginUi: {
-                    family: 'pluginUi',
-                    entriesById: {
-                        [`reactNativeBundle:${pluginId}:${rendererId}`]: {
-                            id: `reactNativeBundle:${pluginId}:${rendererId}`,
-                            pluginId,
-                            runtime: {
-                                decision: {
-                                    state: 'load',
-                                    reason: 'compatible',
-                                    diagnostics: [],
-                                },
-                                cacheIdentity: {
-                                    pluginId,
-                                    contributionId: rendererId,
-                                    artifactDigest: crashState.token.artifactDigest,
-                                    hostAppVersion: '1.0.0',
-                                    hostUiApiVersion: '1.0.0',
-                                    reactVersion: '19.0.0',
-                                    reactNativeVersion: '0.80.0',
-                                    platform: 'ios',
-                                    channel: 'internal',
-                                    nativeCapabilitiesDigest: `sha256:${'b'.repeat(64)}`,
-                                    projectionGeneration: 31,
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        });
-
-        expect(readCurrentComposerReactNativeCrashStateBindings({ registry, projection })).toEqual([{
-            mount,
-            renderer: renderer.identity,
-            artifactDigest: crashState.token.artifactDigest,
-        }]);
-
-        const automationMount = {
-            kind: 'automationEventSetupSurface' as const,
-            contribution: { pluginId, localId: 'repository-updated' },
-            immutableGenerationId,
-        };
-        expect(readCurrentAutomationEventSetupReactNativeCrashStateBindings({ registry, projection })).toEqual([{
-            mount: automationMount,
-            renderer: renderer.identity,
-            artifactDigest: crashState.token.artifactDigest,
-        }]);
-
-        const automationCrashState = {
-            ...crashState,
-            token: { ...crashState.token, mount: automationMount },
-        };
-        expect(projectDaemonEmbeddedPluginUiRenderer({
-            registry,
-            projection,
-            pluginUiHostRuntime: {
-                reactNativeBundles: {
-                    crashStatesByBindingKey: {
-                        [createReactNativeCrashStateBindingKey({ mount: automationMount, renderer: renderer.identity })]: automationCrashState,
-                    },
-                },
-            },
-            modelsByRendererKey: {},
-            contributor: automationMount.contribution,
-            immutableGenerationId,
-            renderer: { renderer: rendererId },
-            crashMount: automationMount,
-        })?.selectedRenderer).toMatchObject({
-            identity: renderer.identity,
-            availability: { state: 'disabled', reason: 'crash_disabled' },
-            crashState: automationCrashState,
-        });
-        const missingExactState = projectDaemonEmbeddedPluginUiRenderer({
-            registry,
-            projection,
-            pluginUiHostRuntime: { reactNativeBundles: { crashStatesByBindingKey: {} } },
-            modelsByRendererKey: {},
-            contributor: automationMount.contribution,
-            immutableGenerationId,
-            renderer: { renderer: rendererId },
-            crashMount: automationMount,
-        });
-        expect(missingExactState?.selectedRenderer).toMatchObject({
-            availability: { state: 'fallback', reason: 'crash_state_unavailable' },
-        });
-        expect(missingExactState?.selectedRenderer).not.toHaveProperty('crashState');
-
-        const retiredGenerationMount = {
-            ...automationMount,
-            immutableGenerationId: 'immutable-retired',
-        } as const;
-        expect(projectDaemonEmbeddedPluginUiRenderer({
-            registry,
-            projection,
-            pluginUiHostRuntime: {
-                reactNativeBundles: {
-                    crashStatesByBindingKey: {
-                        [createReactNativeCrashStateBindingKey({
-                            mount: retiredGenerationMount,
-                            renderer: renderer.identity,
-                        })]: { ...automationCrashState, token: { ...automationCrashState.token, mount: retiredGenerationMount } },
-                    },
-                },
-            },
-            modelsByRendererKey: {},
-            contributor: automationMount.contribution,
-            immutableGenerationId,
-            renderer: { renderer: rendererId },
-            crashMount: automationMount,
-        })?.selectedRenderer).toMatchObject({
-            availability: { state: 'fallback', reason: 'crash_state_unavailable' },
-        });
-
-        const catalog = projectDaemonComposerSurfaceCatalog({
-            registry,
-            projection,
-            pluginUiHostRuntime: {
-                reactNativeBundles: {
-                    crashStatesByBindingKey: {
-                        [createReactNativeCrashStateBindingKey({ mount, renderer: renderer.identity })]: crashState,
-                    },
-                },
-            },
-            modelsByRendererKey: {},
-            pluginExecutionOriginsByPluginId: {
-                [pluginId]: {
-                    serverIdentityId: 'server-composer',
-                    materializationRef: {
-                        machineId: 'machine-composer',
-                        materializationId: 'composer-materialization',
-                        pluginId,
-                    },
-                },
-            },
-            resourceCapabilityForPlugin: () => ({ readable: true, dynamic: true }),
-            readContributorTargetedContributions: (target) => ({ target, points: [] }),
-        });
-
-        expect(catalog).toMatchObject([{
-            contribution: region.identity,
-            role: 'region',
-            selectedRenderer: {
-                identity: renderer.identity,
-                availability: {
-                    state: 'disabled',
-                    reason: 'crash_disabled',
-                },
-                crashState,
-            },
-        }]);
-    });
 });

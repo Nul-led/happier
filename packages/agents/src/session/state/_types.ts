@@ -72,7 +72,7 @@ export type SessionStateStoredValue<F extends SessionStateFieldId> = Readonly<{
 }>;
 
 export type SessionStateFieldWriteValue<F extends SessionStateFieldId> =
-  F extends 'identity.runtimeDescriptor'
+  F extends 'identity.runtimeDescriptor' | 'intent.role'
     ? SessionStateFieldValue<F> | null
     : F extends 'runtime.workState'
       ? SessionStateFieldValue<F> | null

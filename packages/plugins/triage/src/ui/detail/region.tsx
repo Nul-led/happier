@@ -8,24 +8,26 @@ import {
   EmptyState,
   ErrorState,
   Heading,
-  Label,
-  Link,
+  Icon,
+  IconButton,
   LoadingState,
-  Metadata,
   Row,
+  ScrollArea,
   Stack,
   Status,
   TargetedSurface,
+  Text,
+  useSessionState,
   usePluginHostApi,
   usePluginTranslation,
   useSurfaceContext,
   type ComposerRefV1,
-  type MetadataEntry,
 } from '@happier-dev/plugin-ui';
 import type {
   TriageLinkedSessionProjectionV1,
   TriageSourceWorkflowSubjectV1,
 } from '@happier-dev/triage-protocol/v1';
+import { createReviewCommentLinkedIssueIdV1 } from '@happier-dev/plugin-sdk/reviews';
 import {
   TriageEvidenceDisclosureProvider,
   TriagePostMutationCompletionProvider,
@@ -39,6 +41,7 @@ import { buildTriageEntryAttachmentPresentation } from '../../composer/mutationP
 import { useTriageTierBEvidenceInsertion } from '../../composer/tierBEvidenceInsertion.js';
 import type { TriageMountedActionsV1 } from '../actions/useTriageActions.js';
 import {
+  readTriageEntryGlyphV1,
   readTriagePinActionLabelV1,
   type TriageRowPinHandlersV1,
 } from '../list/rows.js';
@@ -62,8 +65,14 @@ import {
   readTriageSourcePrepareReviewWorkspaceOperationV1,
 } from './sourceSurface.js';
 import { useTriageEntryDetail } from './useTriageEntryDetail.js';
-import { reobserveTriagePostMutationRow } from './postMutationReobservation.js';
 import { TriageLinkedSessions } from './linkedSessions.js';
+import { TriageDetailWholeBody, TriageSessionPanel } from './sessionPanel.js';
+import { TriageDetailPanelMount, TriageDetailTabbedBody, type TriageDetailSourceMountV1 } from './body.js';
+import { TriageAgentStep, TriagePermissionCard } from './storyRail.js';
+import { TriageFixPullRequests } from './fixPullRequests.js';
+import { useTriageDetailFixPullRequest } from './useTriageDetailFixPullRequest.js';
+import { planTriageDetailTabsV1 } from './tabs.js';
+import { TRIAGE_DETAIL_ACTIONS_PANEL_V1 } from '@happier-dev/triage-protocol/v1';
 
 /**
  * The mounted detail region: the aggregate's common header, and beneath it the
@@ -88,8 +97,16 @@ import { TriageLinkedSessions } from './linkedSessions.js';
  */
 
 export type TriageDetailRegionProps = Readonly<{
+  headerHosted?: boolean;
   row: TriageListRowV1;
+  /** Reobserves the shell-owned selected snapshot used by both identity and body. */
+  completePostMutation(): Promise<void>;
   lanes: readonly TriageListLaneV1[];
+  /**
+   * The device projection's rows: where the linked fix PR's observation is
+   * found, and the pull requests a reader can link (r0.42).
+   */
+  rows: readonly TriageListRowV1[];
   /** The configured connection's display label, when the aggregate knows one. */
   connectionLabel: string | null;
   /**
@@ -128,26 +145,31 @@ export type TriageDetailRegionProps = Readonly<{
   onClose: () => void;
 }>;
 
-function headerEntries(
+/**
+ * The entry's context as one quiet line: where it lives, what it is, where it
+ * stands and which connection is reading it — the row's own context, said once
+ * under the title rather than again as a label/value form.
+ */
+export function readTriageDetailContextLineV1(
   header: TriageDetailHeaderV1,
-  text: (key: string, fallback?: string) => string,
-): readonly MetadataEntry[] {
-  const entries: MetadataEntry[] = [];
-  // §2.2's Source and Type, in the source's own words. Absent rather than
-  // guessed: a source with no currently admitted contribution loses the rows.
-  if (header.sourceLabel !== null) {
-    entries.push({ label: text('plugins.triage.surface.detail.source', 'Source'), value: header.sourceLabel });
-  }
-  if (header.kindLabel !== null) {
-    entries.push({ label: text('plugins.triage.surface.detail.type', 'Type'), value: header.kindLabel });
-  }
-  if (header.scopeLabel !== null) entries.push({ label: text('plugins.triage.surface.detail.scope', 'Scope'), value: header.scopeLabel });
-  if (header.stateLabel !== null) entries.push({ label: text('plugins.triage.surface.detail.state', 'State'), value: header.stateLabel });
-  if (header.connectionLabel !== null) {
-    entries.push({ label: text('plugins.triage.surface.detail.connection', 'Connection'), value: header.connectionLabel });
-  }
-  return entries;
+  text: (key: string, fallback?: string, values?: Readonly<Record<string, string>>) => string,
+): string | null {
+  const parts = [
+    header.sourceLabel,
+    header.kindLabel,
+    header.scopeLabel,
+    header.stateLabel,
+    header.connectionLabel === null
+      ? null
+      : text('plugins.triage.surface.detail.via', 'via {name}', { name: header.connectionLabel }),
+  ].filter((part): part is string => part !== null && part.length > 0);
+  return parts.length === 0 ? null : parts.join(' · ');
 }
+
+/** The header and the entry actions scroll as one block above the source body, never over it. */
+const DETAIL_HEADER_SCROLL_STYLE_V1 = Object.freeze({ flexGrow: 0, flexShrink: 1, maxHeight: '45%' as const });
+const DETAIL_FILL_STYLE_V1 = Object.freeze({ flex: 1, minWidth: 0, minHeight: 0 });
+const DETAIL_TITLE_STYLE_V1 = Object.freeze({ flex: 1, minWidth: 0 });
 
 const EMPTY_SESSIONS: readonly TriageLinkedSessionProjectionV1[] = Object.freeze([]);
 
@@ -159,6 +181,8 @@ const PRESENCE_COPY = Object.freeze({
 });
 
 export type TriageDetailHeaderViewProps = Readonly<{
+  /** The Collection's host band already renders identity, actions and Close. */
+  headerHosted?: boolean;
   header: TriageDetailHeaderV1;
   /** Retires linked-Session press state when the selected entry/connection changes. */
   instanceKey?: string;
@@ -181,6 +205,11 @@ export type TriageDetailHeaderViewProps = Readonly<{
   pin?: TriageDetailPinActionV1;
   linkedSessionsPageState?: 'idle' | 'loading' | 'failed';
   onLoadMoreLinkedSessions?: () => void;
+  /**
+   * Whether the header lists the linked Sessions. A tabbed detail shows them
+   * as the Overview story's agent step instead, so they appear once.
+   */
+  showLinkedSessions?: boolean;
 }>;
 
 export type TriageDetailPinActionV1 = Readonly<{
@@ -214,12 +243,13 @@ function TriageEntryScopedActionRegion(props: Readonly<{
     // delivery and its arm are all read by the one controller below. This is
     // the last place a press could have re-decided any of them, and it does
     // not — it only adds the facts this screen holds and the record cannot.
-    void (async () => {
+    return (async () => {
       const executable = await props.actions.resolveForExecution(
         request.action.actionId,
         [props.workflowSubject],
       );
-      if (executable.status !== 'resolved') return;
+      // Said beside the control that was pressed, never swallowed.
+      if (executable.status !== 'resolved') return { kind: executable.status };
       controller.start({
         action: executable.action,
         entryRef: request.entryRef,
@@ -239,6 +269,7 @@ function TriageEntryScopedActionRegion(props: Readonly<{
         ...(props.repository === undefined ? {} : { repository: props.repository }),
         ...(props.reviewWorkspace === undefined ? {} : { reviewWorkspace: props.reviewWorkspace }),
       });
+      return null;
     })();
   }, [controller, props]);
   const retireReviewChooser = React.useCallback(() => {
@@ -278,12 +309,38 @@ function TriageEntryScopedActionRegion(props: Readonly<{
 export function TriageDetailHeaderView(props: TriageDetailHeaderViewProps): React.ReactElement {
   const text = usePluginTranslation();
   const header = props.header;
-  const entries = headerEntries(header, text);
+  const contextLine = readTriageDetailContextLineV1(header, text);
   const presenceCopy = header.presence === 'present'
     ? null
     : header.presence === 'absent'
       ? text('plugins.triage.surface.detail.entryAbsent', PRESENCE_COPY.absent ?? '')
       : text('plugins.triage.surface.detail.entryUnresolved', PRESENCE_COPY.unresolved ?? '');
+  return (
+    <>
+      {props.headerHosted ? null : (
+        <Row gap="small" align="center">
+          <Icon name={readTriageEntryGlyphV1(header.lifecyclePresentation, header.workflowSubject)} tone="secondary" />
+          <Stack style={DETAIL_TITLE_STYLE_V1}><Heading level={2} value={header.title} /></Stack>
+          <Row gap="xsmall" align="center">
+            <TriageDetailHeaderActions header={header} pin={props.pin} />
+            <IconButton icon={<Icon name="close" tone="secondary" />} accessibilityLabel={text('plugins.triage.surface.close', 'Close')} onPress={props.onClose} />
+          </Row>
+        </Row>
+      )}
+      {props.headerHosted || contextLine === null ? null : <Text variant="caption" tone="secondary" value={contextLine} />}
+      {props.lastKnown === true ? <Status tone="muted" labelKey="plugins.triage.surface.detail.lastKnown" label="These are the last facts this page held for this entry, and they may be out of date." /> : null}
+      {header.attention === null ? null : <Badge tone={header.attention.level === 'required' ? 'warning' : 'info'} value={header.attention.reasonLabel} />}
+      {presenceCopy === null ? null : <Status tone="warning" label={presenceCopy} />}
+      {header.sourceReadFailed ? <Status tone="muted" labelKey="plugins.triage.surface.detail.connectionUnhealthy" label="This connection could not be read in the last pass." /> : null}
+      {props.showLinkedSessions === false ? null : <TriageLinkedSessions key={props.instanceKey} sessions={header.linkedSessions} hasMore={header.linkedSessionsHasMore} pageState={props.linkedSessionsPageState} onLoadMore={props.onLoadMoreLinkedSessions} />}
+    </>
+  );
+}
+
+/** The same selected-entry actions in either the inline identity row or the host band. */
+export function TriageDetailHeaderActions(props: Readonly<{ header: TriageDetailHeaderV1; pin?: TriageDetailPinActionV1 }>): React.ReactElement {
+  const text = usePluginTranslation();
+  const hostApi = usePluginHostApi();
   const pinLabel = props.pin === undefined
     ? null
     : readTriagePinActionLabelV1(props.pin.row, text);
@@ -291,68 +348,32 @@ export function TriageDetailHeaderView(props: TriageDetailHeaderViewProps): Reac
   const onSetPinned = React.useCallback(() => {
     if (props.pin !== undefined) props.pin.handlers.onSetPinned(props.pin.row);
   }, [props.pin]);
+  const webUrl = props.header.webUrl;
+  const openAtSource = React.useCallback(
+    () => (webUrl === null ? undefined : hostApi.openExternalLink(webUrl)),
+    [hostApi, webUrl],
+  );
 
   return (
-    <>
-      <Row justify="space-between" align="center">
-        <Heading level={2} value={header.title} />
-        <Row gap="small" align="center">
-          {props.pin === undefined || pinLabel === null ? null : (
-            <Button
-              title={pinLabel}
-              variant="secondary"
-              busy={pinBusy}
-              disabled={props.pin.handlers.unavailableReason !== null}
-              onPress={onSetPinned}
-            />
-          )}
-          <Button titleKey="plugins.triage.surface.close" title="Close" variant="secondary" onPress={props.onClose} />
-        </Row>
-      </Row>
-
-      {props.lastKnown === true ? (
-        <Status
-          tone="muted"
-          labelKey="plugins.triage.surface.detail.lastKnown"
-          label="These are the last facts this page held for this entry, and they may be out of date."
-        />
-      ) : null}
-
-      {header.attention === null ? null : (
-        <Badge
-          tone={header.attention.level === 'required' ? 'warning' : 'info'}
-          value={header.attention.reasonLabel}
+    <Row gap="xsmall" align="center">
+      {props.pin === undefined || pinLabel === null ? null : (
+        <IconButton
+          icon={<Icon name="pin" tone={props.pin.row.pinned ? 'accent' : 'secondary'} />}
+          accessibilityLabel={pinLabel}
+          selected={props.pin.row.pinned}
+          busy={pinBusy}
+          disabled={props.pin.handlers.unavailableReason !== null}
+          onPress={onSetPinned}
         />
       )}
-
-      {entries.length === 0 ? null : <Metadata entries={entries} />}
-
-      {presenceCopy === null ? null : <Status tone="warning" label={presenceCopy} />}
-
-      {header.sourceReadFailed ? (
-        <Status
-          tone="muted"
-          labelKey="plugins.triage.surface.detail.connectionUnhealthy"
-          label="This connection could not be read in the last pass."
-        />
-      ) : null}
-
-      {header.webUrl === null ? null : (
-        <Link
-          titleKey="plugins.triage.surface.detail.openAtSource"
-          title="Open at the source"
-          url={header.webUrl}
+      {webUrl === null ? null : (
+        <IconButton
+          icon={<Icon name="external" tone="secondary" />}
+          accessibilityLabel={text('plugins.triage.surface.detail.openAtSource', 'Open at the source')}
+          onPress={openAtSource}
         />
       )}
-
-      <TriageLinkedSessions
-        key={props.instanceKey}
-        sessions={header.linkedSessions}
-        hasMore={header.linkedSessionsHasMore}
-        pageState={props.linkedSessionsPageState}
-        onLoadMore={props.onLoadMoreLinkedSessions}
-      />
-    </>
+    </Row>
   );
 }
 
@@ -364,42 +385,7 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
   // as this detail is: it binds the retained origin address and owns the single
   // revision-checked transaction the disclosed candidate becomes.
   const evidenceDisclosure = useTriageTierBEvidenceInsertion(props.originComposer);
-  const selectedFromProps = React.useMemo(
-    () => readTriageSelectedObservationV1(props.row),
-    [props.row],
-  );
-  const detailOwnerKey = selectedFromProps === null
-    ? null
-    : deriveTriageDetailMountInstanceKey(props.row.entryRef, selectedFromProps.sourceInstanceId);
-  const [postMutationState, setPostMutationState] = React.useState<Readonly<{
-    ownerKey: string | null;
-    generation: number;
-    row: TriageListRowV1 | null;
-  }>>({ ownerKey: detailOwnerKey, generation: 0, row: null });
-  // A prop change renders before a passive effect can retire local state. Make
-  // ownership part of that state and adjust it during this render so not even
-  // one frame can combine B's selection/target with A's post-mutation row.
-  // React immediately retries this component before committing its children.
-  if (postMutationState.ownerKey !== detailOwnerKey) {
-    setPostMutationState({
-      ownerKey: detailOwnerKey,
-      generation: postMutationState.generation + 1,
-      row: null,
-    });
-  }
-  const postMutationReobservation = React.useRef<AbortController | null>(null);
-  React.useEffect(() => {
-    setPostMutationState((current) => current.ownerKey === detailOwnerKey
-      ? { ...current, row: null }
-      : current);
-    return () => {
-      postMutationReobservation.current?.abort();
-      postMutationReobservation.current = null;
-    };
-  }, [detailOwnerKey, props.row]);
-  const row = postMutationState.ownerKey === detailOwnerKey
-    ? postMutationState.row ?? props.row
-    : props.row;
+  const row = props.row;
   const lookup = readTriageSourceDetailContributionV1(context, row.entryRef.source);
 
   // Which connection this row is showing, and the observation made through it,
@@ -435,31 +421,7 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
     linkedSessionsHasMore,
   }), [linkedSessions, linkedSessionsHasMore, props.connectionLabel, props.lanes, row, sourceDescriptor]);
 
-  const completePostMutation = React.useCallback(async (): Promise<void> => {
-    if (selected === null) return;
-    const lifecycleGeneration = postMutationState.generation;
-    postMutationReobservation.current?.abort();
-    const controller = new AbortController();
-    postMutationReobservation.current = controller;
-    const next = await reobserveTriagePostMutationRow(
-      hostApi,
-      row,
-      props.lanes,
-      selected.sourceInstanceId,
-      { signal: controller.signal },
-    );
-    if (!controller.signal.aborted
-      && postMutationReobservation.current === controller
-      && next !== null) {
-      setPostMutationState((current) => current.ownerKey === detailOwnerKey
-        && current.generation === lifecycleGeneration
-          ? { ...current, row: next }
-          : current);
-    }
-    if (postMutationReobservation.current === controller) {
-      postMutationReobservation.current = null;
-    }
-  }, [detailOwnerKey, hostApi, postMutationState.generation, props.lanes, row, selected]);
+  const completePostMutation = props.completePostMutation;
 
   /**
    * The header's action controls, and the one press path they lead to.
@@ -486,9 +448,49 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
       : { locator: observation.locator, scopeLabel: observation.snapshot.scopeLabel }
   ), [observation]);
   const workflowSubject = header.workflowSubject;
-  const repository = selected?.repository;
   const snapshot = observation?.snapshot;
   const locator = observation?.locator;
+  // Which tabs this entry's kind declares, joined with its linked fix PR's
+  // (r0.42). The link is owned by `useTriageFixPullRequests`; an issue or error
+  // group with no fix PR the projection holds shows only the tabs it has.
+  const declaredKind = sourceDescriptor?.kinds.find((kind) => kind.id === row.entryRef.kindId);
+  const fixDisplay = React.useMemo(() => (
+    snapshot === undefined ? null : { title: snapshot.title, scopeLabel: snapshot.scopeLabel }
+  ), [snapshot]);
+  const fixPullRequest = useTriageDetailFixPullRequest({
+    context,
+    row,
+    rows: props.rows,
+    workflowSubject,
+    display: fixDisplay,
+  });
+  const fixTabs = fixPullRequest.mount === null ? undefined : fixPullRequest.detailTabs;
+  const composition = React.useMemo(() => planTriageDetailTabsV1({
+    workflowSubject,
+    entryTabs: declaredKind?.detailTabs,
+    fixPullRequest: fixTabs === undefined ? null : { detailTabs: fixTabs },
+  }), [declaredKind, fixTabs, workflowSubject]);
+  // The most recent linked Session, read live through the host's canonical
+  // Session projection (r0.42): one watch feeds both the permission card and
+  // the agent step.
+  const liveSessionId = header.linkedSessions[0]?.sessionId ?? null;
+  const liveSession = useSessionState(composition.kind === 'tabs' ? liveSessionId : null);
+  const reviewEntry = React.useMemo(() => (
+    workflowSubject === 'pullRequest'
+      ? { kind: 'pullRequest' as const, ...(locator?.webUrl === undefined ? {} : { url: locator.webUrl }) }
+      : { kind: 'issue' as const, id: createReviewCommentLinkedIssueIdV1(row.entryRef) }
+  ), [locator, row.entryRef, workflowSubject]);
+  const admittedSurface = lookup.kind === 'admitted' ? lookup.surface : null;
+  const entryMount = React.useMemo<TriageDetailSourceMountV1 | null>(() => (
+    detail?.kind === 'ready' && admittedSurface !== null
+      ? {
+          surface: admittedSurface,
+          input: detail.input,
+          instanceKey: deriveTriageDetailMountInstanceKey(row.entryRef, detail.input.instance.instance.sourceInstanceId),
+        }
+      : null
+  ), [admittedSurface, detail, row.entryRef]);
+  const repository = selected?.repository;
   const actionPresentation = React.useMemo(() => (
     snapshot === undefined
       ? null
@@ -519,14 +521,18 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
     };
   }, [detail, locator, observation, prepareReviewWorkspaceOperation, row.entryRef, snapshot]);
   return (
-    <Stack gap="small">
+    <Stack gap="medium" style={DETAIL_FILL_STYLE_V1}>
+      <ScrollArea style={DETAIL_HEADER_SCROLL_STYLE_V1}>
+      <Stack gap="small">
       <TriageDetailHeaderView
+        headerHosted={props.headerHosted}
         header={header}
         {...(selected === null ? {} : {
           instanceKey: deriveTriageDetailMountInstanceKey(row.entryRef, selected.sourceInstanceId),
         })}
         pin={props.pin}
         onClose={props.onClose}
+        showLinkedSessions={composition.kind === 'whole'}
         {...(detail?.kind === 'ready' ? {
           linkedSessionsPageState: detail.linkedSessionsPageState,
           onLoadMoreLinkedSessions: detail.loadMoreLinkedSessions,
@@ -549,7 +555,19 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
             {...(reviewWorkspace === undefined ? {} : { reviewWorkspace })}
           />
         )}
+      {/*
+        The source's own write controls (merge, close, reviewers…) render as
+        its `actions` panel in the header, beside Triage's entry actions (r0.42).
+      */}
+      {composition.kind === 'tabs' && declaredKind?.detailActions === true && entryMount !== null ? (
+        <TriagePostMutationCompletionProvider onComplete={completePostMutation}>
+          <TriageDetailPanelMount mount={entryMount} panel={TRIAGE_DETAIL_ACTIONS_PANEL_V1} fallback={null} />
+        </TriagePostMutationCompletionProvider>
+      ) : null}
+      </Stack>
+      </ScrollArea>
 
+      <Stack style={DETAIL_FILL_STYLE_V1}>
       {observation === null ? (
         <EmptyState
           titleKey="plugins.triage.surface.detail.noConnection.title"
@@ -594,7 +612,69 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
           descriptionKey="plugins.triage.surface.detail.noDetail.description"
           description="The source that owns this entry does not currently contribute a detail surface."
         />
+      ) : composition.kind === 'tabs' && entryMount !== null ? (
+        <TriagePostMutationCompletionProvider onComplete={completePostMutation}>
+          <TriageEvidenceDisclosureProvider disclosure={evidenceDisclosure}>
+            <TriageDetailTabbedBody
+              key={entryMount.instanceKey}
+              tabs={composition.tabs}
+              entry={entryMount}
+              fixPullRequest={fixPullRequest.mount}
+              overviewLead={liveSession.state === null || liveSessionId === null ? null : (
+                liveSession.state.pendingPermissions.map((request) => (
+                  <TriagePermissionCard
+                    key={request.requestId}
+                    sessionId={liveSessionId}
+                    sessionTitle={header.linkedSessions[0]?.displayTitle}
+                    request={request}
+                  />
+                ))
+              )}
+              overviewTail={(
+                <>
+                  {fixPullRequest.state?.kind === 'ready' ? (
+                    <TriageFixPullRequests state={fixPullRequest.state} pickable={fixPullRequest.pickable} />
+                  ) : null}
+                  <TriageAgentStep
+                    sessions={header.linkedSessions}
+                    hasMore={header.linkedSessionsHasMore}
+                    live={liveSession}
+                    reviewEntry={reviewEntry}
+                    {...(detail.kind === 'ready' ? {
+                      pageState: detail.linkedSessionsPageState,
+                      onLoadMore: detail.loadMoreLinkedSessions,
+                    } : {})}
+                  />
+                </>
+              )}
+              activityTail={(
+                <TriageAgentStep
+                  variant="card"
+                  sessions={header.linkedSessions}
+                  hasMore={false}
+                  live={liveSession}
+                  reviewEntry={reviewEntry}
+                />
+              )}
+              {...(header.linkedSessions.length === 0 ? {} : {
+                session: <TriageSessionPanel sessions={header.linkedSessions} />,
+              })}
+              fallback={(
+                <EmptyState
+                  titleKey="plugins.triage.surface.detail.mountError.title"
+                  title="This source's detail view is unavailable"
+                  descriptionKey="plugins.triage.surface.detail.mountError.description"
+                  description="Happier could not mount the source's own view of this entry. The facts above are what the aggregate already knows."
+                />
+              )}
+            />
+          </TriageEvidenceDisclosureProvider>
+        </TriagePostMutationCompletionProvider>
       ) : (
+        <TriageDetailWholeBody
+          key={deriveTriageDetailMountInstanceKey(row.entryRef, detail.input.instance.instance.sourceInstanceId)}
+          sessions={header.linkedSessions}
+        >
         <TriagePostMutationCompletionProvider onComplete={completePostMutation}>
           <TriageEvidenceDisclosureProvider disclosure={evidenceDisclosure}>
             <TargetedSurface
@@ -624,7 +704,9 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
             />
           </TriageEvidenceDisclosureProvider>
         </TriagePostMutationCompletionProvider>
+        </TriageDetailWholeBody>
       )}
+      </Stack>
     </Stack>
   );
 }

@@ -1,7 +1,6 @@
 import {
     buildQualifiedPluginContributionKey,
     createPluginContributionIdentity,
-    type PluginDeclarativePreparedTargetedSurfaceInventoryEntryV1,
 } from '@happier-dev/protocol';
 import { createPluginSessionInfoSectionRendererIdV1 } from '@happier-dev/protocol/plugins/contributions/ui';
 
@@ -22,17 +21,8 @@ type DeclarativeActionRuntime = Pick<
 
 export function resolveDeclarativeProjectionModels(params: Readonly<{
     registry: ResolvedContributionRegistry;
-    generation: number;
+    readPluginOccurrenceId(pluginId: string): string | null;
     actionRuntime?: DeclarativeActionRuntime;
-    /**
-     * Request-scoped target inventories keyed by their exact mounted target.
-     * Omitting a plugin deliberately leaves its declarative Targeted Surface
-     * nodes unavailable rather than lending another target's admission to it.
-     */
-    preparedTargetedSurfacesByPluginId?: Readonly<Record<
-        string,
-        readonly PluginDeclarativePreparedTargetedSurfaceInventoryEntryV1[]
-    >>;
     /**
      * Reports a declarative renderer whose model could not be built. The
      * renderer stays unavailable either way; without this the author has no way
@@ -90,6 +80,8 @@ export function resolveDeclarativeProjectionModels(params: Readonly<{
         if (renderer.definition.kind !== 'declarative') continue;
         const pluginId = renderer.pluginId.trim();
         if (!pluginId) continue;
+        const occurrenceId = params.readPluginOccurrenceId(pluginId);
+        if (!occurrenceId) continue;
         try {
             const settingDefinitions = resolveLocalSettingsDeclarations({
                 settings: params.registry.settings ?? [],
@@ -110,16 +102,13 @@ export function resolveDeclarativeProjectionModels(params: Readonly<{
                 .flatMap((collection) => collection.definition.uiQueries));
             const model = createStablePluginDeclarativeModel({
                 pluginId,
-                generation: String(params.generation),
+                occurrenceId,
                 renderer: renderer.definition,
                 settings,
                 actions,
                 actionPresentations,
                 destinations,
                 uiQueries,
-                ...(params.preparedTargetedSurfacesByPluginId?.[pluginId] === undefined
-                    ? {}
-                    : { preparedTargetedSurfaces: params.preparedTargetedSurfacesByPluginId[pluginId] }),
                 availability: {
                     visible: true,
                     enabledActions,
@@ -140,6 +129,8 @@ export function resolveDeclarativeProjectionModels(params: Readonly<{
     for (const section of params.registry.sessionInfoSections ?? []) {
         const pluginId = section.pluginId.trim();
         if (!pluginId) continue;
+        const occurrenceId = params.readPluginOccurrenceId(pluginId);
+        if (!occurrenceId) continue;
         const rendererId = createPluginSessionInfoSectionRendererIdV1(section.definition.id);
         try {
             const permittedActions = actionEntries
@@ -153,7 +144,7 @@ export function resolveDeclarativeProjectionModels(params: Readonly<{
             ));
             const model = createStablePluginDeclarativeModel({
                 pluginId,
-                generation: String(params.generation),
+                occurrenceId,
                 renderer: {
                     id: rendererId,
                     kind: 'declarative',
@@ -169,9 +160,6 @@ export function resolveDeclarativeProjectionModels(params: Readonly<{
                 })),
                 destinations: [],
                 uiQueries: [],
-                ...(params.preparedTargetedSurfacesByPluginId?.[pluginId] === undefined
-                    ? {}
-                    : { preparedTargetedSurfaces: params.preparedTargetedSurfacesByPluginId[pluginId] }),
                 availability: {
                     visible: true,
                     enabledActions: permittedEnabledActions,

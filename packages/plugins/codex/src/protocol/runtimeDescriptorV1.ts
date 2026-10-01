@@ -1,6 +1,7 @@
 export const CODEX_BACKEND_MODES = ['acp', 'appServer'] as const;
 
 export type CodexBackendMode = (typeof CODEX_BACKEND_MODES)[number];
+export type CodexAppServerTransport = 'daemonProxy';
 
 export function normalizeCodexBackendMode(value: unknown): CodexBackendMode | null {
   if (typeof value !== 'string') return null;
@@ -23,6 +24,7 @@ type CodexRuntimeDescriptorAgentExtra = Readonly<{
     backendMode?: CodexBackendMode;
     providerSessionId?: string;
     appServerEndpoint?: string;
+    appServerTransport?: CodexAppServerTransport;
     homePath?: string;
     home?: 'user' | 'connectedService';
     connectedServiceId?: string;
@@ -36,6 +38,7 @@ type CodexAgentRuntimeDescriptorAgentPayload = Readonly<{
   backendMode: CodexBackendMode;
   providerSessionId?: string;
   appServerEndpoint?: string;
+  appServerTransport?: CodexAppServerTransport;
   homePath?: string;
   home?: 'user' | 'connectedService';
   connectedServiceId?: string;
@@ -55,6 +58,7 @@ export type CanonicalCodexAgentRuntimeDescriptorV1 = Readonly<{
   backendMode: CodexBackendMode | null;
   providerSessionId: string | null;
   appServerEndpoint: string | null;
+  appServerTransport: CodexAppServerTransport | null;
   home: 'user' | 'connectedService' | null;
   connectedServiceId: string | null;
   connectedServiceProfileId: string | null;
@@ -66,6 +70,7 @@ export type BuildCodexAgentRuntimeDescriptorParams = Readonly<{
   backendMode: CodexBackendMode;
   providerSessionId?: string | null;
   appServerEndpoint?: string | null;
+  appServerTransport?: CodexAppServerTransport | null;
   home?: 'user' | 'connectedService' | null;
   connectedServiceId?: string | null;
   connectedServiceProfileId?: string | null;
@@ -125,6 +130,10 @@ function normalizeCodexHome(value: unknown): CanonicalCodexAgentRuntimeDescripto
   return value === 'user' || value === 'connectedService' ? value : null;
 }
 
+function normalizeCodexAppServerTransport(value: unknown): CodexAppServerTransport | null {
+  return value === 'daemonProxy' ? value : null;
+}
+
 function normalizeCodexConnectedServiceFields(params: Readonly<{
   home: 'user' | 'connectedService' | null;
   connectedServiceId: string | null;
@@ -158,6 +167,7 @@ function buildCodexRuntimeHandleAgentExtra(
 ): CodexRuntimeDescriptorAgentExtra {
   const providerSessionId = readExactCodexProviderSessionId(params.providerSessionId);
   const appServerEndpoint = normalizeTrimmedString(params.appServerEndpoint);
+  const appServerTransport = normalizeCodexAppServerTransport(params.appServerTransport);
   const home = normalizeCodexHome(params.home);
   const connectedServiceFields = normalizeCodexConnectedServiceFields({
     home,
@@ -174,6 +184,7 @@ function buildCodexRuntimeHandleAgentExtra(
       backendMode: params.backendMode,
       ...(providerSessionId ? { providerSessionId } : {}),
       ...(appServerEndpoint ? { appServerEndpoint } : {}),
+      ...(appServerTransport ? { appServerTransport } : {}),
       ...(home ? { home } : {}),
       ...(connectedServiceFields.connectedServiceId ? { connectedServiceId: connectedServiceFields.connectedServiceId } : {}),
       ...(connectedServiceFields.connectedServiceProfileId
@@ -211,6 +222,7 @@ function readCanonicalCodexAgentExtra(value: unknown) {
     backendMode: normalizeCodexBackendMode(runtimeHandle.backendMode),
     providerSessionId: readProviderSessionIdCompat(runtimeHandle),
     appServerEndpoint: normalizeTrimmedString(runtimeHandle.appServerEndpoint),
+    appServerTransport: normalizeCodexAppServerTransport(runtimeHandle.appServerTransport),
     home,
     ...connectedServiceFields,
   };
@@ -250,6 +262,7 @@ export function buildCodexAgentRuntimeDescriptorV1(
 ): CodexAgentRuntimeDescriptorV1 {
   const providerSessionId = readExactCodexProviderSessionId(params.providerSessionId);
   const appServerEndpoint = normalizeTrimmedString(params.appServerEndpoint);
+  const appServerTransport = normalizeCodexAppServerTransport(params.appServerTransport);
   const home = normalizeCodexHome(params.home);
   const connectedServiceFields = normalizeCodexConnectedServiceFields({
     home,
@@ -266,6 +279,7 @@ export function buildCodexAgentRuntimeDescriptorV1(
       backendMode: params.backendMode,
       ...(providerSessionId ? { providerSessionId } : {}),
       ...(appServerEndpoint ? { appServerEndpoint } : {}),
+      ...(appServerTransport ? { appServerTransport } : {}),
       ...(home ? { home } : {}),
       ...(connectedServiceFields.connectedServiceId ? { connectedServiceId: connectedServiceFields.connectedServiceId } : {}),
       ...(connectedServiceFields.connectedServiceProfileId
@@ -310,6 +324,8 @@ export function readCanonicalCodexAgentRuntimeDescriptorV1(
     backendMode: agentExtra?.backendMode ?? normalizeCodexBackendMode(descriptor.agent.backendMode),
     providerSessionId: agentExtra?.providerSessionId ?? readProviderSessionIdCompat(descriptor.agent),
     appServerEndpoint: agentExtra?.appServerEndpoint ?? normalizeTrimmedString(descriptor.agent.appServerEndpoint),
+    appServerTransport:
+      agentExtra?.appServerTransport ?? normalizeCodexAppServerTransport(descriptor.agent.appServerTransport),
     home,
     ...connectedServiceFields,
   };
@@ -337,6 +353,7 @@ export function readStrictCanonicalCodexAgentRuntimeDescriptorV1(
         'backendMode',
         'providerSessionId',
         'appServerEndpoint',
+        'appServerTransport',
         'vendorSessionId',
         'homePath',
         'home',
@@ -376,6 +393,7 @@ export function readStrictCanonicalCodexAgentRuntimeDescriptorV1(
             'backendMode',
             'providerSessionId',
             'appServerEndpoint',
+            'appServerTransport',
             'vendorSessionId',
             'homePath',
             'home',

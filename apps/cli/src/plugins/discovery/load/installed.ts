@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 
 import type { PluginSourceSpecV1 } from '@happier-dev/protocol';
-import type { PluginUiArtifactsManifestV1 } from '@happier-dev/protocol/plugins/ui';
+import type { PluginUiArtifactsManifestV2 } from '@happier-dev/protocol/plugins/ui';
 
 import type { PluginStateFileV1, PluginStateSourceRecord } from '@/plugins/store/state';
 import { createPluginRegistryStateStore } from '@/plugins/store/registry/currentState';
@@ -24,7 +24,7 @@ export type LoadedPlugin = Readonly<{
   manifestPath: string;
   daemonEntryPath: string | null;
   devDaemonEntryPath: string | null;
-  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV1;
+  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
   manifest: CanonicalPluginManifest;
   sourceSpec: PluginSourceSpecV1;
 }>;

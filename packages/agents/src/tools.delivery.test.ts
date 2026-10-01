@@ -40,24 +40,20 @@ describe('agent tools delivery capability', () => {
     expect(isAgentToolsUnsupported('gemini')).toBe(false);
   });
 
-  it('classifies shell bridge providers through helper APIs', () => {
-    expect(getAgentToolsCapability('auggie')).toEqual({ delivery: 'shell_bridge', support: 'experimental' });
-    expect(usesNativeMcpTools('auggie')).toBe(false);
-    expect(usesShellBridgeTools('auggie')).toBe(true);
-    expect(isAgentToolsUnsupported('auggie')).toBe(false);
-  });
+  it.each(['auggie', 'copilot', 'cursor', 'kilo', 'qwen'] as const)(
+    'classifies %s native MCP delivery through helper APIs',
+    (agentId) => {
+      expect(getAgentToolsCapability(agentId)).toEqual({ delivery: 'native_mcp', support: 'experimental' });
+      expect(usesNativeMcpTools(agentId)).toBe(true);
+      expect(usesShellBridgeTools(agentId)).toBe(false);
+      expect(isAgentToolsUnsupported(agentId)).toBe(false);
+    },
+  );
 
-  it('routes Cursor Happier tools through the shell bridge', () => {
-    expect(getAgentToolsCapability('cursor')).toEqual({ delivery: 'shell_bridge', support: 'experimental' });
-    expect(usesNativeMcpTools('cursor')).toBe(false);
-    expect(usesShellBridgeTools('cursor')).toBe(true);
-    expect(isAgentToolsUnsupported('cursor')).toBe(false);
-  });
-
-  it('does not inject Happier shell-bridge tools for Antigravity', () => {
-    expect(getAgentToolsCapability('antigravity')).toEqual({ delivery: 'unsupported', support: 'unsupported' });
-    expect(usesNativeMcpTools('antigravity')).toBe(false);
+  it('classifies Antigravity native MCP delivery through helper APIs', () => {
+    expect(getAgentToolsCapability('antigravity')).toEqual({ delivery: 'native_mcp', support: 'experimental' });
+    expect(usesNativeMcpTools('antigravity')).toBe(true);
     expect(usesShellBridgeTools('antigravity')).toBe(false);
-    expect(isAgentToolsUnsupported('antigravity')).toBe(true);
+    expect(isAgentToolsUnsupported('antigravity')).toBe(false);
   });
 });

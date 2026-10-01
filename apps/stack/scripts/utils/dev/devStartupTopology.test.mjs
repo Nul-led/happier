@@ -5,6 +5,7 @@ import {
   decideDevStartupTopology,
   observeDevServerStartupTopology,
   resolveDevWatchEnabled,
+  shouldResolveAdoptedServerRuntimePid,
   shouldExitAdoptedDevRuntime,
 } from './devStartupTopology.mjs';
 
@@ -29,6 +30,36 @@ test('an explicit watch keeps the dev lifecycle owner alive after adopting healt
 
   assert.equal(shouldExitAdoptedDevRuntime({ ...adopted, watchEnabled: false }), true);
   assert.equal(shouldExitAdoptedDevRuntime({ ...adopted, watchEnabled: true }), false);
+});
+
+test('runtime PID repair is reserved for an actually adopted server', () => {
+  const freshStart = decideDevStartupTopology({
+    serverRequested: true,
+    serverTopology: 'absent',
+  });
+
+  assert.equal(freshStart.adoptedServer, false);
+  assert.equal(shouldResolveAdoptedServerRuntimePid({
+    serverRequested: true,
+    stackMode: true,
+    runtimeStatePath: '/tmp/stack.runtime.json',
+    serverProcessPid: null,
+    runtimeProxyAlreadyOwned: false,
+    adoptedServer: freshStart.adoptedServer,
+  }), false, 'a proxy created for a failed fresh start must not become the reload incumbent');
+
+  const adoptedDirect = decideDevStartupTopology({
+    serverRequested: true,
+    serverTopology: 'exact-owned-direct',
+  });
+  assert.equal(shouldResolveAdoptedServerRuntimePid({
+    serverRequested: true,
+    stackMode: true,
+    runtimeStatePath: '/tmp/stack.runtime.json',
+    serverProcessPid: null,
+    runtimeProxyAlreadyOwned: false,
+    adoptedServer: adoptedDirect.adoptedServer,
+  }), true, 'an adopted direct server still needs listener-backed runtime PID repair');
 });
 
 test('startup topology observes occupied ownership independently of application health', async () => {

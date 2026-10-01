@@ -86,14 +86,13 @@ describe('target SCM runtime generation fencing', () => {
             },
         } as unknown as ActivationTarget;
         const entries = createTargetScmRuntimeEntries({
-            generation: 7,
             activationTargets: [target],
             targetRegistrations: [{
                 pluginId: 'acme.workspace',
-                generation: '7',
+                occurrenceId: '7',
                 registration,
             }],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const inspectWorkspaceLocation = entries.backends[0]?.registration.handlers.workspaceIntegration?.inspectWorkspaceLocation;
 
@@ -118,18 +117,17 @@ describe('target SCM runtime generation fencing', () => {
             },
         } as unknown as ActivationTarget;
         const entries = createTargetScmRuntimeEntries({
-            generation: 8,
             activationTargets: [target],
             targetRegistrations: [{
                 pluginId: 'acme.abort-backend',
-                generation: '8',
+                occurrenceId: '8',
                 registration: {
                     family: 'scmBackends',
                     localId: 'abortable',
                     value: { handlers: { read: { statusSnapshot: handler } } },
                 },
             }],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const statusSnapshot = entries.backends[0]?.registration.handlers.read?.statusSnapshot;
         const controller = new AbortController();
@@ -167,14 +165,13 @@ describe('target SCM runtime generation fencing', () => {
         };
 
         const entries = createTargetScmRuntimeEntries({
-            generation: 7,
             activationTargets: [target],
             targetRegistrations: [{
                 pluginId: 'acme.pending-backend',
-                generation: '7',
+                occurrenceId: '7',
                 registration,
             }],
-            isGenerationActive: () => active,
+            isOccurrenceCurrent: () => active,
         });
         const statusSnapshot = entries.backends[0]?.registration.handlers.read?.statusSnapshot;
         if (!statusSnapshot) throw new Error('Expected guarded status handler');
@@ -213,14 +210,13 @@ describe('target SCM runtime generation fencing', () => {
         };
 
         const entries = createTargetScmRuntimeEntries({
-            generation: 9,
             activationTargets: [target],
             targetRegistrations: [{
                 pluginId: 'acme.rejecting-backend',
-                generation: '9',
+                occurrenceId: '9',
                 registration,
             }],
-            isGenerationActive: () => active,
+            isOccurrenceCurrent: () => active,
         });
         const statusSnapshot = entries.backends[0]?.registration.handlers.read?.statusSnapshot;
         if (!statusSnapshot) throw new Error('Expected guarded status handler');
@@ -273,14 +269,13 @@ describe('target SCM runtime generation fencing', () => {
         };
 
         const entries = createTargetScmRuntimeEntries({
-            generation: 6,
             activationTargets: [target],
             targetRegistrations: [{
                 pluginId: 'acme.thenable-backend',
-                generation: '6',
+                occurrenceId: '6',
                 registration,
             }],
-            isGenerationActive: () => active,
+            isOccurrenceCurrent: () => active,
         });
         const statusSnapshot = entries.backends[0]?.registration.handlers.read?.statusSnapshot;
         if (!statusSnapshot) throw new Error('Expected guarded status handler');
@@ -319,14 +314,13 @@ describe('target SCM runtime generation fencing', () => {
         const registration = captureHostingRegistration('acme.hosting', 'forge', runtime);
 
         const entries = createTargetScmRuntimeEntries({
-            generation: 4,
             activationTargets: [target],
             targetRegistrations: [{
                 pluginId: 'acme.hosting',
-                generation: '4',
+                occurrenceId: '4',
                 registration,
             }],
-            isGenerationActive: () => active,
+            isOccurrenceCurrent: () => active,
         });
         const retainedDetectRemote = entries.hostingProviders[0]?.registration.adapter.routing?.detectRemote;
         expect(retainedDetectRemote).toBeTypeOf('function');
@@ -371,14 +365,13 @@ describe('target SCM runtime generation fencing', () => {
         );
 
         const entries = createTargetScmRuntimeEntries({
-            generation: 5,
             activationTargets: [target],
             targetRegistrations: [{
                 pluginId: 'acme.class-hosting',
-                generation: '5',
+                occurrenceId: '5',
                 registration,
             }],
-            isGenerationActive: () => active,
+            isOccurrenceCurrent: () => active,
         });
         const retainedDetectRemote = entries.hostingProviders[0]?.registration.adapter.routing?.detectRemote;
         expect(retainedDetectRemote?.({ remoteName: null, remoteUrl: 'https://example.test/acme/repo' })).toBeNull();
@@ -411,14 +404,13 @@ describe('target SCM runtime generation fencing', () => {
         } as unknown as ActivationTarget;
 
         const entries = createTargetScmRuntimeEntries({
-            generation: 3,
             activationTargets: [target],
             targetRegistrations: [{
                 pluginId: 'acme.structure',
-                generation: '3',
+                occurrenceId: '3',
                 registration,
             }],
-            isGenerationActive: () => active,
+            isOccurrenceCurrent: () => active,
         });
         const handlers = entries.backends[0]?.registration.handlers;
         const detection = handlers?.detection;

@@ -60,15 +60,15 @@ function createInvokerForTest(
     invokeContributedAction: InvokeContributedAction,
     overrides: Readonly<{
         revalidatePluginActionCallerMaterialization?: () => Promise<boolean>;
-        revalidatePluginActionCallerImmutableGeneration?: () => Promise<boolean>;
+        revalidatePluginActionCallerOccurrence?: () => Promise<boolean>;
     }> = {},
 ) {
     return createHostContributedActionInvoker({
         invokeContributedAction,
         revalidatePluginActionCallerMaterialization:
             overrides.revalidatePluginActionCallerMaterialization ?? (async () => true),
-        revalidatePluginActionCallerImmutableGeneration:
-            overrides.revalidatePluginActionCallerImmutableGeneration ?? (async () => true),
+        revalidatePluginActionCallerOccurrence:
+            overrides.revalidatePluginActionCallerOccurrence ?? (async () => true),
     });
 }
 
@@ -91,8 +91,9 @@ describe('createHostContributedActionInvoker', () => {
                 kind: 'plugin',
                 pluginId: 'acme.caller',
                 contributionLocalId: 'caller',
-                immutableGenerationId: 'generation-1',
-                materialization: {
+occurrenceId: 'generation-1',
+sourceCustody: { kind: 'development', registeredRootId: 'acme-caller-root' },
+materialization: {
                     pluginId: 'acme.caller',
                     machineId: 'machine-1',
                     materializationId: 'materialization-1',
@@ -111,8 +112,9 @@ describe('createHostContributedActionInvoker', () => {
                     id: 'caller',
                     qualifiedId: 'acme.caller/caller',
                 },
-                immutableGenerationId: 'generation-1',
-                materialization: {
+occurrenceId: 'generation-1',
+sourceCustody: { kind: 'development', registeredRootId: 'acme-caller-root' },
+materialization: {
                     pluginId: 'acme.caller',
                     machineId: 'machine-1',
                     materializationId: 'materialization-1',
@@ -189,8 +191,9 @@ describe('createHostContributedActionInvoker', () => {
                 kind: 'plugin',
                 pluginId: 'acme.caller',
                 contributionLocalId: 'caller',
-                immutableGenerationId: 'generation-1',
-                materialization: {
+occurrenceId: 'generation-1',
+sourceCustody: { kind: 'development', registeredRootId: 'acme-caller-root' },
+materialization: {
                     pluginId: 'acme.caller',
                     machineId: 'machine-1',
                     materializationId: 'materialization-1',
@@ -209,10 +212,10 @@ describe('createHostContributedActionInvoker', () => {
             value: null,
         }));
         const revalidatePluginActionCallerMaterialization = vi.fn(async () => true);
-        const revalidatePluginActionCallerImmutableGeneration = vi.fn(async () => false);
+        const revalidatePluginActionCallerOccurrence = vi.fn(async () => false);
         const executor = createExecutorForTest(createInvokerForTest(invokeContributedAction, {
             revalidatePluginActionCallerMaterialization,
-            revalidatePluginActionCallerImmutableGeneration,
+            revalidatePluginActionCallerOccurrence,
         }));
 
         await expect(executor.execute('action.invoke', {
@@ -224,8 +227,9 @@ describe('createHostContributedActionInvoker', () => {
                 kind: 'plugin',
                 pluginId: 'acme.caller',
                 contributionLocalId: 'caller',
-                immutableGenerationId: 'generation-1',
-                materialization: {
+occurrenceId: 'generation-1',
+sourceCustody: { kind: 'development', registeredRootId: 'acme-caller-root' },
+materialization: {
                     pluginId: 'acme.caller',
                     machineId: 'machine-1',
                     materializationId: 'materialization-1',
@@ -242,9 +246,9 @@ describe('createHostContributedActionInvoker', () => {
             machineId: 'machine-1',
             materializationId: 'materialization-1',
         });
-        expect(revalidatePluginActionCallerImmutableGeneration).toHaveBeenCalledWith({
+        expect(revalidatePluginActionCallerOccurrence).toHaveBeenCalledWith({
             pluginId: 'acme.caller',
-            immutableGenerationId: 'generation-1',
+            occurrenceId: 'generation-1',
         });
         expect(invokeContributedAction).not.toHaveBeenCalled();
     });
@@ -255,14 +259,14 @@ describe('createHostContributedActionInvoker', () => {
             value: { completed: true },
         }));
         const revalidatePluginActionCallerMaterialization = vi.fn(async () => true);
-        let generationChecks = 0;
-        const revalidatePluginActionCallerImmutableGeneration = vi.fn(async () => {
-            generationChecks += 1;
-            return generationChecks === 1;
+        let occurrenceChecks = 0;
+        const revalidatePluginActionCallerOccurrence = vi.fn(async () => {
+            occurrenceChecks += 1;
+            return occurrenceChecks === 1;
         });
         const executor = createExecutorForTest(createInvokerForTest(invokeContributedAction, {
             revalidatePluginActionCallerMaterialization,
-            revalidatePluginActionCallerImmutableGeneration,
+            revalidatePluginActionCallerOccurrence,
         }));
 
         await expect(executor.execute('action.invoke', {
@@ -274,8 +278,9 @@ describe('createHostContributedActionInvoker', () => {
                 kind: 'plugin',
                 pluginId: 'acme.caller',
                 contributionLocalId: 'caller',
-                immutableGenerationId: 'generation-1',
-                materialization: {
+occurrenceId: 'generation-1',
+sourceCustody: { kind: 'development', registeredRootId: 'acme-caller-root' },
+materialization: {
                     pluginId: 'acme.caller',
                     machineId: 'machine-1',
                     materializationId: 'materialization-1',
@@ -289,6 +294,6 @@ describe('createHostContributedActionInvoker', () => {
 
         expect(invokeContributedAction).toHaveBeenCalledOnce();
         expect(revalidatePluginActionCallerMaterialization).toHaveBeenCalledTimes(2);
-        expect(revalidatePluginActionCallerImmutableGeneration).toHaveBeenCalledTimes(2);
+        expect(revalidatePluginActionCallerOccurrence).toHaveBeenCalledTimes(2);
     });
 });

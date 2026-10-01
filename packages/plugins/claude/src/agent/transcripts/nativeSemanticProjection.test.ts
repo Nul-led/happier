@@ -9,10 +9,22 @@ import { mapClaudeUnifiedTranscriptLifecyclePayload } from '../runtime/terminal/
 import { projectClaudeTranscriptRowToProviderPayload } from '../runtime/terminal/unified/providerTranscript.js';
 import {
   projectClaudeJsonlLineToDirectMessages,
+  projectClaudeJsonlLineRecord,
   projectClaudeJsonlLineToRawMessage,
 } from './projection.js';
 
 describe('Claude native transcript semantic projection', () => {
+  it.each(['completed', 'refused'])('treats command lifecycle state %s as a known non-transcript record', (state) => {
+    // Claude Agent SDK 0.3.206 added this frame; 0.3.238 added refused.
+    const record = { type: 'command_lifecycle', command_uuid: 'command-1', session_id: 'provider-session', state, uuid: 'lifecycle-1' };
+    expect(classifyClaudeNativeTranscriptRow(record)).toMatchObject({
+      knownNonTranscriptRecord: true, visibility: 'hidden', content: { kind: 'none' }, lifecycle: { kind: 'none' },
+    });
+    expect(projectClaudeJsonlLineRecord({
+      fileRelPath: 'projects/session.jsonl', lineStartOffsetBytes: 41, lineValue: record,
+    })).toEqual({ disposition: 'known_non_transcript', items: [] });
+  });
+
   it('classifies an unparsable known row from its raw body instead of leaving it unknown', () => {
     // A malformed assistant row still reaches storage as opaque content. Leaving it `unknown` is the
     // one path where an event row escapes the role filter that every other path applies.

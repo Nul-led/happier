@@ -18,7 +18,7 @@ export const AGENT_DEFINITION = Object.freeze({
       sessionRollback: { conversation: 'unsupported' },
     },
     handoff: { vendorStateTransfer: 'unsupported' },
-    tools: { delivery: 'shell_bridge', support: 'experimental' },
+    tools: { delivery: 'native_mcp', support: 'experimental' },
   },
   sessionModeDescriptor: { source: 'none', semantics: 'none', runtimeSwitch: 'none' },
   sessionModesKind: 'none',

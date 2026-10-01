@@ -1,19 +1,23 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   Platform,
   View,
-  type TextStyle,
   type ViewStyle,
 } from 'react-native';
 
 import {
   useHappierNativeMinimumInteractiveTargetSize,
 } from '../../environment/interactiveTarget.js';
+import { useOptionalHappierUiTheme, useOptionalHappierUiTypography } from '../../environment/context.js';
 import type { HappierUiTheme } from '../../environment/types.js';
 import { HappierPressable } from '../interaction/Pressable.js';
 import type { HappierFocusable, HappierLayoutChangeEvent, HappierStyleProp } from '../portableTypes.js';
 import { HAPPIER_TONE_COLOR_TOKEN, type HappierTone } from '../semantics.js';
 import { HappierText } from '../text/Text.js';
+import { resolveHappierTypeRoleStyle } from '../text/typeRole.js';
+import { HAPPIER_PRESS_FEEDBACK_V1 } from '../interaction/pressFeedback.js';
+import { HAPPIER_PAGE_METRICS } from '../layout/pageMetrics.js';
+import { resolveHappierPageTextStyle } from '../layout/pageText.js';
 
 export type HappierMetadataEntry = Readonly<{
   label: string;
@@ -31,20 +35,23 @@ export function HappierHeading(props: Readonly<{
   theme?: HappierUiTheme;
   testID?: string;
 }>) {
+  // Three steps of the ramp, never one size for every level: the page heading
+  // (1) takes the heading role, a pane or section heading (2) the title role,
+  // and a subsection heading (3+) the label role, so a group heading never
+  // reads as loudly as the heading of the pane it sits in.
+  const role = props.level === 1 ? 'heading' as const : props.level === 2 ? 'title' as const : 'label' as const;
+  const hostTypography = useOptionalHappierUiTypography();
+  const environmentTheme = useOptionalHappierUiTheme();
+  const theme = props.theme ?? environmentTheme;
   return (
     <HappierText
       ref={props.controlRef}
       accessibilityRole="header"
       aria-level={props.level}
       tabIndex={props.controlRef ? -1 : undefined}
-      {...(props.theme
-        ? { style: {
-            fontSize: props.theme.typography.title.fontSize,
-            lineHeight: props.theme.typography.title.lineHeight,
-            fontWeight: props.theme.typography.title.fontWeight as TextStyle['fontWeight'],
-            color: props.theme.colors.text,
-          } }
-        : { variant: 'title' as const })}
+      {...(theme
+        ? { style: { ...resolveHappierTypeRoleStyle(role, theme, hostTypography), color: theme.colors.text } }
+        : { variant: role === 'heading' ? 'title' as const : role })}
       testID={props.testID}
     >
       {props.children}
@@ -61,15 +68,11 @@ export function HappierLabel(props: Readonly<{
   theme?: HappierUiTheme;
   testID?: string;
 }>) {
+  const hostTypography = useOptionalHappierUiTypography();
   return (
     <HappierText
       {...(props.theme
-        ? { style: {
-            fontSize: props.theme.typography.label.fontSize,
-            lineHeight: props.theme.typography.label.lineHeight,
-            fontWeight: props.theme.typography.label.fontWeight as TextStyle['fontWeight'],
-            color: props.theme.colors.text,
-          } }
+        ? { style: { ...resolveHappierTypeRoleStyle('label', props.theme, hostTypography), color: props.theme.colors.text } }
         : { variant: 'label' as const })}
       testID={props.testID}
     >
@@ -172,7 +175,7 @@ export function HappierLink(props: Readonly<{
         }),
         borderBottomWidth: state.focused ? 2 : 1,
         borderBottomColor: state.focused ? props.theme.colors.focus : props.theme.colors.accent,
-        opacity: state.disabled ? 0.4 : state.pressed ? 0.7 : 1,
+        opacity: state.disabled ? 0.4 : state.pressed ? HAPPIER_PRESS_FEEDBACK_V1.opacity : 1,
       })}
     >
       <HappierText style={{ color: props.theme.colors.accent }}>{props.children}</HappierText>
@@ -188,6 +191,14 @@ export function HappierProgress(props: Readonly<{
   style?: HappierStyleProp;
   pointerEvents?: 'auto' | 'box-none' | 'box-only' | 'none';
   renderFill?: (percentage: number) => ReactNode;
+  /** Capacity visuals have no progress announcement; their enclosing row supplies meaning. */
+  semantics?: 'progress' | 'none';
+  height?: number;
+  fillColor?: string;
+  trackColor?: string;
+  fillTestID?: string;
+  minimumVisibleFraction?: number;
+  minimumFillWidth?: number;
 }>) {
   const percentage = resolveHappierProgressPercentage(props.value);
   const determinate = props.value !== undefined && Number.isFinite(props.value);
@@ -195,31 +206,36 @@ export function HappierProgress(props: Readonly<{
   const webPointerEventsStyle = Platform.OS === 'web' && props.pointerEvents
     ? { pointerEvents: props.pointerEvents }
     : undefined;
+  const fillPercentage = resolveHappierProgressPercentage(props.value, { minimumVisible: props.minimumVisibleFraction });
   const fillStyle: ViewStyle = {
     height: '100%',
-    width: `${percentage ?? 35}%`,
-    backgroundColor: props.theme.colors.accent,
+    minWidth: props.minimumFillWidth,
+    width: `${fillPercentage}%`,
+    backgroundColor: props.fillColor ?? props.theme.colors.accent,
     borderRadius: props.theme.radii.pill,
   };
   return (
     <View
-      role="progressbar"
-      aria-label={props.label}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={determinate ? percentage : undefined}
-      accessibilityLabel={props.label}
-      accessibilityValue={determinate ? { min: 0, max: 100, now: percentage } : undefined}
+      {...(props.semantics === 'none' ? {} : {
+        role: 'progressbar' as const,
+        accessibilityRole: 'progressbar' as const,
+        'aria-label': props.label,
+        'aria-valuemin': 0,
+        'aria-valuemax': 100,
+        'aria-valuenow': determinate ? percentage : undefined,
+        accessibilityLabel: props.label,
+        accessibilityValue: determinate ? { min: 0, max: 100, now: percentage } : undefined,
+      })}
       testID={props.testID}
       pointerEvents={nativePointerEvents}
       style={[{
-          height: 8,
+          height: props.height ?? 8,
           overflow: 'hidden',
           borderRadius: props.theme.radii.pill,
-          backgroundColor: props.theme.colors.controlDisabled,
+          backgroundColor: props.trackColor ?? props.theme.colors.controlDisabled,
         }, props.style, webPointerEventsStyle]}
     >
-      {props.renderFill ? props.renderFill(percentage) : <View style={fillStyle} />}
+      {props.renderFill ? props.renderFill(percentage) : <View testID={props.fillTestID} style={fillStyle} />}
     </View>
   );
 }
@@ -250,34 +266,63 @@ export function HappierBanner(props: Readonly<{
   testID?: string;
   style?: HappierStyleProp;
   onLayout?: (event: HappierLayoutChangeEvent) => void;
-  renderContent?: (input: Readonly<{ color: string; urgent: boolean }>) => ReactNode;
-  /** Host adapter supplies product placement/chrome while this owner retains semantics. */
-  unstyled?: boolean;
+  icon?: ReactNode;
+  details?: ReactNode;
+  dismiss?: ReactNode;
+  backgroundColor?: string;
+  borderColor?: string;
+  /** Core binds its text host; both adapters retain this owner's layout. */
+  titleContent?: ReactNode;
+  descriptionContent?: ReactNode;
+  announce?: 'alert' | 'status' | 'none';
+  accessibilityLiveRegion?: 'polite' | 'assertive';
 }>) {
   const isUrgent = isHappierBannerUrgent(props.tone);
   const color = props.theme.colors[HAPPIER_TONE_COLOR_TOKEN[props.tone]];
+  const typography = useOptionalHappierUiTypography();
+  const [narrow, setNarrow] = useState(false);
+  const role = props.announce === 'none' ? undefined : props.announce ?? (isUrgent ? 'alert' : 'status');
+  const decorationPointerEvents = Platform.OS === 'web' ? undefined : 'none';
+  const decorationStyle: ViewStyle = {
+    position: 'absolute', top: 0, right: 0, bottom: 0, left: 0,
+    borderRadius: HAPPIER_PAGE_METRICS.sheetRadiusPx,
+    ...(Platform.OS === 'web' ? { pointerEvents: 'none' } : {}),
+  };
   return (
     <View
-      role={isUrgent ? 'alert' : 'status'}
-      accessibilityLiveRegion={isUrgent ? 'assertive' : 'polite'}
+      role={role}
+      accessibilityRole={role === 'alert' ? 'alert' : undefined}
+      accessibilityLiveRegion={props.accessibilityLiveRegion ?? (role === undefined ? undefined : role === 'alert' ? 'assertive' : 'polite')}
       testID={props.testID}
-      onLayout={props.onLayout}
-      style={[props.unstyled ? undefined : {
-        borderWidth: 1,
-        borderColor: color,
-        borderRadius: props.theme.radii.panel,
-        padding: props.theme.spacing.medium,
-        gap: props.theme.spacing.small,
-        backgroundColor: props.theme.colors.elevatedSurface,
+      onLayout={(event) => {
+        const width = event.nativeEvent.layout.width;
+        if (Number.isFinite(width) && width > 0) setNarrow(width < HAPPIER_PAGE_METRICS.rowStackBelowWidthPx);
+        props.onLayout?.(event);
+      }}
+      style={[{
+        flexDirection: 'row',
+        alignItems: narrow ? 'flex-start' : 'center',
+        borderRadius: HAPPIER_PAGE_METRICS.sheetRadiusPx,
+        paddingVertical: 12,
+        paddingLeft: HAPPIER_PAGE_METRICS.rowPaddingHorizontalPx,
+        paddingRight: 12,
+        gap: HAPPIER_PAGE_METRICS.rowLeadingGapPx,
+        backgroundColor: props.backgroundColor ?? props.theme.colors.surface,
       }, props.style]}
     >
-      {props.renderContent ? props.renderContent({ color, urgent: isUrgent }) : (
-        <>
-          <HappierText variant="label" style={{ color }}>{props.title}</HappierText>
-          {props.description ? <HappierText tone="secondary">{props.description}</HappierText> : null}
-          {props.action}
-        </>
-      )}
+      {props.backgroundColor ? null : <View pointerEvents={decorationPointerEvents}
+        style={[decorationStyle, { backgroundColor: color, opacity: 0.08 }]} />}
+      <View pointerEvents={decorationPointerEvents}
+        style={[decorationStyle, { borderWidth: 1, borderColor: props.borderColor ?? color, opacity: 0.32 }]} />
+      {props.icon ? <View style={{ width: HAPPIER_PAGE_METRICS.rowLeadingColumnPx, alignItems: 'center', justifyContent: 'center' }}>{props.icon}</View> : null}
+      <View style={{ flex: 1, minWidth: 0 }}>
+        {props.titleContent ?? <HappierText style={{ ...resolveHappierPageTextStyle('rowTitle', typography), color: props.theme.colors.text }}>{props.title}</HappierText>}
+        {props.descriptionContent ?? (props.description ? <HappierText style={{ ...resolveHappierPageTextStyle('rowDescription', typography), color: props.theme.colors.secondaryText, marginTop: 2 }}>{props.description}</HappierText> : null)}
+        {props.details}
+        {props.action && narrow ? <View style={{ alignItems: 'flex-start', marginTop: 10 }}>{props.action}</View> : null}
+      </View>
+      {props.action && !narrow ? <View style={{ flexShrink: 0 }}>{props.action}</View> : null}
+      {props.dismiss ? <View style={{ alignSelf: 'flex-start', marginTop: -4, marginRight: -4 }}>{props.dismiss}</View> : null}
     </View>
   );
 }

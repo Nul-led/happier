@@ -112,14 +112,14 @@ export function readValidatedAgentSessionRunnerFactory(
 
 /**
  * Production lifecycle wrapper around the shared daemon-independent SDK
- * registration contract. Generation currentness and compatibility diagnostics
+ * registration contract. Occurrence currentness and compatibility diagnostics
  * remain CLI host policy and are not exposed by the SDK testkit.
  */
 export function createContributionRegistrationHost(params: Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     rights: readonly ContributionRegistrationRight[];
-    isGenerationCurrent(): boolean;
+    isOccurrenceCurrent(): boolean;
     /**
      * Host-owned bound for one independent registration-cleanup attempt;
      * forwarded to the SDK registration scope, which bounds each captured
@@ -146,8 +146,8 @@ export function createContributionRegistrationHost(params: Readonly<{
             ? {}
             : { cleanupTimeoutMs: params.cleanupTimeoutMs }),
         assertAvailable() {
-            if (!params.isGenerationCurrent()) {
-                throw new Error(`Plugin '${params.pluginId}' cannot register against retired generation '${params.generation}'`);
+            if (!params.isOccurrenceCurrent()) {
+                throw new Error(`Plugin '${params.pluginId}' cannot register against retired occurrence '${params.occurrenceId}'`);
             }
         },
         onFailure(message) {

@@ -46,6 +46,7 @@ function projectViews(views: readonly CorpusSavedViewV1[]): TriageReadSavedViews
         filters: view.filters,
         order: view.order,
         smartPolicy: view.smartPolicy,
+        view: view.view,
     }));
 }
 
@@ -83,6 +84,7 @@ function commandFrom(input: TriageAdministerSavedViewInputV1): CorpusSavedViewCo
         filters: input.filters,
         order: input.order,
         smartPolicy,
+        ...(input.view === undefined ? {} : { view: input.view }),
     };
     return input.kind === 'create'
         ? {

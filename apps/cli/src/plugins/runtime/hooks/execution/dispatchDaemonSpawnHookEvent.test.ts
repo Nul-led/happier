@@ -277,7 +277,7 @@ describe('dispatchDaemonSpawnHookEvent', () => {
         category: 'augmentation',
         scope: 'daemon',
         agentId: 'codex',
-        backendTarget: 'backend:codex',
+        backendTarget: 'agent:happier.agent.codex/codex',
         cwd: '/repo',
         timestampMs: 123,
         payload: expect.objectContaining({

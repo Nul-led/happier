@@ -39,6 +39,8 @@ type EventBase = Readonly<{ emittedAtMs: number }> & (
 type TurnEventBase = EventBase & Readonly<{ turnId: string }>;
 
 export type OpenCodeRuntimeEvent =
+  | (EventBase & Readonly<{ kind: 'model-catalog-observed' }>)
+  | (EventBase & Readonly<{ kind: 'mode-catalog-observed' }>)
   | (TurnEventBase & Readonly<{ kind: 'turn-start' }>)
   | (TurnEventBase & Readonly<{ kind: 'turn-complete' }>)
   | (TurnEventBase & Readonly<{ kind: 'turn-cancelled'; reason?: string }>)

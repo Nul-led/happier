@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { readBuiltUiArtifactContributionIds } from './builtUiArtifacts';
+import { readBuiltUiArtifactIds } from './builtUiArtifacts';
 
 let pluginRoot: string;
 
@@ -22,38 +22,37 @@ afterEach(async () => {
   await rm(pluginRoot, { recursive: true, force: true });
 });
 
-describe('readBuiltUiArtifactContributionIds', () => {
-  it('returns the contribution ids of the built react-native-web artifact manifest', async () => {
+describe('readBuiltUiArtifactIds', () => {
+  it('returns the artifact ids of the built universal UI artifact manifest', async () => {
     await writeArtifactsManifest(JSON.stringify({
-      version: 1,
+      version: 2,
       entries: [
         {
-          contributionId: 'main-native',
+          artifactId: 'main-native',
           tier: 'reactNative',
-          platform: 'web',
-          entry: 'react-native-web/main-native/entry.mjs.bundle',
+          entry: 'react-native/main-native/entry.cjs.bundle',
           files: [{
-            relativePath: 'react-native-web/main-native/entry.mjs.bundle',
+            relativePath: 'react-native/main-native/entry.cjs.bundle',
             digest: `sha256:${'b'.repeat(64)}`,
             byteSize: 1,
           }],
           digest: `sha256:${'a'.repeat(64)}`,
-          builtWith: { bundler: 'vite', version: '7.0.0' },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
+          builtWith: { bundler: 'esbuild', version: '0.25.0' },
+          executable: { exports: ['renderSurface'] },
+          hostUiApiRange: '^1.0.0',
         },
       ],
     }));
 
-    expect(await readBuiltUiArtifactContributionIds(pluginRoot)).toEqual(['main-native']);
+    expect(await readBuiltUiArtifactIds(pluginRoot)).toEqual(['main-native']);
   });
 
   it('returns an empty list when no built UI artifact manifest exists', async () => {
-    expect(await readBuiltUiArtifactContributionIds(pluginRoot)).toEqual([]);
+    expect(await readBuiltUiArtifactIds(pluginRoot)).toEqual([]);
   });
 
   it('returns an empty list for an invalid manifest instead of throwing', async () => {
     await writeArtifactsManifest('{ not valid json');
-    expect(await readBuiltUiArtifactContributionIds(pluginRoot)).toEqual([]);
+    expect(await readBuiltUiArtifactIds(pluginRoot)).toEqual([]);
   });
 });

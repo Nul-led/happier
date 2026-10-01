@@ -31,6 +31,7 @@ describe('portable plugin brand catalog projection', () => {
             brandAssetsByPluginId: {
                 'acme.brand': {
                     state: 'available',
+                    monochrome: true,
                     resource: { pluginId: 'acme.brand', localId: 'brand-icon' },
                     width: 64,
                     height: 64,
@@ -45,6 +46,7 @@ describe('portable plugin brand catalog projection', () => {
             displayName: 'acme.brand',
             brand: {
                 state: 'available',
+                monochrome: true,
                 resource: { pluginId: 'acme.brand', localId: 'brand-icon' },
                 width: 64,
                 height: 64,

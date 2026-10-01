@@ -11,6 +11,8 @@ import {
   OPEN_CODE_REQUEST_AUTH_CAPABILITY_PATH_ENV,
   resolveOpenCodeConnectedConfigHomeDir,
   resolveOpenCodeRequestAuthPluginPath,
+  resolveOpenCodeRequestAuthV2PluginDir,
+  resolveOpenCodeRequestAuthV2PluginSourcePath,
 } from './requestAuth/index.js';
 import {
   buildOpenCodeAuthContent,
@@ -127,8 +129,14 @@ describe('OpenCode connected-account auth materialization', () => {
       expect(env.HAPPIER_OPENCODE_BROKER_REFRESH_TOKEN_PATH).toBeUndefined();
       expect(env.OPENAI_API_KEY).toBe('');
       expect(env.XDG_CONFIG_HOME).toBe(configHome);
+      expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT)).toEqual({
+        providers: { openai: {} },
+        plugins: [resolveOpenCodeRequestAuthV2PluginDir(configHome, 'openai')],
+      });
       const pluginSource = await readFile(resolveOpenCodeRequestAuthPluginPath(configHome, 'openai'), 'utf8');
       expect(pluginSource).toContain('"openai-codex-model-request"');
+      await expect(readFile(resolveOpenCodeRequestAuthV2PluginSourcePath(configHome, 'openai'), 'utf8'))
+        .resolves.toContain('id: "happier-request-auth-" + PROVIDER');
       expect(pluginSource).not.toContain(ACCESS_TOKEN_SENTINEL);
       expect(pluginSource).not.toContain(REFRESH_TOKEN_SENTINEL);
       expect((await readdir(pluginDir)).sort()).toEqual([
@@ -265,6 +273,13 @@ describe('OpenCode connected-account auth materialization', () => {
       expect(JSON.parse(direct.env.OPENCODE_AUTH_CONTENT)).toEqual({
         openai: { type: 'api', key: 'sk-openai' },
         anthropic: { type: 'api', key: 'sk-anthropic' },
+      });
+      expect(JSON.parse(direct.env.OPENCODE_CONFIG_CONTENT)).toEqual({
+        providers: {
+          openai: { settings: { apiKey: 'sk-openai' } },
+          anthropic: { settings: { apiKey: 'sk-anthropic' } },
+        },
+        plugins: [],
       });
       expect(direct.env[OPEN_CODE_REQUEST_AUTH_CAPABILITY_PATH_ENV]).toBeUndefined();
     } finally {

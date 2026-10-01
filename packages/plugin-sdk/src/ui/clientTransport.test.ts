@@ -26,7 +26,8 @@ const preparedOperation = {
     contributor: {
         pluginId: 'happier.scm.github',
         contributionId: 'github',
-        immutableGenerationId: 'github-generation-1',
+        occurrenceId: 'github-occurrence-1',
+        sourceCustody: { kind: 'development' as const, registeredRootId: 'github-root' },
     },
     role: 'prepareReviewWorkspace',
     action: { pluginId: 'happier.scm.github', localId: 'prepare-review-workspace' },
@@ -37,9 +38,16 @@ const preparedSelection = {
     action: preparedOperation.action,
     input: { repository: 'happier-dev/happier' },
     selection: {
-        target: { pluginId: 'com.acme.fixture', immutableGenerationId: 'generation-2' },
+        target: {
+            pluginId: 'com.acme.fixture',
+            sourceCustody: { kind: 'development' as const, registeredRootId: 'fixture-root' },
+        },
         point: preparedOperation.point,
-        contributor: preparedOperation.contributor,
+        contributor: {
+            pluginId: preparedOperation.contributor.pluginId,
+            contributionId: preparedOperation.contributor.contributionId,
+            sourceCustody: { kind: 'development' as const, registeredRootId: 'github-root' },
+        },
     },
     connectedAccount: { kind: 'none' as const },
     presentation: {
@@ -187,7 +195,15 @@ describe('plugin UI domain client transport adapter', () => {
     });
 
     it('keeps the Protocol surface context mutually assignable through direct and watched reads', async () => {
-        const protocolSurface: PluginUiHostApiSurfaceContextV1 = surface;
+        const protocolSurface: PluginUiHostApiSurfaceContextV1 = createSurfaceContextFixture({
+            mount: {
+                kind: 'destination',
+                destination: { pluginId: 'com.acme.fixture', localId: 'inbox' },
+                container: 'appPage',
+            },
+            target: { kind: 'app' },
+            page: { columnVisible: true },
+        });
         const sdkSurface: SurfaceContext = protocolSurface;
         let receive: ((message: unknown) => void) | undefined;
         let requestSequence = 0;
@@ -247,6 +263,7 @@ describe('plugin UI domain client transport adapter', () => {
 
         await expect(api.context()).resolves.toEqual(sdkSurface);
         expect(observed).toEqual([sdkSurface]);
+        expect(observed[0]?.page).toEqual({ columnVisible: true });
         watch.dispose();
     });
 
@@ -821,7 +838,8 @@ describe('plugin UI domain client transport adapter', () => {
             contributor: {
                 pluginId: 'com.acme.provider',
                 contributionId: 'github-connection',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: { kind: 'development' as const, registeredRootId: 'provider-root' },
             },
             role: 'setup',
             action: { pluginId: 'com.acme.provider', localId: 'connection/prepare-v1' },
@@ -831,7 +849,8 @@ describe('plugin UI domain client transport adapter', () => {
             targetedContributions: {
                 target: {
                     pluginId: 'com.acme.fixture',
-                    immutableGenerationId: 'target-generation-a',
+                    occurrenceId: 'target-occurrence-a',
+                    sourceCustody: { kind: 'development' as const, registeredRootId: 'fixture-root' },
                 },
                 points: [{
                     pointId: 'connection',
@@ -841,7 +860,8 @@ describe('plugin UI domain client transport adapter', () => {
                             contributor: {
                                 pluginId: 'com.acme.provider',
                                 contributionId: 'github-connection',
-                                immutableGenerationId: 'provider-generation-a',
+                                occurrenceId: 'provider-occurrence-a',
+                                sourceCustody: { kind: 'development' as const, registeredRootId: 'provider-root' },
                             },
                             protocol: { id: 'connection', version: 1 },
                             operations: [operation],
@@ -884,9 +904,16 @@ describe('plugin UI domain client transport adapter', () => {
                                     action: operation.action,
                                     input: { repository: 'happier-dev/happier' },
                                     selection: {
-                                        target: targetedSurface.targetedContributions.target,
+                                        target: {
+                                            pluginId: targetedSurface.targetedContributions.target.pluginId,
+                                            sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
+                                        },
                                         point: operation.point,
-                                        contributor: operation.contributor,
+                                        contributor: {
+                                            pluginId: operation.contributor.pluginId,
+                                            contributionId: operation.contributor.contributionId,
+                                            sourceCustody: { kind: 'development', registeredRootId: 'provider-root' },
+                                        },
                                     },
                                     connectedAccount: { kind: 'none' },
                                     presentation: {
@@ -930,7 +957,8 @@ describe('plugin UI domain client transport adapter', () => {
             contributor: {
                 pluginId: 'com.acme.provider',
                 contributionId: 'github-connection',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: { kind: 'development' as const, registeredRootId: 'provider-root' },
             },
             role: 'setup',
             action: { pluginId: 'com.acme.provider', localId: 'connection/prepare-v1' },
@@ -940,7 +968,8 @@ describe('plugin UI domain client transport adapter', () => {
             targetedContributions: {
                 target: {
                     pluginId: 'com.acme.fixture',
-                    immutableGenerationId: 'target-generation-a',
+                    occurrenceId: 'target-occurrence-a',
+                    sourceCustody: { kind: 'development' as const, registeredRootId: 'fixture-root' },
                 },
                 points: [],
             },
@@ -959,9 +988,16 @@ describe('plugin UI domain client transport adapter', () => {
                 action: operation.action,
                 input: { repository: 'happier-dev/happier' },
                 selection: {
-                    target: targetedSurface.targetedContributions.target,
+                    target: {
+                        pluginId: targetedSurface.targetedContributions.target.pluginId,
+                        sourceCustody: { kind: 'development' as const, registeredRootId: 'fixture-root' },
+                    },
                     point: operation.point,
-                    contributor: operation.contributor,
+                    contributor: {
+                        pluginId: operation.contributor.pluginId,
+                        contributionId: operation.contributor.contributionId,
+                        sourceCustody: { kind: 'development' as const, registeredRootId: 'provider-root' },
+                    },
                 },
                 connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: accountA },
                 presentation: {
@@ -974,9 +1010,16 @@ describe('plugin UI domain client transport adapter', () => {
                 action: operation.action,
                 input: { repository: 'happier-dev/happier' },
                 selection: {
-                    target: targetedSurface.targetedContributions.target,
+                    target: {
+                        pluginId: targetedSurface.targetedContributions.target.pluginId,
+                        sourceCustody: { kind: 'development' as const, registeredRootId: 'fixture-root' },
+                    },
                     point: operation.point,
-                    contributor: operation.contributor,
+                    contributor: {
+                        pluginId: operation.contributor.pluginId,
+                        contributionId: operation.contributor.contributionId,
+                        sourceCustody: { kind: 'development' as const, registeredRootId: 'provider-root' },
+                    },
                 },
                 connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: accountB },
                 presentation: {
@@ -1131,7 +1174,8 @@ describe('plugin UI domain client transport adapter', () => {
             contributor: {
                 pluginId: 'com.acme.provider',
                 contributionId: 'github-connection',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: { kind: 'development' as const, registeredRootId: 'provider-root' },
             },
             role: 'setup',
             action: { pluginId: 'com.acme.provider', localId: 'connection/prepare-v1' },
@@ -1141,7 +1185,8 @@ describe('plugin UI domain client transport adapter', () => {
             targetedContributions: {
                 target: {
                     pluginId: 'com.acme.fixture',
-                    immutableGenerationId: 'target-generation-a',
+                    occurrenceId: 'target-occurrence-a',
+                    sourceCustody: { kind: 'development' as const, registeredRootId: 'fixture-root' },
                 },
                 points: [],
             },
@@ -1179,9 +1224,16 @@ describe('plugin UI domain client transport adapter', () => {
                                 action: operation.action,
                                 input: { repository: 'happier-dev/happier' },
                                 selection: {
-                                    target: targetedSurface.targetedContributions.target,
+                                    target: {
+                                        pluginId: targetedSurface.targetedContributions.target.pluginId,
+                                        sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
+                                    },
                                     point: operation.point,
-                                    contributor: operation.contributor,
+                                    contributor: {
+                                        pluginId: operation.contributor.pluginId,
+                                        contributionId: operation.contributor.contributionId,
+                                        sourceCustody: { kind: 'development', registeredRootId: 'provider-root' },
+                                    },
                                 },
                                 connectedAccount: { kind: 'none' },
                                 presentation: {
@@ -2138,7 +2190,14 @@ describe('plugin UI domain client transport adapter', () => {
         let receive: ((message: unknown) => void) | undefined;
         const embeddedSurface = createSurfaceContextFixture({
             mount: { kind: 'embedded', role: 'detail', presentation: 'content' },
-            targetedContributions: { target: { pluginId: 'com.acme.target', immutableGenerationId: 'target-generation' }, points: [] },
+            targetedContributions: {
+                target: {
+                    pluginId: 'com.acme.target',
+                    occurrenceId: 'target-occurrence',
+                    sourceCustody: { kind: 'development', registeredRootId: 'target-root' },
+                },
+                points: [],
+            },
         });
         const api = await createPluginUiHostApiClientFromTransport({
             authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' },

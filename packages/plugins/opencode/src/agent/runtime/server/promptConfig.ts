@@ -48,6 +48,7 @@ function readPromptModel(update: Readonly<Record<string, unknown>>): Readonly<{
 
 export function projectOpenCodeSessionConfiguration(
   configuration: Readonly<{
+    mode?: Readonly<{ value: string | null }>;
     model: Readonly<{ value: string | null }>;
     options: Readonly<Record<string, Readonly<{ value: unknown }>>>;
   }>,
@@ -56,19 +57,21 @@ export function projectOpenCodeSessionConfiguration(
   changed: readonly string[];
 }> {
   const promptOptions = Object.entries(configuration.options).filter(
-    ([id]) => id !== 'opencodeBackendMode',
+    ([id]) => id !== 'opencodeBackendMode' && id !== 'opencodeCliGeneration',
   );
   return Object.freeze({
     updates: Object.freeze([
       Object.freeze({
         modelId: configuration.model.value,
       }),
+      ...(configuration.mode?.value ? [Object.freeze({ modeId: configuration.mode.value })] : []),
       ...promptOptions.map(([id, option]) => Object.freeze({
         configOption: Object.freeze({ id, value: option.value }),
       })),
     ]),
     changed: Object.freeze([
       'model',
+      ...(configuration.mode?.value ? ['mode'] : []),
       ...promptOptions.map(([id]) => `options.${id}`),
     ]),
   });

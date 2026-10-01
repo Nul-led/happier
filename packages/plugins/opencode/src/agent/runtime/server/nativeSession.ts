@@ -10,14 +10,14 @@ import { readOpenCodeServerEndpoint } from './endpoint.js';
 import { createOpenCodeRuntimeContext } from './runtimeContext.js';
 import type { OpenCodeActiveSkillsReaderRegistrar } from '../controls.js';
 
-function readModelsService(
+function readSessionServices(
   context: AgentRuntimeContext,
-): AgentSessionRuntimeContext['session']['services']['models'] | null {
+): AgentSessionRuntimeContext['session']['services'] | null {
   const session = context.session as
     | AgentSessionRuntimeContext['session']
     | Readonly<{ id: string }>
     | undefined;
-  return session && 'services' in session ? session.services.models : null;
+  return session && 'services' in session ? session.services : null;
 }
 
 export async function openOpenCodeServerSession(
@@ -26,8 +26,13 @@ export async function openOpenCodeServerSession(
   workState?: AgentSessionRuntimeContext['workState'],
   bindActiveSkillsReader?: OpenCodeActiveSkillsReaderRegistrar,
 ): Promise<AgentSessionRuntime> {
-  const runtimeContext = createOpenCodeRuntimeContext(request, context, workState);
-  const models = readModelsService(context);
+  const sessionServices = readSessionServices(context);
+  const runtimeContext = createOpenCodeRuntimeContext(
+    request,
+    context,
+    workState,
+    sessionServices?.subagents,
+  );
   const env = request.launchEnvironment?.values ?? {};
   const assembly = await createOpenCodeServerRuntimeAssembly({
     ctx: runtimeContext,
@@ -38,7 +43,8 @@ export async function openOpenCodeServerSession(
     permissionMode: request.configuration?.permissionIntent.value ?? null,
     mcpServers: request.mcpServers,
     request,
-    ...(models ? { models } : {}),
+    ...(sessionServices ? { models: sessionServices.models, modes: sessionServices.modes } : {}),
+    ...(sessionServices?.inputFiles ? { inputFiles: sessionServices.inputFiles } : {}),
     ...(bindActiveSkillsReader ? { bindActiveSkillsReader } : {}),
   });
   return assembly.runtime;

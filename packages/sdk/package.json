@@ -18,6 +18,12 @@
       "default": "./dist/index.js"
     }
   },
+  "imports": {
+    "#http": {
+      "node": "./dist/http/undiciHttp.js",
+      "default": "./dist/http/fetchHttp.js"
+    }
+  },
   "files": [
     "dist",
     "examples/basic/package.json",
@@ -28,6 +34,8 @@
     "examples/comprehensive/index.ts",
     "examples/external-plugin/README.md",
     "examples/external-plugin/index.ts",
+    "examples/child-token/README.md",
+    "examples/child-token/index.ts",
     "package.json",
     "README.md",
     "API.md",
@@ -60,24 +68,34 @@
     "test": "../../apps/stack/bin/hstack-exec --script=test:local",
     "test:local": "vitest run --config ./vitest.config.ts && node --import tsx --test ./scripts/*.test.mjs",
     "test:finite": "yarn -s test:local",
-    "test:external-consumer": "node ./scripts/validateNodeNextConsumer.mjs",
+    "test:external-consumer": "node --import tsx ./scripts/validateNodeNextConsumer.mjs",
+    "test:browser-consumer": "node --import tsx ./scripts/validateBrowserConsumer.mjs",
     "typecheck": "../../apps/stack/bin/hstack-exec --script=typecheck:local",
     "typecheck:local": "yarn -s check:api-governance && node ../../scripts/workspaces/runTypeScriptCli.mjs --noEmit -p tsconfig.tests.json && yarn -s test:external-consumer",
     "typecheck:finite": "node ../../scripts/workspaces/runTypeScriptCli.mjs --noEmit -p tsconfig.tests.json && yarn -s test:external-consumer"
   },
   "bundledDependencies": [
     "@happier-dev/agents",
-    "@happier-dev/protocol"
+    "@happier-dev/protocol",
+    "@happier-dev/connection-supervisor",
+    "@happier-dev/session-core",
+    "@happier-dev/sync-client"
   ],
   "dependencies": {
     "@happier-dev/agents": "0.0.0",
     "@happier-dev/protocol": "0.0.0",
+    "@happier-dev/connection-supervisor": "0.0.0",
+    "@happier-dev/session-core": "0.0.0",
+    "@happier-dev/sync-client": "0.0.0",
+    "socket.io-client": "^4.8.1",
     "undici": "^6.23.0"
   },
   "devDependencies": {
+    "socket.io": "^4.8.1",
     "@types/node": "^22.18.0",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "esbuild": "^0.27.2"
   }
 }

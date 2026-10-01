@@ -6,6 +6,7 @@ import { ingestCanonicalPluginManifest } from '@/plugins/manifest/ingest';
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import { projectLoadedPluginContributes } from '@/plugins/projection/registry/resolvePluginContributions';
 import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import { buildPluginProjectionV2 } from './v2';
 
@@ -88,10 +89,17 @@ function resolveRegistry(
     loadedPlugins: readonly LoadedPlugin[],
     provenance: 'first_party' | 'external' = 'external',
 ): ResolvedContributionRegistry {
-    return createResolvedContributionRegistry(projectLoadedPluginContributes({
+    const inputs = projectLoadedPluginContributes({
         loadResult: { loadedPlugins, diagnosticsByPluginId: {} },
         provenance,
-    }));
+    });
+    return createResolvedContributionRegistry({
+        ...inputs,
+        occurrenceIdsByPluginId: Object.fromEntries(loadedPlugins.map((plugin) => [
+            plugin.pluginId,
+            createPluginRuntimeOccurrenceId(plugin.pluginId),
+        ])),
+    });
 }
 
 function projectUiEntries(

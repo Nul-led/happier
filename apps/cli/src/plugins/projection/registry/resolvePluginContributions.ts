@@ -1,8 +1,7 @@
 import { loadInstalledPlugins } from '../../discovery/load/installed';
 import type { PluginCompatibilityDiagnostic } from '../../validation/diagnostics/types';
 import { buildPluginContributionRegistry } from './normalize/package';
-import { loadBundledPluginLocators } from './builtIn/locators';
-import { BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS } from './sources/generatedBundledPluginManifests';
+import { loadCurrentBundledPluginLocatorResult } from './builtIn/locators';
 import { collectNormalizedRegistryIntrospectionCandidates } from '@/plugins/projection/introspection/normalizedRegistry';
 import { resolveContributedAgentRoutingId } from './agentRoutingIdentity';
 import { projectManifestAgentContribution } from './projectManifestAgentContribution';
@@ -17,6 +16,7 @@ import type {
     ResolvedContributionInputs,
     ResolvedContributionProvenance,
     ResolvedExecutionRunProfileContribution,
+    ResolvedRoleContribution,
     ResolvedEventContribution,
     ResolvedHostedWebContribution,
     ResolvedInstallableContribution,
@@ -275,9 +275,7 @@ export function projectLoadedPluginContributes(
         loadedPlugins: loadResult.loadedPlugins,
         ...(params.provenance === 'external'
             ? {
-                referencePlugins: loadBundledPluginLocators(
-                    BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS,
-                ),
+                referencePlugins: loadCurrentBundledPluginLocatorResult().loadedPlugins,
             }
             : {}),
     });
@@ -322,6 +320,7 @@ export function projectLoadedPluginContributes(
     const systemToolCandidates: PluginResolvedSystemToolContribution[] = [];
     const requestInterceptorCandidates: PluginResolvedRequestInterceptorContribution[] = [];
     const voiceModelPackCandidates: ResolvedVoiceModelPackContribution[] = [];
+    const roleCandidates: ResolvedRoleContribution[] = [];
     const voiceProviderCandidates: ResolvedVoiceProviderContribution[] = [];
     const accountCollectionCandidates: ResolvedAccountCollectionContribution[] = [];
     const pluginContributionPointCandidates: ResolvedPluginContributionPointDeclaration[] = [];
@@ -890,6 +889,18 @@ export function projectLoadedPluginContributes(
       });
     }
 
+    for (const contribution of pluginRegistry.roles) {
+        roleCandidates.push({
+            provenance: params.provenance,
+            source: { kind: contribution.sourceSpec.kind },
+            pluginId: contribution.pluginId,
+            pluginVersion: contribution.pluginVersion,
+            identity: contribution.identity!,
+            manifestPath: contribution.manifestPath,
+            definition: contribution.definition,
+        });
+    }
+
     for (const contribution of pluginRegistry.voiceModelPacks) {
         voiceModelPackCandidates.push({
             provenance: params.provenance,
@@ -928,6 +939,13 @@ export function projectLoadedPluginContributes(
             pluginVersion: contribution.pluginVersion,
             identity: contribution.identity!,
             manifestPath: contribution.manifestPath,
+            pluginRootPath: contribution.pluginRootPath,
+            ...(contribution.generatedUiArtifactsManifest
+                ? { generatedUiArtifactsManifest: contribution.generatedUiArtifactsManifest }
+                : {}),
+            ...(contribution.migrationArtifact
+                ? { migrationArtifact: contribution.migrationArtifact }
+                : {}),
             definition: contribution.definition,
         });
     }
@@ -982,6 +1000,7 @@ export function projectLoadedPluginContributes(
         systemTools: Object.freeze(systemToolCandidates),
         requestInterceptors: Object.freeze(requestInterceptorCandidates),
         voiceModelPacks: Object.freeze(voiceModelPackCandidates),
+        roles: Object.freeze(roleCandidates),
         voiceProviders: Object.freeze(voiceProviderCandidates),
         accountCollections: Object.freeze(accountCollectionCandidates),
         pluginContributionPoints: Object.freeze(pluginContributionPointCandidates),

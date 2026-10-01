@@ -312,17 +312,14 @@ function readPersistedProviderContributionSelection(
     );
   }
   const contributionId = ownChannelStateValue(value, 'contributionId');
-  const immutableGenerationId = ownChannelStateValue(value, 'immutableGenerationId');
   if (typeof contributionId !== 'string'
-    || contributionId.length === 0
-    || typeof immutableGenerationId !== 'string'
-    || immutableGenerationId.length === 0) {
+    || contributionId.length === 0) {
     throw policyError(
       'channels_connection_update_corrupt',
       'Connection update target has an invalid persisted provider contribution selection.',
     );
   }
-  return { contributionId, immutableGenerationId };
+  return { contributionId };
 }
 
 function readPersistedCheckpointedPollInvocationBasis(

@@ -244,7 +244,7 @@ describe('qualified External Session hook transport', () => {
         installationIdentity: 'installation-1',
         variantId: 'variant-1',
         eventId: 'session-stop',
-        pluginGeneration: 'generation-1',
+        pluginOccurrenceId: 'generation-1',
         retirementSignal: new AbortController().signal,
     } as const;
 

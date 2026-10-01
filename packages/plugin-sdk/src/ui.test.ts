@@ -279,6 +279,11 @@ describe('plugin UI public surface', () => {
             'search',
             'change-open',
             'change-complete',
+            'issue',
+            'bug',
+            'pin',
+            'conversations',
+            'pause',
         ]);
     });
 

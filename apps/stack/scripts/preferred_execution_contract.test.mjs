@@ -1,16 +1,19 @@
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 const preferredScriptNames = ['test', 'test:unit', 'typecheck', 'vitest'];
 
 async function resolveWorkspacePackageFiles() {
-  const rootPackage = JSON.parse(await readFile('package.json', 'utf8'));
+  const rootPackage = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
   const packageFiles = ['package.json'];
   for (const workspace of rootPackage.workspaces.packages) {
     if (workspace === 'packages/plugins/[a-z]*') {
-      const pluginEntries = await readdir('packages/plugins', { withFileTypes: true });
+      const pluginEntries = await readdir(join(repoRoot, 'packages/plugins'), { withFileTypes: true });
       for (const entry of pluginEntries) {
         if (entry.isDirectory() && entry.name !== 'node_modules' && /^[a-z]/.test(entry.name)) {
           packageFiles.push(join('packages/plugins', entry.name, 'package.json'));
@@ -40,7 +43,7 @@ function preferredExecutionLauncher(packageFile) {
 test('ordinary internal test and typecheck entry points use preferred execution with explicit local owners', async () => {
   const packageFiles = await resolveWorkspacePackageFiles();
   for (const packageFile of packageFiles) {
-    const pkg = JSON.parse(await readFile(packageFile, 'utf8'));
+    const pkg = JSON.parse(await readFile(join(repoRoot, packageFile), 'utf8'));
     for (const script of preferredScriptNames) {
       if (typeof pkg.scripts?.[script] !== 'string') continue;
       assert.equal(
@@ -63,6 +66,6 @@ test('ordinary internal test and typecheck entry points use preferred execution 
 });
 
 test('the repository exposes one preferred-execution wrapper for arbitrary bounded commands', async () => {
-  const pkg = JSON.parse(await readFile('package.json', 'utf8'));
+  const pkg = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
   assert.equal(pkg.scripts.exec, 'apps/stack/bin/hstack-exec');
 });

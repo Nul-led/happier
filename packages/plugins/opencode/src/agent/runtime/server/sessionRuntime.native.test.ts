@@ -37,6 +37,8 @@ function createOperationsFixture() {
     compactContext: vi.fn(async () => undefined),
     listSkills: vi.fn(async () => []),
     readSessionIdentity: vi.fn(() => ({ sessionId: 'provider-session-child' })),
+    readModelCatalog: () => ({ observedAt: 0, models: null }),
+    readModeCatalog: () => ({ observedAt: 0, modes: null, currentModeId: null }),
     isHappierAuthoredProviderUserMessageId: vi.fn(() => false),
     updateSessionRuntimeConfig: vi.fn(async () => undefined),
     handleProviderEvent: vi.fn(async () => undefined),
@@ -68,6 +70,8 @@ function createRuntime(options: Readonly<{
     sessionId: string,
     reader: () => Promise<unknown>,
   ) => Readonly<{ dispose(): void }>;
+  inputFiles?: NonNullable<Parameters<typeof createOpenCodeSessionRuntime>[0]['inputFiles']>;
+  prepareProviderCliAttach?: NonNullable<Parameters<typeof createOpenCodeSessionRuntime>[0]['prepareProviderCliAttach']>;
 }> = {}) {
   const fixture = createOperationsFixture();
   const disposeOperations = vi.fn(async () => undefined);
@@ -81,6 +85,10 @@ function createRuntime(options: Readonly<{
     },
     disposeOperations,
     ...(options.models ? { models: options.models } : {}),
+    ...(options.inputFiles ? { inputFiles: options.inputFiles } : {}),
+    ...(options.prepareProviderCliAttach
+      ? { prepareProviderCliAttach: options.prepareProviderCliAttach }
+      : {}),
     ...(options.bindActiveSkillsReader
       ? { bindActiveSkillsReader: options.bindActiveSkillsReader }
       : {}),
@@ -89,6 +97,24 @@ function createRuntime(options: Readonly<{
 }
 
 describe('createOpenCodeSessionRuntime', () => {
+  it('exposes the server assembly provider CLI attach preparation without creating another owner', async () => {
+    const prepareProviderCliAttach = vi.fn(async () => ({
+      path: '/repo',
+      runtimeDescriptorV1: {
+        v: 1 as const,
+        agentId: 'opencode',
+        agent: { backendMode: 'server', providerSessionId: 'provider-session-child' },
+      },
+    }));
+    const { runtime } = createRuntime({ prepareProviderCliAttach });
+
+    await expect(runtime.prepareProviderCliAttach?.()).resolves.toEqual({
+      path: '/repo',
+      runtimeDescriptorV1: expect.objectContaining({ agentId: 'opencode' }),
+    });
+    expect(prepareProviderCliAttach).toHaveBeenCalledOnce();
+  });
+
   it('wakes an event-driven completion wait immediately on terminal provider events', async () => {
     const { runtime, publish } = createRuntime();
     publish({
@@ -549,7 +575,7 @@ describe('createOpenCodeSessionRuntime', () => {
       effectiveModelId: 'anthropic/sonnet',
     });
 
-    expect(modelSource?.read()).toEqual({ models: [], currentModelId: null });
+    expect(modelSource?.read()).toEqual({ observedAt: 0, models: [], currentModelId: null });
     await runtime.send({
       inputIds: ['input-model'],
       input: { text: 'Use Sonnet' },
@@ -557,6 +583,7 @@ describe('createOpenCodeSessionRuntime', () => {
     });
 
     expect(modelSource?.read()).toEqual({
+      observedAt: 0,
       models: [{ id: 'anthropic/sonnet', name: 'anthropic/sonnet' }],
       currentModelId: 'anthropic/sonnet',
     });
@@ -609,6 +636,7 @@ describe('createOpenCodeSessionRuntime', () => {
     });
 
     expect(modelSource?.read()).toEqual({
+      observedAt: 0,
       models: [{ id: 'vendor/gateway-model', name: 'vendor/gateway-model' }],
       currentModelId: 'vendor/gateway-model',
     });
@@ -1145,5 +1173,51 @@ describe('createOpenCodeSessionRuntime', () => {
 
     expect(operations.beginTurnLifecycle).not.toHaveBeenCalled();
     expect(operations.sendTurnPrompt).not.toHaveBeenCalled();
+  });
+
+  it('sends a host-verified image as an exact OpenCode file part', async () => {
+    const readVerifiedImage = vi.fn(async () => ({
+      url: 'data:image/png;base64,iVBORw0KGgo=',
+      mimeType: 'image/png',
+      filename: 'screen.png',
+    }));
+    const { runtime, operations } = createRuntime({
+      inputFiles: { readVerifiedImage },
+    });
+
+    await expect(runtime.send({
+      inputIds: ['input-image'],
+      input: {
+        text: 'Inspect this',
+        structuredInput: {
+          v: 1,
+          imageInputs: [{
+            id: 'image-verified',
+            kind: 'localImage',
+            path: '.happier/uploads/messages/message-1/screen.png',
+            mimeType: 'image/png',
+            sha256: 'a'.repeat(64),
+            sizeBytes: 123,
+            provenance: { kind: 'sessionAttachmentUpload' },
+          }],
+        },
+      },
+      delivery: { kind: 'newTurn', turnId: 'turn-image' },
+    })).resolves.toEqual({ status: 'admitted' });
+
+    expect(operations.sendTurnPrompt).toHaveBeenCalledWith(
+      'Inspect this',
+      expect.objectContaining({
+        promptParts: [
+          { type: 'text', text: 'Inspect this' },
+          {
+            type: 'file',
+            mime: 'image/png',
+            filename: 'screen.png',
+            url: 'data:image/png;base64,iVBORw0KGgo=',
+          },
+        ],
+      }),
+    );
   });
 });

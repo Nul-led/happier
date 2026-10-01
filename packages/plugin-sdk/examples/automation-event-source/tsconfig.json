@@ -11,6 +11,6 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "ui/**/*.ts", "pluginUiBuild.ts"],
+  "include": ["src/**/*.ts", "ui/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

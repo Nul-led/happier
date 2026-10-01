@@ -49,7 +49,7 @@ export type PluginDiagnosticEnrichmentContext = Readonly<{
   plugin: PluginDiagnosticRecordV1['plugin'];
   contribution?: PluginDiagnosticRecordV1['contribution'];
   stage: PluginDiagnosticStageV1;
-  generation?: string;
+  occurrenceId?: string;
   host: PluginDiagnosticHostV1;
   platform: string;
   correlationId?: string;
@@ -119,7 +119,7 @@ export function enrichPluginDiagnosticRecord(
     plugin: context.plugin,
     ...(context.contribution ? { contribution: context.contribution } : {}),
     stage: context.stage,
-    ...(context.generation ? { generation: context.generation } : {}),
+    ...(context.occurrenceId ? { occurrenceId: context.occurrenceId } : {}),
     host: context.host,
     platform: context.platform,
     ...(context.correlationId ? { correlationId: context.correlationId } : {}),
@@ -162,7 +162,7 @@ export function projectPluginCompatibilityDiagnostics(params: Readonly<{
   diagnostics: readonly PluginCompatibilityDiagnostic[];
   plugin: PluginDiagnosticRecordV1['plugin'];
   defaultStage: PluginDiagnosticStageV1;
-  generation?: string;
+  occurrenceId?: string;
   host: PluginDiagnosticHostV1;
   platform: string;
   occurredAtMs: number;
@@ -178,7 +178,7 @@ export function projectPluginCompatibilityDiagnostics(params: Readonly<{
       plugin: params.plugin,
       ...(diagnostic.contribution === undefined ? {} : { contribution: diagnostic.contribution }),
       stage: diagnostic.stage ?? params.defaultStage,
-      ...(params.generation === undefined ? {} : { generation: params.generation }),
+      ...(params.occurrenceId === undefined ? {} : { occurrenceId: params.occurrenceId }),
       host: params.host,
       platform: params.platform,
       occurredAtMs: params.occurredAtMs,
@@ -228,6 +228,7 @@ export function projectPluginContributionIntrospection(params: Readonly<{
   candidates: readonly PluginContributionIntrospectionCandidate[];
   diagnostics: readonly PluginDiagnosticRecordV1[];
   runtimeFactsByQualifiedId?: ReadonlyMap<string, PluginContributionRuntimeFacts>;
+  occurrenceIdsByPluginId?: Readonly<Record<string, string>>;
   progression?: Readonly<{ merged: boolean }>;
 }>): PluginContributionIntrospectionProjectionV1 {
   const seenQualifiedIds = new Set<string>();
@@ -258,6 +259,9 @@ export function projectPluginContributionIntrospection(params: Readonly<{
       return {
         version: 1,
         contribution,
+        ...(params.occurrenceIdsByPluginId?.[contribution.pluginId]
+          ? { occurrenceId: params.occurrenceIdsByPluginId[contribution.pluginId] }
+          : {}),
         progression: {
           declared: true,
           normalized: true,

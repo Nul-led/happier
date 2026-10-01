@@ -6,7 +6,10 @@ import type {
 
 import {
     probeClaudeSupportsEffortRaw,
+    probeClaudeSupportsSystemPromptSnapshotOffRaw,
 } from './models.js';
+import { createClaudeNativeRuntime } from '../runtime/nativeRuntime.js';
+import type { AgentSessionRuntimeContext } from '@happier-dev/plugin-sdk/agents/runtime';
 
 function createExecRunFixture(params: Readonly<{
     exitCode?: number | null;
@@ -48,6 +51,52 @@ function createExecRunFixture(params: Readonly<{
 }
 
 describe('probeClaudeSupportsEffortRaw', () => {
+    it('requires both installed file transport and snapshot-off to apply a plan on resume', async () => {
+        for (const [index, stdout] of [
+            '--append-system-prompt-file <path>\n--system-prompt-snapshot <on|off>',
+            '--append-system-prompt-file <path>',
+            '--system-prompt-snapshot <on|off>',
+        ].entries()) {
+            const fixture = createExecRunFixture({ stdout, executablePath: `/managed/startup-${index}/claude` });
+            const runtime = createClaudeNativeRuntime({
+                openSession: async () => { throw new Error('native-effect'); },
+            });
+            // Exec is the installed-binary boundary; no Agent is started by this fixture.
+            const opening = runtime.sessions!.open({
+                kind: 'resume', sessionId: 'installed-startup', providerSessionId: 'native-1', cwd: '/workspace',
+                startupInstructions: { v: 1, id: 'test.plan', revision: 1, instructions: 'Full plan' },
+            }, { services: { exec: fixture.exec } } as unknown as AgentSessionRuntimeContext);
+            if (index === 0) await expect(opening).rejects.toThrow('native-effect');
+            else await expect(opening).rejects.toMatchObject({ code: 'agent_session_startup_instructions_unsupported' });
+        }
+    });
+    it('shares the installed help probe for effort and snapshot-off support and fails closed', async () => {
+        const supported = createExecRunFixture({
+            stdout: '  --effort <level>\n  --system-prompt-snapshot <on|off>',
+            executablePath: '/managed/snapshot-supported/claude',
+        });
+        const unsupported = createExecRunFixture({
+            stdout: 'Claude Code help',
+            executablePath: '/managed/snapshot-unsupported/claude',
+        });
+        const failed = createExecRunFixture({
+            exitCode: 2,
+            stdout: '--system-prompt-snapshot <on|off>',
+            executablePath: '/managed/snapshot-failed/claude',
+        });
+        const input = { exec: supported.exec, cwd: '/workspace', timeoutMs: 2_500 };
+        await expect(Promise.all([
+            probeClaudeSupportsEffortRaw(input),
+            probeClaudeSupportsSystemPromptSnapshotOffRaw(input),
+        ])).resolves.toEqual([true, true]);
+        expect(supported.runs).toHaveLength(1);
+        for (const fixture of [unsupported, failed]) {
+            await expect(probeClaudeSupportsSystemPromptSnapshotOffRaw({
+                exec: fixture.exec, cwd: '/workspace', timeoutMs: 2_500,
+            })).resolves.toBe(false);
+        }
+    });
+
     it('returns one fail-closed installed effort capability fact', async () => {
         const supported = createExecRunFixture({
             stdout: '  --effort <level>',

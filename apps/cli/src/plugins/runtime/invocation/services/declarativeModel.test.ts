@@ -54,7 +54,7 @@ function expectPluginError(operation: () => unknown, code: string): void {
 describe('stable declarative plugin model', () => {
     it('projects host Action requests without borrowing the contributed Action inventory', () => {
         const model = createStablePluginDeclarativeModel({
-            pluginId: 'com.acme.forms', generation: 'generation-7', actions: [], settings: [],
+            pluginId: 'com.acme.forms', occurrenceId: 'occurrenceId-7', actions: [], settings: [],
             renderer: { id: 'send', kind: 'declarative', root: {
                 kind: 'action', hostAction: 'session.message.send', label: 'Send', input: { text: 'Hello' },
             } },
@@ -74,7 +74,7 @@ describe('stable declarative plugin model', () => {
 
         const model = createStablePluginDeclarativeModel({
             pluginId: 'com.acme.forms',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             renderer: {
                 id: 'preferences',
                 kind: 'declarative',
@@ -121,7 +121,7 @@ describe('stable declarative plugin model', () => {
             pluginId: 'com.acme.forms',
             localId: 'preferences',
             qualifiedId: 'com.acme.forms/preferences',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
         });
         expect(model.visible).toBe(true);
         const nodes = listDeclarativeNodesInPreorder(model.root);
@@ -167,7 +167,7 @@ describe('stable declarative plugin model', () => {
     it('carries the document once, as root, with no duplicate flat node list', () => {
         const model = createStablePluginDeclarativeModel({
             pluginId: 'com.acme.forms',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             renderer: {
                 id: 'nested',
                 kind: 'declarative',
@@ -209,7 +209,7 @@ describe('stable declarative plugin model', () => {
     const inputValidation = preparePluginJsonSchema(inputNormalizer.jsonSchema);
     const model = createStablePluginDeclarativeModel({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-dashboard-a',
+      occurrenceId: 'occurrenceId-dashboard-a',
       renderer: {
         id: 'dashboard',
         kind: 'declarative',
@@ -234,7 +234,8 @@ describe('stable declarative plugin model', () => {
           contributor: {
             pluginId: 'com.acme.review',
             contributionId: 'detail',
-            immutableGenerationId: 'review-generation-a',
+            occurrenceId: 'review-occurrence-a',
+            sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
           },
           role: 'detail',
           presentation: 'content',
@@ -252,7 +253,8 @@ describe('stable declarative plugin model', () => {
         contributor: {
           pluginId: 'com.acme.review',
           contributionId: 'detail',
-          immutableGenerationId: 'review-generation-a',
+          occurrenceId: 'review-occurrence-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
         },
         presentation: 'content',
       },
@@ -270,7 +272,7 @@ describe('stable declarative plugin model', () => {
     });
     const model = createStablePluginDeclarativeModel({
       pluginId: 'com.acme.forms',
-      generation: 'generation-8',
+      occurrenceId: 'occurrenceId-8',
       renderer: {
         id: 'text-only',
         kind: 'declarative',
@@ -294,7 +296,7 @@ describe('stable declarative plugin model', () => {
       actions: [{
         identity: { pluginId: 'com.acme.forms', localId: 'refresh' },
         qualifiedId: 'com.acme.forms/refresh',
-        generation: 'generation-8',
+        occurrenceId: 'occurrenceId-8',
         enabled: true,
       }],
       settings: [
@@ -334,7 +336,7 @@ describe('stable declarative plugin model', () => {
     } satisfies NormalizedPluginCollectionUiQueryDescriptorV1;
     const model = createStablePluginDeclarativeModel({
       pluginId: 'com.acme.forms',
-      generation: 'generation-8',
+      occurrenceId: 'occurrenceId-8',
       renderer: {
         id: 'tasks',
         kind: 'declarative',
@@ -389,7 +391,7 @@ describe('stable declarative plugin model', () => {
 
     const model = createStablePluginDeclarativeModel({
       pluginId: 'com.acme.forms',
-      generation: 'generation-collection-commands',
+      occurrenceId: 'occurrenceId-collection-commands',
       renderer: {
         id: 'tasks',
         kind: 'declarative',
@@ -426,7 +428,7 @@ describe('stable declarative plugin model', () => {
       destinations: [{
         identity: details,
         qualifiedId: 'com.acme.forms/task-details',
-        generation: 'generation-collection-commands',
+        occurrenceId: 'occurrenceId-collection-commands',
       }],
     });
     expect(model.root).toMatchObject({
@@ -436,7 +438,7 @@ describe('stable declarative plugin model', () => {
         action: {
           identity: inspect,
           qualifiedId: 'com.acme.forms/inspect-task',
-          generation: 'generation-collection-commands',
+          occurrenceId: 'occurrenceId-collection-commands',
         },
       },
       secondaryCommands: [{
@@ -444,7 +446,7 @@ describe('stable declarative plugin model', () => {
         destination: {
           identity: details,
           qualifiedId: 'com.acme.forms/task-details',
-          generation: 'generation-collection-commands',
+          occurrenceId: 'occurrenceId-collection-commands',
         },
       }],
     });
@@ -457,7 +459,7 @@ describe('stable declarative plugin model', () => {
         });
         const base = {
             pluginId: 'com.acme.forms',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             actions: [{ pluginId: 'com.acme.forms', localId: 'save' }],
             availability: { visible: true, enabledActions: {} },
         } as const;
@@ -490,7 +492,7 @@ describe('stable declarative plugin model', () => {
     it('rejects a foreign Action even when that Action appears in the admitted inventory', () => {
         expectPluginError(() => createStablePluginDeclarativeModel({
             pluginId: 'com.acme.forms',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             settings: [],
             actions: [
                 { pluginId: 'com.acme.forms', localId: 'save' },
@@ -537,7 +539,7 @@ describe('stable declarative plugin model', () => {
 
         expectPluginError(() => createStablePluginDeclarativeModel({
             pluginId: 'com.acme.forms',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             settings: [settings],
             actions: [],
             renderer: {
@@ -572,7 +574,7 @@ describe('stable declarative plugin model', () => {
         });
         expectPluginError(() => createStablePluginDeclarativeModel({
             pluginId: 'com.acme.forms',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             settings: [settings],
             actions: [],
             renderer: {
@@ -600,7 +602,7 @@ describe('stable declarative plugin model', () => {
         });
         const base = {
             pluginId: 'com.acme.forms',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             settings: [],
             actions: [{ pluginId: 'com.acme.forms', localId: 'save' }],
         } as const;
@@ -637,7 +639,7 @@ describe('stable declarative plugin model', () => {
     it('maps malformed availability to a coded model error', () => {
         expectPluginError(() => createStablePluginDeclarativeModel({
             pluginId: 'com.acme.forms',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             settings: [],
             actions: [],
             renderer: {
@@ -668,7 +670,7 @@ describe('stable declarative plugin model', () => {
         });
         const build = (root: unknown) => createStablePluginDeclarativeModel({
             pluginId: 'com.acme.forms',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             settings: [],
             actions: [],
             renderer: { id: 'bounded', kind: 'declarative', root: root as never },
@@ -688,7 +690,7 @@ describe('stable declarative plugin model', () => {
     it('normalizes the list vocabulary and binds item actions through the one action owner', () => {
         const model = createStablePluginDeclarativeModel({
             pluginId: 'com.acme.repos',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             settings: [],
             actions: [
                 { pluginId: 'com.acme.repos', localId: 'open' },
@@ -764,7 +766,7 @@ describe('stable declarative plugin model', () => {
             title: 'happier',
             icon: 'file',
             tone: 'success',
-            action: { qualifiedId: 'com.acme.repos/open', generation: 'generation-7' },
+            action: { qualifiedId: 'com.acme.repos/open', occurrenceId: 'occurrenceId-7' },
             input: { id: 'happier' },
             enabled: true,
         });
@@ -782,7 +784,7 @@ describe('stable declarative plugin model', () => {
     it('refuses a semantic container holding children it cannot render', () => {
         const build = (root: unknown) => createStablePluginDeclarativeModel({
             pluginId: 'com.acme.repos',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             settings: [],
             actions: [{ pluginId: 'com.acme.repos', localId: 'open' }],
             renderer: { id: 'grammar', kind: 'declarative', root: root as never },
@@ -808,7 +810,7 @@ describe('stable declarative plugin model', () => {
     it('fails closed for an unbound item action and an input without one', () => {
         const base = {
             pluginId: 'com.acme.repos',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             settings: [],
             actions: [{ pluginId: 'com.acme.repos', localId: 'open' }],
             availability: { visible: true, enabledActions: {} },
@@ -849,7 +851,7 @@ describe('stable declarative plugin model', () => {
         });
         const build = (root: unknown) => createStablePluginDeclarativeModel({
             pluginId: 'com.acme.repos',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             settings: [],
             actions: [],
             renderer: { id: 'rows', kind: 'declarative', root: root as never },
@@ -866,7 +868,7 @@ describe('stable declarative plugin model', () => {
     it('maps a malformed identity inventory to its coded domain error', () => {
         expectPluginError(() => createStablePluginDeclarativeModel({
             pluginId: 'com.acme.forms',
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             settings: [],
             actions: null as unknown as [],
             renderer: {
@@ -895,10 +897,10 @@ describe('stable structured-message plugin model', () => {
         availability: { when: { fact: 'session.exists', operator: 'equals', value: true } },
     };
 
-    it('normalizes bounded values, actions, resources, fallback, and generation identity without executing them', () => {
+    it('normalizes bounded values, actions, resources, fallback, and occurrenceId identity without executing them', () => {
         const model = createStablePluginStructuredMessageModel({
             pluginId: 'com.acme.build',
-            generation: 'generation-8',
+            occurrenceId: 'occurrenceId-8',
             descriptor,
             value: {
                 kind: 'acme.build-result.v1',
@@ -927,7 +929,7 @@ describe('stable structured-message plugin model', () => {
             pluginId: 'com.acme.build',
             localId: 'build-result',
             qualifiedId: 'com.acme.build/build-result',
-            generation: 'generation-8',
+            occurrenceId: 'occurrenceId-8',
         });
         expect(model.renderer.qualifiedId).toBe('com.acme.build/result-card');
         expect(model.actions.map((action) => [action.qualifiedId, action.enabled])).toEqual([
@@ -947,7 +949,7 @@ describe('stable structured-message plugin model', () => {
     it('validates values and references, fails conditional visibility closed, and rejects accessors without reading them', () => {
         const base = {
             pluginId: 'com.acme.build',
-            generation: 'generation-8',
+            occurrenceId: 'occurrenceId-8',
             descriptor,
             actions: [
                 { pluginId: 'com.acme.build', localId: 'retry' },
@@ -998,7 +1000,7 @@ describe('stable structured-message plugin model', () => {
         Object.setPrototypeOf(nullPrototypePayload, null);
         const base = {
             pluginId: 'com.acme.build',
-            generation: 'generation-8',
+            occurrenceId: 'occurrenceId-8',
             actions: [],
             resources: [],
             renderers: [{ pluginId: 'com.acme.build', localId: 'result-card' }],
@@ -1043,7 +1045,7 @@ describe('stable structured-message plugin model', () => {
         const exactPayload = 'x'.repeat((1024 * 1024) - 2);
         const exact = createStablePluginStructuredMessageModel({
             pluginId: 'com.acme.build',
-            generation: 'generation-8',
+            occurrenceId: 'occurrenceId-8',
             descriptor: {
                 ...descriptor,
                 payloadSchema: { type: 'string' },
@@ -1062,7 +1064,7 @@ describe('stable structured-message plugin model', () => {
 
         expectPluginError(() => createStablePluginStructuredMessageModel({
             pluginId: 'com.acme.build',
-            generation: 'generation-8',
+            occurrenceId: 'occurrenceId-8',
             descriptor: {
                 ...descriptor,
                 payloadSchema: { type: 'string' },
@@ -1082,7 +1084,7 @@ describe('stable structured-message plugin model', () => {
     it('rejects malformed resource identities with a coded boundary error', () => {
         expectPluginError(() => createStablePluginStructuredMessageModel({
             pluginId: 'com.acme.build',
-            generation: 'generation-8',
+            occurrenceId: 'occurrenceId-8',
             descriptor: { ...descriptor, actions: [] },
             value: {
                 kind: 'acme.build-result.v1',
@@ -1104,7 +1106,7 @@ describe('stable structured-message plugin model', () => {
         };
         expectPluginError(() => createStablePluginStructuredMessageModel({
             pluginId: 'com.acme.build',
-            generation: 'generation-8',
+            occurrenceId: 'occurrenceId-8',
             descriptor: { ...descriptor, actions: [] },
             value: valueWithExtraField,
             actions: [],
@@ -1116,7 +1118,7 @@ describe('stable structured-message plugin model', () => {
     it('maps a malformed structured-value envelope to a coded model error', () => {
         expectPluginError(() => createStablePluginStructuredMessageModel({
             pluginId: 'com.acme.build',
-            generation: 'generation-8',
+            occurrenceId: 'occurrenceId-8',
             descriptor: { ...descriptor, actions: [] },
             value: null as unknown as { kind: string; payload: null },
             actions: [],

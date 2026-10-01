@@ -401,6 +401,9 @@ describe('author signature closure source contract', () => {
             "export type { RuntimeDescriptorV1 } from '../../agentRuntime/projections.js';",
         );
         expect(externalSessionsPublicSource).not.toContain('RuntimeDescriptorV1');
+        expect(externalSessionsPublicSource).toContain(
+            "export type { AgentExternalSessionCandidateThread } from '../../externalSessions.js';",
+        );
 
         for (const source of [scmBackendSource, scmBackendPublicSource]) {
             expect(source).toContain('ScmReviewWorkspaceMaterializePreparedRequest');

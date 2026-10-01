@@ -1,6 +1,6 @@
 import { delimiter } from 'node:path';
 
-import { sanitizeDefinedEnv } from '../../utils/test/test_env.mjs';
+import { sanitizeDefinedEnv, sanitizeStackTestRunnerEnv } from '../../utils/test/test_env.mjs';
 
 export function buildStackFixtureEnv({
   baseEnv = process.env,
@@ -13,6 +13,8 @@ export function buildStackFixtureEnv({
   stripStackEnv = false,
   extraEnv = {},
 } = {}) {
+  const isolatedRunnerEnv = stripStackEnv ? sanitizeStackTestRunnerEnv(baseEnv) : {};
+  const isolatedRoot = isolatedRunnerEnv.HAPPIER_STACK_TEST_ISOLATED_ROOT;
   const seed = stripStackEnv
     ? Object.fromEntries(Object.entries(baseEnv ?? {}).filter(([key]) => !key.startsWith('HAPPIER_STACK_')))
     : { ...(baseEnv ?? {}) };
@@ -25,7 +27,12 @@ export function buildStackFixtureEnv({
     ...(sandboxDir ? { HAPPIER_STACK_SANDBOX_DIR: sandboxDir } : {}),
     ...(stackName ? { HAPPIER_STACK_STACK: stackName } : {}),
     ...(envPath ? { HAPPIER_STACK_ENV_FILE: envPath } : {}),
-    ...(stripStackEnv ? { HAPPIER_STACK_CLI_ROOT_DISABLE: '1' } : {}),
+    ...(stripStackEnv ? {
+      HAPPIER_STACK_CLI_ROOT_DISABLE: '1',
+      ...(isolatedRoot ? {
+        HAPPIER_STACK_CANONICAL_HOME_DIR: isolatedRunnerEnv.HAPPIER_STACK_CANONICAL_HOME_DIR,
+      } : {}),
+    } : {}),
     ...extraEnv,
   });
 }

@@ -171,6 +171,49 @@ test('builds examples in an isolated root and leaves the tracked example root un
   }
 });
 
+test('carries hosted-static author input into isolation without copying generated plugin metadata', async () => {
+  const packageRoot = await createExampleFixture();
+  try {
+    await writeFixtureFile(
+      packageRoot,
+      'examples/demo/.happier-plugin/ui/hosted-web/panel/index.html',
+      '<!doctype html><title>Panel</title>\n',
+    );
+    await writeFixtureFile(
+      packageRoot,
+      'examples/demo/.happier-plugin/plugin.json',
+      '{"stale":true}\n',
+    );
+
+    await buildExampleProjects({
+      packageRoot,
+      projects: [{ name: 'demo', entry: 'yarn' }],
+      runBuild: async ({ projectRoot }) => {
+        assert.equal(
+          await readFile(
+            join(projectRoot, '.happier-plugin/ui/hosted-web/panel/index.html'),
+            'utf8',
+          ),
+          '<!doctype html><title>Panel</title>\n',
+        );
+        assert.equal(
+          await readFile(join(projectRoot, '.happier-plugin/plugin.json'), 'utf8').catch(() => undefined),
+          undefined,
+        );
+        await writeFixtureFile(projectRoot, 'dist/index.js', 'export const demo = true;\n');
+        await writeFixtureFile(
+          projectRoot,
+          '.happier-plugin/.happier-daemon-outputs.json',
+          '{"version":1,"outputs":["dist/index.js"]}\n',
+        );
+        return { status: 0 };
+      },
+    });
+  } finally {
+    await rm(packageRoot, { recursive: true, force: true });
+  }
+});
+
 test('a repeated run drops every stale isolated install, cache, source, and output byte', async () => {
   const packageRoot = await createExampleFixture();
   const authorBuild = createAuthorBuildDouble();

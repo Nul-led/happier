@@ -49,9 +49,9 @@ export async function readExactLiveRunnerManagedDependencyRetention(
     retained.push(
       Object.freeze({
         v: 1,
-        sourceGenerationIds:
+        sourceCustodies:
           marker.runnerManagedDependencyRetentionV1
-            .sourceGenerationIds,
+            .sourceCustodies,
         qualifiedDependencyIds:
           marker.runnerManagedDependencyRetentionV1
             .qualifiedDependencyIds,

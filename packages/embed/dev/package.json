@@ -1,0 +1,12 @@
+{
+  "name": "@happier-fixtures/embed-crm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.mjs", "test": "node --test fixture.test.mjs" },
+  "dependencies": {
+    "@happier-dev/embed": "0.0.0", "@happier-dev/sdk": "0.0.0",
+    "@happier-dev/plugin-sdk": "0.0.0", "@happier-dev/protocol": "0.0.0", "esbuild": "0.27.2",
+    "react": "19.2.0", "react-dom": "19.2.0"
+  }
+}

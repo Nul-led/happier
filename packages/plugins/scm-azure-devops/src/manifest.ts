@@ -295,14 +295,12 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
     [AZURE_DEVOPS_TRIAGE_ACTION_IDS.listInstances]: {
       title: 'Discover Azure DevOps organizations',
       description: 'Lists the Azure DevOps deployments each connected account can reach.',
-      scopes: ['global'],
       surfaces: sources.operations.listInstances.declaration.surfaces,
       // Mounted-only placement. `plugin` stays because the Triage daemon
       // consumes it and `ui` because this source's own mounted surfaces hold
       // present-user authority; the explicit empty list only withdraws the
       // Action from global placement discovery — it disables no invocation.
       placementBindings: [],
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.listInstances.declaration.dangerLevel,
       inputSchema: sources.operations.listInstances.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.listInstances.declaration.resultSchema.jsonSchema,
@@ -312,9 +310,7 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
     [AZURE_DEVOPS_TRIAGE_ACTION_IDS.scan]: {
       title: 'Scan Azure DevOps pull requests',
       description: 'Reads one bounded page of the configured Azure DevOps pull-request walk.',
-      scopes: ['global'],
       surfaces: sources.operations.scan.declaration.surfaces,
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.scan.declaration.dangerLevel,
       inputSchema: sources.operations.scan.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.scan.declaration.resultSchema.jsonSchema,
@@ -325,14 +321,12 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
     [AZURE_DEVOPS_TRIAGE_ACTION_IDS.get]: {
       title: 'Read an Azure DevOps pull request',
       description: 'Reads one pull request authoritatively through its configured deployment.',
-      scopes: ['global'],
       surfaces: sources.operations.get.declaration.surfaces,
       // Mounted-only placement. `plugin` stays because the Triage daemon
       // consumes it and `ui` because this source's own mounted surfaces hold
       // present-user authority; the explicit empty list only withdraws the
       // Action from global placement discovery — it disables no invocation.
       placementBindings: [],
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.get.declaration.dangerLevel,
       inputSchema: sources.operations.get.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.get.declaration.resultSchema.jsonSchema,
@@ -343,9 +337,7 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
     [AZURE_DEVOPS_TRIAGE_ACTION_IDS.prepareReviewWorkspace]: {
       title: 'Prepare Azure DevOps review workspace',
       description: 'Revalidates one selected pull request and materializes its source tip locally.',
-      scopes: ['global'],
       surfaces: sources.operations.prepareReviewWorkspace.declaration.surfaces,
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.prepareReviewWorkspace.declaration.dangerLevel,
       inputSchema: sources.operations.prepareReviewWorkspace.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.prepareReviewWorkspace.declaration.resultSchema.jsonSchema,
@@ -356,9 +348,7 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
     [AZURE_DEVOPS_TRIAGE_ACTION_IDS.verifyReviewWorkspace]: {
       title: 'Verify Azure DevOps review workspace',
       description: 'Rereads one pull request and verifies the prepared local HEAD before review.',
-      scopes: ['global'],
       surfaces: sources.operations.verifyReviewWorkspace.declaration.surfaces,
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.verifyReviewWorkspace.declaration.dangerLevel,
       inputSchema: sources.operations.verifyReviewWorkspace.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.verifyReviewWorkspace.declaration.resultSchema.jsonSchema,
@@ -373,11 +363,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Read the Azure DevOps iterations of a pull request',
       description: 'Reads the pull request\u2019s iteration list once, and names the real'
         + ' current iteration the Files and Activity tabs both compare against.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: AzureIterationsInputV1Schema.jsonSchema,
       resultSchema: AzureIterationsResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -388,11 +375,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Read an Azure DevOps commit page',
       description: 'Reads one bounded page of the commits of one pull request, positioned only'
         + ' by the continuation token Azure DevOps issued.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: AzureCommitsInputV1Schema.jsonSchema,
       resultSchema: AzureCommitsResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -403,11 +387,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Read an Azure DevOps iteration change page',
       description: 'Reads one bounded page of the files one pull-request iteration changes,'
         + ' advancing only through the skip and top Azure DevOps issued.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: AzureIterationChangesInputV1Schema.jsonSchema,
       resultSchema: AzureIterationChangesResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -418,11 +399,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Read the Azure DevOps policies of a pull request',
       description: 'Reads the statuses and policy evaluations of one pull request, with'
         + ' enforcement taken only from a returned evaluation.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: AzurePoliciesInputV1Schema.jsonSchema,
       resultSchema: AzurePoliciesResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -433,11 +411,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Read the Azure DevOps threads of a pull request',
       description: 'Reads every review thread of one pull request in the one response the'
         + ' documented endpoint returns.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: AzureThreadsInputV1Schema.jsonSchema,
       resultSchema: AzureThreadsResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -459,10 +434,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       description: 'Completes one active pull request with the branch decision the user chose,'
         + ' only while its merge source is still the commit they saw, and reports the polled'
         + ' terminal state rather than the accepted request.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       // Irreversible on the forge, and it may delete the source branch.
       dangerLevel: 'destructive',
       // The body names the two things Azure will NOT do, because both are decisions a user could
@@ -489,10 +462,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Abandon an Azure DevOps pull request',
       description: 'Abandons one active pull request. Azure can reactivate an abandoned pull'
         + ' request later.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'writesRemote',
       confirmation: {
         title: { key: 'plugins.azureDevops.actions.abandon.confirm.title', fallback: 'Abandon this pull request?' },
@@ -513,10 +484,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Reactivate an Azure DevOps pull request',
       description: 'Reactivates one abandoned pull request, which is Azure’s reopen. A'
         + ' completed pull request is refused rather than reactivated.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'writesRemote',
       // The body says what comes back with it, because reactivating is not a private bookkeeping
       // change: the pull request becomes active again and its reviewers are asked again.
@@ -539,10 +508,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Request review on an Azure DevOps pull request',
       description: 'Adds the selected identities as reviewers of one active pull request through'
         + ' one additive request, leaving every existing reviewer and vote untouched.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'writesRemote',
       // The body states the one thing this write does NOT do, because the reviewer routes Azure
       // publishes can do it: nobody is removed and no existing vote is reset.
@@ -565,10 +532,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Set the status of an Azure DevOps review thread',
       description: 'Sets one review thread’s status and confirms it from the thread itself.'
         + ' The conversation in the thread is never rewritten.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'writesRemote',
       confirmation: {
         title: { key: 'plugins.azureDevops.actions.threadStatus.confirm.title', fallback: 'Change this thread’s status?' },
@@ -592,10 +557,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Submit an Azure DevOps pull request review',
       description: 'Publishes the selected canonical review comments in order and submits the'
         + ' viewer verdict last, only while the exact base and head remain current.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'externalSideEffect',
       confirmation: {
         title: { key: 'plugins.azureDevops.actions.submitReview.confirm.title', fallback: 'Submit this review?' },
@@ -612,10 +575,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Publish an Azure DevOps pull request review comment',
       description: 'Publishes one canonical Happier proposal as a new review thread at its exact'
         + ' preflighted Azure DevOps anchor.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'externalSideEffect',
       confirmation: {
         title: { key: 'plugins.azureDevops.actions.threadCommentCreate.confirm.title', fallback: 'Publish this review comment?' },
@@ -632,10 +593,8 @@ export const AZURE_DEVOPS_PLUGIN = definePlugin({
       title: 'Reply to an Azure DevOps pull request review thread',
       description: 'Publishes one canonical Happier proposal as a reply to the exact Azure DevOps'
         + ' thread and parent comment selected by the reader.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'writesRemote',
       confirmation: {
         title: { key: 'plugins.azureDevops.actions.threadReply.confirm.title', fallback: 'Post this thread reply?' },

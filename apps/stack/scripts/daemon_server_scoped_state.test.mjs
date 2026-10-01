@@ -62,13 +62,18 @@ test('checkDaemonStatePingAware requires a live authenticated control ping', asy
     pingOk = false;
     assert.deepEqual(
       await checkDaemonStatePingAware(dir, { serverUrl }),
-      { status: 'stopped', pid: null },
+      { status: 'unreachable', pid: process.pid, reason: 'ping_failed' },
     );
 
     pingOk = true;
     assert.deepEqual(
       await checkDaemonStatePingAware(dir, { serverUrl }),
-      { status: 'running', pid: process.pid, distClosureFingerprint: null },
+      {
+        status: 'running',
+        pid: process.pid,
+        processInstanceFingerprint: null,
+        distClosureFingerprint: null,
+      },
     );
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -98,7 +103,7 @@ test('checkDaemonStatePingAware honors the caller ping timeout', async () => {
     const startedAt = Date.now();
     assert.deepEqual(
       await checkDaemonStatePingAware(dir, { serverUrl, pingTimeoutMs: 100 }),
-      { status: 'stopped', pid: null },
+      { status: 'unreachable', pid: process.pid, reason: 'ping_failed' },
     );
     assert.ok(Date.now() - startedAt < 750, 'caller ping timeout must bound an unresponsive daemon control endpoint');
   } finally {

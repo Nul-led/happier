@@ -2,7 +2,7 @@ import './utils/env/env.mjs';
 import { parseArgs } from './utils/cli/args.mjs';
 import { killProcessTree } from './utils/proc/proc.mjs';
 import { spawnProc } from './utils/proc/proc.mjs';
-import { getComponentDir, getDefaultAutostartPaths, getRootDir } from './utils/paths/paths.mjs';
+import { getComponentDir, getDefaultAutostartPaths, getRepoDir, getRootDir } from './utils/paths/paths.mjs';
 import { killPortListeners, observeTcpPortAvailability } from './utils/net/ports.mjs';
 import { fetchHappierHealth, getServerComponentName } from './utils/server/server.mjs';
 import { resolveServerShutdownGraceMs } from './utils/server/shutdown_grace.mjs';
@@ -43,6 +43,7 @@ import {
   decideDevStartupTopology,
   observeDevServerStartupTopology,
   resolveDevWatchEnabled,
+  shouldResolveAdoptedServerRuntimePid,
   shouldExitAdoptedDevRuntime,
 } from './utils/dev/devStartupTopology.mjs';
 import {
@@ -107,9 +108,12 @@ import { resolveRuntimeBuildAuthority } from './runtime/shared/runtime_build_aut
 import { resolveStackRuntimeMode } from './runtime/shared/runtime_mode.mjs';
 import { isBorrowedExpoConsumer } from './runtime/shared/borrowed_expo.mjs';
 import {
+  createRuntimeSnapshotPublicationReloadDescriptors,
+  createRuntimeSnapshotPublicationReloadExecutor,
   createRepositoryRuntimePublicationController,
   isRepositoryRuntimePublicationOwner,
   publishRepositoryRuntimeSnapshotInChildProcess,
+  resolveRemoteRuntimePublicationComponents,
   wrapReloadExecutorWithRuntimeSnapshotPublication,
 } from './utils/dev/runtimeSnapshotPublisher.mjs';
 
@@ -251,6 +255,7 @@ async function main() {
 	  const cliBin = join(cliDir, 'bin', 'happier.mjs');
   const autostart = getDefaultAutostartPaths();
   const baseEnv = { ...process.env };
+  const repoDir = getRepoDir(rootDir, baseEnv);
   const parentServerRestartPreflightAlreadyDone = String(
     baseEnv.HAPPIER_STACK_SERVER_RESTART_PREFLIGHT_ALREADY_DONE ?? '',
   ).trim() === '1';
@@ -572,6 +577,25 @@ async function main() {
     stackName,
     authority: runtimeBuildAuthority,
   });
+  let runtimePublicationController = null;
+  const requestRuntimePublication = (components, label) => {
+    if (!runtimePublicationController || shuttingDown) return;
+    try {
+      void Promise.resolve(runtimePublicationController.markRefreshed(components)).catch((error) => {
+        console.error(
+          `[local] ${label} runtime publication request failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    } catch (error) {
+      console.error(
+        `[local] ${label} runtime publication request failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+  const notifyWebRuntimePublicationAfterWorkspaceRefresh = () => {
+    requestRuntimePublication(['web'], 'web workspace refresh');
+  };
+  const remoteRuntimePublicationStateByTarget = new Map();
 
   // Start server (only if not already healthy)
   // NOTE: In stack mode we avoid killing arbitrary port listeners (fail-closed instead).
@@ -628,6 +652,7 @@ async function main() {
         : {}),
       expoTailscale,
       isShuttingDown: () => shuttingDown,
+      onWorkspacePrepared: notifyWebRuntimePublicationAfterWorkspaceRefresh,
     });
     return expoResEarly;
   };
@@ -790,8 +815,10 @@ async function main() {
           throw new Error(formatDaemonAuthRequiredError({ stackName, cliHomeDir, serverUrl: internalServerUrl }));
         }
       }
+    } else if (localDaemonWaitsForRemoteServer && stackMode && runtimeStatePath) {
+      console.log('[local] daemon: waiting for target-hosted server readiness before starting');
     } else {
-      const daemonStartPromise = startDevDaemon({
+      await startDevDaemon({
         startDaemon: true,
         cliDir,
         buildCli,
@@ -807,17 +834,6 @@ async function main() {
         env: baseEnv,
         stackName,
       });
-      if (localDaemonWaitsForRemoteServer) {
-        void daemonStartPromise.catch((error) => {
-          console.error(
-            '[local] daemon startup failed while waiting for the target-hosted server; '
-              + 'the daemon lifecycle reconciler will retry after the server becomes available. '
-              + (error instanceof Error ? error.message : String(error)),
-          );
-        });
-      } else {
-        await daemonStartPromise;
-      }
     }
   } else if (startupDecision.startDaemon && serverWorkspaceAdmissionFailure) {
     console.warn('[local] daemon: waiting for source server admission before starting');
@@ -859,6 +875,11 @@ async function main() {
           stackName,
         });
       },
+      isRecoveryReady: async () => {
+        if (!localDaemonWaitsForRemoteServer) return true;
+        const serverHealth = await fetchHappierHealth(internalServerUrl);
+        return serverHealth.ready === true;
+      },
       recover: async () => {
         return await startDevDaemon({
           startDaemon: true,
@@ -883,14 +904,13 @@ async function main() {
 
   // Snapshot publication is background-only: an unavailable publication dependency
   // must not revoke the source services that have already become usable.
-  let runtimePublicationController = null;
   if (repositoryRuntimePublicationOwner) {
     try {
       const {
         resolveRepositoryRuntimePublicationComponents,
       } = await import('./build/build_stack_artifacts.mjs');
       runtimePublicationController = createRepositoryRuntimePublicationController({
-        rootDir,
+        rootDir: repoDir,
         authority: runtimeBuildAuthority,
         env: baseEnv,
         runtimeStatePath,
@@ -912,6 +932,9 @@ async function main() {
 
   const reloadDescriptors = [];
   const reloadExecutors = [];
+  if (runtimePublicationController) {
+    reloadDescriptors.push(...createRuntimeSnapshotPublicationReloadDescriptors({ repoDir }));
+  }
   const daemonReloadEnabled =
     !serverWorkspaceAdmissionFailure
     && startDaemon
@@ -921,7 +944,7 @@ async function main() {
   );
   const remoteWorkspacePreparationExecutor = remoteCliWorkspacePreparationEnabled
     ? createHappyCliWorkspacePreparationExecutor({
-        repoRoot: resolve(cliDir, '..', '..'),
+        repoRoot: repoDir,
         cliDir,
         env: baseEnv,
       })
@@ -953,7 +976,14 @@ async function main() {
   }
 
   const serverProcRef = { current: serverProc };
-  if (startServer && stackMode && runtimeStatePath && !serverProcRef.current?.pid && !serverRuntimeProxyAlreadyOwned) {
+  if (shouldResolveAdoptedServerRuntimePid({
+    serverRequested: startServer,
+    stackMode,
+    runtimeStatePath,
+    serverProcessPid: serverProcRef.current?.pid,
+    runtimeProxyAlreadyOwned: serverRuntimeProxyAlreadyOwned,
+    adoptedServer: startupDecision.adoptedServer,
+  })) {
     // If the server was already running when we started dev, `startDevServer` won't spawn a new process
     // (and therefore we don't have a ChildProcess handle). For safe watch/restart we need a PID.
     const state = await readStackRuntimeStateFile(runtimeStatePath);
@@ -1000,6 +1030,16 @@ async function main() {
           publisher: runtimePublicationController,
         })
       : serverReloadExecutor);
+  }
+  if (runtimePublicationController) {
+    for (const component of ['server', 'daemon']) {
+      if (reloadExecutors.some((executor) => executor?.target === component)) continue;
+      const publicationExecutor = createRuntimeSnapshotPublicationReloadExecutor({
+        component,
+        publisher: runtimePublicationController,
+      });
+      if (publicationExecutor) reloadExecutors.push(publicationExecutor);
+    }
   }
 
   const reloadWatcher = startDevReloadCoordinator({
@@ -1102,7 +1142,7 @@ async function main() {
     devTargetsStartOptions = {
       stackName,
       stackBaseDir: loadedDevTargets.path ? dirname(loadedDevTargets.path) : autostart.baseDir,
-      sourceDir: resolve(cliDir, '..', '..'),
+      sourceDir: repoDir,
       localServerPort: serverPort,
       localExpoPort: remoteExpoPort,
       publicServerUrl: remotePublicServerUrl,
@@ -1119,9 +1159,19 @@ async function main() {
       targetPlans: servicePlans.targets,
       onTargetStateChange: async ({ name, ...state }) => {
         if (!stackMode || !runtimeStatePath) return;
+        const previousState = remoteRuntimePublicationStateByTarget.get(name) ?? null;
+        const nextState = { name, ...state };
+        remoteRuntimePublicationStateByTarget.set(name, nextState);
         await recordStackRuntimeUpdate(runtimeStatePath, {
           remoteTargets: { [name]: state },
         });
+        const publicationComponents = resolveRemoteRuntimePublicationComponents({
+          previousState,
+          nextState,
+        });
+        if (publicationComponents.length > 0) {
+          requestRuntimePublication(publicationComponents, `${name} readiness`);
+        }
       },
       env: baseEnv,
     };

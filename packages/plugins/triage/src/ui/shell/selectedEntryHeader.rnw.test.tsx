@@ -135,7 +135,7 @@ async function executeAction(action: string): Promise<JsonValue> {
 
 const mounted: PluginUiTestkit[] = [];
 
-async function mountShell() {
+async function mountShell(hosted = false) {
     listsTheEntry = true;
     const ephemeralSharedScope = createTriageEphemeralSharedScopeFixture();
     let fixture!: PluginUiTestkit;
@@ -151,7 +151,7 @@ async function mountShell() {
                     container: 'appPage',
                 },
             }),
-            adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope }),
+            adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope, ...(hosted ? { detailsPane: { available: true } } : {}) }),
             handlers: {
                 publishCurrentUiContext: () => undefined,
                 executeAction: async ({ action }) => await executeAction(action),
@@ -192,6 +192,18 @@ afterEach(async () => {
 });
 
 describe('the selected entry once the window stops holding it', () => {
+    it('names the host pane and keeps one close control when the entry leaves the window', async () => {
+        const { shell, ephemeralSharedScope } = await mountShell(true);
+        await openTheRow(shell);
+        await expect(shell.getByRole('group', { name: 'Details pane' })).resolves.toBeDefined();
+        await expect(shell.queryByRole('button', { name: 'Close' })).resolves.toBeUndefined();
+        await evictTheRow(shell, ephemeralSharedScope);
+        await expect(shell.getByText(ENTRY_TITLE)).resolves.toBeDefined();
+        await expect(shell.queryByRole('button', { name: 'Close' })).resolves.toBeUndefined();
+        await shell.press(await shell.getByRole('button', { name: 'Close details' }));
+        await expect(shell.queryByRole('group', { name: 'Details pane' })).resolves.toBeUndefined();
+    });
+
     it('keeps naming the entry the reader opened', async () => {
         const { shell, ephemeralSharedScope } = await mountShell();
         await openTheRow(shell);
@@ -216,9 +228,9 @@ describe('the selected entry once the window stops holding it', () => {
         // selection: why it was asking for the reader, its state, its scope and
         // the connection it was read through.
         await expect(shell.getByText('Your review was requested')).resolves.toBeDefined();
-        await expect(shell.getByText('Open')).resolves.toBeDefined();
-        await expect(shell.getByText('example/repository')).resolves.toBeDefined();
-        await expect(shell.getByText('Example account')).resolves.toBeDefined();
+        // Scope, state and connection are one quiet context line under the
+        // title, not a label/value form repeating the row.
+        await expect(shell.getByText('example/repository · Open · via Example account')).resolves.toBeDefined();
         // Marked, never presented as current.
         await expect(shell.getByText(
             'These are the last facts this page held for this entry, and they may be out of date.',

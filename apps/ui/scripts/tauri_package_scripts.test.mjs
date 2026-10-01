@@ -3,7 +3,26 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import plist from 'plist';
+
+test('native tray, menu-bar and quit contracts pass through the real Rust owners', async () => {
+  const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  await promisify(execFile)('cargo', [
+    'test', '--manifest-path', 'src-tauri/tests/menu_bar_harness/Cargo.toml', '--locked',
+  ], { cwd: packageRoot });
+});
+
+test('every desktop channel leaves main webview creation to the native launch lifecycle', async () => {
+  const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  for (const channel of ['tauri.conf.json', 'tauri.preview.conf.json', 'tauri.publicdev.conf.json']) {
+    const config = JSON.parse(await readFile(join(packageRoot, 'src-tauri', channel), 'utf-8'));
+    assert.equal(config.app.windows[0].create, false, `${channel}: login must load no web UI`);
+    assert.equal(config.app.windows[0].visible, false, `${channel}: rebuild hidden until menu-bar mode is left`);
+    assert.equal(config.app.windows[0].label, 'main', channel);
+  }
+});
 
 test('apps/ui package.json exposes shared stack-owned Tauri dev entrypoints', async () => {
   const scriptsDir = dirname(fileURLToPath(import.meta.url));
@@ -109,6 +128,46 @@ test('apps/ui Tauri config runs beforeBuildCommand/beforeDevCommand via node wra
 
   assert.equal(config?.build?.beforeDevCommand, 'node ./scripts/runTauriBeforeCommand.mjs tauri:prepare:dev');
   assert.equal(config?.build?.beforeBuildCommand, 'node ./scripts/runTauriBeforeCommand.mjs tauri:prepare:build');
+});
+
+test('apps/ui packages a native layered macOS app icon with a legacy fallback', async () => {
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const packageRoot = dirname(scriptsDir);
+  const srcTauriDir = join(packageRoot, 'src-tauri');
+
+  const packageJson = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf-8'));
+  const cliRange = packageJson?.dependencies?.['@tauri-apps/cli'];
+  const cliVersion = typeof cliRange === 'string' ? cliRange.match(/(\d+)\.(\d+)/) : null;
+  assert.ok(cliVersion, 'apps/ui should declare a parseable @tauri-apps/cli version');
+  assert.ok(
+    Number(cliVersion[1]) > 2 || (Number(cliVersion[1]) === 2 && Number(cliVersion[2]) >= 11),
+    'Tauri CLI 2.11+ is required to compile Apple Icon Composer assets',
+  );
+
+  const config = JSON.parse(await readFile(join(srcTauriDir, 'tauri.conf.json'), 'utf-8'));
+  const bundleIcons = Array.isArray(config?.bundle?.icon) ? config.bundle.icon : [];
+  const iconComposerPath = bundleIcons.find((iconPath) => iconPath.endsWith('.icon'));
+  assert.ok(iconComposerPath, 'the desktop bundle should include an Apple Icon Composer asset');
+  assert.ok(
+    bundleIcons.some((iconPath) => iconPath.endsWith('.icns')),
+    'the desktop bundle should retain an ICNS fallback for pre-macOS 26 releases',
+  );
+
+  const iconRoot = join(srcTauriDir, iconComposerPath);
+  const iconDocument = JSON.parse(await readFile(join(iconRoot, 'icon.json'), 'utf-8'));
+  const referencedAssets = (iconDocument?.groups ?? [])
+    .flatMap((group) => group?.layers ?? [])
+    .flatMap((layer) => [
+      layer?.['image-name'],
+      ...(layer?.['image-name-specializations'] ?? []).map((entry) => entry?.value),
+    ])
+    .filter((assetName) => typeof assetName === 'string' && assetName !== 'automatic');
+
+  assert.ok(referencedAssets.length > 0, 'the Icon Composer document should contain layered artwork');
+  for (const assetName of new Set(referencedAssets)) {
+    const asset = await readFile(join(iconRoot, 'Assets', assetName));
+    assert.ok(asset.byteLength > 0, `Icon Composer artwork should exist: ${assetName}`);
+  }
 });
 
 test('apps/ui default Tauri capability allows dialog open for SSH identity selection', async () => {

@@ -59,14 +59,14 @@ function assertInvocationCurrent(seed: PluginInvocationServicesSeed, signal: Abo
     }
     let current = false;
     try {
-        current = seed.isGenerationCurrent();
+        current = seed.isOccurrenceCurrent();
     } catch {
         current = false;
     }
     if (!current) {
         throwApprovalQueueError(
             'plugin_interaction_generation_retired',
-            'The plugin generation is no longer current',
+            'The plugin occurrenceId is no longer current',
         );
     }
 }

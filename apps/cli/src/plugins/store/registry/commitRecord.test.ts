@@ -29,7 +29,7 @@ function nextRecord(base: PluginRegistryCommitRecord): PluginRegistryCommitRecor
     installationState: {
       revisionId: `state-${base.revision + 1}`,
     },
-    pluginGenerations: {
+    pluginOccurrenceIds: {
       'acme.plugin': {
         immutableGenerationId: 'generation-1',
       },
@@ -50,7 +50,7 @@ function unsupportedDigestBearingCommitRecord() {
       revisionId: 'health-08523559-57c4-4ce7-bcd9-d35876f12a96',
       digest: 'sha256:9277dd1fe2a952053a71a673bd7a34b6c38ed9d9277bd5e9950af4d73b4b7f2d',
     },
-    pluginGenerations: {
+    pluginOccurrenceIds: {
       'com.qa.decl-surface': {
         immutableGenerationId: 'gen-1786033180655-bc3474d0-5ec1-48ed-a77d-8034e6b841ac',
         generationRecordDigest: 'sha256:cdabbdcabbd69c48b933ce2a4730a897d674c869d2cb0ba17ec2c81b8dd39fc2',
@@ -69,7 +69,7 @@ function unsupportedDigestBearingCommitRecord() {
 }
 
 describe('PluginRegistryCommitRecord', () => {
-  it('keeps the primed isolated-home registry compatible with the current strict schema', async () => {
+  it('rejects the primed isolated-home registry retired generation-map key', async () => {
     const primedRegistryPath = fileURLToPath(new URL(
       '../../../../prime-isolated-home/plugins/plugins/state/plugin-registry-current.v1.json',
       import.meta.url,
@@ -77,7 +77,7 @@ describe('PluginRegistryCommitRecord', () => {
 
     const primedRegistry = JSON.parse(await readFile(primedRegistryPath, 'utf8')) as unknown;
 
-    expect(() => PluginRegistryCommitRecordSchema.parse(primedRegistry)).not.toThrow();
+    expect(() => PluginRegistryCommitRecordSchema.parse(primedRegistry)).toThrow();
   });
 
   it('atomically advances the sole current record by exactly one revision', async () => {
@@ -165,7 +165,7 @@ describe('PluginRegistryCommitRecord', () => {
     for (const immutableGenerationId of ['../escape', 'CON', 'dist/trailing.', `control-${String.fromCharCode(1)}`, 'cafe\u0301']) {
       expect(() => PluginRegistryCommitRecordSchema.parse({
         ...base,
-        pluginGenerations: {
+        pluginOccurrenceIds: {
           'acme.plugin': {
             immutableGenerationId,
           },
@@ -174,9 +174,9 @@ describe('PluginRegistryCommitRecord', () => {
     }
     expect(() => PluginRegistryCommitRecordSchema.parse({
       ...base,
-      pluginGenerations: {
+      pluginOccurrenceIds: {
         'acme.plugin': {
-          ...base.pluginGenerations['acme.plugin']!,
+          ...base.pluginOccurrenceIds['acme.plugin']!,
           generationRecordDigest: `sha256:${'2'.repeat(64)}`,
         },
       },

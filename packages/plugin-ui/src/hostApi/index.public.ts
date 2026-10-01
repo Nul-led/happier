@@ -4,7 +4,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 
-import { usePluginHostApiResourceStore } from './context.js';
+import { usePluginHostApiResourceActive, usePluginHostApiResourceStore } from './context.js';
 import type {
   PluginUiResourceEntry,
   PluginUiResourceError,
@@ -28,6 +28,10 @@ export {
   type ReviewCommentProposalReadV1,
   type ReviewCommentProposalWithBodyV1,
 } from './reviewCommentProposals.public.js';
+export {
+  useSessionState,
+  type SessionStateReadV1,
+} from './sessionState.public.js';
 export type {
   PluginUiEphemeralSharedScope,
   PluginUiEphemeralSharedValueLease,
@@ -88,6 +92,7 @@ function usePluginResourceResult(
   live: boolean,
 ): PluginUiResourceResult {
   const resourceStore = usePluginHostApiResourceStore();
+  const active = usePluginHostApiResourceActive();
   // The store owns bare-id normalization because it alone knows the mounted
   // plugin identity. The hook only stabilizes the author-facing spelling.
   const resourceKey = pluginUiResourceReferenceKey(resource, null);
@@ -96,8 +101,8 @@ function usePluginResourceResult(
     [resourceStore, resourceKey],
   );
   const subscribe = useCallback(
-    (listener: () => void) => entry.subscribe(listener, live),
-    [entry, live],
+    (listener: () => void) => active ? entry.subscribe(listener, live) : () => {},
+    [entry, live, active],
   );
   const state = useSyncExternalStore(subscribe, entry.getSnapshot, entry.getSnapshot);
 

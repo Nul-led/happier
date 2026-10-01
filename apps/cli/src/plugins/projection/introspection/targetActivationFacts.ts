@@ -134,13 +134,13 @@ export function adaptTargetActivationFacts(params: Readonly<{
     const currentMetadata = (
       fact.pluginVersion === currentPlugin.pluginVersion && fact.source === currentPlugin.source
     );
-    // `generation` on an activation fact is contributor-local provenance. The
+    // `occurrenceId` on an activation fact is contributor-local currentness. The
     // snapshot generation is the public projection revision, which may advance
     // when a different contributor changes while this activation remains live.
     const usable = params.runtimeState === 'current' && currentMetadata;
     const unavailable = !usable || fact.status === 'unavailable';
     const unavailableReason = projectPluginFailureText(new Error(params.runtimeState === 'disposed'
-      ? `Activation generation '${fact.generation}' was disposed`
+      ? `Activation occurrence '${fact.occurrenceId}' was disposed`
       : !currentMetadata
         ? `Activation facts for '${fact.pluginId}' describe ${fact.source} version '${fact.pluginVersion}', not current ${currentPlugin.source} version '${currentPlugin.pluginVersion}'`
         : fact.diagnostics[0]?.message ?? `Plugin '${fact.pluginId}' activation is unavailable`));
@@ -155,8 +155,8 @@ export function adaptTargetActivationFacts(params: Readonly<{
           }
         : fact.status === 'active'
           ? {
-              registration: { requirement: 'required', state: 'bound', generation: fact.generation },
-              activation: { state: 'active', generation: fact.generation },
+              registration: { requirement: 'required', state: 'bound', occurrenceId: fact.occurrenceId },
+              activation: { state: 'active', occurrenceId: fact.occurrenceId },
               projection: { state: 'projected' },
             }
           : {
@@ -193,7 +193,7 @@ export function adaptTargetActivationFacts(params: Readonly<{
           source: fact.source,
         },
         stage: 'activation',
-        generation: fact.generation,
+        occurrenceId: fact.occurrenceId,
         host: fact.host,
         platform: fact.platform,
         occurredAtMs: fact.occurredAtMs,

@@ -1,21 +1,19 @@
 /**
- * Measured split/stacked composition for the PRs & Issues shell.
+ * Content-owned readable pane measures for the PRs & Issues shell.
  *
- * `core/SURFACE.md` §2.1: the shell measures its own fill region and combines
- * that width with host-stamped accessibility facts. `split` is selected ONLY
- * when the measured width can honour both pane minima — never from a
- * desktop/tablet/phone guess — and its ratio is one static preference clamped
- * by those same minima. V1 has no drag handle, separator role, pane-width
+ * `core/SURFACE.md` §2.1: Triage supplies scaled reading measures and one ratio
+ * preference to the shared ListDetailLayout, which owns measurement and
+ * split/stacked composition. V1 has no drag handle, separator role, pane-width
  * Settings value or restoration path, so nothing here is retained or persisted.
  */
 
 /**
- * The one static layout preference (`core/SURFACE.md` §2.1). The list is a scan
- * column near its useful measure while the detail region carries source-native
- * content, so the preference favours detail. It is a starting point for the
- * clamp below, not a stored or user-adjustable value.
+ * The one static layout preference (`core/SURFACE.md` §2.1). Beside a detail the list is a scan column of
+ * two-line rows (the lens toolbar sits above both panes), while the detail carries source-native content, so the
+ * preference favours detail: the approved composition (`c7-merged.html`) gives the list about 440 of 1188 pt. It
+ * is a starting point for the clamp below, not a stored or user-adjustable value.
  */
-export const TRIAGE_SPLIT_LIST_RATIO_PREFERENCE_V1 = 0.38;
+export const TRIAGE_SPLIT_LIST_RATIO_PREFERENCE_V1 = 0.37;
 
 /**
  * Minimum legible measure for the row title, in characters. Below it the
@@ -63,23 +61,11 @@ export type TriageScaledTypeMetricsV1 = Readonly<{
   label: TriageScaledLineMetricsV1;
 }>;
 
-export type TriageLayoutV1 =
-  | Readonly<{
-      mode: 'split';
-      /** The resolved ratio AFTER both pane minima have clamped the preference. */
-      listRatio: number;
-    }>
-  | Readonly<{ mode: 'stacked' }>;
-
 type TriagePaneSpacingV1 = Readonly<{ xsmall: number; small: number; medium: number }>;
 
 export type TriagePaneMeasureInputV1 = Readonly<{
   type: TriageScaledTypeMetricsV1;
   spacing: TriagePaneSpacingV1;
-}>;
-
-export type TriageLayoutInputV1 = TriagePaneMeasureInputV1 & Readonly<{
-  availableWidth: number;
 }>;
 
 /**
@@ -106,24 +92,6 @@ export function resolveTriageDetailPaneMinimumWidthV1(input: TriagePaneMeasureIn
     + measure(input.type.body.fontSize, TRIAGE_DETAIL_BODY_MEASURE_CHARACTERS_V1)
     + input.spacing.medium,
   );
-}
-
-export function resolveTriageLayoutV1(input: TriageLayoutInputV1): TriageLayoutV1 {
-  const listMinimum = resolveTriageListPaneMinimumWidthV1(input);
-  const detailMinimum = resolveTriageDetailPaneMinimumWidthV1(input);
-
-  if (input.availableWidth < listMinimum + detailMinimum) {
-    return Object.freeze({ mode: 'stacked' });
-  }
-
-  // Both minima clamp the one static preference. The measured width already
-  // clears their sum, so the low bound never crosses the high bound.
-  const listRatio = Math.min(
-    Math.max(TRIAGE_SPLIT_LIST_RATIO_PREFERENCE_V1, listMinimum / input.availableWidth),
-    1 - detailMinimum / input.availableWidth,
-  );
-
-  return Object.freeze({ mode: 'split', listRatio });
 }
 
 function measure(fontSize: number, characters: number): number {

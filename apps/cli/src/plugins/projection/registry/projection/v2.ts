@@ -1,4 +1,5 @@
 import type {
+    PluginContributionIntrospectionProjectionV1,
     PluginDiagnosticRecordV1,
     PluginActionPresentUserGatePolicy,
     PluginProjectionBrandAssetV2,
@@ -21,9 +22,8 @@ import {
 
 import type { PluginCatalogEntry } from '@/plugins/projection/catalog/installed';
 import type { PluginCompatibilityDiagnostic } from '@/plugins/validation/diagnostics/types';
-import type { PluginFinalPolicyCurrentGeneration } from '@/plugins/runtime/policy/facts';
+import type { PluginFinalPolicyCurrentRuntime } from '@/plugins/runtime/policy/facts';
 import { projectTargetActionPresentUserAuthorizationFacts } from '@/plugins/runtime/policy/evaluate';
-import type { PluginSettingsRollbackDeclarations } from '@/plugins/settings/settingsRollbackDeclarations';
 import type {
     ResolvedActionContribution,
     ResolvedContributionRegistry,
@@ -48,6 +48,7 @@ import { pluginBrowserProjectionFamily } from '../browser';
 import { providerProjectionFamily } from '../providers';
 import { connectedAccountProjectionFamily } from '../connectedAccounts';
 import { voiceModelPackProjectionFamily, voiceProviderProjectionFamily } from '../voiceDeclarations';
+import { rolesProjectionFamily } from '../roles';
 import {
     composerAttachmentsProjectionFamily,
     composerControlsProjectionFamily,
@@ -468,7 +469,7 @@ function projectAttributedPluginDiagnostics(params: Readonly<{
             diagnostics,
             plugin,
             defaultStage: 'normalization',
-            generation: params.registry.immutableGenerationIdsByPluginId?.[pluginId],
+            occurrenceId: params.registry.occurrenceIdsByPluginId?.[pluginId],
             host: 'daemon',
             platform: process.platform,
             occurredAtMs: params.occurredAtMs,
@@ -490,6 +491,7 @@ function buildDiagnostics(params: Readonly<{
 function toInstalledPackage(
     entry: PluginCatalogEntry,
     immutableGenerationId: string | undefined,
+    occurrenceId: string | undefined,
 ): PluginProjectionInstalledPackageV2 {
     return {
         id: entry.pluginId,
@@ -501,6 +503,7 @@ function toInstalledPackage(
             locator: readOptionalString(entry.source.locator) ?? entry.pluginId,
         },
         ...(immutableGenerationId ? { immutableGenerationId } : {}),
+        ...(occurrenceId ? { occurrenceId } : {}),
     };
 }
 
@@ -509,19 +512,35 @@ function buildInstalledPackagesById(params: Readonly<{
     installedPackages: readonly PluginCatalogEntry[];
     pluginDiagnosticsByPluginId: Readonly<Record<string, readonly PluginCompatibilityDiagnostic[]>>;
     brandAssetsByPluginId?: Readonly<Record<string, PluginProjectionBrandAssetV2>>;
+    pluginFinalPolicyCurrentRuntimesById?: ReadonlyMap<string, PluginFinalPolicyCurrentRuntime>;
 }>): PluginProjectionV2['installedPackagesById'] {
     const installedPackagesById: PluginProjectionV2['installedPackagesById'] = {};
     const metadataByPluginId = collectPluginContributionMetadata(params.registry);
     const brandAssetsByPluginId = params.brandAssetsByPluginId ?? {};
+    const pointPluginIds = new Set((params.registry.pluginContributionPoints ?? []).map((point) => point.pluginId));
+    // The current occurrence's custody and whether it declares contribution
+    // points, so a mount of a plugin without points needs no targeted read.
+    const readOccurrenceFacts = (
+        pluginId: string,
+        occurrenceId: string | undefined,
+    ): Pick<PluginProjectionInstalledPackageV2, 'sourceCustody' | 'declaresContributionPoints'> => {
+        const current = params.pluginFinalPolicyCurrentRuntimesById?.get(pluginId);
+        return occurrenceId && current?.occurrenceId === occurrenceId
+            ? { sourceCustody: current.sourceCustody, declaresContributionPoints: pointPluginIds.has(pluginId) }
+            : {};
+    };
 
     for (const entry of params.installedPackages) {
         const brand = brandAssetsByPluginId[entry.pluginId];
         const immutableGenerationId = readOptionalString(
             params.registry.immutableGenerationIdsByPluginId?.[entry.pluginId],
         );
-        installedPackagesById[entry.pluginId] = brand
-            ? { ...toInstalledPackage(entry, immutableGenerationId), brand }
-            : toInstalledPackage(entry, immutableGenerationId);
+        const occurrenceId = readOptionalString(params.registry.occurrenceIdsByPluginId?.[entry.pluginId]);
+        installedPackagesById[entry.pluginId] = {
+            ...toInstalledPackage(entry, immutableGenerationId, occurrenceId),
+            ...readOccurrenceFacts(entry.pluginId, occurrenceId),
+            ...(brand ? { brand } : {}),
+        };
     }
 
     const fallbackPluginIds = new Set<string>([
@@ -556,6 +575,7 @@ function buildInstalledPackagesById(params: Readonly<{
         const immutableGenerationId = readOptionalString(
             params.registry.immutableGenerationIdsByPluginId?.[pluginId],
         );
+        const occurrenceId = readOptionalString(params.registry.occurrenceIdsByPluginId?.[pluginId]);
         installedPackagesById[pluginId] = {
             id: pluginId,
             displayName: metadata?.displayName ?? pluginId,
@@ -566,6 +586,8 @@ function buildInstalledPackagesById(params: Readonly<{
                 locator,
             },
             ...(immutableGenerationId ? { immutableGenerationId } : {}),
+            ...(occurrenceId ? { occurrenceId } : {}),
+            ...readOccurrenceFacts(pluginId, occurrenceId),
             ...(brand ? { brand } : {}),
         };
     }
@@ -628,7 +650,7 @@ function buildActionsById(
         pluginId: string,
         localId: string,
     ) => PluginActionPresentUserGatePolicy | null,
-    pluginFinalPolicyCurrentGenerationsById?: ReadonlyMap<string, PluginFinalPolicyCurrentGeneration>,
+    pluginFinalPolicyCurrentRuntimesById?: ReadonlyMap<string, PluginFinalPolicyCurrentRuntime>,
     runtimeFactsByQualifiedId?: PluginTargetActivationIntrospectionSnapshot['runtimeFactsByQualifiedId'],
 ): PluginProjectionV2['actionsById'] {
     const actionsById: PluginProjectionV2['actionsById'] = {};
@@ -636,6 +658,8 @@ function buildActionsById(
         if (!action.pluginId) {
             continue;
         }
+        const occurrenceId = registry.occurrenceIdsByPluginId?.[action.pluginId];
+        if (!occurrenceId) continue;
         // Same owner as manifest ingestion and the raw catalog projection: an
         // absent realm is the daemon realm, a declared-but-invalid one is not.
         const execution = PluginActionDeclaredExecutionV2Schema.safeParse(action.definition.execution);
@@ -654,7 +678,7 @@ function buildActionsById(
         const localizedPresentation = action.localizedPresentation;
         const inputHints = localizedPresentation?.inputHints ?? action.definition.inputHints;
         let authorization: ReturnType<typeof projectTargetActionPresentUserAuthorizationFacts> | undefined;
-        if (pluginFinalPolicyCurrentGenerationsById?.has(action.pluginId)) {
+        if (pluginFinalPolicyCurrentRuntimesById?.has(action.pluginId)) {
             try {
                 const resolvedAuthorization = resolveActionPresentUserGatePolicy?.(
                     action.pluginId,
@@ -682,6 +706,7 @@ function buildActionsById(
         actionsById[qualifiedProjectionKey(action.pluginId, action.definition.id)] = {
             id: action.definition.id,
             pluginId: action.pluginId,
+            occurrenceId,
             title: localizedPresentation?.title ?? action.definition.title,
             description: localizedPresentation?.description ?? readOptionalString(action.definition.description),
             ...(action.definition.icon ? { icon: action.definition.icon } : {}),
@@ -701,8 +726,6 @@ function buildActionsById(
                 ? { placementBindings: [...action.definition.placementBindings] }
                 : {}),
             ...(action.definition.slash ? { slash: { tokens: [...action.definition.slash.tokens] } } : {}),
-            inputSchema: action.definition.inputSchema,
-            ...(action.definition.outputSchema ? { outputSchema: action.definition.outputSchema } : {}),
             ...(inputHints ? { inputHints } : {}),
             ...(action.definition.priority === undefined ? {} : { priority: action.definition.priority }),
             dangerLevel: action.definition.dangerLevel,
@@ -796,7 +819,6 @@ function buildResourcesById(
 
 function buildSettingsById(
     registry: ResolvedContributionRegistry,
-    settingsRollbackDeclarationsByPluginId?: PluginSettingsRollbackDeclarations,
 ): PluginProjectionV2['settingsById'] {
     const settingsById: PluginProjectionV2['settingsById'] = {};
     let declarations;
@@ -818,17 +840,36 @@ function buildSettingsById(
         );
     }
     for (const declaration of declarations) {
-        const rollback = settingsRollbackDeclarationsByPluginId
-            ?.get(declaration.pluginId)
-            ?.get(declaration.definition.scope);
         settingsById[qualifiedProjectionKey(declaration.pluginId, declaration.definition.id)] =
             projectPluginSettingsContributionV2({
                 pluginId: declaration.pluginId,
                 definition: declaration.definition,
-                ...(rollback ? { rollback } : {}),
             });
     }
     return settingsById;
+}
+
+/**
+ * The lifecycle families a client reads from the describe: composer reference
+ * discovery needs per-contribution binding and activation evidence that no
+ * catalog in the projection carries. Every other row is diagnostic evidence
+ * with no client reader (the Agent and Action catalogs already record what is
+ * projected), and it was 40% of each describe. The complete table is the CLI
+ * inspector's, read from its own catalog snapshot.
+ */
+const CLIENT_READ_INTROSPECTION_FAMILIES: ReadonlySet<string> = new Set(['composerReferences']);
+
+function narrowIntrospectionToClientReadFamilies(
+    introspection: PluginContributionIntrospectionProjectionV1,
+): PluginContributionIntrospectionProjectionV1 {
+    const contributions = introspection.contributions.filter((record) => (
+        CLIENT_READ_INTROSPECTION_FAMILIES.has(record.contribution.family)
+    ));
+    return {
+        ...introspection,
+        contributions,
+        diagnostics: contributions.flatMap((record) => record.diagnostics),
+    };
 }
 
 export function buildPluginProjectionV2(params: Readonly<{
@@ -841,20 +882,13 @@ export function buildPluginProjectionV2(params: Readonly<{
     pluginUiHostRuntime?: PluginUiProjectionHostRuntimeContext;
     /** Exact machine materialization facts for the same registry lease. */
     pluginExecutionOriginsByPluginId?: Readonly<Record<string, PluginMachineExecutionOriginV1>>;
-    /**
-     * The one supported rollback Settings declaration per (pluginId, scope)
-     * from the same registry lease; it projects onto each Settings entry so
-     * every consumer sees identical retention facts for bundled and external
-     * plugins alike.
-     */
-    settingsRollbackDeclarationsByPluginId?: PluginSettingsRollbackDeclarations;
     /** Read-only current manifest Action policy owner for the same runtime lease. */
     resolveActionPresentUserGatePolicy?: (
         pluginId: string,
         localId: string,
     ) => PluginActionPresentUserGatePolicy | null;
     /** Current applied-policy facts; absent partial fixtures fail projection closed. */
-    pluginFinalPolicyCurrentGenerationsById?: ReadonlyMap<string, PluginFinalPolicyCurrentGeneration>;
+    pluginFinalPolicyCurrentRuntimesById?: ReadonlyMap<string, PluginFinalPolicyCurrentRuntime>;
     introspectionRuntimeSnapshot?: PluginTargetActivationIntrospectionSnapshot;
     /** The requesting client's display locale, when it named one. */
     requestedLocale?: string;
@@ -894,6 +928,7 @@ export function buildPluginProjectionV2(params: Readonly<{
         pluginUiProjectionFamily,
         pluginBrowserProjectionFamily,
         voiceModelPackProjectionFamily,
+        rolesProjectionFamily,
         voiceProviderProjectionFamily,
         accountCollectionsProjectionFamily,
         composerAttachmentsProjectionFamily,
@@ -911,22 +946,22 @@ export function buildPluginProjectionV2(params: Readonly<{
             ...(params.brandAssetsByPluginId
                 ? { brandAssetsByPluginId: params.brandAssetsByPluginId }
                 : {}),
+            ...(params.pluginFinalPolicyCurrentRuntimesById
+                ? { pluginFinalPolicyCurrentRuntimesById: params.pluginFinalPolicyCurrentRuntimesById }
+                : {}),
         }),
         agentsById: buildAgentsById(params.registry, params.generation),
-        // The V2 wire field remains for mixed-version readers, but the host no
-        // longer projects a parallel backend/runtime registry.
-        backendsById: {},
         actionsById: buildActionsById(
             params.registry,
             params.pluginExecutionOriginsByPluginId,
             params.resolveActionPresentUserGatePolicy,
-            params.pluginFinalPolicyCurrentGenerationsById,
+            params.pluginFinalPolicyCurrentRuntimesById,
             params.introspectionRuntimeSnapshot?.runtimeFactsByQualifiedId,
         ),
         toolsById: buildToolsById(params.registry),
         commandsById: buildCommandsById(params.registry),
         resourcesById: buildResourcesById(params.registry),
-        settingsById: buildSettingsById(params.registry, params.settingsRollbackDeclarationsByPluginId),
+        settingsById: buildSettingsById(params.registry),
         familiesById: buildPluginProjectionFamiliesByIdV2({
             registry: params.registry,
             generation: params.generation,
@@ -940,12 +975,13 @@ export function buildPluginProjectionV2(params: Readonly<{
                 : { requestedLocale: params.requestedLocale }),
             scmRuntimeAvailability: params.scmRuntimeAvailability,
         }, familyDescriptors),
-        contributionIntrospection: projectPluginContributionIntrospection({
+        contributionIntrospection: narrowIntrospectionToClientReadFamilies(projectPluginContributionIntrospection({
             generation: params.generation,
             candidates: params.registry.introspectionContributions ?? [],
             diagnostics,
             runtimeFactsByQualifiedId: params.introspectionRuntimeSnapshot?.runtimeFactsByQualifiedId,
-        }),
+            occurrenceIdsByPluginId: params.registry.occurrenceIdsByPluginId,
+        })),
         diagnostics,
     };
 }

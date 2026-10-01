@@ -14,11 +14,18 @@ import type {
   ListSelectionProps,
 } from './List.js';
 import type { MenuGroup, MenuRadioGroup } from './Overlay.js';
+import type { PageHeaderProps } from './PageHeader.js';
+import type { EmptyStateProps } from './State.js';
+import type { SelectionTilesOption, SelectionTilesProps } from './SelectionTiles.js';
 import type { StatusProps } from './Status.js';
 import type { TextProps } from './Text.js';
 import type { DiffViewerProps } from './Content.js';
 
 type Assert<Condition extends true> = Condition;
+
+type _PrivateSteppedIconAdapterIsNotPublic = Assert<
+  Extract<keyof typeof import('../index.js'), 'PluginUiIconGlyph'> extends never ? true : false
+>;
 
 type IsEqual<Left, Right> = (
   <T>() => T extends Left ? 1 : 2
@@ -60,6 +67,9 @@ type _VisibleTitleButtonMayUseItsTitleAsTheAccessibleName = Assert<(
   Readonly<{ title: string; icon: string; onPress: () => void }> extends ButtonProps ? true : false
 )>;
 type _AuthorTextFieldFocusTarget = Assert<IsEqual<TextFieldProps['focusTarget'], PluginUiFocusTarget | undefined>>;
+// r0.14: the page field row is a presentation of TextField, not a new component.
+type _AuthorTextFieldPresentation = Assert<IsEqual<TextFieldProps['presentation'], 'form' | 'field' | undefined>>;
+type _AuthorTextFieldKind = Assert<IsEqual<TextFieldProps['kind'], 'text' | 'integer' | 'decimal' | undefined>>;
 type _AuthorSelectFocusTarget = Assert<IsEqual<SelectProps['focusTarget'], PluginUiFocusTarget | undefined>>;
 type _AuthorHeadingFocusTarget = Assert<IsEqual<HeadingProps['focusTarget'], PluginUiFocusTarget | undefined>>;
 type _AuthorStatusFocusTarget = Assert<IsEqual<StatusProps['focusTarget'], PluginUiFocusTarget | undefined>>;
@@ -128,10 +138,13 @@ type _AuthorItemPropKeysAreCurated = Assert<IsEqual<keyof ItemProps,
   | 'accessoryWraps'
   | 'accessoryOutsidePressable'
   | 'tone'
+  | 'detailTone'
   | 'onPress'
   | 'disabled'
   | 'busy'
   | 'selected'
+  | 'expanded'
+  | 'expandedContent'
   | 'accessibilityRole'
   | 'accessibilityExpanded'
   | 'accessibilityPositionInSet'
@@ -163,11 +176,50 @@ type _AuthorListSelectionRetainsOpaqueHiddenKeys = Assert<IsEqual<
 
 type _AuthorItemGroupPropKeysAreCurated = Assert<IsEqual<keyof ItemGroupProps,
   | 'children'
+  | 'title'
+  | 'titleKey'
+  | 'description'
+  | 'descriptionKey'
+  | 'action'
+  | 'surface'
   | 'accessibilityRole'
   | 'accessibilityLabel'
   | 'accessibilityLabelKey'
   | 'testID'
   | 'style'
+>>;
+
+// The page header exposes the page anatomy only; navigation chrome (back, title
+// suppression, the content column) stays host-supplied.
+type _AuthorPageHeaderPropKeysAreCurated = Assert<IsEqual<keyof PageHeaderProps,
+  | 'title'
+  | 'titleKey'
+  | 'description'
+  | 'descriptionKey'
+  | 'leading'
+  | 'meta'
+  | 'actions'
+  | 'testID'
+>>;
+
+type _AuthorEmptyStatePropKeysAreCurated = Assert<IsEqual<keyof EmptyStateProps,
+  | 'title'
+  | 'titleKey'
+  | 'description'
+  | 'descriptionKey'
+  | 'action'
+  | 'layout'
+  | 'icon'
+  | 'variant'
+  | 'actionUnavailableReason'
+  | 'actionUnavailableReasonKey'
+  // The container step (pane · details · page · phone) of the shared state composition (pane-states lab 0).
+  | 'size'
+  // The quiet second way forward (agents-plugin-tabs lane, slice 1a).
+  | 'secondaryAction'
+  // A lifecycle caller opts a transition into urgency; static states remain silent.
+  | 'accessibilitySemantics'
+  | 'testID'
 >>;
 
 type _MetadataEntryKeysAreCurated = Assert<IsEqual<keyof MetadataEntry,
@@ -190,6 +242,30 @@ type _MenuRadioGroupKeysAreCurated = Assert<IsEqual<keyof MenuRadioGroup,
   | 'id'
   | 'accessibilityLabel'
   | 'selectedId'
+>>;
+
+// Tiles expose choices only: host density, column forcing, footers, badges and
+// action tiles stay with Happier core's adapter of the same owner.
+type _AuthorSelectionTilesPropKeysAreCurated = Assert<IsEqual<keyof SelectionTilesProps,
+  | 'options'
+  | 'variant'
+  | 'accessibilityLabel'
+  | 'accessibilityLabelKey'
+  | 'testID'
+  | 'selectionMode'
+  | 'value'
+  | 'onChange'
+>>;
+
+type _AuthorSelectionTilesOptionKeysAreCurated = Assert<IsEqual<keyof SelectionTilesOption,
+  | 'id'
+  | 'title'
+  | 'titleKey'
+  | 'subtitle'
+  | 'subtitleKey'
+  | 'icon'
+  | 'preview'
+  | 'disabled'
 >>;
 
 const staticAuthorForm: FormProps['hints'] = {

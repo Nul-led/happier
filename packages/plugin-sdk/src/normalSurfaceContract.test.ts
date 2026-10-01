@@ -220,11 +220,6 @@ const PACKED_RUNTIME_CONSUMER_KEYS = [
     './agents/runtime:AgentRuntimeJsonValueSchema',
     './agents/runtime:AgentSessionRuntimeEventSchema',
     './ui/client:createPluginUiHostApiClient',
-    './ui/build:BUILD_CONFIG_BASENAMES',
-    './ui/build:createReactNativeRepackSharedModules',
-    './ui/build:createReactNativeWebVitePlugins',
-    './ui/build:defineBuildConfig',
-    './ui/build:defineReactNativeWebViteBuildPreset',
     './testing:createPluginTestkit',
 ] as const;
 

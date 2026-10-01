@@ -1,6 +1,7 @@
-import { isIP, type LookupFunction } from 'node:net';
+import type { LookupFunction } from 'node:net';
 
 import { PluginError } from '@happier-dev/plugin-sdk';
+import { isLoopbackHostname } from '@happier-dev/protocol';
 import type {
     PluginDiagnosticData,
     PluginCancellationOptions,
@@ -18,6 +19,8 @@ export type PluginWebSocketRuntimeOptions = PluginCancellationOptions & Readonly
     lifecycleSignal?: AbortSignal;
     /** Exact address set admitted for this socket open; never exposed through the public SDK. */
     validatedAddresses?: readonly string[];
+    /** Host-private loopback consumers may own message byte policy at the containing operation. */
+    messageByteLimits?: null;
 }>;
 
 export type NormalizedPluginWebSocketOpenInput = Readonly<{
@@ -130,13 +133,6 @@ function readBoundedPositiveInteger(
         );
     }
     return value;
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-    const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    if (normalized === 'localhost' || normalized.endsWith('.localhost') || normalized === '::1') return true;
-    if (isIP(normalized) !== 4) return false;
-    return Number(normalized.split('.')[0]) === 127;
 }
 
 function normalizeProtocols(protocols: readonly string[] | undefined): readonly string[] {
@@ -466,7 +462,10 @@ export async function createPluginWebSocketConnection(
     input: PluginWebSocketOpenInput,
     options: PluginWebSocketRuntimeOptions = {},
 ): Promise<PluginWebSocketConnection> {
-    const normalized = normalizePluginWebSocketOpenInput(input);
+    const bounded = normalizePluginWebSocketOpenInput(input);
+    const normalized = options.messageByteLimits === null
+        ? { ...bounded, maxMessageBytes: Infinity, maxPendingBytes: Infinity, maxBufferedSendBytes: Infinity }
+        : bounded;
     assertNotAborted(options.signal);
     assertNotAborted(options.lifecycleSignal);
 
@@ -485,7 +484,8 @@ export async function createPluginWebSocketConnection(
         // The adapter owns the typed deadline. Keep the driver deadline just
         // beyond it so an opening timeout retains its canonical terminal code.
         handshakeTimeout: normalized.connectTimeoutMs + 100,
-        maxPayload: normalized.maxMessageBytes,
+        // ws uses zero to mean no payload byte limit.
+        maxPayload: Number.isFinite(normalized.maxMessageBytes) ? normalized.maxMessageBytes : 0,
         maxFragments: MAX_FRAGMENTS,
         allowSynchronousEvents: false,
         autoPong: true,

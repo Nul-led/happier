@@ -142,7 +142,7 @@ function seedAuthority(input: Readonly<{
     signal: AbortSignal | undefined;
 }>): VoiceAccountOperationAuthority {
     return Object.freeze({
-        isCurrent: () => input.seed.isGenerationCurrent(),
+        isCurrent: () => input.seed.isOccurrenceCurrent(),
         isCredentialCurrent: () => true,
         isCancelled: () => input.seed.signal.aborted || input.signal?.aborted === true,
     });

@@ -8,7 +8,12 @@ import {
   normalizeScmRemoteRequest,
 } from '@happier-dev/plugin-sdk/scm';
 
-export function buildGitPushArgs(request: Readonly<Pick<ScmRemoteRequest, 'remote' | 'branch'>>): string[] {
+export function buildGitPushArgs(request: Readonly<Pick<ScmRemoteRequest, 'remote' | 'branch' | 'pushMode' | 'expectedRemoteOid'>>): string[] {
+    if (request.pushMode === 'force_with_lease') {
+        const ref = request.branch?.startsWith('refs/heads/') ? request.branch : `refs/heads/${request.branch}`;
+        // Normalization requires the exact lease target and object identity.
+        return ['-c', `remote.${request.remote}.mirror=false`, 'push', '--no-mirror', '--no-follow-tags', `--force-with-lease=${ref}:${request.expectedRemoteOid}`, request.remote!, `HEAD:${ref}`];
+    }
     const args = ['push'];
     if (request.remote) {
         args.push(request.remote);
@@ -21,8 +26,12 @@ export function buildGitPushArgs(request: Readonly<Pick<ScmRemoteRequest, 'remot
     return args;
 }
 
-export function buildGitPullArgs(request: Readonly<Pick<ScmRemoteRequest, 'remote' | 'branch'>>): string[] {
-    const args = ['pull', '--ff-only'];
+export function buildGitPullArgs(request: Readonly<Pick<ScmRemoteRequest, 'remote' | 'branch' | 'reconcile'>>): string[] {
+    const args = request.reconcile === 'rebase'
+        ? ['pull', '--rebase', '--ff', '--no-autostash']
+        : request.reconcile === 'merge'
+            ? ['pull', '--no-rebase', '--ff', '--no-edit', '--no-autostash']
+            : ['pull', '--ff-only', '--no-rebase', '--no-autostash'];
     if (request.remote) {
         args.push(request.remote);
         if (request.branch) args.push(request.branch);

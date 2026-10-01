@@ -133,6 +133,29 @@ the staged `.happier-plugin/plugin.json` and emits the declared
 `activate`; these can be different realms and must not share a process-global
 singleton.
 
+The Developer Preview `roles` family is declarative and needs no runtime
+registration. For example, a `definePlugin(...)` input can include:
+
+```ts
+roles: {
+  'security-reviewer': {
+    name: 'Security reviewer',
+    instructions: 'Review the change for security risks.',
+    runsAs: { kind: 'background_run', intent: 'review' },
+    workspaceWrites: 'deny',
+    secondOpinion: 'off',
+    enabled: true,
+  },
+},
+```
+
+The host exposes this read-only source as
+`plugin:<pluginId>/security-reviewer`. Users can override its settings through
+`rolesV1.overrides`, just like built-in roles; the source stays owned by the
+plugin. Optional `engine` and `profileId` fields select execution preferences.
+Disabling or uninstalling the plugin makes its roles unavailable, and an
+override alone cannot restore the missing source.
+
 Run its package-local lifecycle through the canonical managed source-author
 owner (the published copy of this example names the public `happier` command
 instead):

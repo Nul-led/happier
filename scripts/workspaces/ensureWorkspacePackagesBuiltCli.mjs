@@ -9,12 +9,29 @@ import {
 
 const defaultRepoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 
+async function publishBundledPluginArtifactsAfterWorkspaceBuildDefault(options) {
+  const { publishBundledPluginArtifactsAfterWorkspaceBuild } = await import(
+    '../../apps/cli/scripts/buildSharedDeps.mjs'
+  );
+  return await publishBundledPluginArtifactsAfterWorkspaceBuild(options);
+}
+
+async function rebuildWorkspacesInvalidatedByBundledPluginPublicationDefault(options) {
+  const { rebuildWorkspacesInvalidatedByBundledPluginPublication } = await import(
+    '../../apps/cli/scripts/buildSharedDeps.mjs'
+  );
+  return await rebuildWorkspacesInvalidatedByBundledPluginPublication(options);
+}
+
 export async function runWorkspacePackageBuild({
   repoRoot = defaultRepoRoot,
+  env = process.env,
   packageNames = [],
   componentDirs = [],
   ensureWorkspacePackagesBuiltByNameImpl = ensureWorkspacePackagesBuiltByName,
   ensureWorkspacePackagesBuiltForComponentImpl = ensureWorkspacePackagesBuiltForComponent,
+  publishBundledPluginArtifactsAfterWorkspaceBuildImpl = publishBundledPluginArtifactsAfterWorkspaceBuildDefault,
+  rebuildWorkspacesInvalidatedByBundledPluginPublicationImpl = rebuildWorkspacesInvalidatedByBundledPluginPublicationDefault,
 } = {}) {
   const normalizedPackageNames = [...new Set(
     packageNames.map((name) => String(name ?? '').trim()).filter(Boolean),
@@ -38,11 +55,37 @@ export async function runWorkspacePackageBuild({
       { publicationMode: 'live' },
     ));
   }
-  return {
+  const result = {
     ok: results.every((result) => result.ok !== false),
     built: [...new Set(results.flatMap((result) => result.built ?? []))],
     skipped: [...new Set(results.flatMap((result) => result.skipped ?? []))],
   };
+  if (result.ok) {
+    const published = await publishBundledPluginArtifactsAfterWorkspaceBuildImpl({
+      repoRoot,
+      workspaceNames: result.built,
+      env,
+      // This adapter owns preparation of the current checkout. A remote replica
+      // must publish projections for its target-local ignored dist bytes instead
+      // of checking the primary checkout's projection.
+      bundledPluginArtifactPublication: {
+        mode: 'write',
+        ...(String(env?.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1'
+          ? { targetOwnedOnly: true }
+          : {}),
+      },
+    });
+    if (published) {
+      // Publication can update generated CLI/UI source after their compiler
+      // pass. Reuse the canonical invalidation owner before reporting success.
+      await rebuildWorkspacesInvalidatedByBundledPluginPublicationImpl({
+        repoRoot,
+        workspaceNames: result.built,
+        env,
+      });
+    }
+  }
+  return result;
 }
 
 export function parseWorkspaceBuildArgs(argv) {

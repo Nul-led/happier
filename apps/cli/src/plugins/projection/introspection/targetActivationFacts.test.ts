@@ -19,10 +19,10 @@ const managedProvider: PluginContributionIntrospectionCandidate = {
 };
 const plugin = { pluginId: 'acme.runtime', pluginVersion: '1.0.0', source: 'development' as const };
 
-function activeFact(generation = '4') {
+function activeFact(occurrenceId = '4') {
   return {
     pluginId: 'acme.runtime', pluginVersion: '1.0.0', source: 'development' as const,
-    generation, host: 'daemon' as const, platform: 'darwin', occurredAtMs: 10,
+    occurrenceId, host: 'daemon' as const, platform: 'darwin', occurredAtMs: 10,
     status: 'active' as const,
     required: [{ family: 'actions', localId: 'run' }],
     bound: [{ family: 'actions', localId: 'run' }], diagnostics: [],
@@ -41,8 +41,8 @@ describe('target activation introspection adapter', () => {
     });
 
     expect(adapted.runtimeFactsByQualifiedId.get('acme.runtime/providers/packed-managed-provider')).toEqual({
-      registration: { requirement: 'required', state: 'bound', generation: '4' },
-      activation: { state: 'active', generation: '4' }, projection: { state: 'projected' },
+      registration: { requirement: 'required', state: 'bound', occurrenceId: '4' },
+      activation: { state: 'active', occurrenceId: '4' }, projection: { state: 'projected' },
     });
   });
 
@@ -60,7 +60,7 @@ describe('target activation introspection adapter', () => {
     })).toThrow(/unknown required contribution/);
   });
 
-  it('binds and activates only an exact current-generation required target', () => {
+  it('binds and activates only an exact current-occurrence required target', () => {
     const adapted = adaptTargetActivationFacts({
       generation: 4, candidates: [required, descriptor], targetActivationFacts: [activeFact()],
       plugins: [plugin],
@@ -68,8 +68,8 @@ describe('target activation introspection adapter', () => {
     });
 
     expect(adapted.runtimeFactsByQualifiedId.get('acme.runtime/actions/run')).toEqual({
-      registration: { requirement: 'required', state: 'bound', generation: '4' },
-      activation: { state: 'active', generation: '4' }, projection: { state: 'projected' },
+      registration: { requirement: 'required', state: 'bound', occurrenceId: '4' },
+      activation: { state: 'active', occurrenceId: '4' }, projection: { state: 'projected' },
     });
     expect(adapted.runtimeFactsByQualifiedId.has('acme.runtime/ui.translations/en-US')).toBe(false);
   });
@@ -92,7 +92,7 @@ describe('target activation introspection adapter', () => {
       activation: { state: 'dormant' },
     });
     expect(adapted.diagnosticRecords).toEqual([
-      expect.objectContaining({ stage: 'activation', generation: fact.generation, plugin: { id: 'acme.runtime', version: '1.0.0', source: 'development' } }),
+      expect.objectContaining({ stage: 'activation', occurrenceId: fact.occurrenceId, plugin: { id: 'acme.runtime', version: '1.0.0', source: 'development' } }),
     ]);
   });
 
@@ -123,12 +123,12 @@ describe('target activation introspection adapter', () => {
     });
 
     expect(adapted.runtimeFactsByQualifiedId.get('acme.runtime/actions/run')).toEqual({
-      registration: { requirement: 'required', state: 'bound', generation: '4' },
-      activation: { state: 'active', generation: '4' }, projection: { state: 'projected' },
+      registration: { requirement: 'required', state: 'bound', occurrenceId: '4' },
+      activation: { state: 'active', occurrenceId: '4' }, projection: { state: 'projected' },
     });
     expect(adapted.runtimeFactsByQualifiedId.get('acme.second/actions/run')).toEqual({
-      registration: { requirement: 'required', state: 'bound', generation: '3' },
-      activation: { state: 'active', generation: '3' }, projection: { state: 'projected' },
+      registration: { requirement: 'required', state: 'bound', occurrenceId: '3' },
+      activation: { state: 'active', occurrenceId: '3' }, projection: { state: 'projected' },
     });
     expect(adapted.diagnosticRecords).toEqual([]);
   });
@@ -136,7 +136,7 @@ describe('target activation introspection adapter', () => {
   it.each([
     ['version', { pluginVersion: '0.9.0' }],
     ['source', { source: 'localPath' as const }],
-  ])('does not bind a current-generation fact whose host-owned %s differs from the catalog', (_name, mismatch) => {
+  ])('does not bind a current-occurrence fact whose host-owned %s differs from the catalog', (_name, mismatch) => {
     const fact = { ...activeFact(), ...mismatch };
     const adapted = adaptTargetActivationFacts({
       generation: 4,

@@ -72,7 +72,8 @@ export function buildPiRuntimeModelsSnapshot(params: Readonly<{
   const current = readRecord(state?.model);
   const currentModelId = qualifyPiModelId(current?.provider, current?.id);
   const available = readRecord(params.availableModels);
-  const rows = Array.isArray(available?.models) ? available.models : [];
+  if (!Array.isArray(available?.models)) return null;
+  const rows = available.models;
   const models = rows.flatMap((row) => {
     const model = readRecord(row);
     if (!model) return [];
@@ -85,7 +86,7 @@ export function buildPiRuntimeModelsSnapshot(params: Readonly<{
     });
     return entry ? [entry] : [];
   });
-  if (models.length === 0) return null;
+  if (rows.length > 0 && models.length === 0) return null;
   return {
     models,
     ...(currentModelId ? { currentModelId } : {}),

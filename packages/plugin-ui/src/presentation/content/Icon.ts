@@ -4,7 +4,7 @@ import {
 } from '@happier-dev/plugin-sdk/ui';
 
 /** Protocol-owned semantic vocabulary re-exported through the public SDK UI seam. */
-export const HAPPIER_ICON_NAMES = PLUGIN_UI_ICON_TOKENS_V1;
+export const HAPPIER_ICON_NAMES: readonly PluginUiIconTokenV1[] = PLUGIN_UI_ICON_TOKENS_V1;
 
 export type HappierIconName = PluginUiIconTokenV1;
 export type HappierIconSize = 'small' | 'medium' | 'large';

@@ -8,7 +8,11 @@ import {
 
 const bundledAuthority = Object.freeze({
     pluginId: 'acme.provider',
-    immutableGenerationId: 'provider-generation-p',
+    sourceCustody: Object.freeze({
+        kind: 'managed' as const,
+        immutableGenerationId: 'provider-generation-p',
+        installSource: 'npm' as const,
+    }),
     manifestAuthority: 'bundled_first_party' as const,
     hardRevocationRevisionAtAdmission: 7,
 });
@@ -18,8 +22,7 @@ describe('Runner managed Provider retained authority', () => {
         expect(
             RunnerManagedProviderRetainedAuthorityV1Schema.safeParse({
                 pluginId: bundledAuthority.pluginId,
-                immutableGenerationId:
-                    bundledAuthority.immutableGenerationId,
+                sourceCustody: bundledAuthority.sourceCustody,
                 hardRevocationRevisionAtAdmission:
                     bundledAuthority.hardRevocationRevisionAtAdmission,
             }).success,
@@ -32,7 +35,7 @@ describe('Runner managed Provider retained authority', () => {
         expect(mergeRunnerManagedDependencyRetentionV1({
             v: 1,
             adoptedManagedProviderAuthority: bundledAuthority,
-            sourceGenerationIds: [],
+            sourceCustodies: [],
             qualifiedDependencyIds: [],
         }).adoptedManagedProviderAuthority).toEqual(bundledAuthority);
     });
@@ -49,16 +52,23 @@ describe('Runner managed Provider retained authority', () => {
             {
                 v: 1,
                 adoptedManagedProviderAuthority: bundledAuthority,
-                sourceGenerationIds: [],
+                sourceCustodies: [],
                 qualifiedDependencyIds: [],
             },
             {
                 v: 1,
                 adoptedManagedProviderAuthority: {
                     ...bundledAuthority,
+                    sourceCustody: {
+                        kind: 'bundled_first_party',
+                        packagedRuntime: {
+                            kind: 'pinned_runner_snapshot',
+                            snapshotId: 'provider-generation-p',
+                        },
+                    },
                     manifestAuthority: 'external',
                 },
-                sourceGenerationIds: [],
+                sourceCustodies: [],
                 qualifiedDependencyIds: [],
             },
         )).toThrow(

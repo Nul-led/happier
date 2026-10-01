@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createAgentSessionRunnerFactoryBinding,
   createHostDeclarativeAcpRunnerBinding,
+  verifyAgentSessionRunnerBindingV1,
 } from './agentSessionRunnerFactoryBinding';
 
 describe('Agent Session runner binding', () => {
@@ -13,7 +14,11 @@ describe('Agent Session runner binding', () => {
       pluginVersion: '1.0.0',
       agentId: 'acme.agent/main',
       localAgentId: 'main',
-      immutableGenerationId: 'generation-g',
+      sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: 'generation-g',
+        installSource: 'archive',
+      },
       locator: {
         module: './agent/runtime/factory.js',
         export: 'createAgentRuntime',
@@ -29,7 +34,11 @@ describe('Agent Session runner binding', () => {
       pluginVersion: '1.0.0',
       agentId: 'acme.agent/main',
       localAgentId: 'main',
-      immutableGenerationId: 'generation-g',
+      sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: 'generation-g',
+        installSource: 'archive',
+      },
       locator: {
         module: './agent/runtime/factory.js',
         export: 'createAgentRuntime',
@@ -52,10 +61,31 @@ describe('Agent Session runner binding', () => {
       agentId: 'codex',
       qualifiedAgentId: 'happier.agent.codex/agents/codex',
       localAgentId: 'codex',
-      immutableGenerationId: 'generation-codex',
+      sourceCustody: {
+        kind: 'bundled_first_party',
+        packagedRuntime: {
+          kind: 'pinned_runner_snapshot',
+          snapshotId: 'runner-snapshot-codex',
+        },
+      },
     });
 
     expect(binding).not.toHaveProperty('manifestDigest');
     expect(binding).not.toHaveProperty('runtimeBindingDigest');
+    expect(binding).not.toHaveProperty('immutableGenerationId');
+  });
+
+  it('rejects generation-shaped bundled custody and process-local occurrence identity', () => {
+    expect(() => verifyAgentSessionRunnerBindingV1({
+      kind: 'host_declarative_acp_v1',
+      v: 1,
+      pluginId: 'happier.agent.codex',
+      pluginVersion: '1.0.0',
+      agentId: 'codex',
+      qualifiedAgentId: 'happier.agent.codex/agents/codex',
+      localAgentId: 'codex',
+      immutableGenerationId: 'legacy-generation',
+      occurrenceId: 'process-local-occurrence',
+    })).toThrow();
   });
 });

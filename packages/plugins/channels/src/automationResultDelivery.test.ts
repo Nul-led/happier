@@ -109,7 +109,6 @@ function currentConnectionFixture(): Record<string, JsonValue> {
       providerPluginId: 'example.channel.provider',
       providerContributionSelection: {
         contributionId: 'provider-1',
-        immutableGenerationId: 'generation-1',
       },
       providerSetupInput: { source: 'test' },
       credentialRef: null,
@@ -478,7 +477,8 @@ describe('Conversation Automation result delivery admission', () => {
         id: 'automation/result-deliver-v1',
         qualifiedId: 'happier.channels/actions/automation/result-deliver-v1',
       },
-      immutableGenerationId: 'channels-automation-result-fixture-generation',
+      occurrenceId: 'channels-automation-result-fixture-occurrence',
+      sourceCustody: { kind: 'development', registeredRootId: 'channels-automation-result-fixture-root' },
       materialization: {
         pluginId: 'happier.channels',
         machineId: 'machine-1',

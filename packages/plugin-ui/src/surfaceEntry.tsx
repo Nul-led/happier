@@ -46,35 +46,16 @@ function resolveHostedWebDataClient(context: RenderContext): PluginUiDataClient 
 }
 
 /**
- * The artifact entry wrapper for a plugin UI surface (§3.9).
+ * Wraps an author surface in the host-provided Plugin UI provider.
  *
- * §3.9 promises that an author "does not need bootstrap ceremony": the provider
- * is installed around the exported surface rather than by the author's own
- * component tree. The RN/RNW host CANNOT install it. `@happier-dev/plugin-ui`
- * is bundled INTO each plugin artifact — it is not in
- * `PLUGIN_UI_HOST_RUNTIME_EXTERNAL_SPECIFIERS`, which host-provides only
- * `react`, `react/jsx-runtime`, `react/jsx-dev-runtime`, `react-native-web` and
- * `@happier-dev/plugin-sdk/ui/client`. A provider created from a host-owned
- * copy of this package would publish React contexts created by a DIFFERENT
- * module instance from the one the plugin's own components read, so the
- * components would still throw "PluginUiProvider is required". Host-wrapping one
- * copy while components consume another is not a fix; it is a harder-to-see
- * version of the same bug.
- *
- * So the wrapper lives at the artifact entry, inside the plugin bundle, where
- * the provider and the components are the same module instance. It receives
- * the public render context the host already passes — the bound surface
- * controller (`hostApi`) and the initial surface snapshot (`surface`) — so the
- * author supplies no host wiring at all. The host attaches its private provider
- * bindings only after this entry returns its provider element; arbitrary
- * `renderSurface` code never receives those bindings through `RenderContext`.
- *
- * Making this fully generated (so the entry file names no wrapper) needs a
- * bundler-level entry indirection across BOTH the Vite/react-native-web and the
- * Re.Pack/Module-Federation tiers, and there is no packed `plugin-ui` consumer
- * yet to prove it against (EU-7f). Host-providing this package as a versioned
- * singleton instead is blocked on W-04/EU-6. Both later shapes keep this exact
- * author contract: they replace who writes the entry line, not what it means.
+ * The universal CommonJS compiler externalizes the complete
+ * `@happier-dev/plugin-ui` export family. The same-realm host module map then
+ * resolves every export from one physical package instance, so this provider
+ * and plugin components consume the same React contexts. The wrapper receives
+ * the public render context the host already passes, while the host attaches
+ * private provider bindings only after this entry returns its provider element.
+ * Arbitrary `renderSurface` code therefore never receives those bindings
+ * through `RenderContext`, and authors need no bootstrap ceremony.
  */
 export type UiSurfaceComponent = ComponentType<RenderContext>;
 

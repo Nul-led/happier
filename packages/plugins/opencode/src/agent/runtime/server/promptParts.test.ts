@@ -1,11 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { buildOpenCodePromptParts } from './promptParts.js';
 
 describe('buildOpenCodePromptParts', () => {
-  it('preserves text and safe OpenCode mentions without dereferencing structured paths', () => {
-    expect(buildOpenCodePromptParts({
-      cwd: '/repo',
+  it('preserves text and safe OpenCode mentions without dereferencing structured paths', async () => {
+    await expect(Promise.resolve().then(() => buildOpenCodePromptParts({
       text: 'Review this',
       structuredInput: {
         v: 1,
@@ -19,7 +18,7 @@ describe('buildOpenCodePromptParts', () => {
           path: '/repo/.agents/skills/security-review/SKILL.md',
         }],
       },
-    })).toEqual([
+    }))).resolves.toEqual([
       { type: 'text', text: 'Review this' },
       { type: 'agent', name: 'reviewer' },
       {
@@ -29,9 +28,8 @@ describe('buildOpenCodePromptParts', () => {
     ]);
   });
 
-  it('rejects malformed or unsafe structured image input instead of dropping it', () => {
-    expect(() => buildOpenCodePromptParts({
-      cwd: '/repo',
+  it('rejects malformed or unsafe structured image input instead of dropping it', async () => {
+    await expect(Promise.resolve().then(() => buildOpenCodePromptParts({
       text: '',
       structuredInput: {
         v: 1,
@@ -41,13 +39,19 @@ describe('buildOpenCodePromptParts', () => {
           url: 'javascript:alert(1)',
         }],
       },
-    })).toThrow('OpenCode server mode does not accept remote image references');
+    }))).rejects.toThrow('OpenCode server mode does not accept remote image references');
   });
 
-  it('returns typed unsupported for an authorized upload rather than bypassing media verification', () => {
-    expect(() => buildOpenCodePromptParts({
-      cwd: '/repo',
+  it('maps a host-verified upload to the exact OpenCode file-part contract', async () => {
+    const readVerifiedImage = vi.fn(async () => ({
+      url: 'data:image/png;base64,iVBORw0KGgo=',
+      mimeType: 'image/png',
+      filename: 'image.png',
+    }));
+
+    await expect(Promise.resolve().then(() => buildOpenCodePromptParts({
       text: 'Inspect this image',
+      inputFiles: { readVerifiedImage },
       structuredInput: {
         v: 1,
         imageInputs: [{
@@ -60,14 +64,45 @@ describe('buildOpenCodePromptParts', () => {
           provenance: { kind: 'sessionAttachmentUpload' },
         }],
       },
-    })).toThrow('OpenCode server mode cannot consume verified image uploads safely');
+    }))).resolves.toEqual([
+      { type: 'text', text: 'Inspect this image' },
+      {
+        type: 'file',
+        mime: 'image/png',
+        filename: 'image.png',
+        url: 'data:image/png;base64,iVBORw0KGgo=',
+      },
+    ]);
+    expect(readVerifiedImage).toHaveBeenCalledWith(expect.objectContaining({
+      path: '.happier/uploads/messages/message-1/image.png',
+      sha256: 'a'.repeat(64),
+      sizeBytes: 123,
+    }), undefined);
   });
 
-  it('accepts an additive mentions field and emits one part per reference (D-4, R-4)', () => {
+  it('fails closed when the host cannot verify an admitted upload', async () => {
+    await expect(Promise.resolve().then(() => buildOpenCodePromptParts({
+      text: 'Inspect this image',
+      inputFiles: { readVerifiedImage: async () => null },
+      structuredInput: {
+        v: 1,
+        imageInputs: [{
+          id: 'image-verified',
+          kind: 'localImage',
+          path: '.happier/uploads/messages/message-1/image.png',
+          mimeType: 'image/png',
+          sha256: 'a'.repeat(64),
+          sizeBytes: 123,
+          provenance: { kind: 'sessionAttachmentUpload' },
+        }],
+      },
+    }))).rejects.toMatchObject({ code: 'opencode_image_input_untrusted' });
+  });
+
+  it('accepts an additive mentions field and emits one part per reference (D-4, R-4)', async () => {
     // The envelope schema is `.passthrough()`, so `mentions[]` must not trip the
     // `opencode_structured_input_invalid` rejection at the top of the projection.
-    expect(buildOpenCodePromptParts({
-      cwd: '/repo',
+    await expect(Promise.resolve().then(() => buildOpenCodePromptParts({
       text: 'Review this',
       structuredInput: {
         v: 1,
@@ -80,6 +115,6 @@ describe('buildOpenCodePromptParts', () => {
         }],
         vendorPluginMentions: [{ vendorPluginRef: 'reviewer', label: 'Reviewer' }],
       },
-    })).toEqual([{ type: 'text', text: 'Review this' }]);
+    }))).resolves.toEqual([{ type: 'text', text: 'Review this' }]);
   });
 });

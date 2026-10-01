@@ -13,7 +13,7 @@ function projectEntries<T extends Readonly<{
     pluginId: string;
     identity: Readonly<{ pluginId: string; localId: string }>;
     definition: unknown;
-}>>(entries: readonly T[], generation: number): Readonly<Record<string, Readonly<{
+}>>(entries: readonly T[]): Readonly<Record<string, Readonly<{
     id: string;
     pluginId: string;
     [key: string]: unknown;
@@ -23,7 +23,6 @@ function projectEntries<T extends Readonly<{
         return [contributionKey, Object.freeze({
             id: contributionKey,
             pluginId: entry.pluginId,
-            generation,
             contributionKey,
             definition: entry.definition,
         })];
@@ -32,15 +31,15 @@ function projectEntries<T extends Readonly<{
 
 export const voiceModelPackProjectionFamily = definePluginProjectionFamilyV2({
     family: 'voiceModelPacks',
-    project: ({ registry, generation }) => ({
+    project: ({ registry }) => ({
         family: 'voiceModelPacks',
-        entriesById: projectEntries(registry.voiceModelPacks ?? [], generation),
+        entriesById: projectEntries(registry.voiceModelPacks ?? []),
     }),
 });
 
 export const voiceProviderProjectionFamily = definePluginProjectionFamilyV2({
     family: 'voiceProviders',
-    project: ({ registry, generation }) => ({
+    project: ({ registry }) => ({
         family: 'voiceProviders',
         entriesById: Object.freeze(Object.fromEntries((registry.voiceProviders ?? []).map((entry) => {
             const contributionKey = buildQualifiedPluginContributionKey(entry.identity);
@@ -52,7 +51,6 @@ export const voiceProviderProjectionFamily = definePluginProjectionFamilyV2({
             return [contributionKey, Object.freeze({
                 id: contributionKey,
                 pluginId: entry.pluginId,
-                generation,
                 contributionKey,
                 definition,
                 ...(recipientContract

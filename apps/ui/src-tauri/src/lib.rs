@@ -2,6 +2,15 @@
 mod autostart;
 
 #[cfg(desktop)]
+mod dock_icon;
+
+#[cfg(desktop)]
+mod desktop_exit_policy;
+#[cfg(desktop)]
+mod menu;
+#[cfg(desktop)]
+mod menu_bar;
+#[cfg(desktop)]
 mod tray;
 
 #[cfg(desktop)]
@@ -42,10 +51,16 @@ mod mcp_bridge;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        menu_bar::on_second_launch(app, args);
+    }));
+    let mut builder = builder
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init());
 
     #[cfg(desktop)]
     if let Some(init_script) =
@@ -74,6 +89,9 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder
+            .on_menu_event(menu::handle_menu_event)
+            .manage(menu_bar::MenuBarState::default())
+            .manage(desktop_lifecycle::DesktopShutdownState::default())
             .manage(app_updates::PendingUpdate::default())
             .manage(system_tasks::SystemTasksState::default())
             .manage(window_sizing::WindowSizingState::default())
@@ -83,12 +101,12 @@ pub fn run() {
             .manage(hosted_artifact_desktop::DesktopHostedArtifactState::default())
             .invoke_handler(tauri::generate_handler![
                 app_updates::desktop_fetch_update,
+                app_updates::desktop_download_update,
                 app_updates::desktop_install_update,
                 desktop_dialog::desktop_pick_ssh_identity_file,
                 desktop_dialog::desktop_pick_personal_home_backup_archive,
                 desktop_dialog::desktop_save_personal_home_backup_archive,
-                autostart::desktop_get_autostart_enabled,
-                autostart::desktop_set_autostart_enabled,
+                desktop_lifecycle::desktop_finish_shutdown,
                 tray::desktop_set_tray_state,
                 pet_overlay::sync_desktop_pet_overlay_state,
                 pet_overlay::desktop_pet_overlay_read_window_state,
@@ -167,14 +185,23 @@ pub fn run() {
             ]);
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.menu(menu::build_app_menu);
+    }
     builder
         .setup(|app| {
             #[cfg(desktop)]
             {
+                system_tasks::set_desktop_bundle_id(&app.config().identifier);
                 autostart::register(app)?;
                 tray::register(app)?;
+                menu_bar::prepare_launch(app.handle());
+                menu_bar::register(app.handle());
                 window_chrome::register(app)?;
-                window_sizing::register(app)?;
+                if !menu_bar::is_active(app.handle()) {
+                    dock_icon::apply();
+                }
                 activity_overlay::register(app)?;
                 pet_overlay::register(app)?;
             }
@@ -214,6 +241,11 @@ pub fn run() {
                             has_visible_windows,
                         },
                     );
+                }
+                tauri::RunEvent::ExitRequested { api, code, .. } => {
+                    if desktop_lifecycle::handle_exit_requested(app_handle, code) {
+                        api.prevent_exit();
+                    }
                 }
                 // Best-effort teardown of the shared Iroh process endpoint on
                 // final application shutdown; the persistent identity key is
@@ -284,13 +316,29 @@ mod desktop_dialog {
 
 #[cfg(desktop)]
 mod app_updates {
+    //! The desktop app's one updater adapter. Checking, downloading and installing are three
+    //! separate steps so the app can show a real download percentage and let the person choose
+    //! when to restart ("Restart to update"): a download never restarts anything.
+    pub(crate) mod relaunch;
     use serde::Serialize;
     use std::sync::Mutex;
-    use tauri::{AppHandle, State};
+    use tauri::{AppHandle, Emitter, Manager, State};
     use tauri_plugin_updater::{Update, UpdaterExt};
 
+    /// Emitted while `desktop_download_update` runs, once per whole percent (only when the server
+    /// sent a length — an unknown length stays indeterminate rather than guessed).
+    pub const DOWNLOAD_PROGRESS_EVENT: &str = "desktop_update_download_progress";
+
     #[derive(Default)]
-    pub struct PendingUpdate(pub Mutex<Option<Update>>);
+    pub struct PendingUpdateState {
+        /// The update the last check offered.
+        offered: Option<Update>,
+        /// The verified package for `offered`, kept until it is installed.
+        downloaded: Option<(Update, Vec<u8>)>,
+    }
+
+    #[derive(Default)]
+    pub struct PendingUpdate(pub Mutex<PendingUpdateState>);
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -299,6 +347,28 @@ mod app_updates {
         pub current_version: String,
         pub notes: Option<String>,
         pub pub_date: Option<String>,
+        /// The offered version is already downloaded and verified: only a restart is left.
+        pub downloaded: bool,
+    }
+
+    #[derive(Clone, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DownloadProgress {
+        pub version: String,
+        pub downloaded_bytes: u64,
+        pub total_bytes: u64,
+    }
+
+    fn poisoned() -> String {
+        "PendingUpdate poisoned".to_string()
+    }
+
+    /// Whole percent of `downloaded` out of `total`, `None` when the length is unknown.
+    pub(crate) fn whole_percent(downloaded: u64, total: Option<u64>) -> Option<u64> {
+        match total {
+            Some(total) if total > 0 => Some(downloaded.min(total).saturating_mul(100) / total),
+            _ => None,
+        }
     }
 
     #[tauri::command]
@@ -313,40 +383,255 @@ mod app_updates {
             .await
             .map_err(|e| e.to_string())?;
 
+        let mut state = pending_update.0.lock().map_err(|_| poisoned())?;
+        // A package already downloaded for the version still on offer stays ready to install.
+        let keep_download = matches!(
+            (&state.downloaded, &update),
+            (Some((downloaded, _)), Some(offered)) if downloaded.version == offered.version
+        );
+        if !keep_download {
+            state.downloaded = None;
+        }
         let metadata = update.as_ref().map(|u| UpdateMetadata {
             version: u.version.clone(),
             current_version: u.current_version.clone(),
             notes: u.body.clone(),
             pub_date: u.date.map(|d| d.to_string()),
+            downloaded: keep_download,
         });
-
-        *pending_update
-            .0
-            .lock()
-            .map_err(|_| "PendingUpdate poisoned".to_string())? = update;
+        state.offered = update;
         Ok(metadata)
     }
 
+    /// Downloads and verifies the offered update without installing it. `false` when nothing is
+    /// on offer (the check has to run first).
+    #[tauri::command]
+    pub async fn desktop_download_update(
+        app: AppHandle,
+        pending_update: State<'_, PendingUpdate>,
+    ) -> Result<bool, String> {
+        let update = {
+            let state = pending_update.0.lock().map_err(|_| poisoned())?;
+            if let Some((downloaded, _)) = &state.downloaded {
+                if state
+                    .offered
+                    .as_ref()
+                    .is_some_and(|offered| offered.version == downloaded.version)
+                {
+                    return Ok(true);
+                }
+            }
+            match &state.offered {
+                Some(update) => update.clone(),
+                None => return Ok(false),
+            }
+        };
+
+        let version = update.version.clone();
+        let mut downloaded_bytes: u64 = 0;
+        let mut last_percent: Option<u64> = None;
+        let bytes = update
+            .download(
+                |chunk_len, content_len| {
+                    downloaded_bytes = downloaded_bytes.saturating_add(chunk_len as u64);
+                    let percent = whole_percent(downloaded_bytes, content_len);
+                    if percent.is_some() && percent != last_percent {
+                        last_percent = percent;
+                        let _ = app.emit(
+                            DOWNLOAD_PROGRESS_EVENT,
+                            DownloadProgress {
+                                version: version.clone(),
+                                downloaded_bytes,
+                                total_bytes: content_len.unwrap_or(0),
+                            },
+                        );
+                    }
+                },
+                || {},
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let mut state = pending_update.0.lock().map_err(|_| poisoned())?;
+        state.downloaded = Some((update, bytes));
+        Ok(true)
+    }
+
+    /// Installs the downloaded update and restarts the app. `false` when nothing was downloaded.
+    /// A failed install keeps the package, so Retry does not download it again.
     #[tauri::command]
     pub async fn desktop_install_update(
         app: AppHandle,
         pending_update: State<'_, PendingUpdate>,
     ) -> Result<bool, String> {
-        let update = match pending_update
+        let downloaded = pending_update
             .0
             .lock()
-            .map_err(|_| "PendingUpdate poisoned".to_string())?
-            .take()
-        {
-            Some(update) => update,
+            .map_err(|_| poisoned())?
+            .downloaded
+            .take();
+        let (update, bytes) = match downloaded {
+            Some(downloaded) => downloaded,
             None => return Ok(false),
         };
 
-        update
-            .download_and_install(|_chunk_len, _content_len| {}, || {})
-            .await
-            .map_err(|e| e.to_string())?;
+        let installed = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())
+            .and_then(|dir| {
+                relaunch::install_with_relaunch_marker(
+                    &dir,
+                    &app.package_info().version.to_string(),
+                    || update.install(&bytes).map_err(|error| error.to_string()),
+                )
+            });
+        if let Err(error) = installed {
+            if let Ok(mut state) = pending_update.0.lock() {
+                state.downloaded = Some((update, bytes));
+            }
+            return Err(error.to_string());
+        }
 
         app.restart()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::whole_percent;
+
+        #[test]
+        fn download_progress_is_a_whole_percent_only_when_the_length_is_known() {
+            assert_eq!(whole_percent(0, Some(200)), Some(0));
+            assert_eq!(whole_percent(99, Some(200)), Some(49));
+            assert_eq!(whole_percent(200, Some(200)), Some(100));
+            assert_eq!(whole_percent(250, Some(200)), Some(100));
+            assert_eq!(whole_percent(10, None), None);
+            assert_eq!(whole_percent(10, Some(0)), None);
+        }
+    }
+}
+
+#[cfg(desktop)]
+mod desktop_lifecycle {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    use serde::Serialize;
+    use tauri::{AppHandle, Emitter, Manager, State};
+
+    use crate::desktop_exit_policy as policy;
+
+    pub use crate::desktop_exit_policy::QuitIntent;
+    use policy::{
+        parse_shutdown_outcome, resolve_desktop_exit_action, DesktopExitAction, DesktopExitRequest,
+        ShutdownOutcome,
+    };
+
+    /// Emitted to the webview when the app is quitting and the handoff is still available.
+    pub const APP_EXIT_REQUESTED_EVENT: &str = "desktop_app_exit_requested";
+
+    /// The handoff's payload: which Quit the person chose.
+    #[derive(Clone, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AppExitRequestedPayload {
+        /// "Stop background services and quit" — stop them whatever the login-start setting says.
+        stop_services: bool,
+        /// Last proven mode survives a fresh webview's pending first status read.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        service_autostart: Option<crate::tray::model::AutostartMode>,
+    }
+
+    #[derive(Default)]
+    pub struct DesktopShutdownState {
+        handoff_used: AtomicBool,
+        intent: Mutex<QuitIntent>,
+    }
+
+    /// Asks the app to quit the way the person chose; the exit handler hands the choice to the
+    /// webview with the one handoff.
+    pub fn request_quit(app: &AppHandle, intent: QuitIntent) {
+        let state: State<'_, DesktopShutdownState> = app.state();
+        if let Ok(mut current) = state.intent.lock() {
+            *current = intent;
+        }
+        app.exit(0);
+    }
+
+    /// Called by the webview once it has done whatever the user's answer asked for. `menuBar` keeps a
+    /// tray-only process with the services running (R16 a); anything else exits, re-entering the
+    /// handler, which now finds the handoff used and lets the app go.
+    #[tauri::command]
+    pub fn desktop_finish_shutdown(app: AppHandle, outcome: Option<String>) -> Result<(), String> {
+        match parse_shutdown_outcome(outcome.as_deref()) {
+            ShutdownOutcome::MenuBar => {
+                let state: State<'_, DesktopShutdownState> = app.state();
+                // The quit is over; the next one (from the tray, or after reopening) starts afresh.
+                state.handoff_used.store(false, Ordering::SeqCst);
+                crate::menu_bar::enter(&app);
+            }
+            ShutdownOutcome::Exit => app.exit(0),
+        }
+        Ok(())
+    }
+
+    /// Handles `RunEvent::ExitRequested`. Returns `true` when the caller must hold the exit.
+    pub fn handle_exit_requested(app: &AppHandle, code: Option<i32>) -> bool {
+        let state: State<'_, DesktopShutdownState> = app.state();
+        let request = DesktopExitRequest {
+            webview_present: app.get_webview_window("main").is_some(),
+            handoff_used: state.handoff_used.load(Ordering::SeqCst),
+            is_restart: code == Some(tauri::RESTART_EXIT_CODE),
+            menu_bar_mode: crate::menu_bar::is_active(app),
+            explicit: code.is_some(),
+        };
+
+        match resolve_desktop_exit_action(request) {
+            DesktopExitAction::Exit => false,
+            DesktopExitAction::StayInMenuBar => true,
+            DesktopExitAction::HandOffToWebview => {
+                state.handoff_used.store(true, Ordering::SeqCst);
+                let intent = state
+                    .intent
+                    .lock()
+                    .map(|mut intent| std::mem::take(&mut *intent))
+                    .unwrap_or_default();
+                let payload = AppExitRequestedPayload {
+                    stop_services: intent == QuitIntent::StopServices,
+                    service_autostart: crate::tray::persisted_service_autostart(app),
+                };
+                // `emit` reports success with zero listeners, so this only fires when the event could
+                // not be published at all — never as "nobody is listening". A quit that beats the
+                // webview's listener is still held, and is finished by pressing Quit again.
+                if app.emit(APP_EXIT_REQUESTED_EVENT, payload).is_err() {
+                    return false;
+                }
+                true
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn quit_handoff_carries_the_last_proven_login_mode_but_omits_unknown_mode() {
+            let known = serde_json::to_value(AppExitRequestedPayload {
+                stop_services: false,
+                service_autostart: Some(crate::tray::model::AutostartMode::AtLogin),
+            })
+            .unwrap();
+            assert_eq!(
+                known,
+                serde_json::json!({"stopServices": false, "serviceAutostart": "at-login"})
+            );
+            let unknown = serde_json::to_value(AppExitRequestedPayload {
+                stop_services: true,
+                service_autostart: None,
+            })
+            .unwrap();
+            assert_eq!(unknown, serde_json::json!({"stopServices": true}));
+        }
     }
 }

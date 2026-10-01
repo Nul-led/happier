@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 import { parseDevTargetsConfig, resolveDevTargetExecutionPolicy } from './config.mjs';
 import { resolveMutagenSessionName } from './mutagen_project.mjs';
-import { REMOTE_COMMAND_CLASSIFICATION, REMOTE_DEPENDENCY_ADMISSION } from './remote_commands.mjs';
+import { renderNativeCommandPolicy } from './remote_commands.mjs';
 import {
   EXECUTION_PROVENANCE_FILENAME,
   EXECUTION_PROVENANCE_SCHEMA_VERSION,
@@ -35,12 +35,6 @@ export function renderNativeExecutionProjection(config, { repoRoot = '' } = {}) 
     assignment('fallback_mode', policy.fallback ?? 'local'),
     assignment('load_ttl_seconds', Math.max(1, Math.ceil((policy.loadProbeTtlMs ?? 15000) / 1000))),
     assignment('unavailable_ttl_seconds', Math.max(1, Math.ceil((policy.unavailableProbeTtlMs ?? 120000) / 1000))),
-    assignment('dependency_direct_commands', REMOTE_DEPENDENCY_ADMISSION.directCommands.join(' ')),
-    assignment('dependency_corepack_subcommands', REMOTE_DEPENDENCY_ADMISSION.corepackSubcommands.join(' ')),
-    assignment('primary_only_direct_commands', REMOTE_COMMAND_CLASSIFICATION.primaryOnlyDirectCommands.join(' ')),
-    assignment('source_search_direct_commands', REMOTE_COMMAND_CLASSIFICATION.sourceSearchDirectCommands.join(' ')),
-    assignment('validation_direct_commands', REMOTE_COMMAND_CLASSIFICATION.validationDirectCommands.join(' ')),
-    assignment('validation_script_families', REMOTE_COMMAND_CLASSIFICATION.validationScriptFamilies.join(' ')),
     assignment('execution_provenance_schema_version', EXECUTION_PROVENANCE_SCHEMA_VERSION),
     assignment('execution_provenance_filename', EXECUTION_PROVENANCE_FILENAME),
     assignment('target_count', targets.length),
@@ -71,6 +65,10 @@ export async function writeNativeExecutionProjection({ configPath, outputPath, r
 }
 
 async function main() {
+  if (process.argv[2] === '--write-command-policy') {
+    await writeFile(new URL('./native_command_policy.sh', import.meta.url), renderNativeCommandPolicy());
+    return;
+  }
   const [configPath, outputPath, repoRoot = ''] = process.argv.slice(2);
   if (!configPath || !outputPath) {
     throw new Error('usage: native_execution_projection.mjs CONFIG_PATH OUTPUT_PATH');

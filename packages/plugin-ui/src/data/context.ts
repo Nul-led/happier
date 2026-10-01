@@ -9,6 +9,9 @@ import type { PluginUiDataClient } from './types.js';
 
 const PluginUiDataContext = createContext<PluginUiDataClient | null>(null);
 
+/** @internal The surface bridge re-provides this across the host's details pane (`components/surfaceBridge.tsx`). */
+export const PLUGIN_UI_DATA_CONTEXT_INTERNAL = PluginUiDataContext;
+
 /** Private bridge props used only by the bundled surface entry. */
 export type PluginUiDataProviderInternalProps = Readonly<{
   client?: PluginUiDataClient;

@@ -15,8 +15,12 @@ import {
 
 import { createRuntimeFingerprint } from '../runtime/shared/runtime_fingerprint.mjs';
 import { runCapture } from '../utils/proc/proc.mjs';
-import { readHappyCliRuntimeInputFreshness } from '../utils/proc/cli_runtime_inputs.mjs';
+import {
+  readHappyCliRuntimeInputFreshness,
+  resolveHappyCliRuntimeInputPaths,
+} from '../utils/proc/cli_runtime_inputs.mjs';
 import { readDevReloadWatchChangeSignatureAsync } from '../utils/dev/watchSignature.mjs';
+import { resolveWorkspaceBuildInputWatchPaths } from '../utils/fs/workspaceBuildInputs.mjs';
 
 const RUNTIME_COMPONENTS = Object.freeze(['web', 'server', 'daemon']);
 
@@ -43,7 +47,7 @@ function readInternalWorkspaceDependencyNames(packageJsonPath) {
     .sort((left, right) => left.localeCompare(right));
 }
 
-function collectWorkspaceSourcePaths({ repoDir, hostDir }) {
+function collectWorkspaceSourcePaths({ repoDir, hostDir, existsSyncImpl = existsSync }) {
   const dependencyNames = readInternalWorkspaceDependencyNames(join(hostDir, 'package.json'));
   const closure = resolveInternalWorkspacePackageNameClosure({
     repoRoot: repoDir,
@@ -51,13 +55,55 @@ function collectWorkspaceSourcePaths({ repoDir, hostDir }) {
   });
   return closure.flatMap((packageName) => {
     const packageDir = resolveWorkspaceSourceDir({ repoRoot: repoDir, packageName });
-    return [
-      join(packageDir, 'src'),
-      join(packageDir, 'package.json'),
-      join(packageDir, 'tsconfig.json'),
-      join(packageDir, 'tsconfig.build.json'),
-    ];
-  }).filter((path) => existsSync(path));
+    return resolveWorkspaceBuildInputWatchPaths(packageDir, { existsSyncImpl });
+  });
+}
+
+export function resolveRuntimeComponentSourcePaths({
+  component,
+  sourceMetadata,
+  existsSyncImpl = existsSync,
+}) {
+  const normalizedComponent = String(component ?? '').trim();
+  if (!RUNTIME_COMPONENTS.includes(normalizedComponent)) {
+    throw new Error(`[build] unknown runtime artifact component: ${normalizedComponent || '<empty>'}.`);
+  }
+  const repoDir = String(sourceMetadata?.repoDir ?? '').trim();
+  if (!repoDir) throw new Error('[build] runtime artifact identity requires a repository directory.');
+
+  if (normalizedComponent === 'daemon') {
+    return resolveHappyCliRuntimeInputPaths({
+      cliDir: join(repoDir, 'apps', 'cli'),
+      existsSyncImpl,
+    });
+  }
+
+  const hostDir = join(repoDir, 'apps', normalizedComponent === 'web' ? 'ui' : 'server');
+  const ownPaths = normalizedComponent === 'web'
+    ? [
+        join(hostDir, 'sources'),
+        join(hostDir, 'assets'),
+        join(hostDir, 'app.config.js'),
+        join(hostDir, 'babel.config.js'),
+        join(hostDir, 'metro.config.js'),
+        join(hostDir, 'package.json'),
+        join(hostDir, 'tsconfig.json'),
+        join(hostDir, 'patches'),
+        join(repoDir, 'yarn.lock'),
+      ]
+    : [
+        join(hostDir, 'sources'),
+        join(hostDir, 'scripts'),
+        join(hostDir, 'prisma'),
+        join(hostDir, 'package.json'),
+        join(hostDir, 'tsconfig.json'),
+        join(hostDir, 'tsconfig.build.json'),
+        join(repoDir, 'yarn.lock'),
+      ];
+  return [...new Set([
+    ...ownPaths.filter((path) => existsSyncImpl(path)),
+    ...collectWorkspaceSourcePaths({ repoDir, hostDir, existsSyncImpl }),
+  ])].sort((left, right) => left.localeCompare(right));
 }
 
 async function readSourcePathFingerprint({ component, paths }) {
@@ -93,33 +139,10 @@ export async function readRuntimeComponentSourceFingerprint({
     const freshness = await readDaemonRuntimeInputFreshnessImpl(join(repoDir, 'apps', 'cli'));
     return normalizeFingerprint(freshness?.fingerprint, 'daemon runtime source identity');
   }
-
-  const hostDir = join(repoDir, 'apps', normalizedComponent === 'web' ? 'ui' : 'server');
-  const ownPaths = normalizedComponent === 'web'
-    ? [
-        join(hostDir, 'sources'),
-        join(hostDir, 'assets'),
-        join(hostDir, 'app.config.js'),
-        join(hostDir, 'babel.config.js'),
-        join(hostDir, 'metro.config.js'),
-        join(hostDir, 'package.json'),
-        join(hostDir, 'tsconfig.json'),
-        join(hostDir, 'patches'),
-        join(repoDir, 'yarn.lock'),
-      ]
-    : [
-        join(hostDir, 'sources'),
-        join(hostDir, 'scripts'),
-        join(hostDir, 'prisma'),
-        join(hostDir, 'package.json'),
-        join(hostDir, 'tsconfig.json'),
-        join(hostDir, 'tsconfig.build.json'),
-        join(repoDir, 'yarn.lock'),
-      ];
-  const paths = [...new Set([
-    ...ownPaths.filter((path) => existsSync(path)),
-    ...collectWorkspaceSourcePaths({ repoDir, hostDir }),
-  ])].sort((left, right) => left.localeCompare(right));
+  const paths = resolveRuntimeComponentSourcePaths({
+    component: normalizedComponent,
+    sourceMetadata,
+  });
   return await readSourcePathFingerprintImpl({ component: normalizedComponent, paths });
 }
 

@@ -368,17 +368,22 @@ const testRouteBlockList = /[\\/]sources[\\/]app[\\/].*\.(test|spec)\.[jt]sx?$/;
 const projectArtifactsBlockList = /[\\/]\.project[\\/]/;
 const nextBuildArtifactsBlockList = /[\\/]\.next[\\/]/;
 const hstackWebArtifactExportBlockList = /[\\/]\.expo[\\/]hstack[\\/]web-artifact-export[\\/]/;
-// `apps/stack/scripts/pack.mjs` owns this transient publication name family. Metro mirrors the
-// packer's exact startsWith semantics at its crawl boundary so in-progress and rollback trees
-// never compete with the canonical workspace `src/**` and `dist/**` trees.
+// Package builders and the packer publish transient siblings of canonical output trees.
+// Exclude those siblings at Metro's crawl boundary so a removed backup cannot remain watched.
 const packTransientPublicationBlockList =
-  /[\\/](?:\.tmp\.|\.backup\.|\.restore\.|\.dist\.build\.|\.dist\.backup\.|\.dist\.hstack-stage-|\.happier-plugin-ui-stage-|\.happier-plugin-ui-staging(?:[\\/]|$)|dist\.staging\.|dist\.probe\.|dist\.__finalize_backup__\.)[^\\/]*(?:[\\/]|$)/;
+  /[\\/](?:\.tmp\.|\.backup\.|\.restore\.|\.dist\.build\.|\.dist\.backup\.|\.dist\.hstack-|\.happier-plugin-ui-stage-|\.happier-plugin-ui-staging(?:[\\/]|$)|dist\.staging\.|dist\.probe\.|dist\.__finalize_backup__\.)[^\\/]*(?:[\\/]|$)/;
 // Repository metadata is never a bundle input. Excluding it at the crawl boundary also prevents
 // Metro's fallback watcher from racing short-lived nested checkout and agent-instruction paths.
 const repositoryMetadataBlockList = /[\\/](?:\.git|\.agents|\.codex)(?:[\\/]|$)/;
 // The CLI's isolated runtime-snapshot staging area can retain multi-gigabyte native artifacts.
 // It is not a Metro input, but `apps/cli` is an Expo workspace watch root in stack runs.
 const cliRunnerSnapshotsBlockList = /[\\/]apps[\\/]cli[\\/]\.runner-snapshots(?:[\\/]|$)/;
+// TypeScript package builds keep incremental compiler output below each watched package root.
+// That cache is not a Metro input and may be removed or replaced after a compile. If Metro crawls
+// it, the fallback watcher can retain a path that disappears during publication and abort startup
+// with ENOENT before it ever reaches the package's canonical source or `dist` tree.
+const typescriptPackageBuildCacheBlockList =
+  /[\\/]\.happier[\\/]typescript-package-build(?:[\\/]|$)/;
 // Package-manager executable shims are never bundle inputs. Excluding them also prevents a retained
 // Metro file-map entry for a symlink from being read as a symlink after a synced install replaces it
 // with a regular wrapper script.
@@ -396,10 +401,10 @@ const nestedDependencyNodeModulesBlockList =
   /[\\/]node_modules[\\/](?!react-native[\\/]node_modules[\\/]@react-native[\\/])(?:@[^\\/]+[\\/])?[^\\/]+[\\/]node_modules[\\/]/;
 const existingBlockList = config.resolver.blockList;
   config.resolver.blockList = Array.isArray(existingBlockList)
-  ? [...existingBlockList, testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, repositoryMetadataBlockList, cliRunnerSnapshotsBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList]
+  ? [...existingBlockList, testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, repositoryMetadataBlockList, cliRunnerSnapshotsBlockList, typescriptPackageBuildCacheBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList]
   : existingBlockList
-    ? [existingBlockList, testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, repositoryMetadataBlockList, cliRunnerSnapshotsBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList]
-    : [testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, repositoryMetadataBlockList, cliRunnerSnapshotsBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList];
+    ? [existingBlockList, testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, repositoryMetadataBlockList, cliRunnerSnapshotsBlockList, typescriptPackageBuildCacheBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList]
+    : [testRouteBlockList, projectArtifactsBlockList, nextBuildArtifactsBlockList, hstackWebArtifactExportBlockList, packTransientPublicationBlockList, repositoryMetadataBlockList, cliRunnerSnapshotsBlockList, typescriptPackageBuildCacheBlockList, packageManagerBinBlockList, workspaceNodeModulesBlockList, nestedDependencyNodeModulesBlockList, ...internalWorkspaceDistBlockList];
 
 addInternalWorkspaceWatchFolders();
 
@@ -823,6 +828,11 @@ function resolvePackageNameShadowedByArtifactAssetExt(context, moduleName) {
 
 const defaultResolveRequest = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  // Resolve runtime peers from the app, preserving Metro platform/export rules.
+  // Hoisted dependencies must not introduce their own React or native renderers.
+  if (/^(react|react-dom|react-native)(?:\/|$)/u.test(moduleName)) {
+    context = { ...context, originModulePath: workspaceEntryPoint };
+  }
   // Expo CLI normally projects this platform fact before delegating to Metro,
   // but other legitimate consumers of the canonical config (release/proof
   // builders using Metro's public runBuild API) reach this resolver directly.
@@ -1003,8 +1013,8 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   }
   if (platform !== "web" && nativeEmptyNodeBuiltins.has(moduleName)) {
     // A bare Node-builtin NAME can also be a real installed npm package that ships a
-    // browser/RN implementation (`events` — extended by @callstack/repack's
-    // ScriptManager; `punycode` — required by whatwg-url's url-state-machine; also
+    // browser/RN implementation (`events`; `punycode` is required by
+    // whatwg-url's url-state-machine; also
     // buffer/process/util/...). Stubbing those to the empty shim breaks their
     // consumers at runtime ("Super expression must either be null or a function",
     // "Cannot read property 'decode' of undefined"). Prefer normal npm resolution for

@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { resolveCodexTerminalPermissionPolicy } from './permissionPolicy.js';
 
 describe('Codex terminal permission policy', () => {
+  it('keeps Happier coordination available with a read-only native sandbox under hands-off YOLO', () => {
+    expect(resolveCodexTerminalPermissionPolicy('yolo', 'deny')).toEqual({
+      approvalPolicy: 'never', sandbox: 'read-only',
+    });
+  });
+
   it.each([
     {
       mode: 'read_only',

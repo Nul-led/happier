@@ -30,10 +30,14 @@ type PluginHostApiContextValue = Readonly<{
   resourceStore: PluginUiResourceStore;
   composerRef: ComposerRefV1 | null;
   surfaceActive: boolean;
+  resourceActive: boolean;
   ephemeralSharedScope: PluginUiEphemeralSharedScope | null;
 }>;
 
 const PluginHostApiContext = createContext<PluginHostApiContextValue | null>(null);
+
+/** @internal The surface bridge re-provides this across the host's details pane (`components/surfaceBridge.tsx`). */
+export const PLUGIN_HOST_API_CONTEXT_INTERNAL = PluginHostApiContext;
 
 export type PluginHostApiProviderProps = Readonly<{
   hostApi: PluginUiHostApi;
@@ -119,6 +123,7 @@ export function PluginHostApiProviderInternal({
       resourceStore,
       composerRef,
       surfaceActive: surfaceActivity?.active ?? false,
+      resourceActive: surfaceActivity?.active ?? true,
       ephemeralSharedScope,
     }),
     [hostApi, resourceStore, composerRef, surfaceActivity, surfaceActivity?.active, ephemeralSharedScope],
@@ -141,6 +146,15 @@ export function usePluginHostApiResourceStore(): PluginUiResourceStore {
     throw new Error('PluginHostApiProvider is required before using plugin UI host API hooks.');
   }
   return context.resourceStore;
+}
+
+/** Internal Resource eligibility; legacy providers without activity remain live. */
+export function usePluginHostApiResourceActive(): boolean {
+  const context = useContext(PluginHostApiContext);
+  if (!context) {
+    throw new Error('PluginHostApiProvider is required before using plugin UI host API hooks.');
+  }
+  return context.resourceActive;
 }
 
 /** Internal carrier for the host-validated Composer mount identity. */

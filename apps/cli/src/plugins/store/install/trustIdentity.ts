@@ -139,16 +139,12 @@ export const PluginTrustRecordSchema: z.ZodType<PluginTrustRecord> = z.object({
  *
  * - `pinned` — the request is refused (`plugin_update_pinned`). The installation
  *   stays where the user put it until they change this policy.
- * - `reviewEveryUpdate` — the request proceeds, and the newest compatible
- *   candidate is staged and presented to a present user, who decides it like
- *   any install.
- * - `reviewSensitiveChanges` — the request proceeds and may be admitted
- *   *without a new present-user review* only while the trusted npm
- *   origin/package channel is preserved, whose trust record still matches the
- *   candidate distribution, and whose manifest change is not review-sensitive;
+ * - `allowed` — the request proceeds and may be admitted
+ *   *without a new present-user review* only while the trusted update channel
+ *   is preserved and the candidate manifest does not expand declared authority;
  *   it also requires published compatibility metadata, so an unevaluatable
- *   candidate is ineligible rather than silently taken. Any sensitive
- *   trust-fact change reopens the present-user review, never a silent upgrade.
+ *   candidate is ineligible rather than silently taken. Any authority expansion
+ *   reopens the present-user review, never a silent upgrade.
  *   Curation is discovery and recommendation only: a marketplace withdrawal or
  *   source removal never disables installed code and never blocks this update.
  */
@@ -257,10 +253,10 @@ export function pluginDistributionIdentitiesEqual(
 }
 
 /**
- * Whether two reviewed distributions belong to the same rollback lineage.
- * Archive integrity is deliberately excluded: replacement bytes require a new
- * trust decision, but the previously reviewed bytes remain an explicit
- * rollback target when the canonical archive source itself did not change.
+ * Whether two reviewed distributions belong to the same update/rollback
+ * lineage. Archive integrity is deliberately excluded: integrity remains an
+ * exact technical admission fact, while changed bytes from the same canonical
+ * archive source do not by themselves expand user-granted authority.
  */
 export function pluginDistributionRollbackLineagesEqual(
   left: PluginDistributionIdentity,
@@ -287,7 +283,6 @@ export function isPluginTrustRecordAuthorized(
   candidate: Readonly<{
     pluginId: string;
     distribution: PluginDistributionIdentity;
-    realm?: 'daemon' | 'reactNative' | 'reactNativeWeb' | 'hostedWeb' | 'declarative';
   }>,
 ): boolean {
   const parsedTrust = PluginTrustRecordSchema.safeParse(trust);

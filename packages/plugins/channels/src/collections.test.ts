@@ -241,11 +241,11 @@ describe('Channels collection declarations', () => {
     ]);
   });
 
-  it('declares the V2 census conflict pair and pure V1 migration beside the immutable V2 index', () => {
+  it('declares the V3 stable provider-selection shape and its ordered pure migrations', () => {
     const censusPayload = findChannelStateRecordPayload(
       CHANNEL_STATE_RECORD_KIND.ingressCensus,
     );
-    const migration = CHANNEL_ACCOUNT_COLLECTION_MIGRATIONS['channel-state']?.[0];
+    const [v1ToV2, v2ToV3] = CHANNEL_ACCOUNT_COLLECTION_MIGRATIONS['channel-state'] ?? [];
     const staticDeclaration = CHANNEL_ACCOUNT_COLLECTION_DECLARATIONS.find(
       (collection) => collection.id === 'channel-state',
     );
@@ -266,27 +266,106 @@ describe('Channels collection declarations', () => {
       },
     } as const;
 
-    expect(CHANNEL_STATE_COLLECTION.schemaVersion).toBe(2);
-    expect(CHANNEL_STATE_COLLECTION.readableSchemaVersions).toEqual([1]);
+    expect(CHANNEL_STATE_COLLECTION.schemaVersion).toBe(3);
+    expect(CHANNEL_STATE_COLLECTION.readableSchemaVersions).toEqual([1, 2]);
     expect(JSON.parse(JSON.stringify(CHANNEL_ACCOUNT_COLLECTION_DECLARATIONS)))
       .toEqual(CHANNEL_ACCOUNT_COLLECTION_DECLARATIONS);
     expect(staticDeclaration?.migrations).toEqual([{
       id: 'channel-state-v1-to-v2',
       fromSchemaVersion: 1,
       toSchemaVersion: 2,
+    }, {
+      id: 'channel-state-v2-to-v3',
+      fromSchemaVersion: 2,
+      toSchemaVersion: 3,
     }]);
     expect(staticDeclaration).not.toHaveProperty('migrations.0.migrate');
     expect(censusPayload?.required).toContain('conflict');
     expect(censusPayload?.required).toContain('compacted');
-    expect(migration).toMatchObject({
+    expect(v1ToV2).toMatchObject({
       id: 'channel-state-v1-to-v2',
       fromSchemaVersion: 1,
       toSchemaVersion: 2,
     });
-    expect(migration?.migrate(source)).toEqual({
+    expect(v1ToV2?.migrate(source)).toEqual({
       ...source,
       attention: false,
       payload: { ...source.payload, conflict: null, compacted: null },
+    });
+    expect(v2ToV3?.migrate({
+      id: 'connection-1',
+      'record-kind': 'connection',
+      v: 1,
+      'connection-id': 'connection-1',
+      'created-at': 10,
+      'updated-at': 20,
+      payload: {
+        providerContributionSelection: {
+          contributionId: 'telegram',
+          immutableGenerationId: 'provider-generation-a',
+        },
+        providerSetupInput: {
+          providerContributionSelection: {
+            contributionId: 'provider-owned',
+            immutableGenerationId: 'opaque-provider-value',
+          },
+        },
+        pendingOldTransportStop: {
+          providerContributionSelection: {
+            contributionId: 'telegram',
+            immutableGenerationId: 'provider-generation-old',
+          },
+        },
+      },
+    })).toEqual({
+      id: 'connection-1',
+      'record-kind': 'connection',
+      v: 1,
+      'connection-id': 'connection-1',
+      'created-at': 10,
+      'updated-at': 20,
+      payload: {
+        providerContributionSelection: { contributionId: 'telegram' },
+        providerSetupInput: {
+          providerContributionSelection: {
+            contributionId: 'provider-owned',
+            immutableGenerationId: 'opaque-provider-value',
+          },
+        },
+        pendingOldTransportStop: {
+          providerContributionSelection: { contributionId: 'telegram' },
+        },
+      },
+    });
+    expect(v2ToV3?.migrate({
+      id: 'obligation-1',
+      'record-kind': 'ingress-obligation',
+      v: 1,
+      'connection-id': 'connection-1',
+      'created-at': 10,
+      'updated-at': 20,
+      payload: {
+        target: {
+          kind: 'event',
+          providerContributionSelection: {
+            contributionId: 'telegram',
+            immutableGenerationId: 'provider-generation-a',
+          },
+        },
+      },
+    })).toEqual({
+      id: 'obligation-1',
+      'record-kind': 'ingress-obligation',
+      v: 1,
+      'connection-id': 'connection-1',
+      'created-at': 10,
+      'updated-at': 20,
+      payload: {
+        target: {
+          kind: 'event',
+          providerContributionSelection: { contributionId: 'telegram' },
+        },
+      },
     });
     expect(findChannelStateRecordBranch(CHANNEL_STATE_RECORD_KIND.ingressCensus)?.allOf)
       .toEqual(expect.arrayContaining([

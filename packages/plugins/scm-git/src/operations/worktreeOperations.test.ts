@@ -47,6 +47,8 @@ describe('git worktree operations', () => {
 
         expect(response.success).toBe(false);
         expect(response.error).toContain('Invalid Git base ref');
+        expect(response).not.toHaveProperty('worktreePath');
+        expect(response).not.toHaveProperty('branchName');
         expect(runScmCommandMock).not.toHaveBeenCalled();
         expect(mkdirMock).not.toHaveBeenCalled();
     });

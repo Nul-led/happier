@@ -4,11 +4,21 @@ import type { TriageEntryRefV1 } from '@happier-dev/triage-protocol/v1';
 import type { CorpusCollectionsV1 } from '../collections/bindCorpusCollections.js';
 import { putCorpusRowOnce } from '../collections/putRowOnce.js';
 import { fromCorpusStoredRow } from '../collections/rowCodec.js';
-import type { CorpusUserMarkDisplayV1, CorpusUserMarkRowV1 } from '../collections/rows.js';
+import type {
+    CorpusFixPullRequestsV1,
+    CorpusUserMarkDisplayV1,
+    CorpusUserMarkRowV1,
+} from '../collections/rows.js';
+import { toCorpusStoredValue } from '../collections/rowCodec.js';
+import { sameTriageEntryReference } from '../identity/components.js';
 import { deriveUserMarkTag } from '../identity/tags.js';
+import { MAX_TRIAGE_LINKED_SESSIONS_PAGE_SIZE_V1 } from '@happier-dev/triage-protocol/v1';
 
 /**
- * The one canonical `user-marks` writer.
+ * The one canonical `user-marks` writer: Pin/Unpin and the fix-PR choice
+ * (`setFixPullRequest`, `design/FIX-LINK.md`) share this module because they
+ * share the row, so the two concerns can never race each other inside it
+ * through two writers that each think they own it.
  *
  * Pin and Unpin are direct user actions on Account Collection data: there is no
  * confirmation ceremony, no optimistic second owner, no source Action, no
@@ -72,6 +82,28 @@ async function readLiveMark(
     return row ? fromCorpusStoredRow<CorpusUserMarkRowV1>(row) : null;
 }
 
+/**
+ * Rewrite a live mark at its read revision. `false` means another writer moved
+ * the row in between, exactly as the store said; every other refusal is raised.
+ */
+async function rewriteLiveMark(
+    collections: MarkCollections,
+    revision: number,
+    row: CorpusUserMarkRowV1,
+    signal?: AbortSignal,
+): Promise<boolean> {
+    const result = await collections.userMarks.batch(
+        [{ kind: 'put', value: toCorpusStoredValue(row), expectedRevision: revision }],
+        signal ? { signal } : undefined,
+    );
+    return result.status === 'updated';
+}
+
+function withoutFixPullRequests(row: CorpusUserMarkRowV1): CorpusUserMarkRowV1 {
+    const { fixPullRequests: _dropped, ...rest } = row;
+    return rest;
+}
+
 export async function setPinned(input: CorpusSetPinnedInputV1): Promise<CorpusSetPinnedResultV1> {
     const { collections, entryRef, nowMs } = input;
     const options = input.signal ? { signal: input.signal } : undefined;
@@ -83,6 +115,19 @@ export async function setPinned(input: CorpusSetPinnedInputV1): Promise<CorpusSe
         const existing = await readLiveMark(collections, markTag, options);
         // An already-absent mark is an idempotent success.
         if (!existing) return { status: 'unpinned', markTag };
+        if (existing.value.pinned === false) return { status: 'unpinned', markTag };
+        // The row also carries the reader's fix-PR choice. Unpin removes the
+        // pin, never that choice, so the row stays live as `pinned: false`.
+        if (existing.value.fixPullRequests !== undefined) {
+            return await rewriteLiveMark(
+                collections,
+                existing.revision,
+                { ...existing.value, pinned: false },
+                input.signal,
+            )
+                ? { status: 'unpinned', markTag }
+                : { status: 'conflict', markTag };
+        }
         try {
             await collections.userMarks.delete(markTag, {
                 expectedRevision: existing.revision,
@@ -108,6 +153,19 @@ export async function setPinned(input: CorpusSetPinnedInputV1): Promise<CorpusSe
     // A live mark is idempotent: a repeat Pin never reorders the pinned section
     // and never overwrites the user's own mark with a later pass's rendering.
     if (existing?.value.pinned === true) return { status: 'pinned', markTag };
+    // A live unpinned mark that holds a fix-PR choice is pinned in place, keeping
+    // the choice. A live unpinned mark WITHOUT one is not a state this writer
+    // produces, so it stays a conflict rather than being overwritten.
+    if (existing?.value.fixPullRequests !== undefined) {
+        return await rewriteLiveMark(
+            collections,
+            existing.revision,
+            { ...existing.value, pinned: true, markedAtMs: nowMs, displayAtMark: input.displayAtMark },
+            input.signal,
+        )
+            ? { status: 'pinned', markTag }
+            : { status: 'conflict', markTag };
+    }
 
     const written = await putCorpusRowOnce<CorpusUserMarkRowV1>({
         collection: collections.userMarks,
@@ -133,4 +191,85 @@ export async function setPinned(input: CorpusSetPinnedInputV1): Promise<CorpusSe
             : { status: 'conflict', markTag };
     }
     return { status: 'conflict', markTag };
+}
+
+export type CorpusSetFixPullRequestResultV1 =
+    | Readonly<{ status: 'linked' }>
+    | Readonly<{ status: 'unlinked' }>
+    /** Another writer moved the mark first; the caller re-reads rather than forcing. */
+    | Readonly<{ status: 'conflict' }>
+    /** The mark already holds one page of fix-PR choices; nothing was dropped to make room. */
+    | Readonly<{ status: 'full' }>;
+
+/**
+ * Link or unlink one fix pull request for the marked entry.
+ *
+ * - Link adds the PR to `linked` (replacing an earlier link to the same PR) and
+ *   removes it from `dismissed`.
+ * - Unlink removes it from `linked` and adds it to `dismissed`, so an unlink
+ *   wins over a candidate a shared Session link implies. It never touches
+ *   `session-links`: the Session still worked on that PR.
+ *
+ * Both carry the marked entry's own display pair, because the first fix-PR
+ * choice on an unpinned entry creates its mark row and a mark must be nameable
+ * on its own bytes. An existing row keeps its own `displayAtMark` and pin.
+ * Each list holds at most one detail page of refs; a write past that bound is
+ * refused as `full` rather than silently evicting an older choice.
+ */
+export async function setFixPullRequest(input: Readonly<{
+    collections: MarkCollections;
+    entryRef: TriageEntryRefV1;
+    displayAtMark: CorpusUserMarkDisplayV1;
+    fixPullRequest: TriageEntryRefV1;
+    nowMs: number;
+    signal?: AbortSignal;
+}> & (
+    | Readonly<{ linked: true; displayAtLink: CorpusUserMarkDisplayV1 }>
+    | Readonly<{ linked: false }>
+)): Promise<CorpusSetFixPullRequestResultV1> {
+    const { collections, entryRef, fixPullRequest, nowMs } = input;
+    const options = input.signal ? { signal: input.signal } : undefined;
+    const markTag = await deriveUserMarkTag(collections.userMarks, entryRef, options);
+    const existing = await readLiveMark(collections, markTag, options);
+
+    const current: CorpusFixPullRequestsV1 = existing?.value.fixPullRequests ?? { linked: [], dismissed: [] };
+    const isTarget = (ref: TriageEntryRefV1) => sameTriageEntryReference(ref, fixPullRequest);
+    const linked = current.linked.filter((link) => !isTarget(link.entryRef));
+    const dismissed = current.dismissed.filter((ref) => !isTarget(ref));
+    const next: CorpusFixPullRequestsV1 = input.linked
+        ? {
+            linked: [...linked, { entryRef: fixPullRequest, displayAtLink: input.displayAtLink, linkedAtMs: nowMs }],
+            dismissed,
+        }
+        : { linked, dismissed: [...dismissed, fixPullRequest] };
+    if (next.linked.length > MAX_TRIAGE_LINKED_SESSIONS_PAGE_SIZE_V1
+        || next.dismissed.length > MAX_TRIAGE_LINKED_SESSIONS_PAGE_SIZE_V1) {
+        return { status: 'full' };
+    }
+    const settled = input.linked ? { status: 'linked' as const } : { status: 'unlinked' as const };
+
+    if (existing) {
+        return await rewriteLiveMark(
+            collections,
+            existing.revision,
+            { ...withoutFixPullRequests(existing.value), fixPullRequests: next },
+            input.signal,
+        )
+            ? settled
+            : { status: 'conflict' };
+    }
+    const written = await putCorpusRowOnce<CorpusUserMarkRowV1>({
+        collection: collections.userMarks,
+        rowId: markTag,
+        row: {
+            markTag,
+            pinned: false,
+            markedAtMs: nowMs,
+            entryRef,
+            displayAtMark: input.displayAtMark,
+            fixPullRequests: next,
+        },
+        ...(input.signal ? { signal: input.signal } : {}),
+    });
+    return written.status === 'written' ? settled : { status: 'conflict' };
 }

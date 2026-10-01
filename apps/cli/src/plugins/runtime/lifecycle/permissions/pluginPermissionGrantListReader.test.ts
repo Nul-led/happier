@@ -1,12 +1,15 @@
 import axios from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  PluginInstallReviewPrincipalDigestSchema,
-  PluginPermissionSubjectV1Schema,
-} from '@happier-dev/protocol';
+import { PluginPermissionSubjectV1Schema } from '@happier-dev/protocol';
 import { createDefaultPluginInstallationPublisherHeader } from '@/plugins/installations/publisherProof';
-import { createServerPluginPermissionGrantListReader } from './pluginPermissionGrantListReader';
+import {
+  createAccountLifetimePluginPermissionGrantListReader,
+  createServerPluginPermissionGrantListReader,
+  resetAccountLifetimePluginPermissionGrantProjectionForTests,
+  retireAccountLifetimePluginPermissionGrant,
+  retireAccountLifetimePluginPermissionGrantsForPlugin,
+} from './pluginPermissionGrantListReader';
 
 vi.mock('axios');
 vi.mock('@/plugins/installations/publisherProof', () => ({
@@ -17,6 +20,10 @@ describe('server plugin permission grant list reader', () => {
   beforeEach(() => {
     vi.mocked(axios.post).mockReset();
     vi.mocked(createDefaultPluginInstallationPublisherHeader).mockReset();
+    vi.mocked(axios.isAxiosError).mockImplementation((error) => (
+      error instanceof Error && error.message === 'relay unavailable'
+    ));
+    resetAccountLifetimePluginPermissionGrantProjectionForTests();
   });
 
   it('posts the exact canonical query with account authentication and parses the response', async () => {
@@ -28,8 +35,6 @@ describe('server plugin permission grant list reader', () => {
       accessDeclarationDigest: 'c'.repeat(64),
       selectedAuthorityDigest: 'd'.repeat(64),
       selectedRawAccessDigest: 'e'.repeat(64),
-      installedGenerationId: 'generation-1',
-      installReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema.parse('a'.repeat(64)),
     });
     const output = {
       grants: [{
@@ -106,5 +111,115 @@ describe('server plugin permission grant list reader', () => {
       limit: 50,
     })).rejects.toThrow('plugin_permission_grant_publisher_proof_unavailable');
     expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it('reuses a synchronized active grant only during the same Account lifetime when the relay is unavailable', async () => {
+    const subject = PluginPermissionSubjectV1Schema.parse({
+      kind: 'credential_access_disclosure',
+      contribution: { pluginId: 'acme.voice', localId: 'speech' },
+      credentialSlotId: 'api_key',
+      purpose: 'voice.speech',
+      accessDeclarationDigest: 'c'.repeat(64),
+      selectedAuthorityDigest: 'd'.repeat(64),
+      selectedRawAccessDigest: 'e'.repeat(64),
+    });
+    const grant = {
+      v: 1,
+      id: 'grant-1',
+      accountId: 'account-1',
+      pluginId: 'acme.voice',
+      capability: 'credentials.materialize.raw',
+      targetScope: { kind: 'account' },
+      subject,
+      authoritySource: { kind: 'machine_installation', machineId: 'machine-1', installationId: 'install-1' },
+      status: 'active',
+      grantedByUserId: 'user-1',
+      grantedAt: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    } as const;
+    let lifetime = 1;
+    let scopeKey: string | null = 'account-scope-1';
+    const reader = createAccountLifetimePluginPermissionGrantListReader({
+      credentials: { token: 'account-token', encryption: null },
+      getScopeKey: () => scopeKey,
+      getLifetimeToken: () => lifetime,
+    });
+    const query = {
+      pluginId: 'acme.voice',
+      capability: 'credentials.materialize.raw',
+      targetScope: { kind: 'account' },
+      subject,
+      includeRevoked: false,
+      includeResolvedRequests: false,
+      limit: 200,
+    } as const;
+    vi.mocked(axios.post).mockResolvedValueOnce({ data: { grants: [grant], pendingRequests: [] } });
+    await expect(reader.list(query)).resolves.toEqual({ grants: [grant], pendingRequests: [] });
+
+    vi.mocked(axios.post).mockRejectedValue(new Error('relay unavailable'));
+    await expect(reader.list(query)).resolves.toEqual({ grants: [grant], pendingRequests: [] });
+
+    retireAccountLifetimePluginPermissionGrant(grant.id);
+    await expect(reader.list(query)).resolves.toEqual({ grants: [], pendingRequests: [] });
+
+    const replacementGrant = { ...grant, id: 'grant-2' } as const;
+    vi.mocked(axios.post).mockResolvedValueOnce({ data: { grants: [replacementGrant], pendingRequests: [] } });
+    await expect(reader.list(query)).resolves.toEqual({ grants: [replacementGrant], pendingRequests: [] });
+    vi.mocked(axios.post).mockRejectedValue(new Error('relay unavailable'));
+    retireAccountLifetimePluginPermissionGrantsForPlugin(grant.pluginId);
+    await expect(reader.list(query)).resolves.toEqual({ grants: [], pendingRequests: [] });
+
+    vi.mocked(axios.post).mockResolvedValueOnce({ data: { grants: [replacementGrant], pendingRequests: [] } });
+    await expect(reader.list(query)).resolves.toEqual({ grants: [replacementGrant], pendingRequests: [] });
+    vi.mocked(axios.post).mockRejectedValue(new Error('relay unavailable'));
+
+    lifetime += 1;
+    scopeKey = 'account-scope-2';
+    await expect(reader.list(query)).resolves.toEqual({ grants: [], pendingRequests: [] });
+
+    resetAccountLifetimePluginPermissionGrantProjectionForTests();
+    await expect(reader.list(query)).resolves.toEqual({ grants: [], pendingRequests: [] });
+  });
+
+  it('does not let an older in-flight list response resurrect a locally revoked grant', async () => {
+    const subject = PluginPermissionSubjectV1Schema.parse({
+      kind: 'credential_access_disclosure',
+      contribution: { pluginId: 'acme.voice', localId: 'speech' },
+      credentialSlotId: 'api_key',
+      purpose: 'voice.speech',
+      accessDeclarationDigest: 'c'.repeat(64),
+      selectedAuthorityDigest: 'd'.repeat(64),
+      selectedRawAccessDigest: 'e'.repeat(64),
+    });
+    const grant = {
+      v: 1, id: 'grant-race', accountId: 'account-1', pluginId: 'acme.voice',
+      capability: 'credentials.materialize.raw', targetScope: { kind: 'account' }, subject,
+      authoritySource: { kind: 'machine_installation', machineId: 'machine-1', installationId: 'install-1' },
+      status: 'active', grantedByUserId: 'user-1', grantedAt: 1, createdAt: 1, updatedAt: 1,
+    } as const;
+    let release!: () => void;
+    vi.mocked(axios.post).mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { data: { grants: [grant], pendingRequests: [] } };
+    });
+    const reader = createAccountLifetimePluginPermissionGrantListReader({
+      credentials: { token: 'account-token', encryption: null },
+      getScopeKey: () => 'account-scope',
+      getLifetimeToken: () => 1,
+    });
+    const pending = reader.list({
+      pluginId: grant.pluginId,
+      capability: grant.capability,
+      targetScope: grant.targetScope,
+      subject,
+      includeRevoked: false,
+      includeResolvedRequests: false,
+      limit: 200,
+    });
+    await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
+    retireAccountLifetimePluginPermissionGrant(grant.id);
+    release();
+    await expect(pending).resolves.toEqual({ grants: [], pendingRequests: [] });
   });
 });

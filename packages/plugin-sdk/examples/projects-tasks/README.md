@@ -22,9 +22,9 @@ open tasks for its bounded `project-a` binding. It uses the same query fields;
 the host Collection List owns its accessible loading, empty, and retryable
 last-known-good error states without a daemon tunnel or a second query path.
 
-`pluginUiBuild.ts` declares the standard web, iOS, and Android targets. The
-SDK build owner derives its operation-local Vite and Re.Pack configuration; no
-package-root bundler config or generated artifact is checked in. This source
+The package export for `./ui/panel.native` is compiled once as a universal CommonJS artifact. The
+SDK build owner supplies the compiler configuration; no package-root bundler
+config or generated artifact is checked in. This source
 package does not by itself prove empty-workspace installation,
 daemon-offline behavior, or device rendering; those are separate loaded-runtime
 validation gates on the existing development stack.

@@ -149,7 +149,6 @@ const parsedDefinition = PluginContributesV2Schema.parse({
         },
         client: {
             artifactId: 'voice-runtime-web',
-            modulePath: './voiceRuntime',
             exportName: 'activate',
         },
     }],
@@ -437,10 +436,10 @@ function createCatalogService(
     adapter: (request: TestFetchRequest) => Promise<TestFetchResponse>,
     lifecycle: Readonly<{
         signal: AbortSignal;
-        isGenerationCurrent: () => boolean;
+        isOccurrenceCurrent: () => boolean;
     }> = {
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
     },
     voiceProviders: Parameters<
         typeof createVoiceAccountPluginHttpCredentialBindingHost
@@ -463,11 +462,11 @@ function createCatalogService(
             id: 'list-voices',
             qualifiedId: `${invocationPluginId}/actions/list-voices`,
         },
-        generation: 'generation-7',
+        occurrenceId: 'generation-7',
         correlationId: 'voice-catalog-operation',
         surface: 'ui',
         signal: lifecycle.signal,
-        isGenerationCurrent: lifecycle.isGenerationCurrent,
+        isOccurrenceCurrent: lifecycle.isOccurrenceCurrent,
     }, catalogNetworkBinding());
 }
 
@@ -492,11 +491,11 @@ describe('Voice account Plugin fetch credential binding', () => {
     }).bind({
         plugin: { id: 'acme.voice', version: '1.0.0' },
         contribution: { id: 'list-voices', qualifiedId: 'acme.voice/actions/list-voices' },
-        generation: 'generation-7',
+        occurrenceId: 'generation-7',
         correlationId: 'voice-catalog-operation',
         surface: 'ui',
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
     }, catalogNetworkBinding());
 
     await expect(service.request(catalogRequest())).rejects.toMatchObject({
@@ -542,7 +541,7 @@ describe('Voice account Plugin fetch credential binding', () => {
             response(request, { voices: [] }));
         const service = createCatalogService(adapter, {
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, [{
             pluginId: identity.pluginId,
             identity,
@@ -593,11 +592,11 @@ describe('Voice account Plugin fetch credential binding', () => {
         const service = host.bind({
             plugin: { id: 'acme.voice', version: '1.0.0' },
             contribution: { id: 'mint-session', qualifiedId: 'acme.voice/actions/mint-session' },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: 'voice-account-operation',
             surface: 'ui',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, networkBinding());
         const pluginRequest = {
             url: 'https://voice.example.test/v1/session',
@@ -678,15 +677,15 @@ describe('Voice account Plugin fetch credential binding', () => {
         const bind = (
             actionId: string,
             signal = new AbortController().signal,
-            isGenerationCurrent: () => boolean = () => true,
+            isOccurrenceCurrent: () => boolean = () => true,
         ) => host.bind({
             plugin: { id: 'acme.voice', version: '1.0.0' },
             contribution: { id: actionId, qualifiedId: `acme.voice/actions/${actionId}` },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: 'voice-account-operation',
             surface: 'ui',
             signal,
-            isGenerationCurrent,
+            isOccurrenceCurrent,
         }, networkBinding());
         const request = {
             url: 'https://voice.example.test/v1/session',
@@ -762,11 +761,11 @@ describe('Voice account Plugin fetch credential binding', () => {
         }).bind({
             plugin: { id: 'acme.voice', version: '1.0.0' },
             contribution: { id: 'mint-session', qualifiedId: 'acme.voice/actions/mint-session' },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: 'voice-account-operation-origin-race',
             surface: 'ui',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, networkBinding());
 
         await expect(service.request({
@@ -801,11 +800,11 @@ describe('Voice account Plugin fetch credential binding', () => {
             }).bind({
                 plugin: { id: 'acme.voice', version: '1.0.0' },
                 contribution: { id: 'mint-session', qualifiedId: 'acme.voice/actions/mint-session' },
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 correlationId: 'voice-account-operation',
                 surface: 'ui',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             }, networkBinding())
         );
         const request = {
@@ -900,7 +899,7 @@ describe('Voice account Plugin fetch credential binding', () => {
         const adapter = vi.fn(async (request: TestFetchRequest) => response(request, { voices: [] }));
         const service = createCatalogService(adapter, {
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, [{
             pluginId: 'acme.voice',
             identity: { pluginId: 'acme.voice', localId: 'conversation' },
@@ -964,7 +963,7 @@ describe('Voice account Plugin fetch credential binding', () => {
         const adapter = vi.fn(async (request: TestFetchRequest) => response(request, { voices: [] }));
         const service = createCatalogService(adapter, {
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, [{
             pluginId: identity.pluginId,
             identity,
@@ -1021,11 +1020,11 @@ describe('Voice account Plugin fetch credential binding', () => {
         }).bind({
             plugin: { id: 'acme.voice', version: '1.0.0' },
             contribution: { id: 'mint-session', qualifiedId: 'acme.voice/actions/mint-session' },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: 'voice-account-operation',
             surface: 'ui',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, networkBinding());
         const request = {
             url: 'https://voice.example.test/v1/session',
@@ -1111,11 +1110,11 @@ describe('Voice account Plugin fetch credential binding', () => {
         }).bind({
             plugin: { id: 'acme.voice', version: '1.0.0' },
             contribution: { id: 'mint-session', qualifiedId: 'acme.voice/actions/mint-session' },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: 'voice-account-dynamic-credential-header',
             surface: 'ui',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, networkBinding());
 
         const observed = vi.fn(async (
@@ -1184,11 +1183,11 @@ describe('Voice account Plugin fetch credential binding', () => {
                 id: 'mint-session',
                 qualifiedId: 'acme.voice/actions/mint-session',
             },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: 'voice-account-operation',
             surface: 'ui' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         };
         const body = new TextEncoder().encode(JSON.stringify({
             kind: 'bearer_token',
@@ -1263,11 +1262,11 @@ describe('Voice account Plugin fetch credential binding', () => {
                     id: 'list-voices',
                     qualifiedId: 'acme.voice/actions/list-voices',
                 },
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 correlationId: 'voice-account-operation-rejected-response',
                 surface: 'ui',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             serviceBinding: catalogNetworkBinding(),
             credentialBinding: catalogRequest().credentialBinding,
@@ -1401,7 +1400,7 @@ describe('Voice account Plugin fetch credential binding', () => {
             const caller = new AbortController();
             const pending = createCatalogService(adapter, {
                 signal: caller.signal,
-                isGenerationCurrent: () => current,
+                isOccurrenceCurrent: () => current,
             }).request(catalogRequest());
             await started;
             change({
@@ -1506,11 +1505,11 @@ describe('Voice account Plugin fetch credential binding', () => {
                 id: packedDefinition.id,
                 qualifiedId: `acme.packed-voice/voiceProviders/${packedDefinition.id}`,
             },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: `packed-voice-account-operation:${phase}`,
             surface: 'ui' as const,
             signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, createLoggerAndEventsAvailablePluginInvocationServiceBinding(
             'generation-7',
             `binding-packed-voice:${phase}`,

@@ -13,6 +13,7 @@ import {
 import { retainManagedServiceDiagnostic } from './managedProcessSupervisor';
 import type {
     ManagedServiceDiagnosticRetention,
+    ManagedServiceProcessHealthCheck,
     ManagedServiceProcessSnapshot,
     ManagedServiceProcessSpec,
 } from './managedProcessSupervisor';
@@ -106,10 +107,14 @@ function createHarness(processes: PluginProcessHandle[] = []) {
         fetch: vi.fn(async () => new Response('', { status: 200 })),
     });
     const servers = host.bind({
-        generation: 'generation-7',
+        occurrenceId: 'occurrenceId-7',
+        sourceCustody: {
+            kind: 'development',
+            registeredRootId: 'fixture-plugin-root',
+        },
         pluginId: 'fixture.plugin',
         contributionId: 'fixture.agent',
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         exec,
     });
     return { exec, host, servers };
@@ -422,10 +427,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
         const exec = createExec();
         const host = createManagedServiceProcessSupervisorHost({ platform: 'win32' });
         const servers = host.bind({
-            generation: 'generation-windows-custody',
+            occurrenceId: 'occurrenceId-windows-custody',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
@@ -451,10 +456,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             new Response('', { status: 200 }));
         const host = createManagedServiceProcessSupervisorHost({ fetch });
         const servers = host.bind({
-            generation: 'generation-stale-health-lease',
+            occurrenceId: 'occurrenceId-stale-health-lease',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec: createExec(),
         });
         const isCurrent = vi.fn(async () => false);
@@ -478,6 +483,212 @@ describe('createManagedServiceProcessSupervisorHost', () => {
         await handle.dispose();
     });
 
+    it.each([
+        {
+            label: 'released V2 server info',
+            responses: [new Response(JSON.stringify({
+                version: '2.0.15',
+                pid: 42,
+                urls: [],
+                paths: { data: '/tmp/opencode' },
+            }), { status: 200, headers: { 'content-type': 'application/json' } })],
+            expectedPaths: ['/api/info'],
+        },
+        {
+            label: 'retained V1 health marker',
+            responses: [
+                new Response(JSON.stringify({ error: 'not found' }), { status: 404 }),
+                new Response(JSON.stringify({ healthy: true }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            ],
+            expectedPaths: ['/api/info', '/global/health'],
+        },
+    ])('admits $label through one authenticated ordered health attempt', async ({ responses, expectedPaths }) => {
+        const paths: string[] = [];
+        const authorizationValues: string[] = [];
+        const isCurrent = vi.fn(async () => true);
+        const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+            paths.push(new URL(String(input)).pathname);
+            authorizationValues.push(new Headers(init?.headers).get('authorization') ?? '');
+            return responses.shift() ?? new Response('', { status: 500 });
+        });
+        const host = createManagedServiceProcessSupervisorHost({ fetch });
+        const servers = host.bind({
+            occurrenceId: 'occurrenceId-ordered-health',
+            pluginId: 'fixture.plugin',
+            contributionId: 'fixture.agent',
+            isOccurrenceCurrent: () => true,
+            exec: createExec(),
+        });
+        const healthCheck: ManagedServiceProcessHealthCheck = {
+            kind: 'http',
+            alternatives: [
+                {
+                    target: { kind: 'serverPath', path: '/api/info' },
+                    response: {
+                        kind: 'jsonObject',
+                        required: {
+                            version: 'nonEmptyString',
+                            pid: 'nonNegativeInteger',
+                            urls: 'array',
+                            paths: 'object',
+                        },
+                    },
+                },
+                {
+                    target: { kind: 'serverPath', path: '/global/health' },
+                    response: { kind: 'jsonObject', required: { healthy: 'true' } },
+                },
+            ],
+            resolveHeaders: async () => ({
+                headers: { authorization: 'Basic exact-credential' },
+                isCurrent,
+            }),
+            timeoutMs: 5_000,
+        };
+        const handle = await servers.supervise({
+            ...externalSpec('attached-ordered-health'),
+            healthCheck,
+        });
+
+        await expect(handle.waitUntilHealthy({ timeoutMs: 30_000 }))
+            .resolves.toMatchObject({ state: 'healthy' });
+        expect(paths).toEqual(expectedPaths);
+        expect(authorizationValues).toEqual(expectedPaths.map(() => 'Basic exact-credential'));
+        expect(isCurrent).toHaveBeenCalledTimes(expectedPaths.length);
+        await handle.dispose();
+    });
+
+    it('resolves a fresh credential lease for each ordered health alternative', async () => {
+        const firstLeaseCurrent = vi.fn()
+            .mockResolvedValueOnce(true)
+            .mockResolvedValueOnce(false);
+        let leaseResolution = 0;
+        const resolveHeaders = vi.fn(async () => {
+            leaseResolution += 1;
+            return leaseResolution === 1 ? {
+                headers: { authorization: 'Basic first-lease' },
+                isCurrent: firstLeaseCurrent,
+            } : {
+                headers: { authorization: 'Basic rotated-lease' },
+                isCurrent: async () => true,
+            };
+        });
+        const requests: Array<{ path: string; authorization: string | null }> = [];
+        const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+            requests.push({
+                path: new URL(String(input)).pathname,
+                authorization: new Headers(init?.headers).get('authorization'),
+            });
+            return requests.length === 1
+                ? new Response('', { status: 404 })
+                : new Response(JSON.stringify({ healthy: true }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+        });
+        const services = createManagedServiceProcessSupervisorHost({ fetch }).bind({
+            occurrenceId: 'occurrenceId-rotated-health-lease',
+            pluginId: 'fixture.plugin',
+            contributionId: 'fixture.agent',
+            isOccurrenceCurrent: () => true,
+            exec: createExec(),
+        });
+        const healthCheck: ManagedServiceProcessHealthCheck = {
+            kind: 'http',
+            alternatives: [{
+                target: { kind: 'serverPath', path: '/api/info' },
+                response: {
+                    kind: 'jsonObject',
+                    required: { version: 'nonEmptyString' },
+                },
+            }, {
+                target: { kind: 'serverPath', path: '/global/health' },
+                response: {
+                    kind: 'jsonObject',
+                    required: { healthy: 'true' },
+                },
+            }],
+            resolveHeaders,
+            timeoutMs: 5_000,
+        };
+        const handle = await services.supervise({
+            ...externalSpec('attached-rotated-health-lease'),
+            healthCheck,
+        });
+
+        await expect(handle.waitUntilHealthy({ timeoutMs: 30_000 }))
+            .resolves.toMatchObject({ state: 'healthy' });
+        expect(resolveHeaders).toHaveBeenCalledTimes(2);
+        expect(firstLeaseCurrent).toHaveBeenCalledOnce();
+        expect(requests).toEqual([
+            { path: '/api/info', authorization: 'Basic first-lease' },
+            { path: '/global/health', authorization: 'Basic rotated-lease' },
+        ]);
+        await handle.dispose();
+    });
+
+    it.each([
+        ['unrelated HTML', new Response('<html>ok</html>', { status: 200, headers: { 'content-type': 'text/html' } })],
+        ['wrong JSON shape', new Response(JSON.stringify({ version: '2.0.15' }), { status: 200, headers: { 'content-type': 'application/json' } })],
+        ['authentication rejection', new Response('', { status: 401 })],
+    ])('does not admit an ordered health alternative from %s', async (_label, firstResponse) => {
+        let fetchCalls = 0;
+        const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+            fetchCalls += 1;
+            return fetchCalls === 1
+                ? firstResponse
+                : new Response(JSON.stringify({ healthy: false }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+        });
+        const host = createManagedServiceProcessSupervisorHost({ fetch });
+        const servers = host.bind({
+            occurrenceId: 'occurrenceId-invalid-ordered-health',
+            pluginId: 'fixture.plugin',
+            contributionId: 'fixture.agent',
+            isOccurrenceCurrent: () => true,
+            exec: createExec(),
+        });
+        const healthCheck: ManagedServiceProcessHealthCheck = {
+            kind: 'http',
+            alternatives: [
+                {
+                    target: { kind: 'serverPath', path: '/api/info' },
+                    response: {
+                        kind: 'jsonObject',
+                        required: {
+                            version: 'nonEmptyString',
+                            pid: 'nonNegativeInteger',
+                            urls: 'array',
+                            paths: 'object',
+                        },
+                    },
+                },
+                {
+                    target: { kind: 'serverPath', path: '/global/health' },
+                    response: { kind: 'jsonObject', required: { healthy: 'true' } },
+                },
+            ],
+            timeoutMs: 5_000,
+        };
+        const handle = await servers.supervise({
+            ...externalSpec('attached-invalid-ordered-health'),
+            healthCheck,
+        });
+
+        await expect(handle.waitUntilHealthy({ timeoutMs: 100 }))
+            .rejects.toMatchObject({ code: 'plugin_managed_server_health_timeout' });
+        expect(fetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(fetch.mock.calls.slice(0, 2).map(([input]) => (
+            new URL(String(input)).pathname
+        ))).toEqual(['/api/info', '/global/health']);
+        await handle.dispose();
+    });
+
     it('joins a concurrent endpoint publication before disposal releases its projection', async () => {
         const publication = deferred<string>();
         const durability = createDurability();
@@ -490,11 +701,12 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             fetch: vi.fn(async () => new Response('', { status: 200 })),
         });
         const servers = host.bind({
-            generation: 'generation-publication-race',
+            occurrenceId: 'occurrenceId-publication-race',
+            sourceCustody: { kind: 'development', registeredRootId: 'fixture-plugin-root' },
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
             sessionId: 'session-publication-race',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec: createExec(),
         });
         const handle = await servers.supervise({
@@ -547,11 +759,11 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             })(),
         });
         const bindSession = (sessionId: string) => host.bind({
-            generation: 'generation-session-scope',
+            occurrenceId: 'occurrenceId-session-scope',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.plugin/providers/gateway',
             sessionId,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
@@ -608,11 +820,12 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             captureProcessStartIdentity: async () => 'runner-process-start',
         });
         const servers = host.bind({
-            generation: 'runner-generation',
+            occurrenceId: 'runner-occurrenceId',
+            sourceCustody: { kind: 'development', registeredRootId: 'fixture-plugin-root' },
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.plugin/agents/fixture',
             sessionId: 'session-1',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
@@ -636,7 +849,7 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.plugin/agents/fixture',
             serverId: 'runner-server',
-            immutableGenerationId: 'runner-generation',
+            occurrenceId: 'runner-occurrenceId',
             executable: { kind: 'systemTool', id: 'fixture.server' },
             environmentKeys: ['PROVIDER_KEY'],
         }));
@@ -682,11 +895,11 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             },
         });
         const servers = host.bind({
-            generation: 'generation-terminal',
+            occurrenceId: 'occurrenceId-terminal',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
             sessionId: 'session-terminal',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
@@ -742,13 +955,13 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             captureProcessStartIdentity: async () => 'runner-p-start',
         });
         const servers = host.bind({
-            generation: 'runner-generation-p',
+            occurrenceId: 'runner-occurrenceId-p',
             pluginId: 'happier.provider.cliproxyapi',
             contributionId:
                 'happier.provider.cliproxyapi/providers/cliproxyapi',
             operationId: 'provider-operation-p',
             sessionId: 'session-p',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
@@ -801,11 +1014,12 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             captureProcessStartIdentity: async () => 'runner-process-start',
         });
         const servers = host.bind({
-            generation: 'runner-generation',
+            occurrenceId: 'runner-occurrenceId',
+            sourceCustody: { kind: 'development', registeredRootId: 'fixture-plugin-root' },
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.plugin/agents/fixture',
             sessionId: 'session-1',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
@@ -828,10 +1042,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             captureProcessStartIdentity: async () => 'os-start-token',
         });
         const servers = host.bind({
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec: createExec([process]),
         });
 
@@ -856,10 +1070,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             captureProcessStartIdentity: async () => 'os-start-token',
         });
         const servers = host.bind({
-            generation: 'generation-basic-redaction',
+            occurrenceId: 'occurrenceId-basic-redaction',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec: createExec([process]),
         });
 
@@ -919,11 +1133,12 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             captureProcessStartIdentity: async () => 'os-start-token',
         });
         const servers = host.bind({
-            generation: 'generation-cleanup-retry',
+            occurrenceId: 'occurrenceId-cleanup-retry',
+            sourceCustody: { kind: 'development', registeredRootId: 'fixture-plugin-root' },
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
             sessionId: 'session-cleanup-retry',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec: createExec([process]),
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -998,11 +1213,11 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             captureProcessStartIdentity: async () => 'os-start-token',
         });
         const servers = host.bind({
-            generation: 'generation-post-acquisition-cleanup',
+            occurrenceId: 'occurrenceId-post-acquisition-cleanup',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
             sessionId: 'session-post-acquisition-cleanup',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec: createExec([process]),
         });
         let retainedCleanup: (() => Promise<void>) | null = null;
@@ -1063,17 +1278,17 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             })(),
         });
         const first = host.bind({
-            generation: 'generation-scoped',
+            occurrenceId: 'occurrenceId-scoped',
             pluginId: 'fixture.plugin',
             contributionId: 'first',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec: firstExec,
         });
         const second = host.bind({
-            generation: 'generation-scoped',
+            occurrenceId: 'occurrenceId-scoped',
             pluginId: 'fixture.plugin',
             contributionId: 'second',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec: secondExec,
         });
 
@@ -1114,10 +1329,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
         const exec = createExec();
         const host = createManagedServiceProcessSupervisorHost({ createInstanceId: () => '   ' });
         const servers = host.bind({
-            generation: 'generation-invalid-instance',
+            occurrenceId: 'occurrenceId-invalid-instance',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
@@ -1171,11 +1386,12 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             captureProcessStartIdentity: async () => 'start-42',
         });
         const servers = host.bind({
-            generation: 'generation-incomplete-termination',
+            occurrenceId: 'occurrenceId-incomplete-termination',
+            sourceCustody: { kind: 'development', registeredRootId: 'fixture-plugin-root' },
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
             sessionId: 'session-incomplete-termination',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec: createExec([process]),
         });
         const handle = await servers.supervise(managedSpec('server'));
@@ -1203,22 +1419,22 @@ describe('createManagedServiceProcessSupervisorHost', () => {
 
 
 
-    it('rejects credential-bearing endpoints and stale generation lifetime before launch or attach', async () => {
+    it('rejects credential-bearing endpoints and stale occurrenceId lifetime before launch or attach', async () => {
         const { exec, host } = createHarness();
         const stale = host.bind({
-            generation: 'generation-8',
+            occurrenceId: 'occurrenceId-8',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => false,
+            isOccurrenceCurrent: () => false,
             exec,
         });
 
         await expect(stale.supervise(externalSpec('stale'))).rejects.toMatchObject({ code: 'plugin_generation_stale' });
         const current = host.bind({
-            generation: 'generation-9',
+            occurrenceId: 'occurrenceId-9',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         await expect(current.supervise({
@@ -1269,10 +1485,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             fetch,
         });
         const servers = host.bind({
-            generation: 'generation-attach',
+            occurrenceId: 'occurrenceId-attach',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec: createExec(),
         });
 
@@ -1301,10 +1517,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
         const fetch = vi.fn(async () => new Response('', { status: 200 }));
         const host = createManagedServiceProcessSupervisorHost({ fetch });
         const servers = host.bind({
-            generation: 'generation-attach',
+            occurrenceId: 'occurrenceId-attach',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec: createExec(),
         });
 
@@ -1443,10 +1659,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             fetch: vi.fn(async () => await health.promise),
         });
         const servers = host.bind({
-            generation: 'generation-race',
+            occurrenceId: 'occurrenceId-race',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -1477,10 +1693,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             fetch,
         });
         const servers = host.bind({
-            generation: 'generation-watchdog-race',
+            occurrenceId: 'occurrenceId-watchdog-race',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -1522,10 +1738,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             reservePort,
         });
         const servers = host.bind({
-            generation: 'generation-base-url',
+            occurrenceId: 'occurrenceId-base-url',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
@@ -1568,10 +1784,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             reservePort,
         });
         const servers = host.bind({
-            generation: 'generation-reserved-spawn-failure',
+            occurrenceId: 'occurrenceId-reserved-spawn-failure',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
@@ -1615,11 +1831,11 @@ describe('createManagedServiceProcessSupervisorHost', () => {
                 await authorization.promise,
         });
         const servers = host.bind({
-            generation: 'generation-reserved-abort',
+            occurrenceId: 'occurrenceId-reserved-abort',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
             sessionId: 'session-reserved-abort',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         const controller = new AbortController();
@@ -1674,10 +1890,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             createInstanceId: () => 'opaque-process-failure',
         });
         const servers = host.bind({
-            generation: 'generation-process-failure',
+            occurrenceId: 'occurrenceId-process-failure',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -1720,10 +1936,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             createInstanceId: () => 'opaque-health-timeout',
         });
         const servers = host.bind({
-            generation: 'generation-health-timeout',
+            occurrenceId: 'occurrenceId-health-timeout',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -1742,7 +1958,7 @@ describe('createManagedServiceProcessSupervisorHost', () => {
         await handle.dispose();
     });
 
-    it('blocks retained health activity as soon as the generation becomes stale', async () => {
+    it('blocks retained health activity as soon as the occurrenceId becomes stale', async () => {
         let current = true;
         const process = createProcess();
         const exec = createExec([process]);
@@ -1752,10 +1968,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             createInstanceId: () => 'opaque-stale-health',
         });
         const servers = host.bind({
-            generation: 'generation-stale-health',
+            occurrenceId: 'occurrenceId-stale-health',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -1780,10 +1996,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             createInstanceId: () => 'opaque-aborted-health',
         });
         const servers = host.bind({
-            generation: 'generation-aborted-health',
+            occurrenceId: 'occurrenceId-aborted-health',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -1803,7 +2019,7 @@ describe('createManagedServiceProcessSupervisorHost', () => {
         await handle.dispose();
     });
 
-    it('cannot publish a healthy result after its generation becomes stale mid-probe', async () => {
+    it('cannot publish a healthy result after its occurrenceId becomes stale mid-probe', async () => {
         let current = true;
         const health = deferred<Response>();
         const fetch = vi.fn(async () => await health.promise);
@@ -1813,10 +2029,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             createInstanceId: () => 'opaque-mid-probe-stale',
         });
         const servers = host.bind({
-            generation: 'generation-mid-probe-stale',
+            occurrenceId: 'occurrenceId-mid-probe-stale',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -1897,10 +2113,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             createInstanceId: () => 'opaque-manual-redirect',
         });
         const servers = host.bind({
-            generation: 'generation-manual-redirect',
+            occurrenceId: 'occurrenceId-manual-redirect',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -1959,10 +2175,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             createInstanceId: () => 'opaque-exit-interrupt',
         });
         const servers = host.bind({
-            generation: 'generation-exit-interrupt',
+            occurrenceId: 'occurrenceId-exit-interrupt',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -1991,10 +2207,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             createInstanceId: () => 'opaque-watchdog-terminal',
         });
         const servers = host.bind({
-            generation: 'generation-watchdog-terminal',
+            occurrenceId: 'occurrenceId-watchdog-terminal',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -2024,10 +2240,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             createInstanceId: () => 'opaque-invalid-caller-timeout',
         });
         const servers = host.bind({
-            generation: 'generation-invalid-caller-timeout',
+            occurrenceId: 'occurrenceId-invalid-caller-timeout',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {
@@ -2066,10 +2282,10 @@ describe('createManagedServiceProcessSupervisorHost', () => {
             createInstanceId: () => 'opaque-health-body',
         });
         const servers = host.bind({
-            generation: 'generation-health-body',
+            occurrenceId: 'occurrenceId-health-body',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
         const handle = await servers.supervise(managedSpec('server', {

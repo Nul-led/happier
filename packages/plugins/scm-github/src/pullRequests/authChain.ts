@@ -20,6 +20,7 @@ import {
 } from './restAdapter.js';
 
 export type GithubPullRequestAdapter = typeof githubHostingProviderAdapter & Readonly<{
+  supportsDraftCreate: true;
   getPullRequestAuthProfileKey(input: Readonly<{ provider: ScmHostingProviderRef }>): string | null;
   listPullRequests(input: ScmHostingProviderPullRequestListInput): Promise<readonly ScmPullRequestSummary[]>;
   getPullRequest(input: ScmHostingProviderPullRequestGetInput): Promise<ScmPullRequestSummary | null>;
@@ -51,6 +52,7 @@ export function createGithubPullRequestAdapter(params?: Readonly<{
 
   return Object.freeze({
     ...githubHostingProviderAdapter,
+    supportsDraftCreate: true as const,
     getPullRequestAuthProfileKey(input: Readonly<{ provider: ScmHostingProviderRef }>) {
       return typeof restAdapter.getPullRequestAuthProfileKey === 'function'
         ? restAdapter.getPullRequestAuthProfileKey(input)

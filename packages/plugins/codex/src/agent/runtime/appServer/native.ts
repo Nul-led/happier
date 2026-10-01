@@ -38,8 +38,13 @@ import { sanitizeCodexAppServerRuntimeAuthClassification } from './turns/failure
 import { parseCodexProviderBindingEngineConfigV1 } from '../../providerBinding/runtimeConfig.js';
 import { reconcileCodexResumeRolloutPath } from '../../auth/services/state/sharing/reconcileResumeRolloutPath.js';
 import type { CodexGoalProjection } from './work/goalProjection.js';
-import { readExactCodexProviderSessionId } from '../../../protocol/runtimeDescriptorV1.js';
+import {
+  buildCodexAgentRuntimeDescriptorV1,
+  readCanonicalCodexAgentRuntimeDescriptorV1,
+  readExactCodexProviderSessionId,
+} from '../../../protocol/runtimeDescriptorV1.js';
 import { createCodexSharedAppServer } from './sharedServer.js';
+import { buildCodexExecutionRunBaseEnv } from '../../executionRuns/environment.js';
 
 type CodexSharedAppServer = NonNullable<Awaited<ReturnType<typeof createCodexSharedAppServer>>>;
 
@@ -74,7 +79,13 @@ type CodexAccountUsageSourceContext = Awaited<
 type CodexAppServerLaunchRequest = AgentSessionOpenRequest | AgentExecutionRunOpenRequest;
 
 function readLaunchEnvironment(request: CodexAppServerLaunchRequest): Record<string, string> {
-  const values = { ...(request.launchEnvironment?.values ?? {}) };
+  const values: Record<string, string> = {};
+  for (const [key, value] of Object.entries(buildCodexExecutionRunBaseEnv({
+    processEnv: process.env,
+    isolationEnv: request.launchEnvironment?.values,
+  }) ?? {})) {
+    if (typeof value === 'string') values[key] = value;
+  }
   const unsetNames = new Set((request.launchEnvironment?.unset ?? []).map((name) => name.toUpperCase()));
   for (const key of Object.keys(values)) {
     if (unsetNames.has(key.toUpperCase())) delete values[key];
@@ -93,11 +104,26 @@ function readInitialModelId(request: CodexAppServerLaunchRequest): string | null
   return modelId && modelId !== 'default' ? modelId : null;
 }
 
+async function applyCodexConfigurationOptions(
+  updateConfig: NonNullable<CodexAppServerSession['updateConfig']>,
+  options: NonNullable<AgentSessionOpenRequest['configuration']>['options'],
+): Promise<string[]> {
+  const changed: string[] = [];
+  for (const [id, option] of Object.entries(options)) {
+    const value = typeof option.value === 'string' ? option.value.trim() : '';
+    if (!value) continue;
+    await updateConfig({ configOption: { id, value } });
+    changed.push(`options.${id}`);
+  }
+  return changed;
+}
+
 export function createCodexNativeAppServerRuntimeHost(params: Readonly<{
   request: AgentSessionOpenRequest;
   context: AgentSessionRuntimeContext;
   processEnv: Readonly<Record<string, string>>;
   sharedAppServer?: CodexSharedAppServer | null;
+  appServerTransport?: 'daemonProxy' | null;
 }>): CodexAppServerRuntimeHost {
   const accountUsage: CodexAccountUsageService = {
     resolveSourceContext: async (input, options) =>
@@ -125,6 +151,7 @@ export function createCodexNativeAppServerRuntimeHost(params: Readonly<{
   };
   return {
     baseProcessEnv: params.processEnv,
+    ...(params.context.session.services.inputFiles ? { inputFiles: params.context.session.services.inputFiles } : {}),
     ...(params.context.session.services.nativeHome
       ? { nativeHome: params.context.session.services.nativeHome }
       : {}),
@@ -142,6 +169,9 @@ export function createCodexNativeAppServerRuntimeHost(params: Readonly<{
           configOverrides: clientRequest.configOverrides,
           disableUserMcpServers: clientRequest.disableUserMcpServers,
           signal: params.context.signal,
+          ...(params.appServerTransport === 'daemonProxy'
+            ? { transport: { kind: 'daemonProxy' as const } }
+            : {}),
         }),
     fetchRateLimitResetCredits: async ({ accessToken, accountId }) => {
       const response = await params.context.services.http.request({
@@ -163,6 +193,17 @@ export function createCodexNativeAppServerRuntimeHost(params: Readonly<{
     ...(currentSession ? {
       setTitle: async (title) => {
         await currentSession.setDisplayTitle(title, { signal: params.context.signal });
+      },
+      sendUserMessage: async (message) => {
+        const result = await currentSession.send({
+          kind: 'userText',
+          text: message.text,
+          idempotencyKey: message.idempotencyKey,
+          toolAnswerDelivery: { toolCallId: message.toolCallId },
+        }, { signal: params.context.signal });
+        if (result.status !== 'accepted' && result.status !== 'alreadyAccepted') {
+          throw new Error(`Codex async question reply was not accepted (${result.status})`);
+        }
       },
     } : {}),
     refreshRuntimeAuth: async (request) => {
@@ -322,6 +363,9 @@ function readCommittedMessage(
 
 function mapCodexAppServerEvent(event: CodexAppServerEvent): NativeSessionEventInput | null {
   switch (event.kind) {
+    case 'context-compaction':
+      return { kind: event.kind, compactionId: event.compactionId, phase: event.phase, trigger: event.trigger,
+        ...(event.turnId ? { turnId: event.turnId } : {}) };
     case 'turn-start':
       return {
         kind: 'turn-start',
@@ -348,7 +392,11 @@ function mapCodexAppServerEvent(event: CodexAppServerEvent): NativeSessionEventI
         kind: 'turn-failed',
         turnId: event.turnId,
         ...(event.agentTurnId ? { agentTurnId: event.agentTurnId } : {}),
-        diagnostic: diagnostic(event.issue.code, event.issue.sanitizedPreview ?? event.issue.code),
+        diagnostic: diagnostic(
+          event.issue.code,
+          event.issue.sanitizedPreview ?? event.issue.code,
+          { v: 1, source: event.issue.source },
+        ),
       };
     case 'turn-cancelled':
       return {
@@ -694,21 +742,22 @@ function createCodexNativeAppServerConversationRuntime(
           await appServer.updateConfig({ collaborationModeId });
           changed.push('mode');
         }
-        if (permissionMode !== null || modelId) {
+        if (permissionMode !== null || modelId || request.workspaceWrites !== undefined) {
           await appServer.updateConfig({
             ...(permissionMode !== null ? { permissionMode } : {}),
+            ...(request.workspaceWrites !== undefined ? { workspaceWrites: request.workspaceWrites } : {}),
             ...(modelId ? { modelId } : {}),
           });
           if (permissionMode !== null) changed.push('permissionIntent');
+          if (request.workspaceWrites !== undefined) changed.push('workspaceWrites');
           if (modelId) changed.push('model');
         }
-        for (const [id, option] of Object.entries(request.options)) {
-          const value = typeof option.value === 'string' ? option.value.trim() : '';
-          if (!value) continue;
-          await appServer.updateConfig({ configOption: { id, value } });
-          changed.push(`options.${id}`);
-        }
+        changed.push(...await applyCodexConfigurationOptions(appServer.updateConfig, request.options));
       } catch (error) {
+        if (error && typeof error === 'object'
+          && (error as Readonly<{ code?: unknown }>).code === 'role_policy_restart_required') {
+          return { status: 'rejected', diagnostic: diagnostic('role_policy_restart_required', 'The active Codex turn cannot change its sandbox.') };
+        }
         if (
           error
           && typeof error === 'object'
@@ -784,6 +833,15 @@ export async function openCodexNativeAppServerSession(
       : null,
   );
   const processEnv = readLaunchEnvironment(request);
+  const runtimeDescriptor = request.runtimeDescriptorV1
+    ? readCanonicalCodexAgentRuntimeDescriptorV1(request.runtimeDescriptorV1)
+    : null;
+  const appServerTransport = request.kind === 'resume'
+    && runtimeDescriptor?.backendMode === 'appServer'
+    && runtimeDescriptor.providerSessionId === request.providerSessionId
+    && runtimeDescriptor.appServerTransport === 'daemonProxy'
+    ? 'daemonProxy' as const
+    : null;
   let providerSessionId = request.kind === 'resume' ? request.providerSessionId : null;
   const continuationProviderSessionId = request.kind === 'resume'
     ? request.providerSessionId
@@ -792,6 +850,7 @@ export async function openCodexNativeAppServerSession(
       : null;
   if (
     continuationProviderSessionId
+    && appServerTransport !== 'daemonProxy'
     && !await reconcileCodexResumeRolloutPath({
       processEnv,
       cwd: request.cwd,
@@ -823,24 +882,35 @@ export async function openCodexNativeAppServerSession(
     }
   }
 
-  const sharedAppServer = await createCodexSharedAppServer({
-    exec: context.services.exec,
-    processEnv,
-    signal: context.signal,
-  });
+  const sharedAppServer = appServerTransport === 'daemonProxy'
+    ? null
+    : await createCodexSharedAppServer({
+        exec: context.services.exec,
+        processEnv,
+        signal: context.signal,
+      });
 
   const runtime = createCodexAppServerRuntime({
-    host: createCodexNativeAppServerRuntimeHost({ request, context, processEnv, sharedAppServer }),
+    host: createCodexNativeAppServerRuntimeHost({
+      request,
+      context,
+      processEnv,
+      sharedAppServer,
+      appServerTransport,
+    }),
     directory: request.cwd,
     happierSessionId: request.sessionId,
     initialProviderSessionId: providerSessionId,
     appServerEndpoint: sharedAppServer?.endpoint,
+    appServerTransport,
     initialModelId: readInitialModelId(request),
     initialCollaborationModeId: request.configuration?.mode.value,
+    initialWorkspaceWrites: request.configuration?.workspaceWrites,
+    initialPermissionMode: readPermissionMode(request),
     ...(initialProviderBinding ? { initialProviderBinding } : {}),
     processEnv,
     ...(request.mcpServers ? { mcpServers: request.mcpServers } : {}),
-    resolveCurrentPolicy: () => resolveCodexTerminalPermissionPolicy(readPermissionMode(request)),
+    resolveCurrentPolicy: () => resolveCodexTerminalPermissionPolicy(readPermissionMode(request), request.configuration?.workspaceWrites),
     ...(goalProjection
       ? {
           observeGoal: (() => {
@@ -852,8 +922,9 @@ export async function openCodexNativeAppServerSession(
         }
       : {}),
   });
-  if (providerSessionId || (request.kind !== 'fork' && request.startupInstructions)) {
-    try {
+  try {
+    await applyCodexConfigurationOptions(runtime.updateConfig, request.configuration?.options ?? {});
+    if (providerSessionId || (request.kind !== 'fork' && request.startupInstructions)) {
       await startCodexAppServerRuntime(runtime, {
         ...(providerSessionId ? { resumeId: providerSessionId } : {}),
         preserveRequestedThreadId: Boolean(providerSessionId),
@@ -864,10 +935,10 @@ export async function openCodexNativeAppServerSession(
           ? { developerInstructions: request.startupInstructions.instructions }
           : {}),
       });
-    } catch (error) {
-      await sharedAppServer?.dispose();
-      throw createSanitizedNativeRuntimeError('Codex app-server startup failed.', error);
     }
+  } catch (error) {
+    await sharedAppServer?.dispose();
+    throw createSanitizedNativeRuntimeError('Codex app-server startup failed.', error);
   }
   const sessionRuntime = createCodexNativeAppServerSessionRuntime(
     runtime,
@@ -876,10 +947,43 @@ export async function openCodexNativeAppServerSession(
   );
   return {
     ...sessionRuntime,
+    ...(sharedAppServer
+      ? {
+          async prepareProviderCliAttach() {
+            const liveProviderSessionId = await runtime.prepareProviderCliAttach();
+            return {
+              path: request.cwd,
+              runtimeDescriptorV1: buildCodexAgentRuntimeDescriptorV1({
+                backendMode: 'appServer',
+                providerSessionId: liveProviderSessionId,
+                appServerEndpoint: sharedAppServer.endpoint,
+              }),
+            };
+          },
+        }
+      : {}),
+    ...(appServerTransport === 'daemonProxy' && runtimeDescriptor
+      ? {
+          runtimeDescriptorV1: buildCodexAgentRuntimeDescriptorV1({
+            backendMode: 'appServer',
+            providerSessionId,
+            home: runtimeDescriptor.home,
+            homePath: runtimeDescriptor.homePath,
+            connectedServiceId: runtimeDescriptor.connectedServiceId,
+            connectedServiceProfileId: runtimeDescriptor.connectedServiceProfileId,
+            connectedServiceGroupId: runtimeDescriptor.connectedServiceGroupId,
+          }),
+        }
+      : {}),
     runtimeCapabilities: {
       ...sessionRuntime.runtimeCapabilities,
       localControl: sharedAppServer
-        ? { supported: true, topology: 'shared', attachStrategy: 'provider_attach' }
+        ? {
+            supported: true,
+            topology: 'shared',
+            attachStrategy: 'provider_attach',
+            remoteWritable: true,
+          }
         : null,
     },
   };
@@ -934,21 +1038,24 @@ export async function openCodexNativeAppServerExecutionRunConversation(
     appServerEndpoint: sharedAppServer?.endpoint,
     initialModelId: readInitialModelId(request),
     initialCollaborationModeId: request.configuration?.mode.value,
+    initialWorkspaceWrites: request.configuration?.workspaceWrites,
+    initialPermissionMode: readPermissionMode(request),
     ...(initialProviderBinding ? { initialProviderBinding } : {}),
     processEnv,
     ...(request.mcpServers ? { mcpServers: request.mcpServers } : {}),
-    resolveCurrentPolicy: () => resolveCodexTerminalPermissionPolicy(readPermissionMode(request)),
+    resolveCurrentPolicy: () => resolveCodexTerminalPermissionPolicy(readPermissionMode(request), request.configuration?.workspaceWrites),
   });
-  if (providerSessionId) {
-    try {
+  try {
+    await applyCodexConfigurationOptions(runtime.updateConfig, request.configuration?.options ?? {});
+    if (providerSessionId) {
       await startCodexAppServerRuntime(runtime, {
         resumeId: providerSessionId,
         preserveRequestedThreadId: true,
       });
-    } catch (error) {
-      await sharedAppServer?.dispose();
-      throw createSanitizedNativeRuntimeError('Codex app-server startup failed.', error);
     }
+  } catch (error) {
+    await sharedAppServer?.dispose();
+    throw createSanitizedNativeRuntimeError('Codex app-server startup failed.', error);
   }
   return createCodexNativeAppServerExecutionRunConversationRuntime(runtime, request.runId);
 }

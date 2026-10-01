@@ -18,6 +18,7 @@ export type { AgentAccountUsageRecordSnapshotInput } from '../../agentRuntime/pr
 export type { AgentAccountUsageRecordSnapshotResult } from '../../agentRuntime/projections.js';
 export type { AgentAccountUsageRecoveryCredit } from '../../agentRuntime/projections.js';
 export type { AgentAccountUsageRecoveryCredits } from '../../agentRuntime/projections.js';
+export type { AgentAccountUsageSubscription } from '../../agentRuntime/projections.js';
 export type { AgentAccountUsageService } from '../../agentRuntime/projections.js';
 export type { AgentAccountUsageSnapshot } from '../../agentRuntime/projections.js';
 export type { AgentAccountUsageSourceContext } from '../../agentRuntime/projections.js';
@@ -164,6 +165,11 @@ export type { AgentCliSessionCommandDeclarationV1 } from '../../agentRuntime/pro
 export type { AgentCliSessionCommandOptionsV1 } from '../../agentRuntime/projections.js';
 export type { AgentCliSessionCommandParsedArgsV1 } from '../../agentRuntime/projections.js';
 export type { AgentProviderCliAttachDeclarationV1 } from '../../agentRuntime/projections.js';
+export type { AgentProviderCliAttachHostFactsV1 } from '../../agentRuntime/projections.js';
+export type {
+  AgentSettingsSelectedSystemToolInputV1,
+  AgentSettingsSelectedSystemToolV1,
+} from '../../agentRuntime/projections.js';
 export type { AgentProviderCliAttachReachabilityV1 } from '../../agentRuntime/projections.js';
 export type { AgentProviderCliAttachTargetResolutionV1 } from '../../agentRuntime/projections.js';
 export type { AgentProviderCliAttachTargetV1 } from '../../agentRuntime/projections.js';
@@ -213,6 +219,8 @@ export type { AgentSessionHookServerHandle } from '../../agentRuntime/projection
 export type { AgentSessionHookServerStartRequest } from '../../agentRuntime/projections.js';
 export type { AgentSessionHooksService } from '../../agentRuntime/projections.js';
 export type { AgentSessionHostServices } from '../../agentRuntime/projections.js';
+export type { AgentSessionInputFilesService } from '../../agentRuntime/projections.js';
+export type { AgentSessionVerifiedImageInput } from '../../agentRuntime/projections.js';
 export type { AgentSessionHappierToolsService } from '../../agentRuntime/projections.js';
 export type { AgentSessionNativeHomeService } from '../../agentRuntime/projections.js';
 export type { AgentSessionSubagentObservation } from '../../agentRuntime/projections.js';
@@ -231,6 +239,9 @@ export type { AgentSessionModelOptionChoice } from '../../agentRuntime/projectio
 export type { AgentSessionModelsService } from '../../agentRuntime/projections.js';
 export type { AgentSessionModelsSnapshot } from '../../agentRuntime/projections.js';
 export type { AgentSessionModelsSource } from '../../agentRuntime/projections.js';
+export type { AgentSessionModesService } from '../../agentRuntime/projections.js';
+export type { AgentSessionModesSnapshot } from '../../agentRuntime/projections.js';
+export type { AgentSessionModesSource } from '../../agentRuntime/projections.js';
 export type { AgentSessionOpenRequest } from '../../agentRuntime/projections.js';
 export type { RuntimeDescriptorV1 } from '../../agentRuntime/projections.js';
 export type { ConnectedServicesProviderStateSharingPolicyV1 } from '../../agentRuntime/projections.js';

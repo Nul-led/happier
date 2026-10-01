@@ -71,7 +71,7 @@ describe('declared plugin secret custody', () => {
                 ],
                 resolveCustody: custody.resolve,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 registerRawForRedaction: vi.fn(),
             });
 
@@ -133,7 +133,7 @@ describe('declared plugin secret custody', () => {
             const port = host.bindDaemonPluginSecretAdministrationPort({
                 pluginId,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             if (!port) throw new Error('Expected daemon secret administration port');
 
@@ -174,7 +174,7 @@ describe('declared plugin secret custody', () => {
             const sdkSecrets = host.bind({
                 pluginId,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 registerRawForRedaction: vi.fn(),
             });
             if (!sdkSecrets) throw new Error('Expected SDK secrets service');
@@ -215,7 +215,7 @@ describe('declared plugin secret custody', () => {
                     delete: remove,
                 }),
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => generationCurrent,
+                isOccurrenceCurrent: () => generationCurrent,
                 registerRawForRedaction: vi.fn(),
             });
 

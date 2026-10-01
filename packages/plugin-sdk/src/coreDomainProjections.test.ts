@@ -314,13 +314,6 @@ import type {
     UiTranslationBundle,
     UiView,
 } from './ui.js';
-import {
-    BUILD_CONFIG_BASENAMES,
-    createReactNativeRepackSharedModules,
-    createReactNativeWebVitePlugins,
-    defineBuildConfig,
-    defineReactNativeWebViteBuildPreset,
-} from './ui/build/index.js';
 import { getActionSpec as canonicalGetActionSpec } from '@happier-dev/protocol/actions/actionSpecs';
 import {
     PluginEventAutomationHistoryGapResetActionInputV1JsonSchema as canonicalPluginEventAutomationHistoryGapResetActionInputV1JsonSchema,
@@ -651,11 +644,6 @@ describe('final core-domain package-local projections', () => {
         expect(typeof defineBrowserTarget).toBe('function');
         expect(normalizeDetectedMcpServerV1).toBe(canonicalNormalizeDetectedMcpServerV1);
         expect(typeof defineHostedWebBridgeMessage).toBe('function');
-        expect(Array.isArray(BUILD_CONFIG_BASENAMES)).toBe(true);
-        expect(typeof defineBuildConfig).toBe('function');
-        expect(typeof createReactNativeRepackSharedModules).toBe('function');
-        expect(typeof createReactNativeWebVitePlugins).toBe('function');
-        expect(typeof defineReactNativeWebViteBuildPreset).toBe('function');
         expect(typeof createAgentSessionRuntimeHarness).toBe('function');
         expect(typeof createPluginTestkit).toBe('function');
     });

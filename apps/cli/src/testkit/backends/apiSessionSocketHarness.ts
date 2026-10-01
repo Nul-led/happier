@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import {
     MACHINE_PLAIN_DATA_KEY_MARKER,
     SESSION_PUBLISHER_AUTHORITY_CHECK_EVENT,
@@ -18,6 +19,23 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 
 type SocketEventHandler = (...args: unknown[]) => void;
+
+/** Socket.IO Manager boundary: its public timeout setter is chainable and accepts false. */
+class SocketIoManagerStub extends EventEmitter {
+    private connectionTimeoutMs: number | false = 20_000;
+
+    timeout(): number | false;
+    timeout(value: number | false): this;
+    timeout(value?: number | false): number | false | this {
+        if (value === undefined) return this.connectionTimeoutMs;
+        this.connectionTimeoutMs = value;
+        return this;
+    }
+}
+
+export function createSocketIoManagerStub() {
+    return new SocketIoManagerStub();
+}
 
 export function createAvailableSessionSpawnMachineSnapshot(
     machineId: string,
@@ -225,6 +243,7 @@ export function createSessionRuntimeActivityHomeStub(options: Readonly<{
 }
 
 export type ApiSessionSocketStub = {
+    io: ReturnType<typeof createSocketIoManagerStub>;
     id: string;
     connected: boolean;
     on: ReturnType<typeof vi.fn>;
@@ -264,6 +283,7 @@ export function createApiSessionSocketStub(options: {
     const handlers = new Map<string, Set<SocketEventHandler>>();
 
     const socket = {
+        io: createSocketIoManagerStub(),
         id: options.id ?? 'sock-1',
         connected: options.connected ?? false,
         on: vi.fn((event: string, handler: SocketEventHandler) => {

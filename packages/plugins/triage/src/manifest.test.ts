@@ -16,10 +16,13 @@ import {
 } from './manifest.js';
 import { TRIAGE_LIST_ENTRIES_ACTION_LOCAL_ID_V1 } from './actions/listEntriesProtocol.js';
 import { TRIAGE_ENTRIES_CONTROL_LOCAL_ID_V1 } from './composer/attachmentValue.js';
-import { TRIAGE_LIST_PAGE_RENDERER_ID_V1 } from './ui/contributions.js';
 import { TRIAGE_UI_TRANSLATIONS } from './ui/translations.js';
 
 describe('Triage plugin manifest', () => {
+  it('offers mounted UI a safe exact-entry PR-status read without a global affordance', () => {
+    expect(PLUGIN_MANIFEST.contributes.actions.find((action) => action.id === 'entries/read-pull-request-status-v1'))
+      .toMatchObject({ dangerLevel: 'safe', surfaces: ['ui'], placementBindings: [], hostAccess: ['account-storage'] });
+  });
   it('projects its prior cold identity and declared contribution families through one definePlugin value', () => {
     const normalized = parsePluginManifest(TRIAGE_PLUGIN.manifest);
 
@@ -63,6 +66,34 @@ describe('Triage plugin manifest', () => {
   it('is admitted by the canonical public manifest parser', () => {
     const parsed = parsePluginManifest(PLUGIN_MANIFEST);
     expect(parsed.ok ? null : parsed.diagnostics).toBe(null);
+  });
+
+  it('declares its rail page and a separate views column renderer', () => {
+    expect(PLUGIN_MANIFEST.contributes.ui.views).toContainEqual(expect.objectContaining({
+      id: 'triage',
+      placement: { kind: 'rail' },
+      column: { renderer: 'views-column' },
+    }));
+    expect(PLUGIN_MANIFEST.contributes.ui.renderers).toContainEqual(expect.objectContaining({
+      id: 'views-column',
+      kind: 'reactNative',
+      artifact: 'triage-views-column-native',
+      requiredHostMethods: ['openSurface'],
+    }));
+  });
+
+  it('declares its Home latest widget as shown by default', () => {
+    expect(PLUGIN_MANIFEST.contributes.ui.views).toContainEqual(expect.objectContaining({
+      id: 'latest',
+      container: 'widget',
+      target: { kind: 'app' },
+      renderer: 'latest-widget',
+      home: { default: 'shown' },
+    }));
+    expect(PLUGIN_MANIFEST.contributes.ui.renderers).toContainEqual(expect.objectContaining({
+      id: 'latest-widget',
+      artifact: 'triage-latest-widget-native',
+    }));
   });
 
   it('puts every durable local mutation behind host-owned confirmation', () => {
@@ -194,14 +225,14 @@ describe('Triage plugin manifest', () => {
 
   it('requires current-context publication only for the list-page renderer', () => {
     const renderers = PLUGIN_MANIFEST.contributes.ui?.renderers ?? [];
-    const listPage = renderers.find((candidate) => candidate.id === TRIAGE_LIST_PAGE_RENDERER_ID_V1);
+    const listPage = renderers.find((candidate) => candidate.id === 'list-page');
 
     expect(listPage?.requiredHostMethods).toEqual([
       'executeAction',
       'publishCurrentUiContext',
     ]);
     expect(renderers
-      .filter((candidate) => candidate.id !== TRIAGE_LIST_PAGE_RENDERER_ID_V1)
+      .filter((candidate) => candidate.id !== 'list-page')
       .some((candidate) => candidate.requiredHostMethods?.includes('publishCurrentUiContext')))
       .toBe(false);
   });

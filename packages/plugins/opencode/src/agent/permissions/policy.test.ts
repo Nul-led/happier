@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildOpenCodePermissionEnv,
   buildOpenCodeSessionPermissionRuleset,
+  buildOpenCodeSessionScopedPermissionRuleset,
   resolveOpenCodePermissionConfig,
 } from './policy.js';
 
@@ -36,5 +37,27 @@ describe('OpenCode permission policy', () => {
       read: 'allow',
       write: 'deny',
     });
+  });
+
+  it('denies other session namespaces and then restores the current mode plus exact built-in safe tools', () => {
+    const rules = buildOpenCodeSessionScopedPermissionRuleset('default', {
+      registrations: [
+        { projectedName: 'happier-session-session-a--happier' },
+        { projectedName: 'happier-session-session-a--custom' },
+      ],
+      requiredHappierServerName: 'happier-session-session-a--happier',
+    });
+
+    expect(rules.slice(-9)).toEqual([
+      { permission: 'happier-session-*', pattern: '*', action: 'deny' },
+      { permission: 'happier-session-session-a--happier_*', pattern: '*', action: 'ask' },
+      { permission: 'happier-session-session-a--custom_*', pattern: '*', action: 'ask' },
+      { permission: 'happier-session-session-a--happier_change_title', pattern: '*', action: 'allow' },
+      { permission: 'happier-session-session-a--happier_session_title_set', pattern: '*', action: 'allow' },
+      { permission: 'happier-session-session-a--happier_action_execute', pattern: '*', action: 'allow' },
+      { permission: 'happier-session-session-a--happier_action_spec_search', pattern: '*', action: 'allow' },
+      { permission: 'happier-session-session-a--happier_action_spec_get', pattern: '*', action: 'allow' },
+      { permission: 'happier-session-session-a--happier_action_options_resolve', pattern: '*', action: 'allow' },
+    ]);
   });
 });

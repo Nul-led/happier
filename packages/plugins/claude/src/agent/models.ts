@@ -12,10 +12,18 @@ export const CLAUDE_AGENT_MODEL_CONFIG: AgentModelConfig = Object.freeze({
     supportsFreeform: true,
     nonAcpApplyScope: 'next_prompt',
     dynamicProbe: 'auto',
+    dynamicProbeControl: {
+        accountSettingId: 'claudeDynamicModelProbeEnabled',
+        environmentVariable: 'HAPPIER_CLAUDE_DYNAMIC_MODEL_PROBE_ENABLED',
+    },
     nativeCatalogObservation: {
         providerLocalId: 'anthropic',
         purpose: 'model_upstream',
         connectedServiceId: 'claude-subscription',
+        nativeBearer: {
+            fileId: '.credentials.json',
+            jsonPath: ['claudeAiOauth', 'accessToken'],
+        },
     },
     defaultMode: 'default',
     allowedModes: CLAUDE_STATIC_MODELS.map((model) => model.id),

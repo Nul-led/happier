@@ -11,17 +11,6 @@ import {
 import { TRIAGE_ENTRIES_CONTROL_LOCAL_ID_V1, TRIAGE_ENTRY_ATTACHMENT_LOCAL_ID_V1 } from './composer/attachmentValue.js';
 import { TRIAGE_APP_PAGE_LOCAL_ID_V1 } from './composer/openEntryDetails.js';
 import {
-    TRIAGE_ENTRIES_COMPACT_ARTIFACT_ID_V1,
-    TRIAGE_ENTRIES_COMPACT_RENDERER_ID_V1,
-    TRIAGE_ENTRY_PICKER_ARTIFACT_ID_V1,
-    TRIAGE_ENTRY_PICKER_RENDERER_ID_V1,
-    TRIAGE_LIST_PAGE_ARTIFACT_ID_V1,
-    TRIAGE_LIST_PAGE_RENDERER_ID_V1,
-    TRIAGE_SESSION_ENTRIES_ARTIFACT_ID_V1,
-    TRIAGE_SESSION_ENTRIES_RENDERER_ID_V1,
-    TRIAGE_SESSION_ENTRIES_VIEW_ID_V1,
-} from './ui/contributions.js';
-import {
     CORPUS_SESSION_LINKS_COLLECTION_ID,
     CORPUS_SESSION_LINKS_FIELD,
     CORPUS_SOURCE_INSTANCES_COLLECTION_ID,
@@ -44,7 +33,7 @@ import {
 type PackagedManifest = Readonly<{
     contributes: Readonly<{
         ui: Readonly<{
-            views: readonly Readonly<{ id: string; container: string; renderer: string }>[];
+            views: readonly Readonly<{ id: string; container: string; renderer: string; column?: Readonly<{ renderer: string }> }>[];
             renderers: readonly Readonly<{ id: string; kind: string; artifact?: string }>[];
         }>;
         composerAttachments: readonly Readonly<{
@@ -103,12 +92,12 @@ describe('packaged PRs & Issues manifest', () => {
         expect(views).toContainEqual(expect.objectContaining({
             id: TRIAGE_APP_PAGE_LOCAL_ID_V1,
             container: 'appPage',
-            renderer: TRIAGE_LIST_PAGE_RENDERER_ID_V1,
+            renderer: 'list-page',
         }));
         expect(views).toContainEqual(expect.objectContaining({
-            id: TRIAGE_SESSION_ENTRIES_VIEW_ID_V1,
+            id: 'session-entries',
             container: 'rightSidebarTab',
-            renderer: TRIAGE_SESSION_ENTRIES_RENDERER_ID_V1,
+            renderer: 'session-entries-panel',
         }));
     });
 
@@ -118,18 +107,19 @@ describe('packaged PRs & Issues manifest', () => {
             contributes.ui.renderers.map((renderer) => [renderer.id, renderer.artifact] as const),
         );
 
-        expect(artifactByRenderer.get(TRIAGE_LIST_PAGE_RENDERER_ID_V1))
-            .toBe(TRIAGE_LIST_PAGE_ARTIFACT_ID_V1);
-        expect(artifactByRenderer.get(TRIAGE_ENTRY_PICKER_RENDERER_ID_V1))
-            .toBe(TRIAGE_ENTRY_PICKER_ARTIFACT_ID_V1);
-        expect(artifactByRenderer.get(TRIAGE_ENTRIES_COMPACT_RENDERER_ID_V1))
-            .toBe(TRIAGE_ENTRIES_COMPACT_ARTIFACT_ID_V1);
-        expect(artifactByRenderer.get(TRIAGE_SESSION_ENTRIES_RENDERER_ID_V1))
-            .toBe(TRIAGE_SESSION_ENTRIES_ARTIFACT_ID_V1);
+        expect(artifactByRenderer.get('list-page'))
+            .toBe('triage-list-page-native');
+        expect(artifactByRenderer.get('entry-picker'))
+            .toBe('triage-entry-picker-native');
+        expect(artifactByRenderer.get('entries-compact'))
+            .toBe('triage-entries-compact-native');
+        expect(artifactByRenderer.get('session-entries-panel'))
+            .toBe('triage-session-entries-native');
 
         // Every renderer a view or a composer declaration names must exist.
         for (const view of contributes.ui.views) {
             expect(artifactByRenderer.has(view.renderer)).toBe(true);
+            if (view.column) expect(artifactByRenderer.has(view.column.renderer)).toBe(true);
         }
         for (const attachment of contributes.composerAttachments) {
             if (attachment.picker) expect(artifactByRenderer.has(attachment.picker.renderer)).toBe(true);
@@ -146,7 +136,7 @@ describe('packaged PRs & Issues manifest', () => {
 
         expect(contributes.composerAttachments).toContainEqual(expect.objectContaining({
             id: TRIAGE_ENTRY_ATTACHMENT_LOCAL_ID_V1,
-            picker: { renderer: TRIAGE_ENTRY_PICKER_RENDERER_ID_V1 },
+            picker: { renderer: 'entry-picker' },
             // Without the pre-dispatch role the draft carries an identity the
             // model can never read.
             runtime: expect.objectContaining({ resolveForDispatch: true }),
@@ -157,7 +147,7 @@ describe('packaged PRs & Issues manifest', () => {
                 kind: 'attachmentPicker',
                 attachment: TRIAGE_ENTRY_ATTACHMENT_LOCAL_ID_V1,
             }),
-            compactRenderer: { renderer: TRIAGE_ENTRIES_COMPACT_RENDERER_ID_V1 },
+            compactRenderer: { renderer: 'entries-compact' },
         }));
     });
 

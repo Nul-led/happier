@@ -460,6 +460,26 @@ describe('Claude Unified TUI runtime control integration (updateSessionRuntimeCo
 });
 
 describe('Claude Unified terminal composer clear runtime control', () => {
+  it('returns the existing not_safe protocol status without Escape for an automatic usage-limit wait', async () => {
+    const configDir = await makeConfigDir();
+    const { envelope, runtime, fakePort } = buildRuntime({
+      featureEnabled: true,
+      controlPortCaptures: [[USER_DRAFT, '    Continuing automatically at 5:10pm · esc to cancel'].join('\n')],
+      configDir,
+    });
+    try {
+      await runtime.startProviderSession();
+      const nativeRuntime = envelope.nativeRuntime as ComposerClearNativeRuntime;
+
+      expect(await nativeRuntime.clearTerminalComposer?.({ sessionId: 'happy-session-1' })).toMatchObject({
+        ok: false, status: 'not_safe', sessionId: 'happy-session-1',
+      });
+      expect(fakePort?.sentKeys).toEqual([]);
+    } finally {
+      await runtime.resetOrDisposeRuntime().catch(() => undefined);
+    }
+  });
+
   it('exposes a user-authorized clear control that clears a safe draft with Escape', async () => {
     const configDir = await makeConfigDir();
     const { envelope, runtime, fakePort } = buildRuntime({

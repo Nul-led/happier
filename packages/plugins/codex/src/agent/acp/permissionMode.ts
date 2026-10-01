@@ -1,3 +1,5 @@
+import { readSessionModesMetadata } from '@happier-dev/protocol';
+
 export type CodexAcpSessionMode = Readonly<{
   id: string;
   name: string;
@@ -5,7 +7,7 @@ export type CodexAcpSessionMode = Readonly<{
 }>;
 
 export type CodexAcpSessionModesState = Readonly<{
-  currentModeId: string;
+  currentModeId: string | null;
   availableModes: readonly CodexAcpSessionMode[];
 }>;
 
@@ -45,6 +47,9 @@ function readCodexAcpSessionModesState(value: unknown): CodexAcpSessionModesStat
 
 function readCodexAcpSessionModesStateFromMetadata(metadata: unknown): CodexAcpSessionModesState | null {
   if (!isRecord(metadata)) return null;
+  if ('sessionModesV2' in metadata) return readSessionModesMetadata(metadata);
+  // Retained ACP policy inputs may be unversioned partial descriptors; current
+  // metadata catalogs above are parsed by the canonical Protocol reader.
   return readCodexAcpSessionModesState(metadata.sessionModesV1)
     ?? readCodexAcpSessionModesState(metadata.acpSessionModesV1);
 }

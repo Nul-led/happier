@@ -63,21 +63,12 @@ function contributionIdentities(
  */
 export function resolveStablePluginStructuredMessage(params: Readonly<{
     registry: ResolvedContributionRegistry;
-    expectedGeneration: string;
-    currentGeneration: string;
+    expectedContributorOccurrenceId: string;
     kind: string;
     payload: JsonValue;
     resourceRefs?: NonNullable<HostStructuredMessageDescriptorV1['actions']>;
     facts: ContributionPolicyFacts;
 }>): StablePluginStructuredMessageModel {
-    const currentGeneration = params.currentGeneration;
-    if (!currentGeneration || currentGeneration !== params.expectedGeneration) {
-        throw consumerError(
-            'plugin_structured_message_generation_retired',
-            'Structured-message projection generation is no longer current',
-        );
-    }
-
     const matches = (params.registry.structuredMessages ?? []).filter((candidate) => (
         candidate.definition.kind === params.kind && candidate.pluginId?.trim()
     ));
@@ -90,6 +81,16 @@ export function resolveStablePluginStructuredMessage(params: Readonly<{
 
     const contribution = matches[0]!;
     const pluginId = contribution.pluginId!.trim();
+    const currentOccurrenceId = params.registry.occurrenceIdsByPluginId?.[pluginId];
+    if (
+        !currentOccurrenceId
+        || currentOccurrenceId !== params.expectedContributorOccurrenceId
+    ) {
+        throw consumerError(
+            'plugin_structured_message_occurrence_retired',
+            'Structured-message contributor occurrence is no longer current',
+        );
+    }
     const availability = evaluateContributionAvailability({
         availability: contribution.definition.availability,
         facts: params.facts,
@@ -102,7 +103,7 @@ export function resolveStablePluginStructuredMessage(params: Readonly<{
 
     return createStablePluginStructuredMessageModel({
         pluginId,
-        generation: currentGeneration,
+        occurrenceId: currentOccurrenceId,
         descriptor: contribution.definition,
         value: {
             kind: params.kind,
@@ -152,7 +153,7 @@ export function resolveStablePluginStructuredMessageConsumer(params: Parameters<
     }));
     const renderer = createStablePluginDeclarativeModel({
         pluginId: rendererContribution.pluginId,
-        generation: model.identity.generation,
+        occurrenceId: model.identity.occurrenceId,
         renderer: rendererContribution.definition,
         settings,
         actions: rendererActionIdentities,

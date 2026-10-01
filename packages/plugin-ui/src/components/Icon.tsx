@@ -22,10 +22,14 @@ export type IconProps = Readonly<{
 }>;
 
 export function Icon({ name, size = 'medium', tone = 'neutral', accessibilityLabel, testID }: IconProps): ReactElement {
+  return <PluginUiIconGlyph name={name} size={resolveHappierIconSize(size)} tone={tone} accessibilityLabel={accessibilityLabel} testID={testID} />;
+}
+
+/** Package-private adapter for geometry stepped by a shared presentation owner. */
+export function PluginUiIconGlyph({ name, size: pixels, tone = 'neutral', accessibilityLabel, testID }: Omit<IconProps, 'size'> & Readonly<{ size: number }>): ReactElement {
   const host = useOptionalPluginUiPresentationHost();
   const theme = usePluginTheme();
   const color = theme.colors[HAPPIER_TONE_COLOR_TOKEN[tone]];
-  const pixels = resolveHappierIconSize(size);
   if (host) {
     return <>{host.renderIcon({ name, size: pixels, color, ...(accessibilityLabel ? { accessibilityLabel } : {}), ...(testID ? { testID } : {}) })}</>;
   }

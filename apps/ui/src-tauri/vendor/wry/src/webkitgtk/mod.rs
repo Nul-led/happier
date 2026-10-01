@@ -704,6 +704,22 @@ impl InnerWebView {
     Ok(true)
   }
 
+  pub fn can_go_back(&self) -> Result<bool> {
+    Ok(self.webview.can_go_back())
+  }
+
+  pub fn can_go_forward(&self) -> Result<bool> {
+    Ok(self.webview.can_go_forward())
+  }
+
+  pub fn go_forward(&self) -> Result<bool> {
+    if !self.can_go_forward()? {
+      return Ok(false);
+    }
+    self.webview.go_forward();
+    Ok(true)
+  }
+
   pub fn id(&self) -> crate::WebViewId<'_> {
     &self.id
   }

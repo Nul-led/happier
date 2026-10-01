@@ -46,7 +46,10 @@ export const ANTIGRAVITY_PLUGIN = definePlugin({
             kind: 'stdio',
             executable: { kind: 'managedDependency', id: 'agy-acp-server' },
           },
-          definition: { mcp: { policy: 'pass_through' } },
+          definition: {
+            auth: { methodId: 'oauth-personal' },
+            mcp: { policy: 'pass_through' },
+          },
         },
         cli: {
           displayName: 'Antigravity CLI',
@@ -80,7 +83,7 @@ export const ANTIGRAVITY_PLUGIN = definePlugin({
           auth: {
             support: 'login_terminal',
             machineLoginKey: 'antigravity-cli',
-            loginLaunches: [{ kind: 'primary', args: [] }],
+            loginLaunches: [{ kind: 'primary', target: 'agent_acp', args: [] }],
           },
         },
         primary: 'sessions',
@@ -143,6 +146,16 @@ export const ANTIGRAVITY_PLUGIN = definePlugin({
         kind: 'pinnedArchive',
         installId: ANTIGRAVITY_ACP_SERVER_INSTALL_ID,
         version: '1.1.1',
+        // The checksum-pinned Linux x64 archive is 681,969,407 bytes and
+        // expands to 2,009,327,248 bytes, including one 1,880,360,328-byte file.
+        // Keep the release-specific allowance here instead of widening the
+        // generic archive extractor's defaults for every managed dependency.
+        archiveExtractionLimits: {
+          maxArchiveBytes: 1024 * 1024 * 1024,
+          maxFileBytes: 2 * 1024 * 1024 * 1024,
+          maxExpandedBytes: 2 * 1024 * 1024 * 1024,
+          timeoutMs: 10 * 60_000,
+        },
         assetsByPlatform: {
           'darwin-arm64': {
             archiveUrl: 'https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-agy_acp_server_1.1.1-darwin-arm64.zip',
@@ -152,6 +165,7 @@ export const ANTIGRAVITY_PLUGIN = definePlugin({
           'linux-x64': {
             archiveUrl: 'https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_1.1.1-linux-x86_64.zip',
             sha256: '38f62d01b32deb0907b3d39a71ec301fd36369f6ffd1cf262d4af385177f79df',
+            sizeBytes: 681969407,
             executableSubpath: 'agy_acp_server.par',
             args: ['--uid='],
           },

@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -10,7 +9,9 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
+import { run } from '../../stack/scripts/utils/proc/proc.mjs';
 
+import { PLUGIN_HOST_SHARED_RUNTIME_PACKAGES } from './pluginHostSharedRuntimePackages.mjs';
 import {
   DEFAULT_CLI_PKGROLL_NODE_HEAP_LIMIT_MB,
   upsertMaxOldSpaceSize,
@@ -142,10 +143,14 @@ function preparePkgrollPackageManifest(value, outputDir) {
 
 function prepareRuntimeGenerationManifest(manifest, outputDir) {
   const prepared = preparePkgrollPackageManifest(manifest, outputDir);
+  // Bundled internals are inlined into the host, except the packages plugins
+  // also import at runtime: those stay external so host and plugins share one
+  // module instance from the packaged closure.
   const bundledInternalPackages = new Set(
     (Array.isArray(manifest?.bundledDependencies) ? manifest.bundledDependencies : [])
       .map((name) => String(name))
-      .filter((name) => name.startsWith('@happier-dev/')),
+      .filter((name) => name.startsWith('@happier-dev/'))
+      .filter((name) => !PLUGIN_HOST_SHARED_RUNTIME_PACKAGES.includes(name)),
   );
   if (bundledInternalPackages.size === 0) return prepared;
 
@@ -237,13 +242,22 @@ function copyFirstPartyStaticAssets(packageRoot, outputDir) {
   cpSync(sourceDir, distDir, { recursive: true });
 }
 
-function runPkgrollBuildInStage(options = {}) {
+async function runPkgrollCommand(command, args, { timeout, ...options }) {
+  try {
+    await run(command, args, { ...options, timeoutMs: timeout, ownedProcessGroup: true });
+    return { status: 0 };
+  } catch (error) {
+    return { error };
+  }
+}
+
+async function runPkgrollBuildInStage(options = {}) {
   const packageJsonPath = resolve(String(options.packageJsonPath));
   const packageRoot = dirname(packageJsonPath);
   const outputDir = resolveRequiredPkgrollOutputDir(options.outputDir);
   const stagingDir = resolve(packageRoot, outputDir);
   const sourceDir = resolve(packageRoot, 'src');
-  const spawn = options.spawn ?? spawnSync;
+  const spawn = options.spawn ?? runPkgrollCommand;
   const nodeExecutable = options.nodeExecutable ?? process.execPath;
   const env = options.env ?? process.env;
   const timeoutMs = resolvePkgrollTimeoutMs(env, options.timeoutMs);
@@ -289,7 +303,7 @@ function runPkgrollBuildInStage(options = {}) {
       for (const inputPath of inputGroup) {
         pkgrollArgs.push('--input', inputPath);
       }
-      const result = spawn(nodeExecutable, pkgrollArgs, {
+      const result = await spawn(nodeExecutable, pkgrollArgs, {
         cwd: physicalStagingDir,
         env: childEnv,
         stdio: ['ignore', 'inherit', 'inherit'],
@@ -303,7 +317,9 @@ function runPkgrollBuildInStage(options = {}) {
         throw result.error;
       }
       if (result.signal) {
-        throw new Error(`pkgroll terminated by signal ${result.signal}`);
+        const error = new Error(`pkgroll terminated by signal ${result.signal}`);
+        error.signal = result.signal;
+        throw error;
       }
       if (result.status !== 0) {
         throw new Error(`pkgroll exited without success (status=${result.status ?? 'null'})`);
@@ -315,7 +331,7 @@ function runPkgrollBuildInStage(options = {}) {
   copyFirstPartyStaticAssets(packageRoot, outputDir);
 }
 
-export function runPkgrollBuild(options = {}) {
+export async function runPkgrollBuild(options = {}) {
   const lexicalPackageJsonPath = resolve(String(
     options.packageJsonPath
       ?? join(options.cwd ?? process.cwd(), 'package.json'),

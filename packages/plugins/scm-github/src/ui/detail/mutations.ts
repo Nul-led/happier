@@ -128,11 +128,11 @@ const NO_MUTATIONS: readonly GithubPullRequestMutationIdV1[] = Object.freeze([])
  * merge to refuse there: a control whose every press the provider refuses is worse
  * than no control.
  *
- * GitHub's canonical mapper preserves merged versus merely closed only in its
- * native state label, so that provider fact is load-bearing for reopen: a merged
- * pull request can never be reopened and must not offer a guaranteed refusal.
- * Issue `resolved` is GitHub's canonical completed-issue presentation and remains
- * reopenable just like its other closed reasons.
+ * A merged pull request projects `resolved` (`CONTRACT.md` §4, r0.42) and can
+ * never be reopened, so it offers no guaranteed refusal; one closed without
+ * merging projects `closed` and offers reopen. Issue `resolved` is GitHub's
+ * canonical completed-issue presentation and remains reopenable just like its
+ * other closed reasons.
  */
 export function githubOfferedMutationsV1(params: Readonly<{
   kindId: GithubTriageKindIdV1;
@@ -150,9 +150,7 @@ export function githubOfferedMutationsV1(params: Readonly<{
   }
   if (params.kindId !== 'pull-request') return NO_MUTATIONS;
   if (params.state.presentation === 'active') return OPEN_MUTATIONS;
-  if (params.state.presentation === 'closed') {
-    return params.state.nativeLabel === 'Merged' ? NO_MUTATIONS : CLOSED_MUTATIONS;
-  }
+  if (params.state.presentation === 'closed') return CLOSED_MUTATIONS;
   return NO_MUTATIONS;
 }
 /**

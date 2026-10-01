@@ -1,7 +1,7 @@
 import type { PluginDiagnosticRecordV1 } from '@happier-dev/protocol';
 
 import type { PluginCatalogEntry } from '@/plugins/projection/catalog/installed';
-import type { PluginFinalPolicyCurrentGeneration } from '@/plugins/runtime/policy/facts';
+import type { PluginFinalPolicyCurrentRuntime } from '@/plugins/runtime/policy/facts';
 import type { PluginCompatibilityDiagnostic } from '@/plugins/validation/diagnostics/types';
 import { collectManifestContributionIntrospectionCandidates } from './manifest';
 import {
@@ -105,7 +105,6 @@ function projectAttributedCatalogDiagnostics(params: Readonly<{
         source: mapPluginSourceToDiagnosticSource(entry.source),
       },
       defaultStage: 'normalization',
-      generation: entry.appliedGeneration ?? entry.desiredGeneration ?? undefined,
       host: 'daemon',
       platform: process.platform,
       occurredAtMs: params.occurredAtMs,
@@ -189,14 +188,19 @@ export function joinInstalledCatalogRuntimeIntrospection(
     generation?: number;
     targetActivationFacts?: readonly PluginTargetActivationFact[];
     pluginDiagnosticsByPluginId?: Readonly<Record<string, readonly PluginCompatibilityDiagnostic[]>>;
-    pluginFinalPolicyCurrentGenerationsById?: ReadonlyMap<string, PluginFinalPolicyCurrentGeneration>;
+    pluginFinalPolicyCurrentRuntimesById?: ReadonlyMap<string, PluginFinalPolicyCurrentRuntime>;
   }> | null | undefined,
 ): readonly PluginCatalogEntry[] {
   const currentEntries = entries.map((entry) => {
-    const current = runtimeRegistry?.pluginFinalPolicyCurrentGenerationsById?.get(entry.pluginId);
+    const current = runtimeRegistry?.pluginFinalPolicyCurrentRuntimesById?.get(entry.pluginId);
+    const currentCatalogGeneration = current
+      ? current.sourceCustody.kind === 'managed'
+        ? current.sourceCustody.immutableGenerationId
+        : current.occurrenceId
+      : null;
     const appliedGeneration = current?.applied === true
-      && current.immutableGenerationId === entry.desiredGeneration
-      ? current.immutableGenerationId
+      && currentCatalogGeneration === entry.desiredGeneration
+      ? currentCatalogGeneration
       : null;
     return appliedGeneration === entry.appliedGeneration
       ? entry

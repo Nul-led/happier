@@ -32,11 +32,13 @@ const MAX_WITHOUT_XHIGH = ['low', 'medium', 'high', 'max'] as const;
 const LEGACY_EFFORT_LEVELS = ['low', 'medium', 'high'] as const;
 
 const ANTHROPIC_MODEL_DEFINITIONS = [
-  { id: 'claude-opus-5', name: 'Opus 5', description: 'Latest highest-capability Claude model for the hardest coding and reasoning tasks.', effortLevels: ALL_EFFORT_LEVELS, oneMillionContext: 'always' },
+  { id: 'claude-fable-5-1', name: 'Fable 5.1', description: 'Latest Claude model for demanding reasoning and long-running agentic work.', effortLevels: ALL_EFFORT_LEVELS, oneMillionContext: 'always' },
+  { id: 'claude-opus-5-5', name: 'Opus 5.5', description: 'Latest Opus model for long-running agentic coding and knowledge work.', effortLevels: ALL_EFFORT_LEVELS, defaultEffort: 'medium', oneMillionContext: 'always' },
+  { id: 'claude-opus-5', name: 'Opus 5', description: 'Prior Opus model for complex coding and reasoning tasks.', effortLevels: ALL_EFFORT_LEVELS, oneMillionContext: 'always' },
   { id: 'claude-sonnet-5', name: 'Sonnet 5', description: 'Latest balanced Claude model for coding, agentic work, editing, and analysis.', effortLevels: ALL_EFFORT_LEVELS, oneMillionContext: 'always' },
-  { id: 'claude-fable-5', name: 'Fable 5', description: 'Newest highest-capability generally available Claude model for the hardest coding and reasoning tasks.', effortLevels: ALL_EFFORT_LEVELS, oneMillionContext: 'always' },
+  { id: 'claude-fable-5', name: 'Fable 5', description: 'Prior Fable model for demanding coding and reasoning tasks.', effortLevels: ALL_EFFORT_LEVELS, oneMillionContext: 'always' },
   { id: 'claude-mythos-5', name: 'Mythos 5', description: 'Limited-availability Claude model for approved Project Glasswing customers.', effortLevels: ALL_EFFORT_LEVELS, oneMillionContext: 'always' },
-  { id: 'claude-opus-4-8', name: 'Opus 4.8', description: 'Newest highest-capability Claude model for the hardest coding and reasoning tasks.', effortLevels: ALL_EFFORT_LEVELS, oneMillionContext: 'always' },
+  { id: 'claude-opus-4-8', name: 'Opus 4.8', description: 'Earlier Opus model for complex coding and reasoning tasks.', effortLevels: ALL_EFFORT_LEVELS, oneMillionContext: 'always' },
   { id: 'claude-opus-4-7', name: 'Opus 4.7', description: 'Prior highest-capability Claude model for hard coding and reasoning tasks.', effortLevels: ALL_EFFORT_LEVELS, defaultEffort: 'xhigh', oneMillionContext: 'always' },
   { id: 'claude-opus-4-6', name: 'Opus 4.6', description: 'Highest-capability Claude model for the hardest coding and reasoning tasks.', effortLevels: MAX_WITHOUT_XHIGH, oneMillionContext: 'optIn' },
   { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6', description: 'Balanced Claude model for everyday coding, editing, and analysis.', effortLevels: MAX_WITHOUT_XHIGH, oneMillionContext: 'optIn' },

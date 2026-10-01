@@ -182,11 +182,11 @@ async function buildControlContext(params: Readonly<{
     pluginId: params.lease.pluginId,
     pluginVersion: params.lease.pluginVersion,
     agentId: params.lease.agentId,
-    generation: params.lease.generation,
+    occurrenceId: params.lease.occurrenceId,
     correlationId: randomUUID(),
     cwd,
     signal,
-    isGenerationCurrent: params.lease.isCurrent,
+    isOccurrenceCurrent: params.lease.isCurrent,
   });
   // Inactive routers decrypt and validate this boundary before invoking a facet. The
   // metadata shape is therefore canonical even though the host route contract exposes
@@ -202,7 +202,7 @@ async function buildControlContext(params: Readonly<{
     pluginId: params.lease.pluginId,
     contributionId: params.lease.localAgentId,
     agentId: params.lease.agentId,
-    generationId: params.lease.generation,
+    occurrenceId: params.lease.occurrenceId,
     declarations: readAgentSessionCapabilities(
       params.registry.contributes.agentDefinitionsById
         .get(params.lease.agentId)
@@ -228,7 +228,7 @@ async function buildControlContext(params: Readonly<{
     ui: createPluginInvocationPresentation({
       currentSession: null,
       signal,
-      isGenerationCurrent: params.lease.isCurrent,
+      isOccurrenceCurrent: params.lease.isCurrent,
     }),
     agent: Object.freeze({ id: params.lease.agentId }),
     protocols: Object.freeze({
@@ -447,7 +447,7 @@ export function createNativeInactiveGoalAdapter(params: Readonly<{
               pluginId: context.plugin.id,
               contributionId: context.contribution.id,
               agentId: context.agent.id,
-              generationId: 'unavailable',
+              occurrenceId: 'unavailable',
               declarations: [],
               isCurrent: () => false,
             }).publisher('unavailable'),
@@ -477,7 +477,7 @@ export function createNativeInactiveGoalAdapter(params: Readonly<{
                 pluginId: context.plugin.id,
                 contributionId: context.contribution.id,
                 agentId: context.agent.id,
-                generationId: 'unavailable',
+                occurrenceId: 'unavailable',
                 declarations: [],
                 isCurrent: () => false,
               }).publisher('unavailable'),
@@ -501,7 +501,7 @@ export function createNativeInactiveGoalAdapter(params: Readonly<{
               pluginId: context.plugin.id,
               contributionId: context.contribution.id,
               agentId: context.agent.id,
-              generationId: 'unavailable',
+              occurrenceId: 'unavailable',
               declarations: [],
               isCurrent: () => false,
             }).publisher('unavailable'),

@@ -73,7 +73,8 @@ function providerActionContext(input: Readonly<{
     caller: {
       kind: 'plugin',
       pluginId: input.callerPluginId,
-      immutableGenerationId: 'caller-generation-1',
+      occurrenceId: 'caller-generation-1',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'caller-generation-1', installSource: 'npm' },
       contribution: {
         id: 'connection-setup-v1',
         qualifiedId: `${input.callerPluginId}/actions/connection-setup-v1`,

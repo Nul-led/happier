@@ -140,7 +140,7 @@ describe('Plugin authoring Actions', () => {
     const targetDir = join(workspaceRoot, 'external-plugin');
     const spawnCalls: PluginAuthorToolchainSpawnInput[] = [];
     const requestDevelopmentChange = vi.fn(async () => ({
-      kind: 'sourceRootReviewRequired' as const,
+      kind: 'reviewRequired', reviewKind: 'projectTrust' as const,
       pendingChangeId: 'pending-external-author-1',
       review: { source: { kind: 'path' as const, locator: targetDir } },
     } satisfies Awaited<ReturnType<NonNullable<
@@ -222,7 +222,7 @@ describe('Plugin authoring Actions', () => {
     const services: AuthoringActionServices = {
       ...createToolchainServices({ spawnCalls: [] }),
       readUserPluginChangeStatus: async ({ pendingChangeId }) => ({
-        kind: 'sourceRootReviewRequired',
+        kind: 'reviewRequired', reviewKind: 'projectTrust',
         pendingChangeId,
         review: { source: { kind: 'path', locator: '/external/plugin' } },
       }),
@@ -238,7 +238,7 @@ describe('Plugin authoring Actions', () => {
           ok: true,
           kind: 'plugins_change_status',
           status: {
-            kind: 'sourceRootReviewRequired',
+            kind: 'reviewRequired', reviewKind: 'projectTrust',
             pendingChangeId: 'pending-source-root-1',
             review: { source: { kind: 'path', locator: '/external/plugin' } },
           },

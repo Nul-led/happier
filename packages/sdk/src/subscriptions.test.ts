@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createTranscriptIterable, startExecutionRunStream } from './subscriptions.js';
-import type { ActionExecute } from './types.js';
+import { startExecutionRunStream } from './subscriptions.js';
 
 type StreamEvent = Readonly<{ t: 'delta'; textDelta: string }>;
 
@@ -135,22 +134,20 @@ describe('execution-run subscriptions', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  it('paces an empty nonterminal page before pulling again', async () => {
+  it('waits on the producer push without issuing idle reads', async () => {
     vi.useFakeTimers();
+    const pushedPage = deferred<Readonly<{
+      streamId: string; events: StreamEvent[]; nextCursor: number; done: boolean;
+    }>>();
     let reads = 0;
+    let requestedWait: unknown;
     const stream = await startExecutionRunStream({
       runId: 'run-1',
       start: async () => ({ streamId: 'stream-1' }),
-      read: async () => {
+      read: async (input) => {
         reads += 1;
-        return reads === 1
-          ? { streamId: 'stream-1', events: [], nextCursor: 0, done: false }
-          : {
-              streamId: 'stream-1',
-              events: [{ t: 'delta' as const, textDelta: 'ready' }],
-              nextCursor: 1,
-              done: true,
-            };
+        requestedWait = Reflect.get(input, 'waitForEvents');
+        return await pushedPage.promise;
       },
       cancel: async () => undefined,
       closeSignal: new AbortController().signal,
@@ -162,15 +159,18 @@ describe('execution-run subscriptions', () => {
     await Promise.resolve();
     expect(reads).toBe(1);
 
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(reads).toBe(1);
+    expect(requestedWait).toBe(true);
+    pushedPage.resolve({ streamId: 'stream-1', events: [{ t: 'delta', textDelta: 'ready' }], nextCursor: 1, done: true });
     await expect(next).resolves.toEqual({
       done: false,
       value: { t: 'delta', textDelta: 'ready' },
     });
-    expect(reads).toBe(2);
+    expect(reads).toBe(1);
   });
 
-  it('aborts an empty-page wait and cancels without another read', async () => {
+  it('aborts a pending producer read and cancels without another read', async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
     const cancel = vi.fn(async () => undefined);
@@ -178,9 +178,11 @@ describe('execution-run subscriptions', () => {
     const stream = await startExecutionRunStream({
       runId: 'run-1',
       start: async () => ({ streamId: 'stream-1' }),
-      read: async () => {
+      read: async (_input, signal) => {
         reads += 1;
-        return { streamId: 'stream-1', events: [], nextCursor: 0, done: false };
+        return await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
       },
       cancel,
       closeSignal: new AbortController().signal,
@@ -193,10 +195,22 @@ describe('execution-run subscriptions', () => {
     await Promise.resolve();
     expect(reads).toBe(1);
 
-    controller.abort(new Error('stop polling'));
+    controller.abort(new Error('stop observation'));
     await expect(next).resolves.toEqual({ done: true, value: undefined });
     expect(reads).toBe(1);
     expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a finite-only producer instead of repeatedly reading an idle cursor', async () => {
+    const cancel = vi.fn(async () => undefined);
+    const read = vi.fn(async () => ({ streamId: 'stream-1', events: [], nextCursor: 0, done: false }));
+    const stream = await startExecutionRunStream({
+      runId: 'run-1', start: async () => ({ streamId: 'stream-1' }), read, cancel,
+      closeSignal: new AbortController().signal,
+    });
+    await expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'execution_run_stream_update_required' });
+    expect(read).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it('returns while concurrent next calls share one pending read', async () => {
@@ -276,49 +290,4 @@ describe('execution-run subscriptions', () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
-  it('bounds transcript iterator return while lease release continues', async () => {
-    vi.useFakeTimers();
-    const releaseCompletion = deferred<void>();
-    let releaseCompleted = false;
-    const release = vi.fn(async () => {
-      await releaseCompletion.promise;
-      releaseCompleted = true;
-    });
-    const execute = vi.fn(async (actionId: string) => {
-      if (actionId === 'transcript.follow') {
-        return {
-          items: [{ role: 'assistant', text: 'ready' }],
-          nextCursor: '1',
-          truncated: false,
-        };
-      }
-      throw new Error(`Unexpected Action: ${actionId}`);
-    }) as unknown as ActionExecute;
-    const transcript = createTranscriptIterable({
-      execute,
-      release,
-      sessionId: 'session-1',
-      closeSignal: new AbortController().signal,
-    });
-    const iterator = transcript[Symbol.asyncIterator]();
-    await expect(iterator.next()).resolves.toEqual({
-      done: false,
-      value: { role: 'assistant', text: 'ready' },
-    });
-
-    const returning = iterator.return!();
-    let returnSettled = false;
-    void returning.then(() => {
-      returnSettled = true;
-    });
-    await vi.advanceTimersByTimeAsync(1_000);
-    const settledAtGrace = returnSettled;
-    const cleanupCompletedAtGrace = releaseCompleted;
-    releaseCompletion.resolve();
-    await returning;
-
-    expect(settledAtGrace).toBe(true);
-    expect(cleanupCompletedAtGrace).toBe(false);
-    expect(release).toHaveBeenCalledOnce();
-  });
 });

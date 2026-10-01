@@ -44,6 +44,36 @@ describe('plugin-ui List item presentation', () => {
     )).toThrow('List rows contain duplicate key "duplicate".');
   });
 
+  it('draws its search as one named field with no second visible label', () => {
+    const context = createSurfaceContext();
+    const mount = mountThroughReactNativeWeb(
+      <PluginUiProvider hostApi={createHostApiStub(context)} context={context}>
+        <List
+          accessibilityLabel="Repositories"
+          items={[{ id: 'web', title: 'acme/web' }]}
+          keyForItem={(item) => item.id}
+          renderItem={(item) => <List.Item title={item.title} />}
+          search={{
+            label: 'Search repositories',
+            filter: (item, query) => item.title.includes(query),
+          }}
+        />
+      </PluginUiProvider>,
+    );
+
+    const field = mount.container.querySelector('input');
+    expect(field?.getAttribute('aria-label')).toBe('Search repositories');
+    // The field says what it searches until the reader types.
+    expect(field?.getAttribute('placeholder')).toBe('Search repositories');
+    // Its name is not repeated as a detached bold line above the field.
+    const visibleText = Array.from(mount.container.querySelectorAll('*'))
+      .filter((node) => node.children.length === 0)
+      .map((node) => node.textContent?.trim())
+      .filter((value) => value === 'Search repositories');
+    expect(visibleText).toEqual([]);
+    mount.unmount();
+  });
+
   it('rejects duplicate authored row identities even when search hides one occurrence', () => {
     const context = createSurfaceContext();
     expect(() => mountThroughReactNativeWeb(
@@ -328,6 +358,48 @@ describe('plugin-ui List item presentation', () => {
     rows = Array.from(mount.container.querySelectorAll<HTMLElement>('[role="row"]'));
     expect(document.activeElement).toBe(rows[1]?.querySelector('[role="button"]'));
     expect(rows.map((row) => row.getAttribute('aria-selected'))).toEqual(['true', 'false']);
+    mount.unmount();
+  });
+
+  it('paints a selected surface that focus alone never paints', async () => {
+    const entries = [
+      { id: 'first', title: 'First entry' },
+      { id: 'second', title: 'Second entry' },
+    ] as const;
+    const context = createSurfaceContext();
+    const mount = mountThroughReactNativeWeb(
+      <PluginUiProvider hostApi={createHostApiStub(context)} context={context}>
+        <List
+          accessibilityLabel="Entries"
+          accessibilityPattern="grid"
+          items={entries}
+          keyForItem={(item) => item.id}
+          selection={{ selectedKey: 'first', onSelectedKeyChange: () => undefined }}
+          renderItem={(item) => <List.Item title={item.title} />}
+        />
+      </PluginUiProvider>,
+    );
+    const resolveColor = (value: string) => {
+      const probe = document.createElement('div');
+      probe.style.backgroundColor = value;
+      document.body.appendChild(probe);
+      const rendered = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return rendered;
+    };
+    const rowButtons = () => Array.from(mount.container.querySelectorAll<HTMLElement>('[role="row"]'))
+      .map((row) => row.querySelector<HTMLElement>('[role="button"]')!);
+
+    const [selected, unselected] = rowButtons();
+    await act(async () => { unselected?.focus(); });
+    const [selectedAfterFocus, focusedUnselected] = rowButtons();
+
+    // The open entry is visible on touch and pointer, not only to a screen
+    // reader: selection paints the control surface.
+    expect(getComputedStyle(selected!).backgroundColor).toBe(resolveColor(context.theme.colors.control));
+    expect(getComputedStyle(selectedAfterFocus!).backgroundColor).toBe(resolveColor(context.theme.colors.control));
+    // Focus draws the ring and nothing else, so focus is never mistaken for selection.
+    expect(getComputedStyle(focusedUnselected!).backgroundColor).not.toBe(resolveColor(context.theme.colors.control));
     mount.unmount();
   });
 

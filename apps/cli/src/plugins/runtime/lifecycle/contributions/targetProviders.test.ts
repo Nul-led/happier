@@ -2,12 +2,19 @@ import { createPluginContributionIdentity } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ingestCanonicalPluginManifest } from '@/plugins/manifest/ingest';
+import type { PluginSourceCustody } from '@/plugins/runtime/sourceAuthority';
 import type {
     ResolvedActivationTarget,
     ResolvedProviderContribution,
 } from '@/plugins/projection/registry/types';
 import type { ContributionRuntimeRegistration } from '../../api/registrationRightsHost';
 import { projectTargetProviderRuntimes } from './targetProviders';
+import {
+    createBundledFirstPartyPluginSourceCustody,
+    createDevelopmentPluginSourceCustody,
+    createManagedPluginSourceCustody,
+    createManagedSourceCustodiesByPluginId,
+} from './runtimeIdentity.testkit';
 
 type ProviderRuntimeRegistrationValue = Extract<
     ContributionRuntimeRegistration,
@@ -124,10 +131,10 @@ function activationTarget(
     };
 }
 
-function registration(pluginId: string, generation = '9') {
+function registration(pluginId: string, occurrenceId = '9') {
     return {
         pluginId,
-        generation,
+        occurrenceId,
         registration: {
             family: 'providers',
             localId: 'gateway',
@@ -158,25 +165,32 @@ describe('projectTargetProviderRuntimes', () => {
                 managed: true,
             }),
         ];
-        const immutableGenerationIdsByPluginId = new Map(providers.map((entry) => [
-            entry.pluginId,
-            `immutable:${entry.pluginId}`,
-        ]));
+        const sourceCustodiesByPluginId = new Map<string, PluginSourceCustody>([
+            ['acme.provider.bundled', createBundledFirstPartyPluginSourceCustody(
+                'fixture-version-root:acme.provider.bundled',
+            )],
+            ['acme.provider.development', createDevelopmentPluginSourceCustody(
+                'fixture-root:acme.provider.development',
+            )],
+            ['acme.provider.installed', createManagedPluginSourceCustody(
+                'immutable:acme.provider.installed',
+                'npm',
+            )],
+        ]);
 
         const projected = projectTargetProviderRuntimes({
             providers,
             activationTargets: providers.map(activationTarget),
             targetRegistrations: providers.map((entry) => registration(entry.pluginId)),
-            activationGeneration: '9',
-            immutableGenerationIdsByPluginId,
+            sourceCustodiesByPluginId,
             isRegistrationCurrent: () => true,
         }).providers;
 
         expect(projected.map((entry) => entry.managedRuntime)).toEqual(providers.map((entry) => (
             expect.objectContaining({
                 runtime: managedRuntime,
-                activationGeneration: '9',
-                immutableGenerationId: `immutable:${entry.pluginId}`,
+                activationOccurrenceId: '9',
+                sourceCustody: sourceCustodiesByPluginId.get(entry.pluginId),
                 isCurrent: expect.any(Function),
             })
         )));
@@ -197,13 +211,12 @@ describe('projectTargetProviderRuntimes', () => {
             providers: [descriptorOnly],
             activationTargets: [activationTarget(descriptorOnly)],
             targetRegistrations: [],
-            activationGeneration: '9',
-            immutableGenerationIdsByPluginId: new Map(),
+            sourceCustodiesByPluginId: new Map(),
             isRegistrationCurrent: () => true,
         }).providers[0]?.managedRuntime).toBeUndefined();
     });
 
-    it('refuses a runtime without an exact managed declaration or immutable generation', () => {
+    it('refuses a runtime without an exact managed declaration or source custody', () => {
         const descriptorOnly = provider({
             pluginId: 'acme.provider.descriptor',
             provenance: 'external',
@@ -213,8 +226,9 @@ describe('projectTargetProviderRuntimes', () => {
             providers: [descriptorOnly],
             activationTargets: [activationTarget(descriptorOnly)],
             targetRegistrations: [registration(descriptorOnly.pluginId)],
-            activationGeneration: '9',
-            immutableGenerationIdsByPluginId: new Map([[descriptorOnly.pluginId, 'immutable:descriptor']]),
+            sourceCustodiesByPluginId: createManagedSourceCustodiesByPluginId(
+                new Map([[descriptorOnly.pluginId, 'immutable:descriptor']]),
+            ),
             isRegistrationCurrent: () => true,
         });
         expect(withoutDeclaration.providers[0]?.managedRuntime).toBeUndefined();
@@ -231,19 +245,18 @@ describe('projectTargetProviderRuntimes', () => {
             source: 'marketplace',
             managed: true,
         });
-        const withoutGeneration = projectTargetProviderRuntimes({
+        const withoutCustody = projectTargetProviderRuntimes({
             providers: [managed],
             activationTargets: [activationTarget(managed)],
             targetRegistrations: [registration(managed.pluginId)],
-            activationGeneration: '9',
-            immutableGenerationIdsByPluginId: new Map(),
+            sourceCustodiesByPluginId: new Map(),
             isRegistrationCurrent: () => true,
         });
-        expect(withoutGeneration.providers[0]?.managedRuntime).toBeUndefined();
-        expect(withoutGeneration.diagnosticsByPluginId[managed.pluginId]).toEqual([
+        expect(withoutCustody.providers[0]?.managedRuntime).toBeUndefined();
+        expect(withoutCustody.diagnosticsByPluginId[managed.pluginId]).toEqual([
             expect.objectContaining({
                 code: 'plugin_activation_failed',
-                message: expect.stringMatching(/immutable generation/i),
+                message: expect.stringMatching(/source custody/i),
             }),
         ]);
     });
@@ -273,13 +286,16 @@ describe('projectTargetProviderRuntimes', () => {
                     value: retainedRuntime,
                 },
             }, registration(managed.pluginId, '9')],
-            activationGeneration: '9',
-            immutableGenerationIdsByPluginId: new Map([[managed.pluginId, 'immutable:Q']]),
-            isRegistrationCurrent: (entry) => current && entry.generation === '9',
+            sourceCustodiesByPluginId: createManagedSourceCustodiesByPluginId(
+                new Map([[managed.pluginId, 'immutable:Q']]),
+            ),
+            isRegistrationCurrent: (entry) => current && entry.occurrenceId === '9',
         }).providers;
 
         expect(projected[0]?.managedRuntime?.runtime).toBe(managedRuntime);
-        expect(projected[0]?.managedRuntime?.immutableGenerationId).toBe('immutable:Q');
+        expect(projected[0]?.managedRuntime?.sourceCustody).toEqual(
+            createManagedPluginSourceCustody('immutable:Q'),
+        );
         expect(projected[0]?.managedRuntime?.isCurrent()).toBe(true);
         current = false;
         expect(projected[0]?.managedRuntime?.isCurrent()).toBe(false);
@@ -305,10 +321,9 @@ describe('projectTargetProviderRuntimes', () => {
             providers: [providerDeclaration],
             activationTargets: [activationTarget(activationTargetDeclaration)],
             targetRegistrations: [registration(providerDeclaration.pluginId)],
-            activationGeneration: '9',
-            immutableGenerationIdsByPluginId: new Map([
+            sourceCustodiesByPluginId: createManagedSourceCustodiesByPluginId(new Map([
                 [providerDeclaration.pluginId, 'immutable:Q'],
-            ]),
+            ])),
             isRegistrationCurrent: () => true,
         });
         expect(projected.providers[0]?.managedRuntime).toBeUndefined();
@@ -320,7 +335,7 @@ describe('projectTargetProviderRuntimes', () => {
         ]);
     });
 
-    it('projects contributed catalog formats for an external Provider with no managed runtime', () => {
+    it('projects contributed catalog formats for a bundled Provider without a managed generation', () => {
         const external = provider({
             pluginId: 'acme.provider.catalog-format',
             provenance: 'external',
@@ -340,16 +355,18 @@ describe('projectTargetProviderRuntimes', () => {
                     value: { catalogParsers: { 'acme-catalog-v3': parse } },
                 },
             }],
-            activationGeneration: '9',
-            immutableGenerationIdsByPluginId: new Map([
-                [external.pluginId, 'immutable:Q'],
-            ]),
+            sourceCustodiesByPluginId: new Map([[
+                external.pluginId,
+                createBundledFirstPartyPluginSourceCustody('1.2.3'),
+            ]]),
             isRegistrationCurrent: () => true,
         }).providers;
 
         expect(projected[0]?.managedRuntime).toBeUndefined();
         expect(projected[0]?.catalogParsers?.parsersByFormat['acme-catalog-v3']).toBe(parse);
-        expect(projected[0]?.catalogParsers?.immutableGenerationId).toBe('immutable:Q');
+        expect(projected[0]?.catalogParsers?.sourceCustody).toEqual(
+            createBundledFirstPartyPluginSourceCustody('1.2.3'),
+        );
         expect(projected[0]?.catalogParsers?.isCurrent()).toBe(true);
     });
 
@@ -372,10 +389,9 @@ describe('projectTargetProviderRuntimes', () => {
                     value: { catalogParsers: { 'other-format': vi.fn(() => ({ models: [] })) } },
                 },
             }],
-            activationGeneration: '9',
-            immutableGenerationIdsByPluginId: new Map([
+            sourceCustodiesByPluginId: createManagedSourceCustodiesByPluginId(new Map([
                 [external.pluginId, 'immutable:Q'],
-            ]),
+            ])),
             isRegistrationCurrent: () => true,
         });
 
@@ -407,10 +423,9 @@ describe('projectTargetProviderRuntimes', () => {
             providers: [managed],
             activationTargets: undefined,
             targetRegistrations: [registration(managed.pluginId)],
-            activationGeneration: '9',
-            immutableGenerationIdsByPluginId: new Map([
+            sourceCustodiesByPluginId: createManagedSourceCustodiesByPluginId(new Map([
                 [managed.pluginId, 'immutable:Q'],
-            ]),
+            ])),
             isRegistrationCurrent: () => true,
         });
         expect(projected.providers[0]?.managedRuntime).toBeUndefined();
@@ -460,11 +475,10 @@ describe('projectTargetProviderRuntimes', () => {
                     value: { catalogParsers: { 'bad-catalog-v4': badParse } },
                 },
             }],
-            activationGeneration: '9',
-            immutableGenerationIdsByPluginId: new Map([
+            sourceCustodiesByPluginId: createManagedSourceCustodiesByPluginId(new Map([
                 [good.pluginId, 'immutable:good'],
                 [bad.pluginId, 'immutable:bad'],
-            ]),
+            ])),
             isRegistrationCurrent: () => true,
         });
 
@@ -513,10 +527,9 @@ describe('projectTargetProviderRuntimes', () => {
                     },
                 },
             }],
-            activationGeneration: '9',
-            immutableGenerationIdsByPluginId: new Map([
+            sourceCustodiesByPluginId: createManagedSourceCustodiesByPluginId(new Map([
                 [managedAndFormats.pluginId, 'immutable:both'],
-            ]),
+            ])),
             isRegistrationCurrent: () => true,
         });
 

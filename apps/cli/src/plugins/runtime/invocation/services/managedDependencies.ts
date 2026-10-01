@@ -1,6 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
 
-import type { ManagedExecutableRef } from '@happier-dev/protocol';
+import type {
+    ManagedExecutableRef,
+    PluginSourceCustodyV1,
+} from '@happier-dev/protocol';
 import type {
     InstallableDependencyDescriptor,
     InstallableRegistryContribution,
@@ -15,6 +18,7 @@ import type {
 import { isPluginError, PluginError } from '@happier-dev/plugin-sdk';
 
 import type { RuntimeInstallableAdapter } from '@/packagedRuntime/installables/registry';
+import { selectRunnerManagedDependencySourceCustody } from '@/plugins/runtime/retainedPluginSourceAttestation';
 import type {
     ManagedDependencySourceModelDependency,
     ManagedDependencySourceModelEntry,
@@ -22,6 +26,7 @@ import type {
 } from './managedDependencySourceModel';
 import {
     mergeRunnerManagedDependencyRetentionV1,
+    runnerPluginSourceCustodyIdentity,
     type RunnerManagedDependencySourceCandidateV1,
     type RunnerManagedDependencyRetentionV1,
 } from '../../runner/runnerManagedDependencyRetention';
@@ -166,6 +171,8 @@ function legacyUnsupportedCode(descriptor: InstallableDependencyDescriptor): str
         case 'vendor_recipe':
             return 'plugin_managed_dependency_vendor_recipe_required';
         case 'managed_package':
+        // Host optional runtimes do not expose the plugin executable adapter contract.
+        case 'first_party_runtime':
             return 'plugin_managed_dependency_source_unsupported';
         case 'github_release_binary':
         case 'managed_pypi_wheel_asset':
@@ -202,6 +209,8 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
     isCurrent?(): boolean;
     immutableGenerationIdsByPluginId?:
         ReadonlyMap<string, string>;
+    sourceCustodiesByPluginId?:
+        ReadonlyMap<string, PluginSourceCustodyV1>;
     getSettings(): unknown;
     resolveAdapter(
         key: string,
@@ -255,6 +264,9 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
             ? Object.freeze({
                 kind: 'pinned_archive' as const,
                 version: source.declaration.version,
+                ...(source.declaration.archiveExtractionLimits
+                    ? { archiveExtractionLimits: source.declaration.archiveExtractionLimits }
+                    : {}),
                 assetsByPlatform: source.declaration.assetsByPlatform,
             })
             : source.declaration.kind === 'managedPypiWheelAsset'
@@ -350,7 +362,7 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
         if (params.isCurrent?.() === false) {
             fail(
                 'plugin_managed_dependency_generation_retired',
-                'Managed dependency generation has retired',
+                'Managed dependency occurrenceId has retired',
             );
         }
     }
@@ -373,19 +385,23 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
             RunnerManagedDependencySourceCandidateV1
         >();
         const addSourceCandidate = (owner: V2DescriptorOwner): void => {
-            const immutableGenerationId =
-                params.immutableGenerationIdsByPluginId?.get(
+            const registeredCustody =
+                params.sourceCustodiesByPluginId?.get(
                     owner.dependency.identity.pluginId,
                 );
-            if (!immutableGenerationId) {
+            if (!registeredCustody) {
                 return fail(
                     'plugin_managed_dependency_retention_generation_unavailable',
-                    'Managed dependency immutable source generation is unavailable',
+                    'Managed dependency immutable source occurrenceId is unavailable',
                 );
             }
+            const sourceCustody = selectRunnerManagedDependencySourceCustody(
+                binding.sourceCustody,
+                registeredCustody,
+            );
             const sourceCandidate = Object.freeze({
                 qualifiedDependencyId: owner.qualifiedKey,
-                immutableGenerationId,
+                sourceCustody,
                 manifestAuthority:
                     owner.dependency.provenance === 'first_party'
                         ? 'bundled_first_party' as const
@@ -394,7 +410,9 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
             sourceCandidatesByIdentity.set(
                 JSON.stringify([
                     sourceCandidate.qualifiedDependencyId,
-                    sourceCandidate.immutableGenerationId,
+                    runnerPluginSourceCustodyIdentity(
+                        sourceCandidate.sourceCustody,
+                    ),
                 ]),
                 sourceCandidate,
             );
@@ -419,7 +437,7 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
                 if (!winnerOwner) {
                     return fail(
                         'plugin_managed_dependency_retention_generation_unavailable',
-                        'Managed dependency collision winner has no immutable source generation',
+                        'Managed dependency collision winner has no immutable source occurrenceId',
                     );
                 }
                 addSourceCandidate(winnerOwner);
@@ -430,20 +448,24 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
         ].sort((left, right) => (
             left.qualifiedDependencyId.localeCompare(
                 right.qualifiedDependencyId,
-            ) || left.immutableGenerationId.localeCompare(
-                right.immutableGenerationId,
-            ) || left.manifestAuthority.localeCompare(
+            ) || runnerPluginSourceCustodyIdentity(left.sourceCustody)
+                .localeCompare(
+                    runnerPluginSourceCustodyIdentity(right.sourceCustody),
+                )
+            || left.manifestAuthority.localeCompare(
                 right.manifestAuthority,
             )
         ));
-        const sourceGenerationIds = [
-            ...new Set(sourceCandidates.map(
-                ({ immutableGenerationId }) => immutableGenerationId,
-            )),
-        ].sort();
+        const sourceCustodies = [
+            ...new Map(sourceCandidates.map(({ sourceCustody }) => [
+                runnerPluginSourceCustodyIdentity(sourceCustody),
+                sourceCustody,
+            ])).values(),
+        ].sort((left, right) => runnerPluginSourceCustodyIdentity(left)
+            .localeCompare(runnerPluginSourceCustodyIdentity(right)));
         return mergeRunnerManagedDependencyRetentionV1({
             v: 1,
-            sourceGenerationIds,
+            sourceCustodies,
             qualifiedDependencyIds: [...qualifiedDependencyIds],
             sourceCandidates,
         });
@@ -493,9 +515,11 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
             );
         }
         for (
-            const generationId of
-            retention.sourceGenerationIds
+            const sourceCustody of
+            retention.sourceCustodies
         ) {
+            if (sourceCustody.kind !== 'managed') continue;
+            const generationId = sourceCustody.immutableGenerationId;
             pendingRunnerRetentionBySourceGenerationId.set(
                 generationId,
                 (
@@ -533,9 +557,11 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
                     }
                 }
                 for (
-                    const generationId of
-                    retention.sourceGenerationIds
+                    const sourceCustody of
+                    retention.sourceCustodies
                 ) {
+                    if (sourceCustody.kind !== 'managed') continue;
+                    const generationId = sourceCustody.immutableGenerationId;
                     const next = (
                         pendingRunnerRetentionBySourceGenerationId.get(
                             generationId,
@@ -1057,7 +1083,7 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
         if (generationRetirementReserved) {
             fail(
                 'plugin_managed_dependency_busy',
-                'Managed dependency generation retirement is already in progress',
+                'Managed dependency occurrenceId retirement is already in progress',
             );
         }
         generationRetirementReserved = true;
@@ -1066,28 +1092,28 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
             const localImmutableSourceGenerationIds = new Set(
                 params.sourceModel.snapshot().dependencies.flatMap(
                     (dependency) => {
-                        const immutableGenerationId =
-                            params.immutableGenerationIdsByPluginId?.get(
+                        const sourceCustody =
+                            params.sourceCustodiesByPluginId?.get(
                                 dependency.identity.pluginId,
                             );
-                        return immutableGenerationId
-                            ? [immutableGenerationId]
+                        return sourceCustody?.kind === 'managed'
+                            ? [sourceCustody.immutableGenerationId]
                             : [];
                     },
                 ),
             );
             if (
                 pendingRunnerReservations > 0
-                || retained.sourceGenerationIds.some(
-                    (immutableGenerationId) =>
-                        localImmutableSourceGenerationIds.has(
-                            immutableGenerationId,
+                || retained.sourceCustodies.some(
+                    (sourceCustody) => sourceCustody.kind === 'managed'
+                        && localImmutableSourceGenerationIds.has(
+                            sourceCustody.immutableGenerationId,
                         ),
                 )
             ) {
                 fail(
                     'plugin_managed_dependency_in_use',
-                    'Managed dependency generation is retained by a live Agent runner',
+                    'Managed dependency occurrenceId is retained by a live Agent runner',
                 );
             }
             const modelKeys = new Set(params.sourceModel.snapshot().dependencies.map((dependency) => dependency.qualifiedId));
@@ -1097,7 +1123,7 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
                 || removals.has(key)
                 || inspections.has(key)
             ));
-            if (busy) fail('plugin_managed_dependency_in_use', 'Managed dependency generation is still in use');
+            if (busy) fail('plugin_managed_dependency_in_use', 'Managed dependency occurrenceId is still in use');
             params.sourceModel.retire();
         } finally {
             generationRetirementReserved = false;

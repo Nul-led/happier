@@ -35,30 +35,28 @@ describe('resolveCliLocalFeaturePolicyEnabled', () => {
     expect(resolveCliLocalFeaturePolicyEnabled('plugins.ui.reactNativeBundles', {} as NodeJS.ProcessEnv)).toBe(true);
   });
 
-  it('keeps the finer reactNativeBundles.devHotReload tier client-represented + fail-closed', () => {
-    expect(resolveCliLocalFeaturePolicyEnabled('plugins.ui.reactNativeBundles.devHotReload', {} as NodeJS.ProcessEnv)).toBe(false);
-    expect(resolveCliLocalFeaturePolicyEnabled('plugins.ui.reactNativeBundles.devHotReload', {
+  it('does not recognize the retired reactNativeBundles.devHotReload local feature tier', () => {
+    expect(resolveCliLocalFeaturePolicyEnabled('plugins.ui.reactNativeBundles.devHotReload' as unknown as FeatureId, {} as NodeJS.ProcessEnv)).toBe(true);
+    expect(resolveCliLocalFeaturePolicyEnabled('plugins.ui.reactNativeBundles.devHotReload' as unknown as FeatureId, {
       HAPPIER_FEATURE_PLUGINS_UI_REACT_NATIVE_BUNDLES_DEV_HOT_RELOAD__ENABLED: '1',
     } as NodeJS.ProcessEnv)).toBe(true);
   });
 
-  it('defers browser.automation to the server decision and keeps the injectedPage/eval tiers fail-closed', () => {
+  it('defers browser.automation to the server decision without dormant local opt-in tiers', () => {
     // browser.automation is server-represented + default-ALLOW (§13.4 — the server owns the
     // automation gate and can disable it independently), so CLI local policy must NOT pre-empt it —
-    // it defaults to allow via the unlisted-id fallback so the server bit governs. The finer
-    // injectedPage/eval tiers stay client-represented + fail-closed locally (operator opt-in on top
-    // of the server gate).
+    // it defaults to allow via the unlisted-id fallback so the server bit governs.
     expect(resolveCliLocalFeaturePolicyEnabled('browser.automation', {} as NodeJS.ProcessEnv)).toBe(true);
-    expect(resolveCliLocalFeaturePolicyEnabled('browser.automation.injectedPage', {} as NodeJS.ProcessEnv)).toBe(false);
-    expect(resolveCliLocalFeaturePolicyEnabled('browser.automation.eval', {} as NodeJS.ProcessEnv)).toBe(false);
+    expect(resolveCliLocalFeaturePolicyEnabled('browser.automation.injectedPage', {} as NodeJS.ProcessEnv)).toBe(true);
+    expect(resolveCliLocalFeaturePolicyEnabled('browser.automation.eval', {} as NodeJS.ProcessEnv)).toBe(true);
   });
 
-  it('honors the explicit env opt-in for the finer browser.automation.injectedPage/eval tiers', () => {
+  it('ignores retired browser automation env opt-ins', () => {
     expect(resolveCliLocalFeaturePolicyEnabled('browser.automation.injectedPage', {
-      HAPPIER_FEATURE_BROWSER_AUTOMATION_INJECTED_PAGE__ENABLED: '1',
+      HAPPIER_FEATURE_BROWSER_AUTOMATION_INJECTED_PAGE__ENABLED: '0',
     } as NodeJS.ProcessEnv)).toBe(true);
     expect(resolveCliLocalFeaturePolicyEnabled('browser.automation.eval', {
-      HAPPIER_FEATURE_BROWSER_AUTOMATION_EVAL__ENABLED: '1',
+      HAPPIER_FEATURE_BROWSER_AUTOMATION_EVAL__ENABLED: '0',
     } as NodeJS.ProcessEnv)).toBe(true);
   });
 

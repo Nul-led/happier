@@ -13,11 +13,8 @@ import type { ResolvedContributionRegistry } from '../../projection/registry/typ
 import type { ResolvedExecutablePluginRuntimeRegistry } from '../resolveExecutablePluginRuntimeRegistry';
 import { createUnavailablePluginServices } from '../invocation/services/unavailable';
 import { createPluginReloadController } from '../reload/controller';
+import type { PluginRuntimeOccurrenceId } from '../runtimeSlots';
 import { ingestCanonicalPluginManifest } from '../../manifest/ingest';
-import {
-    createLocalPathPluginDistributionIdentity,
-    createPluginTrustRecord,
-} from '../../store/install/trustIdentity';
 import { activatePluginRuntimeRegistry } from './manager';
 import type { PluginContributionActivationDemand } from './activation/targets';
 
@@ -28,12 +25,6 @@ async function createCommittedFileBackedFixtureActivationSource(params: Readonly
     root: string;
     entryPath: string;
 }>) {
-    const distribution = await createLocalPathPluginDistributionIdentity(params.root);
-    const trust = createPluginTrustRecord({
-        pluginId: params.pluginId,
-        distribution,
-        approvedAtMs: 1,
-    });
     return () => ({
         kind: 'file_backed' as const,
         entryPath: params.entryPath,
@@ -41,15 +32,62 @@ async function createCommittedFileBackedFixtureActivationSource(params: Readonly
         committedAuthorization: {
             pluginId: params.pluginId,
             immutableGenerationId: `fixture:${params.pluginId}`,
-            distribution,
-            trust,
-            isCurrent: async () => true,
         },
     });
 }
 
 describe('target activation publication', () => {
-    it('bounds module loading before activation and still activates an unrelated plugin', async () => {
+    it('bounds bundled source preparation within the cold-start deadline', async () => {
+        vi.useFakeTimers();
+        const pluginId = 'acme.prepare-hangs';
+        const ingested = ingestCanonicalPluginManifest({
+            schemaVersion: 2,
+            id: pluginId,
+            version: '1.0.0',
+            displayName: pluginId,
+            engines: { happier: '^0.2.0' },
+            runtime: { apiVersion: 1 },
+            entrypoints: { daemon: './daemon.mjs' },
+            activation: { events: [{ kind: 'startup' }] },
+            contributes: {},
+        }, { sourceProvenance: 'registryCustodied' });
+        if (!ingested.ok) throw new Error('Expected valid preparation fixture');
+        const load = vi.fn(async () => ({ activate: vi.fn() }));
+        const activation = activatePluginRuntimeRegistry({
+            contributes: {
+                agents: [], actions: [], resources: [],
+                activationTargets: [{
+                    provenance: 'first_party', source: { kind: 'bundled' }, pluginId,
+                    manifestPath: '/virtual/prepare/plugin.json', daemonEntryPath: '/virtual/prepare/daemon.mjs',
+                    sourceSpec: { kind: 'package', locator: '@happier-dev/prepare-hangs', trustPolicy: 'bundled_trusted', installPolicy: 'copy' },
+                    activationEvents: ['startup'], manifest: ingested.manifest,
+                }],
+                catalogEntriesById: Object.freeze({}),
+                agentDefinitionsById: new Map(),
+                pluginDiagnosticsByPluginId: Object.freeze({}),
+            } as unknown as ResolvedContributionRegistry,
+            generation: 26,
+            startupDeadlineAtMs: Date.now() + 1_000,
+            resolveActivationSource: () => ({
+                kind: 'bundled', moduleId: '@happier-dev/prepare-hangs/daemon',
+                prepare: () => new Promise<never>(() => undefined),
+                load,
+            }),
+        });
+        try {
+            await vi.advanceTimersByTimeAsync(1_000);
+            const registry = await activation;
+            expect(registry.targetActivationFacts).toEqual([
+                expect.objectContaining({ pluginId, status: 'unavailable' }),
+            ]);
+            expect(load).not.toHaveBeenCalled();
+            await registry.dispose();
+        } finally {
+            vi.useRealTimers();
+        }
+    }, 5_000);
+
+    it('bounds cold-start module loading and does not invoke a later plugin after the shared deadline', async () => {
         vi.useFakeTimers();
         const hangingPluginId = 'acme.module-load-hangs';
         const healthyPluginId = 'acme.module-load-healthy';
@@ -92,6 +130,8 @@ describe('target activation publication', () => {
                 pluginDiagnosticsByPluginId: Object.freeze({}),
             } as unknown as ResolvedContributionRegistry,
             generation: 25,
+            // Cold startup has one deadline across all plugin phases.
+            startupDeadlineAtMs: Date.now() + 1_000,
             resolveActivationSource: (target) => target.pluginId === hangingPluginId
                 ? {
                     kind: 'bundled',
@@ -106,7 +146,7 @@ describe('target activation publication', () => {
         });
 
         try {
-            await vi.advanceTimersByTimeAsync(30_000);
+            await vi.advanceTimersByTimeAsync(1_000);
             const registry = await activation;
             expect(registry.targetActivationFacts).toEqual([
                 expect.objectContaining({
@@ -114,9 +154,13 @@ describe('target activation publication', () => {
                     status: 'unavailable',
                     diagnostics: [expect.objectContaining({ code: 'plugin_daemon_module_load_failed' })],
                 }),
-                expect.objectContaining({ pluginId: healthyPluginId, status: 'active' }),
+                expect.objectContaining({
+                    pluginId: healthyPluginId,
+                    status: 'unavailable',
+                    diagnostics: [expect.objectContaining({ code: 'plugin_daemon_module_load_failed' })],
+                }),
             ]);
-            expect(activateHealthy).toHaveBeenCalledOnce();
+            expect(activateHealthy).not.toHaveBeenCalled();
             await registry.dispose();
         } finally {
             vi.useRealTimers();
@@ -193,9 +237,21 @@ describe('target activation publication', () => {
                 pluginDiagnosticsByPluginId: Object.freeze({}),
             } as unknown as ResolvedContributionRegistry,
             generation: 24,
+            occurrenceIdsByPluginId: new Map([[
+                pluginId,
+                'candidate:host-access-projection' as PluginRuntimeOccurrenceId,
+            ]]),
             resolveActivationSource: () => ({
                 kind: 'bundled',
                 moduleId: '@happier-dev/host-access-projection',
+                sourceAuthority: {
+                    kind: 'bundled_first_party',
+                    packagedRuntime: {
+                        kind: 'cli_version_root',
+                        versionRootId: 'cli-version-root-a',
+                    },
+                    resolvedRoot: '/virtual',
+                },
                 load: async () => ({
                     activate(api: PluginApi) {
                         api.actions.register('run', async () => ({ ok: true }));
@@ -211,6 +267,16 @@ describe('target activation publication', () => {
                 .toEqual(new Set(['observed']));
             expect(activated.envAllowedNamesByPluginId.get(pluginId))
                 .toEqual(new Set(['FORGE_REGION', 'FORGE_TOKEN']));
+            expect(activated.readPluginSourceCustody(pluginId)).toEqual({
+                kind: 'bundled_first_party',
+                packagedRuntime: {
+                    kind: 'cli_version_root',
+                    versionRootId: 'cli-version-root-a',
+                },
+            });
+            expect(activated.readPluginOccurrenceId(pluginId)).toBe(
+                'candidate:host-access-projection',
+            );
         } finally {
             await activated.dispose();
         }
@@ -756,23 +822,23 @@ describe('target activation publication', () => {
         expect(activated.pluginDiagnosticsByPluginId['acme.target.bundled']).toEqual([]);
         expect(activated.targetRegistrations).toEqual([
             expect.objectContaining({
-                pluginId: 'acme.target.bundled', generation: '7',
+                pluginId: 'acme.target.bundled', occurrenceId: activated.readPluginOccurrenceId('acme.target.bundled'),
                 registration: expect.objectContaining({ family: 'actions', localId: 'run' }),
             }),
             expect.objectContaining({
-                pluginId: 'acme.target.bundled', generation: '7',
+                pluginId: 'acme.target.bundled', occurrenceId: activated.readPluginOccurrenceId('acme.target.bundled'),
                 registration: expect.objectContaining({ family: 'hooks', localId: 'after-spawn' }),
             }),
             expect.objectContaining({
-                pluginId: 'acme.target.bundled', generation: '7',
+                pluginId: 'acme.target.bundled', occurrenceId: activated.readPluginOccurrenceId('acme.target.bundled'),
                 registration: expect.objectContaining({ family: 'mcp.discoverySources', localId: 'config' }),
             }),
             expect.objectContaining({
-                pluginId: 'acme.target.bundled', generation: '7',
+                pluginId: 'acme.target.bundled', occurrenceId: activated.readPluginOccurrenceId('acme.target.bundled'),
                 registration: expect.objectContaining({ family: 'scmBackends', localId: 'fixture' }),
             }),
             expect.objectContaining({
-                pluginId: 'acme.target.bundled', generation: '7',
+                pluginId: 'acme.target.bundled', occurrenceId: activated.readPluginOccurrenceId('acme.target.bundled'),
                 registration: expect.objectContaining({ family: 'notificationChannels', localId: 'configured' }),
             }),
         ]);
@@ -818,6 +884,9 @@ describe('target activation publication', () => {
         expect(activated.runtimeCapabilitiesByPluginId.get('acme.target.bundled')).toEqual(expect.any(Set));
         expect(activated.systemToolDefinitionsByPluginId.get('acme.target.bundled')).toEqual([
             expect.objectContaining({ id: 'fixture-cli' }),
+        ]);
+        expect(activated.eventDeclarationsByPluginId.get('acme.target.bundled')).toEqual([
+            expect.objectContaining({ id: 'review-ready-event', kind: 'event', title: 'Review ready' }),
         ]);
         await activated.dispose();
         expect(activated.targetRegistrations).toEqual([]);
@@ -874,7 +943,7 @@ describe('target activation publication', () => {
 
         expect(activated.targetActivationFacts).toMatchObject([{
             pluginId: 'acme.target.load-failure', pluginVersion: '2.0.0', source: 'development',
-            generation: '6', host: 'daemon', platform: process.platform, occurredAtMs: expect.any(Number),
+            occurrenceId: expect.any(String), host: 'daemon', platform: process.platform, occurredAtMs: expect.any(Number),
             status: 'unavailable',
             diagnostics: [expect.objectContaining({ code: 'plugin_source_missing' })],
         }]);
@@ -1004,7 +1073,7 @@ describe('target activation publication', () => {
         expect(activated.requestInterceptors).toEqual([
             expect.objectContaining({
                 pluginId: 'acme.target.request-policy',
-                generation: '11',
+                occurrenceId: activated.readPluginOccurrenceId('acme.target.request-policy'),
                 contribution: expect.objectContaining({ id: 'authorize-api' }),
             }),
         ]);
@@ -1134,7 +1203,7 @@ describe('target activation publication', () => {
 
         expect(activated.targetRegistrations).toEqual([
             expect.objectContaining({
-                pluginId: 'acme.target', generation: '7',
+                pluginId: 'acme.target', occurrenceId: activated.readPluginOccurrenceId('acme.target'),
                 registration: expect.objectContaining({ family: 'actions', localId: 'run' }),
             }),
         ]);
@@ -1387,7 +1456,7 @@ describe('target activation publication', () => {
         expect(retainedPeerCleanup).toHaveBeenCalledOnce();
     });
 
-    it('holds successor publication until the real changed-plugin runtime disposable settles', async () => {
+    it('publishes the fenced successor without waiting for changed-plugin runtime disposal', async () => {
         const pluginId = 'acme.changed';
         const contributes: ResolvedContributionRegistry = {
             agents: Object.freeze([]),
@@ -1422,6 +1491,7 @@ describe('target activation publication', () => {
 
         const executableRegistry = (
             dispose: () => Promise<void>,
+            occurrenceId: string,
         ): ResolvedExecutablePluginRuntimeRegistry => ({
             contributes,
             hookHandlersByHookId: new Map(),
@@ -1432,6 +1502,7 @@ describe('target activation publication', () => {
             activateContributionsOnDemand: async () => [],
             resolvePromptAssetBlocks: async () => [],
             createAgentInvocationServices: async () => createUnavailablePluginServices(),
+            readPluginOccurrenceId: () => occurrenceId as PluginRuntimeOccurrenceId,
             retireConsumers: () => {},
             retirePluginConsumers: async (pluginIds) => {
                 activated.retireBackgroundServices(pluginIds);
@@ -1442,9 +1513,12 @@ describe('target activation publication', () => {
             addRuntimeDisposable: activated.addRuntimeDisposable,
             dispose,
         });
-        const previous = executableRegistry(async () => await activated.dispose());
+        const previous = executableRegistry(
+            async () => await activated.dispose(),
+            'previous-occurrence',
+        );
         const replacementDispose = vi.fn(async () => undefined);
-        const replacement = executableRegistry(replacementDispose);
+        const replacement = executableRegistry(replacementDispose, 'replacement-occurrence');
         const controller = createPluginReloadController({
             resolveRuntimeRegistry: async () => previous,
         });
@@ -1463,8 +1537,9 @@ describe('target activation publication', () => {
         });
         await cleanupEntered;
 
-        expect(controller.getState().activeRegistry).toBe(previous);
-        expect(events).toEqual(['p-cleanup-start']);
+        expect(controller.getState().activeRegistry?.readPluginOccurrenceId?.(pluginId))
+            .toBe('replacement-occurrence');
+        expect(events).toEqual(['q-publish', 'p-cleanup-start']);
         expect(() => activated.addRuntimeDisposable(pluginId, Object.freeze({
             dispose: vi.fn(async () => undefined),
         }))).toThrow(/retired/i);
@@ -1473,9 +1548,9 @@ describe('target activation publication', () => {
         await adoption;
 
         expect(events).toEqual([
+            'q-publish',
             'p-cleanup-start',
             'p-cleanup-end',
-            'q-publish',
         ]);
         expect(controller.getState().activeRegistry).toBe(replacement);
         await controller.shutdown({ timeoutMs: 0 });

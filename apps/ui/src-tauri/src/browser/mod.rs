@@ -46,6 +46,9 @@ const DESKTOP_BROWSER_DIAGNOSTICS_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
 pub(crate) trait DesktopBrowserWebViewHandle {
     fn load_url(&self, url: &str) -> Result<(), String>;
+    fn navigation_state(&self) -> Result<(bool, bool), String>;
+    fn go_back(&self) -> Result<bool, String>;
+    fn go_forward(&self) -> Result<bool, String>;
     fn set_bounds(
         &self,
         rect: types::DesktopBrowserBoundsRect,
@@ -680,6 +683,12 @@ impl DesktopBrowserState {
         }
 
         let key = view_key(&request.browser_session_id, &request.view_id);
+        // Read the native history authority on demand, including same-document history changes.
+        let (can_go_back, can_go_forward) =
+            match with_native_handle(&key, |handle| handle.navigation_state()) {
+                Ok(state) => state,
+                Err(_) => return self.unavailable_page_info_result(),
+            };
         let inner = self.inner.lock().expect("browser state lock poisoned");
         let Some(view) = inner.views.get(&key) else {
             return self.unavailable_page_info_result();
@@ -694,6 +703,8 @@ impl DesktopBrowserState {
                 current_url: view.current_url.clone(),
                 title: view.title.clone(),
                 loading_state: view.loading_state,
+                can_go_back,
+                can_go_forward,
                 last_error: view.last_error.clone(),
                 last_rejected_navigation: view.last_rejected_navigation.clone(),
             },
@@ -764,17 +775,22 @@ impl DesktopBrowserState {
         // taken from the caller, so this can never become an arbitrary-eval surface. Unlike the eval
         // REPL it is NOT gated on `page_info_diagnostics` — reload/stop are page navigation controls
         // that must work regardless of whether in-page diagnostics are supported.
-        let script = match request.kind {
-            DesktopBrowserNavigationDispatchKind::Reload => "location.reload()",
-            DesktopBrowserNavigationDispatchKind::Stop => "window.stop()",
-        };
-
         let key = view_key(&request.browser_session_id, &request.view_id);
         if !self.view_exists(&key) {
             return self.unavailable_result();
         }
 
-        if with_native_handle(&key, |handle| handle.eval_script(script)).is_err() {
+        let dispatched = with_native_handle(&key, |handle| match request.kind {
+            DesktopBrowserNavigationDispatchKind::GoBack => handle.go_back(),
+            DesktopBrowserNavigationDispatchKind::GoForward => handle.go_forward(),
+            DesktopBrowserNavigationDispatchKind::Reload => {
+                handle.eval_script("location.reload()").map(|()| true)
+            }
+            DesktopBrowserNavigationDispatchKind::Stop => {
+                handle.eval_script("window.stop()").map(|()| true)
+            }
+        });
+        if !matches!(dispatched, Ok(true)) {
             return self.unavailable_result();
         }
 
@@ -1546,6 +1562,23 @@ impl WryDesktopBrowserView {
 }
 
 impl DesktopBrowserWebViewHandle for WryDesktopBrowserView {
+    fn navigation_state(&self) -> Result<(bool, bool), String> {
+        Ok((
+            self.webview.can_go_back().map_err(|error| error.to_string())?,
+            self.webview
+                .can_go_forward()
+                .map_err(|error| error.to_string())?,
+        ))
+    }
+
+    fn go_back(&self) -> Result<bool, String> {
+        self.webview.go_back().map_err(|error| error.to_string())
+    }
+
+    fn go_forward(&self) -> Result<bool, String> {
+        self.webview.go_forward().map_err(|error| error.to_string())
+    }
+
     fn load_url(&self, url: &str) -> Result<(), String> {
         self.webview
             .load_url(url)

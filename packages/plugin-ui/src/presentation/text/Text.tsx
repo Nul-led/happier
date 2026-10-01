@@ -12,7 +12,11 @@ import {
   type TextStyle,
 } from 'react-native';
 
-import { useOptionalHappierUiAccessibility, useOptionalHappierUiTheme } from '../../environment/context.js';
+import {
+  useOptionalHappierUiAccessibility,
+  useOptionalHappierUiTheme,
+  useOptionalHappierUiTypography,
+} from '../../environment/context.js';
 import type { HappierPortableStyle, HappierStyleProp, HappierTextHostProps } from '../portableTypes.js';
 import {
   HAPPIER_TONE_COLOR_TOKEN,
@@ -20,6 +24,9 @@ import {
   type HappierTone,
 } from '../semantics.js';
 import { scaleTextStyleMetrics, type TextStyleEntryTransform } from './textStyleScale.js';
+import { readHappierTypeRoleTabular, resolveHappierTypeRoleStyle } from './typeRole.js';
+
+const TABULAR_NUMBERS_STYLE: TextStyle = { fontVariant: ['tabular-nums'] };
 import { resolveHappierTextScaleOwnership } from './textScaleOwnership.js';
 
 /**
@@ -145,6 +152,11 @@ export type HappierTextProps = HappierTextHostProps & Readonly<{
   baseStyle?: HappierStyleProp;
   /** Web focus-order override forwarded to the underlying host element. */
   tabIndex?: 0 | -1;
+  /**
+   * Draw digits at a fixed advance so changing counts, ages and times never
+   * jitter. A variant whose host role is tabular gets it without asking.
+   */
+  tabularNumbers?: boolean;
 }>;
 
 export const HappierText = memo(forwardRef<unknown, HappierTextProps>(function HappierText(
@@ -157,11 +169,13 @@ export const HappierText = memo(forwardRef<unknown, HappierTextProps>(function H
     baseStyle,
     allowFontScaling,
     style,
+    tabularNumbers,
     ...rest
   },
   ref,
 ) {
   const theme = useOptionalHappierUiTheme();
+  const hostTypography = useOptionalHappierUiTypography();
   const presentation = useHappierTextPresentation({ selectable, textScale });
   const resolvedScale = presentation.metricScale;
 
@@ -175,22 +189,24 @@ export const HappierText = memo(forwardRef<unknown, HappierTextProps>(function H
       );
     }
 
-    const typography = variant ? theme.typography[variant] : undefined;
     const color = tone ? theme.colors[HAPPIER_TONE_COLOR_TOKEN[tone]] : undefined;
+    const code = variant === 'code' ? theme.typography.code : undefined;
     return {
-      ...(typography
-        ? {
-          fontSize: typography.fontSize,
-          lineHeight: typography.lineHeight,
-          ...('fontWeight' in typography ? { fontWeight: typography.fontWeight as TextStyle['fontWeight'] } : {}),
-          ...('fontFamily' in typography && typography.fontFamily
-            ? { fontFamily: typography.fontFamily }
-            : {}),
-        }
-        : {}),
+      ...(variant === undefined
+        ? {}
+        : code
+          ? {
+            fontSize: code.fontSize,
+            lineHeight: code.lineHeight,
+            ...(code.fontFamily ? { fontFamily: code.fontFamily } : {}),
+          }
+          : resolveHappierTypeRoleStyle(variant as Exclude<HappierTextVariant, 'code'>, theme, hostTypography)),
       ...(color ? { color } : {}),
     };
-  }, [theme, variant, tone]);
+  }, [theme, hostTypography, variant, tone]);
+
+  const tabular = tabularNumbers === true
+    || (variant !== undefined && variant !== 'code' && readHappierTypeRoleTabular(variant, hostTypography));
 
   const scaleOptions = useMemo(
     () => (scaleStyleEntry ? { transformEntry: scaleStyleEntry } : {}),
@@ -202,6 +218,8 @@ export const HappierText = memo(forwardRef<unknown, HappierTextProps>(function H
     if (baseStyle) entries.push(baseStyle);
     if (semanticStyle) entries.push(scaleTextStyleMetrics(semanticStyle, resolvedScale, scaleOptions));
 
+    if (tabular) entries.push(TABULAR_NUMBERS_STYLE);
+
     const scaled = scaleTextStyleMetrics(style, resolvedScale, scaleOptions);
     // Flattened rather than nested so the caller's own entries keep the exact
     // cascade order Happier core has always produced.
@@ -209,7 +227,7 @@ export const HappierText = memo(forwardRef<unknown, HappierTextProps>(function H
     else if (scaled) entries.push(scaled as StyleProp<TextStyle>);
 
     return entries;
-  }, [baseStyle, semanticStyle, style, resolvedScale, scaleOptions]);
+  }, [baseStyle, semanticStyle, tabular, style, resolvedScale, scaleOptions]);
 
   return (
     <ReactNativeText

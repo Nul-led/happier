@@ -294,33 +294,38 @@ test('dev reaches Expo before starting remote development targets', async () => 
   );
 });
 
-test('remote server placement does not wait for the local daemon before starting its target', async () => {
+test('remote server placement defers daemon admission to the lifecycle owner without gating its target', async () => {
   const source = await readFile(join(scriptsDir, 'dev.mjs'), 'utf-8');
   const remoteServerDependencyIndex = source.indexOf(
     'const localDaemonWaitsForRemoteServer = servicePlans.targets.some((plan) => plan.services.server);',
   );
-  const backgroundDaemonIndex = source.indexOf(
-    'if (localDaemonWaitsForRemoteServer) {',
+  const deferredDaemonIndex = source.indexOf(
+    'if (localDaemonWaitsForRemoteServer && stackMode && runtimeStatePath) {',
   );
+  const recoveryReadinessIndex = source.indexOf('isRecoveryReady: async () => {');
   const devTargetsStartIndex = source.indexOf(
     'devTargetsController = startStackDevTargetsInBackground(',
   );
 
   assert.notEqual(remoteServerDependencyIndex, -1, 'expected the remote-server dependency decision');
-  assert.notEqual(backgroundDaemonIndex, -1, 'expected remote-server daemon startup to be non-blocking');
+  assert.notEqual(deferredDaemonIndex, -1, 'expected daemon admission to be deferred for a remote server');
+  assert.notEqual(recoveryReadinessIndex, -1, 'expected the daemon lifecycle owner to gate recovery on readiness');
   assert.notEqual(devTargetsStartIndex, -1, 'expected the canonical target supervisor startup');
-  const remoteServerBranchEnd = source.indexOf('} else {', backgroundDaemonIndex);
+  const remoteServerBranchEnd = source.indexOf('} else {', deferredDaemonIndex);
   assert.notEqual(remoteServerBranchEnd, -1, 'expected the local-server branch after remote-server handling');
-  const remoteServerBranch = source.slice(backgroundDaemonIndex, remoteServerBranchEnd);
-  assert.match(
-    remoteServerBranch,
-    /void daemonStartPromise\.catch/u,
-    'the VM daemon may start concurrently, but it must not gate the target-hosted server that it needs',
-  );
+  const remoteServerBranch = source.slice(deferredDaemonIndex, remoteServerBranchEnd);
   assert.doesNotMatch(
     remoteServerBranch,
-    /await daemonStartPromise/u,
-    'waiting for the daemon here recreates the daemon→server→target startup cycle',
+    /startDevDaemon/u,
+    'daemon admission must not be attempted before its target-hosted server is ready',
+  );
+  assert.ok(
+    deferredDaemonIndex < devTargetsStartIndex,
+    'deferring daemon admission must allow startup to proceed to the target supervisor',
+  );
+  assert.ok(
+    recoveryReadinessIndex < devTargetsStartIndex,
+    'the lifecycle readiness gate must be installed before the target supervisor starts',
   );
 });
 
@@ -436,6 +441,26 @@ test('dev publishes a configured remote Expo service in its initial runtime decl
   );
 });
 
+test('dev gives runtime publication the canonical repository root', async () => {
+  const source = await readFile(join(scriptsDir, 'dev.mjs'), 'utf-8');
+
+  assert.match(
+    source,
+    /const repoDir = getRepoDir\(rootDir, baseEnv\);/u,
+    'the Stack package root must be normalized through the canonical repository resolver',
+  );
+  assert.match(
+    source,
+    /createRepositoryRuntimePublicationController\(\{[\s\S]*?rootDir: repoDir,/u,
+    'the runtime publisher must receive the repository root rather than apps/stack',
+  );
+  assert.match(
+    source,
+    /createRuntimeSnapshotPublicationReloadDescriptors\(\{ repoDir \}\)/u,
+    'runtime reload descriptors must resolve CLI inputs from the repository root',
+  );
+});
+
 test('one full CLI admission owns every shared workspace build exactly once', async (t) => {
   const cliPackageJson = JSON.parse(await readFile(join(repoRoot, 'apps', 'cli', 'package.json'), 'utf8'));
   assert.equal(
@@ -455,7 +480,7 @@ test('one full CLI admission owns every shared workspace build exactly once', as
   );
   const { cliDir, eventsPath } = await createCliBuildFixture(t);
 
-  await ensureCliBuilt(cliDir, { buildCli: true, quiet: true, env: process.env });
+  await ensureCliBuilt(cliDir, { buildCli: true, quiet: true, env: process.env, platform: 'darwin' });
 
   const events = await readFile(eventsPath, 'utf8');
   for (const workspaceName of sharedWorkspaceNames) {
@@ -473,7 +498,7 @@ test('one successful atomic CLI build is admitted as usable when later edits sup
   const { cliDir, eventsPath } = await createCliBuildFixture(t);
   applyEnv(t, { MUTATE_CLI_SOURCE_DURING_BUILD: '1' });
 
-  const result = await ensureCliBuilt(cliDir, { buildCli: true, quiet: true, env: process.env });
+  const result = await ensureCliBuilt(cliDir, { buildCli: true, quiet: true, env: process.env, platform: 'darwin' });
   const events = await readFile(eventsPath, 'utf8');
 
   assert.equal(countEvent(events, 'cli:build:prepared'), 1, `build events:\n${events}`);
@@ -487,7 +512,7 @@ test('one successful atomic CLI build is admitted as usable when later edits sup
 test('adopting an existing CLI dist still repairs every missing shared workspace once', async (t) => {
   const { cliDir, eventsPath } = await createCliBuildFixture(t, { existingCliDist: true });
 
-  const result = await ensureCliBuilt(cliDir, { buildCli: true, quiet: true, env: process.env });
+  const result = await ensureCliBuilt(cliDir, { buildCli: true, quiet: true, env: process.env, platform: 'darwin' });
 
   assert.deepEqual(result, { built: false, current: false, reason: 'mode_never' });
   const events = await readFile(eventsPath, 'utf8');

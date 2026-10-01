@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { resolveWorkspaceBundlesFromPackageJson } from '@happier-dev/cli-common/workspaces';
 import { isDevRuntimeReloadIgnoredPath } from '../dev/watchSignature.mjs';
 import { forgetCachedFileDigest, readCachedFileDigest } from '../fs/cached_file_digest.mjs';
+import { resolveWorkspaceBuildInputWatchPaths } from '../fs/workspaceBuildInputs.mjs';
 
 export function collectHappyCliRuntimePackageDirs({
   cliDir,
@@ -62,12 +63,7 @@ export function resolveHappyCliRuntimeInputGroups({
       // descriptors are merged; a CLI-only package remains daemon-only.
       id: `shared:${id}`,
       target: 'daemon',
-      paths: [
-        join(dir, 'src'),
-        join(dir, 'package.json'),
-        join(dir, 'tsconfig.json'),
-        join(dir, 'tsconfig.build.json'),
-      ],
+      paths: resolveWorkspaceBuildInputWatchPaths(dir, { existsSyncImpl }),
     })),
   ];
 

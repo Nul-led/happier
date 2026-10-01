@@ -15,6 +15,23 @@ describe('Anthropic Provider catalog', () => {
     expect(normalizeAnthropicModelDisplayName(undefined, 'claude-future-6')).toBe('claude-future-6');
   });
 
+  it('publishes the current Fable and Opus models with their documented controls', () => {
+    const fable = ANTHROPIC_STATIC_MODELS.find(({ id }) => id === 'claude-fable-5-1');
+    const opus = ANTHROPIC_STATIC_MODELS.find(({ id }) => id === 'claude-opus-5-5');
+    expect(fable).toMatchObject({ name: 'Fable 5.1', contextWindowTokens: 1_000_000 });
+    expect(opus).toMatchObject({ name: 'Opus 5.5', contextWindowTokens: 1_000_000 });
+    expect(fable?.modelOptions).toEqual(buildAnthropicModelOptions({
+      supportedLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaultEffort: 'high',
+    }));
+    expect(opus?.modelOptions).toEqual(buildAnthropicModelOptions({
+      supportedLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaultEffort: 'medium',
+    }));
+    expect(isAnthropic1mAlwaysOnModelId('claude-fable-5-1')).toBe(true);
+    expect(isAnthropic1mAlwaysOnModelId('claude-opus-5-5')).toBe(true);
+  });
+
   it('owns the static model options consumed by both Provider discovery and the Claude Agent', () => {
     expect(ANTHROPIC_STATIC_MODELS.find(({ id }) => id === 'claude-opus-5')?.modelOptions)
       .toEqual(buildAnthropicModelOptions({

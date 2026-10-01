@@ -13,6 +13,8 @@ const FIELD_CAPABILITY_PATH = {
   'identity.runtimeDescriptor': ['identity', 'runtimeDescriptor'],
   'identity.providerSessionId': ['identity', 'providerSessionId'],
   'intent.model': ['intent', 'model'],
+  'intent.role': ['intent', 'role'],
+  'intent.sessionRoles': ['intent', 'sessionRoles'],
   'intent.permissionMode': ['intent', 'permissionMode'],
   'intent.acpSessionMode': ['intent', 'acpSessionMode'],
   'intent.acpConfigOption': ['intent', 'acpConfigOption'],
@@ -28,6 +30,8 @@ const FIELD_CAPABILITY_PATH = {
 } as const satisfies Record<SessionStateFieldId, readonly [SessionStateFieldFamily, string]>;
 
 const DEFERRED_PROVIDER_SYNC_FIELDS = new Set<SessionStateFieldId>([
+  'intent.role',
+  'intent.sessionRoles',
   'view.readState',
   'view.attention',
 ]);

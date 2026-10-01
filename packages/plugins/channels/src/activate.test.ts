@@ -38,6 +38,7 @@ import {
   CHANNEL_STATE_FIELD,
   CHANNEL_STATE_FIXED_ROW_ID,
   CHANNEL_STATE_RECORD_KIND,
+  type PersistedConversationProviderContributionSelection,
 } from './collections.js';
 import {
   CHANNELS_PROVIDER_POINT_REF,
@@ -226,13 +227,17 @@ function targetedSocketProviderSelection(
   return Object.freeze({
     target: {
       pluginId: CHANNELS_PROVIDER_POINT_REF.targetPluginId,
-      immutableGenerationId: snapshot.generation,
+      sourceCustody: snapshot.sourceCustody,
     },
     point: {
       pointId: CHANNELS_PROVIDER_POINT_REF.id,
       protocol: CHANNELS_PROVIDER_POINT_REF.protocol,
     },
-    contributor: contribution.contributor,
+    contributor: {
+      pluginId: contribution.contributor.pluginId,
+      contributionId: contribution.contributor.contributionId,
+      sourceCustody: contribution.contributor.sourceCustody,
+    },
   });
 }
 
@@ -300,7 +305,6 @@ function reconciliationConnectionAuthority(
     providerPluginId: PROVIDER_RECONCILIATION_TEST_MANIFEST.id,
     providerContributionSelection: {
       contributionId: 'discord-test-provider',
-      immutableGenerationId: 'discord-test-generation',
     },
     providerSetupInput: { fixture: 'discord-reconciliation' },
     credentialRef: null,
@@ -336,14 +340,13 @@ function socketConnectionForProvider(input: Readonly<{
   connectionId: string;
   providerPluginId: string;
   materializationId?: string;
-  providerContributionSelection?: PluginTargetedContributionSelectionV1['contributor'];
+  providerContributionSelection?: PersistedConversationProviderContributionSelection;
 }>) {
   const authority = {
     ...reconciliationConnectionAuthority(input.connectionId),
     providerPluginId: input.providerPluginId,
     providerContributionSelection: input.providerContributionSelection ?? {
       contributionId: SOCKET_PROVIDER_CONTRIBUTION_ID,
-      immutableGenerationId: 'socket-test-generation',
     },
     providerSetupInput: { fixture: 'socket-reconciliation' },
     transportOrigin: {
@@ -1158,7 +1161,6 @@ describe('Channels core activation', () => {
       providerPluginId: 'example.channel.provider',
       providerContributionSelection: {
         contributionId: 'automation-result-provider',
-        immutableGenerationId: 'automation-result-generation',
       },
       providerSetupInput: { source: 'automation-result' },
       credentialRef: null,
@@ -3264,7 +3266,6 @@ describe('Channels core activation', () => {
       providerPluginId: 'happier.channel.discord',
       providerContributionSelection: {
         contributionId: 'discord-reconciliation-provider',
-        immutableGenerationId: 'discord-reconciliation-generation',
       },
       providerSetupInput: { source: 'reconciliation' },
       credentialRef: {
@@ -3384,7 +3385,8 @@ describe('Channels core activation', () => {
           id: 'channel-background',
           qualifiedId: 'happier.channel.discord/background/channel-background',
         },
-        immutableGenerationId: 'channels-activate-fixture-generation',
+        occurrenceId: 'channels-activate-fixture-occurrence',
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-activate-fixture-root' },
         materialization: exactConnection.payload.transportOrigin.materializationRef,
       },
       signal: new AbortController().signal,
@@ -3580,7 +3582,6 @@ describe('Channels core activation', () => {
       providerPluginId: PROVIDER_RECONCILIATION_TEST_MANIFEST.id,
       providerContributionSelection: {
         contributionId: 'discord-test-provider',
-        immutableGenerationId: 'discord-test-generation',
       },
       providerSetupInput: { source: 'reconciliation' },
       credentialRef: null,

@@ -2,19 +2,19 @@ import {
     PluginMachineMaterializationRefV1Schema,
 } from '@happier-dev/protocol';
 import {
-    PluginUiImmutableGenerationIdV1Schema,
-} from '@happier-dev/protocol/plugins/ui';
-import type {
-    PluginMachineMaterializationRefV1,
+    PluginSourceCustodyV1Schema,
 } from '@happier-dev/protocol';
+import type { PluginMachineMaterializationRefV1 } from '@happier-dev/protocol';
 import type { ActionPluginCaller } from '@happier-dev/protocol/actions';
 
 type PluginActionCallerSeed = Readonly<{
     plugin: Readonly<{ id: string }>;
     /** Immediate host-stamped contribution. It is never accepted from plugin input. */
     contribution?: Readonly<{ id: string }>;
-    /** Exact admitted plugin bytes, supplied by the runtime owner only. */
-    immutableGenerationId?: string;
+    /** Exact process-local occurrence, supplied by the runtime owner only. */
+    occurrenceId?: string;
+    /** Durable source custody, supplied by the runtime owner only. */
+    sourceCustody?: unknown;
     /** The resolved runtime registry supplies this live lookup at dispatch. */
     resolveCurrentPluginMaterializationRef?(): PluginMachineMaterializationRefV1 | null;
 }>;
@@ -29,15 +29,15 @@ export type RevalidatePluginActionCallerMaterialization = (
 ) => boolean | Promise<boolean>;
 
 /**
- * The runtime owner compares an already host-stamped immutable generation
- * against its current admitted generation. It never returns a replacement.
+ * The runtime owner compares an already host-stamped immutable occurrenceId
+ * against its current admitted occurrenceId. It never returns a replacement.
  */
-export type RevalidatePluginActionCallerImmutableGeneration = (
-    caller: Readonly<{ pluginId: string; immutableGenerationId: string }>,
+export type RevalidatePluginActionCallerOccurrence = (
+    caller: Readonly<{ pluginId: string; occurrenceId: string }>,
 ) => boolean | Promise<boolean>;
 
 export type PluginActionCallerCurrentness = Readonly<{
-    kind: 'current' | 'materializationUnavailable' | 'generationUnavailable';
+    kind: 'current' | 'materializationUnavailable' | 'occurrenceUnavailable';
 }>;
 
 /**
@@ -54,35 +54,37 @@ export function createPluginActionCallerCurrentnessCheck(params: Readonly<{
     caller: Readonly<{
         pluginId: string;
         /** Absent only for a legacy in-process caller the host never stamped. */
-        immutableGenerationId?: string;
-        materialization: PluginMachineMaterializationRefV1;
+        occurrenceId?: string;
+        materialization?: PluginMachineMaterializationRefV1;
     }>;
     revalidateMaterialization: RevalidatePluginActionCallerMaterialization;
-    revalidateImmutableGeneration?: RevalidatePluginActionCallerImmutableGeneration;
+    revalidateOccurrence?: RevalidatePluginActionCallerOccurrence;
 }>): () => Promise<PluginActionCallerCurrentness> {
     const { caller } = params;
     return async () => {
-        try {
-            if (!await params.revalidateMaterialization(caller.materialization)) {
+        if (caller.materialization !== undefined) {
+            try {
+                if (!await params.revalidateMaterialization(caller.materialization)) {
+                    return { kind: 'materializationUnavailable' };
+                }
+            } catch {
                 return { kind: 'materializationUnavailable' };
             }
-        } catch {
-            return { kind: 'materializationUnavailable' };
         }
-        const immutableGenerationId = caller.immutableGenerationId;
-        if (immutableGenerationId === undefined) return { kind: 'current' };
-        if (!params.revalidateImmutableGeneration) {
-            return { kind: 'generationUnavailable' };
+        const occurrenceId = caller.occurrenceId;
+        if (occurrenceId === undefined) return { kind: 'current' };
+        if (!params.revalidateOccurrence) {
+            return { kind: 'occurrenceUnavailable' };
         }
         try {
-            return await params.revalidateImmutableGeneration({
+            return await params.revalidateOccurrence({
                 pluginId: caller.pluginId,
-                immutableGenerationId,
+                occurrenceId,
             })
                 ? { kind: 'current' }
-                : { kind: 'generationUnavailable' };
+                : { kind: 'occurrenceUnavailable' };
         } catch {
-            return { kind: 'generationUnavailable' };
+            return { kind: 'occurrenceUnavailable' };
         }
     };
 }
@@ -101,23 +103,28 @@ export function resolvePluginActionCaller(
     } catch {
         return null;
     }
-    const materialization = PluginMachineMaterializationRefV1Schema.safeParse(
-        rawMaterialization,
-    );
-    if (!materialization.success || materialization.data.pluginId !== seed.plugin.id) {
+    const materialization = rawMaterialization == null
+        ? undefined
+        : PluginMachineMaterializationRefV1Schema.safeParse(rawMaterialization);
+    if (materialization !== undefined && (
+        !materialization.success || materialization.data.pluginId !== seed.plugin.id
+    )) {
         return null;
     }
-    const immutableGeneration = seed.immutableGenerationId === undefined
+    const occurrenceId = typeof seed.occurrenceId === 'string' && seed.occurrenceId.trim().length > 0
+        ? seed.occurrenceId.trim()
+        : undefined;
+    if (seed.occurrenceId !== undefined && occurrenceId === undefined) return null;
+    const sourceCustody = seed.sourceCustody === undefined
         ? undefined
-        : PluginUiImmutableGenerationIdV1Schema.safeParse(seed.immutableGenerationId);
-    if (immutableGeneration !== undefined && !immutableGeneration.success) return null;
+        : PluginSourceCustodyV1Schema.safeParse(seed.sourceCustody);
+    if (sourceCustody !== undefined && !sourceCustody.success) return null;
     return Object.freeze({
         kind: 'plugin' as const,
         pluginId: seed.plugin.id,
         ...(seed.contribution ? { contributionLocalId: seed.contribution.id } : {}),
-        ...(immutableGeneration === undefined ? {} : {
-            immutableGenerationId: immutableGeneration.data,
-        }),
-        materialization: materialization.data,
+        ...(occurrenceId === undefined ? {} : { occurrenceId }),
+        ...(sourceCustody === undefined ? {} : { sourceCustody: sourceCustody.data }),
+        ...(materialization?.success === true ? { materialization: materialization.data } : {}),
     });
 }

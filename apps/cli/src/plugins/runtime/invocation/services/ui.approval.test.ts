@@ -39,7 +39,7 @@ describe('plugin invocation transient approval', () => {
         const interactions = createPluginInteractionsService({
             currentSession: null,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             createOperationId: () => 'fallback-approval',
         });
 
@@ -71,7 +71,7 @@ describe('plugin invocation transient approval', () => {
         const interactions = createPluginInteractionsService({
             currentSession: { interactions: new TestInteractions(handle) },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         await expect(interactions.requestApproval(request)).resolves.toEqual({
@@ -88,7 +88,7 @@ describe('plugin invocation transient approval', () => {
         const interactions = createPluginInteractionsService({
             currentSession: { interactions: new TestInteractions(async () => { throw capacityError; }) },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         await expect(interactions.requestApproval({
@@ -106,7 +106,7 @@ describe('plugin invocation transient approval', () => {
         })).rejects.toBe(capacityError);
     });
 
-    it('settles requester abort and generation retirement with distinct exact terminals', async () => {
+    it('settles requester abort and occurrence retirement with distinct exact terminals', async () => {
         const request = {
             kind: 'approval' as const,
             title: 'Run Bash?',
@@ -123,7 +123,7 @@ describe('plugin invocation transient approval', () => {
                 }),
             },
             signal: invocationController.signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             createOperationId: () => 'fallback-aborted',
         }).requestApproval(request);
         invocationController.abort();
@@ -136,13 +136,13 @@ describe('plugin invocation transient approval', () => {
         const retired = createPluginInteractionsService({
             currentSession: { interactions: new TestInteractions(async () => { throw new Error('must not invoke'); }) },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => false,
+            isOccurrenceCurrent: () => false,
             createOperationId: () => 'fallback-retired',
         });
         await expect(retired.requestApproval(request)).resolves.toEqual({
             requestId: 'fallback-retired',
             kind: 'approval',
-            status: 'generationRetired',
+            status: 'occurrenceRetired',
         });
     });
 });

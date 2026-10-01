@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runNodeCapture } from './testkit/core/run_node_capture.mjs';
 import { coerceHappyMonorepoRootFromPath } from './utils/paths/paths.mjs';
@@ -23,6 +23,7 @@ test('happier wrapper refreshes bundled workspace packages in preflight mode bef
     const cliMarkerPath = join(fixtureDir, 'cli.txt');
     const syncStubPath = join(fixtureDir, 'syncBundledWorkspacePackages.mjs');
     const healthStubPath = join(fixtureDir, 'cliCommonWorkspaces.mjs');
+    const loadCliCommonWorkspacesStubPath = join(fixtureDir, 'loadCliCommonWorkspacesModule.mjs');
     const resolveSyncModulePathStubPath = join(fixtureDir, 'resolveBundledWorkspaceSyncModulePath.mjs');
     const cliStubPath = join(fixtureDir, 'happier.mjs');
     const loaderPath = join(fixtureDir, 'loader.mjs');
@@ -45,6 +46,16 @@ test('happier wrapper refreshes bundled workspace packages in preflight mode bef
         'export function hasBundledWorkspacePackagesHealthy() {',
         '  callCount += 1;',
         '  return callCount > 1;',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    writeFileSync(
+      loadCliCommonWorkspacesStubPath,
+      [
+        'export async function loadCliCommonWorkspacesModule() {',
+        `  return import(${JSON.stringify(pathToFileURL(healthStubPath).href)});`,
         '}',
         '',
       ].join('\n'),
@@ -75,6 +86,9 @@ test('happier wrapper refreshes bundled workspace packages in preflight mode bef
         "import { pathToFileURL } from 'node:url';",
         '',
         'export async function resolve(specifier, context, defaultResolve) {',
+        "  if (specifier.endsWith('/scripts/workspaces/loadCliCommonWorkspacesModule.mjs')) {",
+        `    return { url: pathToFileURL(${JSON.stringify(loadCliCommonWorkspacesStubPath)}).href, shortCircuit: true };`,
+        '  }',
         "  if (specifier.endsWith('/packages/cli-common/dist/workspaces/index.js')) {",
         `    return { url: pathToFileURL(${JSON.stringify(healthStubPath)}).href, shortCircuit: true };`,
         '  }',

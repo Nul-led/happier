@@ -14,34 +14,28 @@ import type { PluginRegistryCommitRecord } from '@/plugins/store/registry/commit
 import type { PluginGenerationCustodyRetirementRemoteDependencies } from '@/plugins/store/registry/generationCustodyRetirement';
 import {
   prepareOwnedImmutablePluginGeneration,
-  prepareOwnedPluginDevelopmentGeneration,
-  prepareOwnedPluginDevelopmentGenerationFromEdit,
   readCurrentCommittedPluginGenerations,
-  type CurrentCommittedPluginGeneration,
+  readPreparedImmutablePluginGeneration,
   type OwnedPreparedImmutablePluginGeneration,
 } from '@/plugins/store/registry/generationStore';
-import { PLUGIN_MANIFEST_RELATIVE_PATH, resolvePluginStorePaths } from '@/plugins/store/paths';
+import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import {
   createLocalPathPluginDistributionIdentity,
   createPluginTrustRecord,
   isPluginTrustRecordAuthorized,
   pluginDistributionIdentitiesEqual,
-  type PluginDistributionIdentity,
 } from '@/plugins/store/install/trustIdentity';
-import { copyFile } from 'node:fs/promises';
-import { basename, join, relative } from 'node:path';
+import { join, relative } from 'node:path';
 import type { PluginStateRecord } from '@/plugins/store/state';
-import { serializeCanonicalPluginManifest } from '@/plugins/manifest/serialize';
-import type { CanonicalPluginManifest } from '@/plugins/manifest/types';
-import type { PreparedPluginActivationGraph } from '@/plugins/runtime/types';
 import { projectPluginFailureText } from '@/plugins/runtime/lifecycle/utils';
 import { readPluginManifest } from '@/plugins/manifest/read';
-import { pluginSourceProvenanceForKind } from '@/plugins/manifest/sourceProvenance';
 import {
-  evaluateOwnedPluginAuthorGeneration,
+  evaluateManifestPluginDevelopmentCandidate,
+  evaluatePluginDevelopmentCandidate,
   projectEvaluatedPluginDevelopmentSource,
   resolvePluginAuthoringSource,
 } from '@/plugins/authoring/sourceModule';
+import { bindPluginRuntimeSourceAuthority } from '@/plugins/runtime/sourceAuthority';
 import { isPluginDevelopmentDependencyInputPath } from '@/plugins/authoring/developmentDependencyInputs';
 import {
   runPluginUiArtifactBuild,
@@ -55,24 +49,27 @@ import type {
   PluginDataRemovalStep,
   PluginChangeRequest,
   PreparedDaemonPluginChange,
+  PreparedDaemonPluginChangeCandidate,
+  PreparedPluginDevelopmentCandidate,
 } from './changeContract';
 import { DaemonPluginChangePreparationError } from './changeService';
 import { derivePluginInstallReviewPrincipal } from './installReviewPrincipal';
 import { projectPluginInstallationReview } from './installationReview';
 import { projectPluginTransactionChangeResult } from './transactionChangeResult';
 import {
-  materializePluginDevelopmentCandidate,
+  preparePluginDevelopmentRoot,
   type RunManagedPluginPnpmBoundary,
 } from './developmentCandidateMaterializer';
-import { createSelectedPluginOptionalAccess } from './optionalAccessSelections';
+import { updateSelectedPluginOptionalAccess } from './optionalAccessSelections';
 import {
-  hasReviewSensitivePluginUpdate,
-  preserveValidPluginOptionalSelections,
+  evaluatePluginAuthorityReview,
+  listInitialPluginAuthorityExpansions,
+  type PluginAuthorityReviewEvaluation,
 } from './updateReviewPolicy';
 
-function hasDaemonExecution(manifest: CanonicalPluginManifest): boolean {
-  return Boolean(manifest.entrypoints?.daemon || manifest.entrypoints?.development);
-}
+export type DaemonPathPluginChangePreparationContext = Readonly<{
+  installedUpdate: Readonly<{ pluginId: string }>;
+}>;
 
 type RunPluginUiArtifactBuildBoundary = (params: Readonly<{
   projectRoot: string;
@@ -98,36 +95,6 @@ async function buildOwnedPluginDevelopmentUiArtifacts(params: Readonly<{
   );
 }
 
-/**
- * The path change preparer is the only caller that decides whether a captured
- * development batch needs a fresh dependency closure. Both code-defined and
- * manifest-defined development sources delegate the actual isolated install
- * to this same candidate materializer.
- */
-async function materializeDaemonOwnedPluginDevelopmentCandidate(params: Readonly<{
-  happyHomeDir: string;
-  sourceRootPath: string;
-  sdkRegistryOrigin?: string;
-  destinationRootPath?: string;
-  runManagedPluginPnpm?: RunManagedPluginPnpmBoundary;
-}>): Promise<Awaited<ReturnType<typeof materializePluginDevelopmentCandidate>>> {
-  try {
-    return await materializePluginDevelopmentCandidate({
-      happyHomeDir: params.happyHomeDir,
-      sourceRootPath: params.sourceRootPath,
-      ...(params.sdkRegistryOrigin ? { sdkRegistryOrigin: params.sdkRegistryOrigin } : {}),
-      ...(params.destinationRootPath ? { destinationRootPath: params.destinationRootPath } : {}),
-    }, {
-      ...(params.runManagedPluginPnpm ? { runManagedPluginPnpm: params.runManagedPluginPnpm } : {}),
-    });
-  } catch (error) {
-    throw new DaemonPluginChangePreparationError(
-      'plugin_dev_dependency_preparation_failed',
-      projectPluginFailureText(error),
-    );
-  }
-}
-
 function isSourceOnlyDevelopmentBatch(params: Readonly<{
   expectedPluginId: string | null | undefined;
   changedPaths: readonly string[] | undefined;
@@ -141,85 +108,31 @@ function isSourceOnlyDevelopmentBatch(params: Readonly<{
     && params.changedPaths.every((path) => !isPluginDevelopmentDependencyInputPath(path));
 }
 
-async function readReusableCurrentDevelopmentGeneration(params: Readonly<{
-  happyHomeDir: string;
-  paths: ReturnType<typeof resolvePluginStorePaths>;
-  pluginId: string;
-  distribution: PluginDistributionIdentity;
-}>): Promise<CurrentCommittedPluginGeneration | undefined> {
-  const [catalog, committed] = await Promise.all([
-    createPluginRegistryStateStore({ happyHomeDir: params.happyHomeDir }).read(),
-    readCurrentCommittedPluginGenerations(params.paths),
-  ]);
-  const catalogRecord = catalog.plugins[params.pluginId];
-  const generation = committed?.generations.get(params.pluginId);
-  if (
-    catalogRecord?.source.kind !== 'path'
-    || catalogRecord.source.devWatch !== true
-    || !generation?.installation
-    || !pluginDistributionIdentitiesEqual(
-      generation.installation.source.distribution,
-      params.distribution,
-    )
-  ) {
-    return undefined;
-  }
-  return generation;
-}
-
-type ResolvedDaemonDevelopmentSource = ResolvedLocalPathPluginSourceSuccess & Readonly<{
+type ResolvedDaemonLocalPathSource = ResolvedLocalPathPluginSourceSuccess & Readonly<{
   sourceLocator: string;
   manifestRelativePath: string;
-  sourceKind: 'singleFile' | 'packageRoot';
-  /**
-   * Exact current generation whose bytes a source-only candidate cloned. This
-   * travels to the registry transaction so a same-plugin successor cannot be
-   * overwritten by a candidate derived from an older source snapshot.
-   */
-  developmentBaseGenerationId?: string;
-  preparedActivationGraph?: PreparedPluginActivationGraph;
-  preparedGeneration?: OwnedPreparedImmutablePluginGeneration;
 }>;
 
-const SOURCE_ROOT_APPROVED = Symbol('pluginDevelopmentSourceRootApproved');
+const PROJECT_TRUST_APPROVED = Symbol('pluginDevelopmentProjectTrustApproved');
 type InternalPluginChangeRequest = PluginChangeRequest & Readonly<{
-  [SOURCE_ROOT_APPROVED]?: Readonly<{
+  [PROJECT_TRUST_APPROVED]?: Readonly<{
     distribution: Awaited<ReturnType<typeof createLocalPathPluginDistributionIdentity>>;
   }>;
 }>;
 
-async function resolveDaemonDevelopmentSource(
-  locator: string,
-): Promise<ResolvedDaemonDevelopmentSource> {
-  const resolution = await resolvePluginAuthoringSource(locator);
-  if (!resolution.ok) {
-    throw new Error(
-      resolution.diagnostics.map((entry) => entry.message).join('\n')
-        || 'Invalid plugin development source',
-    );
-  }
-  if (resolution.kind === 'manifest') {
-    const source = resolution.source;
-    return Object.freeze({
-      ...source,
-      sourceLocator: source.sourceSpec.locator,
-      manifestRelativePath: relative(source.pluginRootPath, source.manifestPath).split('\\').join('/'),
-      sourceKind: 'packageRoot',
-    });
-  }
-
-  throw new Error('Executable development code must be evaluated from an owned immutable generation');
-}
-
 export function createDaemonPathPluginChangePreparer(params: Readonly<{
   happyHomeDir: string;
   runtimeLifecycle: PluginRegistryRuntimeLifecycle;
+  isRegisteredDevelopmentRoot?: (canonicalRootPath: string) => boolean;
   onRegistryApplied?: (record: PluginRegistryCommitRecord) => void;
   runManagedPluginPnpm?: RunManagedPluginPnpmBoundary;
   runPluginUiArtifactBuild?: RunPluginUiArtifactBuildBoundary;
   removePluginDataDirectory?: (directoryPath: string) => Promise<void>;
   generationCustodyRetirement?: PluginGenerationCustodyRetirementRemoteDependencies;
-}>): (request: PluginChangeRequest) => Promise<PreparedDaemonPluginChange> {
+}>): (
+  request: PluginChangeRequest,
+  context?: DaemonPathPluginChangePreparationContext,
+) => Promise<PreparedDaemonPluginChange> {
   const createMutationStore = (
     onApplied?: (record: PluginRegistryCommitRecord) => void,
   ) => createPluginRegistryStateStore({
@@ -233,14 +146,15 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
 
   const prepare = async (
     request: InternalPluginChangeRequest,
+    context?: DaemonPathPluginChangePreparationContext,
   ): Promise<PreparedDaemonPluginChange> => {
     let trustedDevelopmentPluginId: string | null = null;
+    let registeredDevelopmentRoot = false;
     let developmentAuthoringSource: Awaited<ReturnType<typeof resolvePluginAuthoringSource>> | null = null;
+    const approvedProjectTrust = request[PROJECT_TRUST_APPROVED];
     const developmentSourceRootPath = request.kind === 'development'
       ? request.sourceRootPath
-      : request.kind === 'installPath' && request.development
-        ? request.locator
-        : null;
+      : null;
     if (developmentSourceRootPath) {
       const sourceResolution = await resolvePluginAuthoringSource(developmentSourceRootPath);
       developmentAuthoringSource = sourceResolution;
@@ -251,6 +165,9 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
         if (distribution.kind !== 'localPath') {
           throw new Error('Plugin development source did not resolve to a local path identity');
         }
+        registeredDevelopmentRoot = params.isRegisteredDevelopmentRoot?.(
+          distribution.canonicalPath,
+        ) === true;
         const currentCatalog = await createPluginRegistryStateStore({
           happyHomeDir: params.happyHomeDir,
         }).read();
@@ -261,7 +178,6 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
             && isPluginTrustRecordAuthorized(record.install.trust, {
               pluginId,
               distribution,
-              realm: 'daemon',
             })
           ),
         );
@@ -271,19 +187,18 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
           );
         }
         trustedDevelopmentPluginId = trustedMatches[0]?.[0] ?? null;
-        const approvedSourceRoot = request[SOURCE_ROOT_APPROVED];
         if (
-          approvedSourceRoot
+          approvedProjectTrust
           && !pluginDistributionIdentitiesEqual(
-            approvedSourceRoot.distribution,
+            approvedProjectTrust.distribution,
             distribution,
           )
         ) {
           throw new Error('Approved plugin development source root was substituted before evaluation');
         }
-        if (!trustedDevelopmentPluginId && !approvedSourceRoot) {
+        if (!trustedDevelopmentPluginId && !approvedProjectTrust && !registeredDevelopmentRoot) {
           return Object.freeze({
-            kind: 'sourceRootApprovalRequired' as const,
+            kind: 'projectTrustApprovalRequired' as const,
             pendingKey: distribution.canonicalPath,
             review: Object.freeze({
               source: Object.freeze({
@@ -291,7 +206,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
                 locator: distribution.canonicalPath,
               }),
             }),
-            continueAfterSourceRootApproval: async () => {
+            continueAfterProjectTrustApproval: async () => {
               const approvedSource = await resolvePluginAuthoringSource(developmentSourceRootPath);
               if (!approvedSource.ok || approvedSource.kind !== 'code') {
                 throw new Error('Approved plugin development source identity changed before evaluation');
@@ -305,11 +220,11 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
               const continued = await prepare(Object.assign(
                 { ...request },
                 {
-                  [SOURCE_ROOT_APPROVED]: Object.freeze({ distribution }),
+                  [PROJECT_TRUST_APPROVED]: Object.freeze({ distribution }),
                 },
-              ));
-              if ('kind' in continued) {
-                throw new Error('Approved plugin development source unexpectedly requested source-root review again');
+              ), context);
+              if ('kind' in continued && continued.kind === 'projectTrustApprovalRequired') {
+                throw new Error('Approved plugin development source unexpectedly requested project-trust review again');
               }
               return continued;
             },
@@ -318,25 +233,215 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
         }
       }
     }
-    const expectedDevelopmentPluginId = developmentSourceRootPath
-      ? (request.kind === 'development' ? request.pluginId : undefined)
-        ?? trustedDevelopmentPluginId
-        ?? undefined
-      : null;
-    const developmentChangedPaths = request.kind === 'development'
-      ? request.changedPaths
-      : undefined;
-    const developmentSourceBatch = {
-      expectedPluginId: expectedDevelopmentPluginId,
-      changedPaths: developmentChangedPaths,
-    };
-    if (request.kind === 'development') {
-      request = Object.freeze({
-        kind: 'installPath',
-        locator: request.sourceRootPath,
-        development: true,
-        ...(request.sdkRegistryOrigin ? { sdkRegistryOrigin: request.sdkRegistryOrigin } : {}),
+    if (developmentSourceRootPath && developmentAuthoringSource?.ok) {
+      const authoringSource = developmentAuthoringSource;
+      const expectedPluginId = request.kind === 'development'
+        ? request.pluginId
+        : trustedDevelopmentPluginId ?? undefined;
+      const entry = authoringSource.kind === 'code'
+        ? authoringSource.entry
+        : null;
+      const canonicalRoot = authoringSource.kind === 'code'
+        ? authoringSource.entry.locator
+        : authoringSource.source.pluginRootPath;
+      const sourceRootPath = authoringSource.kind === 'code'
+        ? authoringSource.entry.packageRoot
+        : authoringSource.source.pluginRootPath;
+      const distribution = await createLocalPathPluginDistributionIdentity(canonicalRoot);
+      if (distribution.kind !== 'localPath') {
+        throw new Error('Plugin development source did not resolve to a local path identity');
+      }
+      const changedPaths = request.kind === 'development' ? request.changedPaths : undefined;
+      const prepareDependencies = (entry?.kind ?? 'packageRoot') === 'packageRoot'
+        && !isSourceOnlyDevelopmentBatch({ expectedPluginId, changedPaths });
+      const preparedRoot = await preparePluginDevelopmentRoot({
+        sourceRootPath,
+        prepareDependencies,
+        ...(request.kind === 'development' && request.sdkRegistryOrigin
+          ? { sdkRegistryOrigin: request.sdkRegistryOrigin }
+          : {}),
+      }, {
+        ...(params.runManagedPluginPnpm ? { runManagedPluginPnpm: params.runManagedPluginPnpm } : {}),
+      }).catch((error: unknown) => {
+        throw new DaemonPluginChangePreparationError(
+          'plugin_dev_dependency_preparation_failed',
+          projectPluginFailureText(error),
+        );
       });
+      try {
+        if ((entry?.kind ?? 'packageRoot') === 'packageRoot') {
+          await buildOwnedPluginDevelopmentUiArtifacts({
+            projectRoot: preparedRoot.rootPath,
+            ...(params.runPluginUiArtifactBuild
+              ? { runPluginUiArtifactBuild: params.runPluginUiArtifactBuild }
+              : {}),
+          });
+        }
+        const sourceAuthority = bindPluginRuntimeSourceAuthority({
+          custody: { kind: 'development', registeredRootId: distribution.canonicalPath },
+          resolvedRoot: preparedRoot.rootPath,
+          observedRevision: request.kind === 'development' ? request.observedRevision ?? 0 : 0,
+        });
+        if (sourceAuthority.kind !== 'development') {
+          throw new Error('Development source authority resolved to the wrong source class');
+        }
+        const evaluated = developmentAuthoringSource.kind === 'code'
+          ? await evaluatePluginDevelopmentCandidate({
+              locator: entry!.locator,
+              sourceAuthority,
+            })
+          : await evaluateManifestPluginDevelopmentCandidate({
+              source: developmentAuthoringSource.source,
+              sourceAuthority,
+            });
+        const projected = developmentAuthoringSource.kind === 'code'
+          ? projectEvaluatedPluginDevelopmentSource(evaluated.evaluated)
+          : evaluated.evaluated;
+        if (expectedPluginId && projected.manifest.id !== expectedPluginId) {
+          throw new PluginRegistryCandidateConflictError(
+            `Plugin development source identity changed from '${expectedPluginId}' to '${projected.manifest.id}'`,
+          );
+        }
+        const registryStateStore = createPluginRegistryStateStore({
+          happyHomeDir: params.happyHomeDir,
+          runtimeLifecycle: params.runtimeLifecycle,
+        });
+        await registryStateStore.initialize();
+        const registrySnapshot = await registryStateStore.readSnapshot();
+        const existing = registrySnapshot.state.plugins[projected.manifest.id];
+        const alreadyTrusted = existing?.source.kind === 'path'
+          && existing.source.devWatch === true
+          && isPluginTrustRecordAuthorized(existing.install.trust, {
+            pluginId: projected.manifest.id,
+            distribution,
+          });
+        let incumbentAuthorityManifest = registrySnapshot.approvedAuthorityManifestsByPluginId[projected.manifest.id];
+        if (!incumbentAuthorityManifest && existing) {
+          const generationReference = registrySnapshot.pluginOccurrenceIds[projected.manifest.id];
+          if (generationReference) {
+            const incumbentGeneration = await readPreparedImmutablePluginGeneration({
+              paths: resolvePluginStorePaths({ happyHomeDir: params.happyHomeDir }),
+              immutableGenerationId: generationReference.immutableGenerationId,
+            });
+            const incumbent = await readPluginManifest({
+              manifestPath: join(
+                incumbentGeneration.rootPath,
+                ...incumbentGeneration.record.manifestRelativePath.split('/'),
+              ),
+              sourceProvenance: incumbentGeneration.record.sourceProvenance,
+            });
+            if (incumbent.ok && incumbent.manifest.id === projected.manifest.id) {
+              incumbentAuthorityManifest = incumbent.manifest;
+            }
+          }
+        }
+        const incumbentAuthorityEvaluation = alreadyTrusted && incumbentAuthorityManifest
+          ? evaluatePluginAuthorityReview({
+              previous: incumbentAuthorityManifest,
+              candidate: projected.manifest,
+              selectedOptionalAccess: existing.install.optionalAccess ?? [],
+              development: true,
+            })
+          : null;
+        const authorityExpansion = incumbentAuthorityEvaluation?.authorityExpansion
+          ?? (approvedProjectTrust || registeredDevelopmentRoot
+            ? listInitialPluginAuthorityExpansions(projected.manifest)
+            : []);
+        const requiresReview = approvedProjectTrust || registeredDevelopmentRoot
+          ? authorityExpansion.length > 0
+          : !alreadyTrusted
+            || !incumbentAuthorityManifest
+            || incumbentAuthorityEvaluation?.requiresReview === true;
+        const review = projectPluginInstallationReview({
+          manifest: projected.manifest,
+          source: {
+            kind: 'path',
+            locator: distribution.canonicalPath,
+            development: true,
+            packageName: null,
+            publisher: { status: 'unavailable' },
+            signature: { status: 'notProvided' },
+            provenance: { status: 'notProvided' },
+            curation: { status: 'notApplicable' },
+            updatePolicy: 'allowed',
+          },
+          uiArtifacts: { verification: 'unavailable', contributionIds: [] },
+        });
+        const installReviewPrincipal = derivePluginInstallReviewPrincipal(review);
+        const priorPrincipalDigest = registrySnapshot.installReviewPrincipalDigestsByPluginId[projected.manifest.id];
+        const priorPrincipalPresentation = registrySnapshot.installReviewPrincipalPresentationsByPluginId[projected.manifest.id];
+        const approvedAtMs = Date.now();
+        const trust = alreadyTrusted
+          ? existing!.install.trust!
+          : createPluginTrustRecord({
+              pluginId: projected.manifest.id,
+              distribution,
+              approvedAtMs,
+            });
+        const catalogRecord: PluginStateRecord = {
+          source: {
+            kind: 'path',
+            locator: distribution.canonicalPath,
+            trustPolicy: 'local_trusted',
+            installPolicy: 'link',
+            resolvedPath: preparedRoot.rootPath,
+            manifestPath: authoringSource.kind === 'manifest'
+              ? authoringSource.source.manifestPath
+              : entry!.entryPath,
+            resolvedVersion: projected.manifest.version,
+            installedAt: existing?.source.installedAt ?? approvedAtMs,
+            devWatch: true,
+          },
+          compatibility: { status: 'compatible', diagnostics: [] },
+          install: {
+            mode: 'link',
+            manifestVersion: projected.manifest.version,
+            installedPath: null,
+          },
+          state: {
+            enabled: existing?.state.enabled ?? true,
+            lastLoadedAtMs: approvedAtMs,
+            lastError: null,
+          },
+        };
+        const candidate: PreparedPluginDevelopmentCandidate = Object.freeze({
+          kind: 'preparedDevelopmentCandidate' as const,
+          pluginId: projected.manifest.id,
+          sourceAuthority,
+          manifest: projected.manifest,
+          preparedActivationGraph: evaluated.graph,
+          registryRevision: registrySnapshot.revision,
+          priorOptionalAccess: existing?.install.optionalAccess ?? [],
+          preservedOptionalAccess: approvedProjectTrust || registeredDevelopmentRoot
+            ? Object.freeze([])
+            : incumbentAuthorityEvaluation?.preservedOptionalAccess ?? null,
+          installReviewPrincipal,
+          ...(priorPrincipalDigest && priorPrincipalPresentation
+            ? { priorInstallReviewPrincipal: { digest: priorPrincipalDigest, presentation: priorPrincipalPresentation } }
+            : {}),
+          catalogRecord,
+          trust,
+          updatePolicy: existing?.install.updatePolicy ?? 'allowed',
+          reviewReason: approvedProjectTrust || registeredDevelopmentRoot || existing
+            ? 'authorityExpansion'
+            : 'firstInstall',
+          ...(existing ? { currentVersion: existing.install.manifestVersion } : {}),
+          authorityExpansion,
+          requiresReview,
+          ...(requiresReview ? { review } : {}),
+          cleanup: preparedRoot.cleanup,
+        });
+        return candidate;
+      } catch (error) {
+        await preparedRoot.cleanup();
+        throw error;
+      }
+    }
+    if (developmentSourceRootPath) {
+      const diagnostics = developmentAuthoringSource && !developmentAuthoringSource.ok
+        ? developmentAuthoringSource.diagnostics.map((entry) => entry.message).join('\n')
+        : '';
+      throw new Error(diagnostics || 'Invalid plugin development source');
     }
     if (
       request.kind === 'enable'
@@ -440,7 +545,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
             ))?.transaction ?? null;
           }
           const generation = transaction
-            ? transaction.record.pluginGenerations[stateRequest.pluginId]?.immutableGenerationId ?? null
+            ? transaction.record.pluginOccurrenceIds[stateRequest.pluginId]?.immutableGenerationId ?? null
             : generationBeforeMutation;
           const registryResult = projectPluginTransactionChangeResult({
             pluginId: stateRequest.pluginId,
@@ -491,232 +596,25 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
     if (request.kind !== 'installPath') {
       throw new Error(`Plugin change '${request.kind}' is not implemented by the path candidate adapter`);
     }
-    let resolved = request.development
-      && developmentAuthoringSource?.ok
-      && developmentAuthoringSource.kind === 'code'
-      ? await (async (): Promise<ResolvedDaemonDevelopmentSource> => {
-          const entry = developmentAuthoringSource.entry;
-          const paths = resolvePluginStorePaths({ happyHomeDir: params.happyHomeDir });
-          const distribution = await createLocalPathPluginDistributionIdentity(entry.locator);
-          let priorGeneration: CurrentCommittedPluginGeneration | undefined;
-          let sourceOnlyChangedPaths: readonly string[] | undefined;
-          if (entry.kind === 'packageRoot' && isSourceOnlyDevelopmentBatch(developmentSourceBatch)) {
-            sourceOnlyChangedPaths = developmentSourceBatch.changedPaths;
-            priorGeneration = await readReusableCurrentDevelopmentGeneration({
-              happyHomeDir: params.happyHomeDir,
-              paths,
-              pluginId: developmentSourceBatch.expectedPluginId,
-              distribution,
-            });
-          }
-          const draft = priorGeneration && sourceOnlyChangedPaths
-            ? await prepareOwnedPluginDevelopmentGenerationFromEdit({
-                paths,
-                sourceRootPath: entry.packageRoot,
-                changedPaths: sourceOnlyChangedPaths,
-                priorReference: { immutableGenerationId: priorGeneration.immutableGenerationId },
-                generatedManifestRelativePath: PLUGIN_MANIFEST_RELATIVE_PATH,
-              })
-            : await prepareOwnedPluginDevelopmentGeneration({
-                paths,
-                populate: async (rootPath) => {
-                  if (entry.kind === 'singleFile') {
-                    await copyFile(entry.entryPath, join(rootPath, basename(entry.entryPath)));
-                    return;
-                  }
-                  await materializeDaemonOwnedPluginDevelopmentCandidate({
-                    happyHomeDir: params.happyHomeDir,
-                    sourceRootPath: entry.packageRoot,
-                    destinationRootPath: rootPath,
-                    ...(request.sdkRegistryOrigin ? { sdkRegistryOrigin: request.sdkRegistryOrigin } : {}),
-                    ...(params.runManagedPluginPnpm
-                      ? { runManagedPluginPnpm: params.runManagedPluginPnpm }
-                      : {}),
-                  });
-                },
-              });
-          try {
-            if (entry.kind === 'packageRoot') {
-              await buildOwnedPluginDevelopmentUiArtifacts({
-                projectRoot: draft.rootPath,
-                ...(params.runPluginUiArtifactBuild
-                  ? { runPluginUiArtifactBuild: params.runPluginUiArtifactBuild }
-                  : {}),
-              });
-            }
-            const ownedEvaluation = await draft.runWithIntegrityFence(async () => (
-              await evaluateOwnedPluginAuthorGeneration({
-                locator: entry.kind === 'singleFile'
-                  ? join(draft.rootPath, basename(entry.entryPath))
-                  : draft.rootPath,
-                immutableGenerationId: draft.immutableGenerationId,
-                rootPath: draft.rootPath,
-              })
-            ));
-            const projected = projectEvaluatedPluginDevelopmentSource(
-              ownedEvaluation.evaluated,
-            );
-            const preparedGeneration = await draft.finalize({
-              pluginId: projected.manifest.id,
-              manifestRelativePath: PLUGIN_MANIFEST_RELATIVE_PATH,
-              generatedManifestContents: projected.canonicalManifestJson,
-              distribution,
-              updatePolicy: 'reviewEveryUpdate',
-              createdAtMs: Date.now(),
-            });
-            const manifestAuthority = 'external' as const;
-            const preparedManifest = await readPluginManifest({
-              manifestPath: join(
-                preparedGeneration.rootPath,
-                ...PLUGIN_MANIFEST_RELATIVE_PATH.split('/'),
-              ),
-              manifestAuthority,
-              sourceProvenance: preparedGeneration.record.sourceProvenance,
-            });
-            if (!preparedManifest.ok) {
-              throw new Error('Owned plugin development candidate manifest is unavailable');
-            }
-            return Object.freeze({
-              ok: true,
-              pluginRootPath: entry.packageRoot,
-              manifestPath: preparedManifest.manifestPath,
-              manifestAuthority,
-              manifest: preparedManifest.manifest,
-              sourceSpec: {
-                kind: 'path' as const,
-                locator: entry.locator,
-                trustPolicy: 'prompt' as const,
-                installPolicy: 'link' as const,
-                resolvedVersion: preparedManifest.manifest.version,
-              },
-              sourceLocator: entry.locator,
-              manifestRelativePath: PLUGIN_MANIFEST_RELATIVE_PATH,
-              sourceKind: entry.kind,
-              ...(priorGeneration && sourceOnlyChangedPaths
-                ? { developmentBaseGenerationId: priorGeneration.immutableGenerationId }
-                : {}),
-              preparedActivationGraph: ownedEvaluation.graph,
-              preparedGeneration,
-            });
-          } catch (error) {
-            await draft.cleanup();
-            throw error;
-          }
-        })()
-      : request.development
-      ? await resolveDaemonDevelopmentSource(request.locator)
-      : await (async (): Promise<ResolvedDaemonDevelopmentSource> => {
-          const source = await resolveLocalPathPluginSource({ locator: request.locator });
-          if (!source.ok) {
-            throw new Error(source.diagnostics.map((entry) => entry.message).join('\n') || 'Invalid plugin path source');
-          }
-          return Object.freeze({
-            ...source,
-            sourceLocator: source.sourceSpec.locator,
-            manifestRelativePath: relative(source.pluginRootPath, source.manifestPath).split('\\').join('/'),
-            sourceKind: 'packageRoot',
-          });
-        })();
-    if (expectedDevelopmentPluginId && resolved.manifest.id !== expectedDevelopmentPluginId) {
-      return Object.freeze({
-        pluginId: expectedDevelopmentPluginId,
-        requiresReview: false,
-        apply: async () => ({
-          kind: 'conflict' as const,
-          pluginId: expectedDevelopmentPluginId,
-        }),
-        cleanup: resolved.preparedGeneration?.cleanup
-          ?? (async () => undefined),
-      });
+    const source = await resolveLocalPathPluginSource({ locator: request.locator });
+    if (!source.ok) {
+      throw new Error(source.diagnostics.map((entry) => entry.message).join('\n') || 'Invalid plugin path source');
     }
+    const resolved: ResolvedDaemonLocalPathSource = Object.freeze({
+      ...source,
+      sourceLocator: source.sourceSpec.locator,
+      manifestRelativePath: relative(source.pluginRootPath, source.manifestPath).split('\\').join('/'),
+    });
     const distribution = await createLocalPathPluginDistributionIdentity(resolved.sourceLocator);
-    if (
-      request.development
-      && resolved.sourceKind === 'packageRoot'
-      && !resolved.preparedGeneration
-      && isSourceOnlyDevelopmentBatch(developmentSourceBatch)
-    ) {
-      const paths = resolvePluginStorePaths({ happyHomeDir: params.happyHomeDir });
-      const priorGeneration = await readReusableCurrentDevelopmentGeneration({
-        happyHomeDir: params.happyHomeDir,
-        paths,
-        pluginId: developmentSourceBatch.expectedPluginId,
-        distribution,
-      });
-      if (priorGeneration) {
-        const draft = await prepareOwnedPluginDevelopmentGenerationFromEdit({
-          paths,
-          sourceRootPath: resolved.pluginRootPath,
-          changedPaths: developmentSourceBatch.changedPaths,
-          priorReference: { immutableGenerationId: priorGeneration.immutableGenerationId },
-          generatedManifestRelativePath: resolved.manifestRelativePath,
-        });
-        try {
-          await buildOwnedPluginDevelopmentUiArtifacts({
-            projectRoot: draft.rootPath,
-            ...(params.runPluginUiArtifactBuild
-              ? { runPluginUiArtifactBuild: params.runPluginUiArtifactBuild }
-              : {}),
-          });
-          const preparedGeneration = await draft.finalize({
-            pluginId: resolved.manifest.id,
-            manifestRelativePath: resolved.manifestRelativePath,
-            generatedManifestContents: serializeCanonicalPluginManifest(resolved.manifest),
-            distribution,
-            updatePolicy: 'reviewEveryUpdate',
-            createdAtMs: Date.now(),
-          });
-          resolved = Object.freeze({
-            ...resolved,
-            developmentBaseGenerationId: priorGeneration.immutableGenerationId,
-            preparedGeneration,
-          });
-        } catch (error) {
-          await draft.cleanup();
-          throw error;
-        }
-      }
-    }
-    const developmentCandidate = request.development
-      && resolved.sourceKind === 'packageRoot'
-      && !resolved.preparedGeneration
-      ? await (async () => {
-          const candidate = await materializeDaemonOwnedPluginDevelopmentCandidate({
-            happyHomeDir: params.happyHomeDir,
-            sourceRootPath: resolved.pluginRootPath,
-            ...(request.sdkRegistryOrigin ? { sdkRegistryOrigin: request.sdkRegistryOrigin } : {}),
-            ...(params.runManagedPluginPnpm ? { runManagedPluginPnpm: params.runManagedPluginPnpm } : {}),
-          });
-          try {
-            await buildOwnedPluginDevelopmentUiArtifacts({
-              projectRoot: candidate.rootPath,
-              ...(params.runPluginUiArtifactBuild
-                ? { runPluginUiArtifactBuild: params.runPluginUiArtifactBuild }
-                : {}),
-            });
-            return candidate;
-          } catch (error) {
-            await candidate.cleanup();
-            throw error;
-          }
-        })()
-      : null;
-    const preparedGeneration = await (async (): Promise<OwnedPreparedImmutablePluginGeneration> => {
-      try {
-        return resolved.preparedGeneration ?? await prepareOwnedImmutablePluginGeneration({
-          paths: resolvePluginStorePaths({ happyHomeDir: params.happyHomeDir }),
-          pluginId: resolved.manifest.id,
-          sourceRootPath: developmentCandidate?.rootPath ?? resolved.pluginRootPath,
-          manifestRelativePath: resolved.manifestRelativePath,
-          distribution,
-          updatePolicy: 'reviewEveryUpdate',
-          createdAtMs: Date.now(),
-        });
-      } catch (error) {
-        await developmentCandidate?.cleanup();
-        throw error;
-      }
-    })();
+    const preparedGeneration: OwnedPreparedImmutablePluginGeneration = await prepareOwnedImmutablePluginGeneration({
+      paths: resolvePluginStorePaths({ happyHomeDir: params.happyHomeDir }),
+      pluginId: resolved.manifest.id,
+      sourceRootPath: resolved.pluginRootPath,
+      manifestRelativePath: resolved.manifestRelativePath,
+      distribution,
+      updatePolicy: 'allowed',
+      createdAtMs: Date.now(),
+    });
     let cleanupPromise: Promise<void> | undefined;
     const cleanup = () => {
       cleanupPromise ??= (async () => {
@@ -725,11 +623,6 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
           await preparedGeneration.cleanup();
         } catch (error) {
           cleanupError = error;
-        }
-        try {
-          await developmentCandidate?.cleanup();
-        } catch (error) {
-          cleanupError ??= error;
         }
         if (cleanupError) throw cleanupError;
       })();
@@ -757,88 +650,78 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
       );
     }
     const manifest = candidateManifest.manifest;
-    if (expectedDevelopmentPluginId && manifest.id !== expectedDevelopmentPluginId) {
-      return Object.freeze({
-        pluginId: expectedDevelopmentPluginId,
-        requiresReview: false,
-        apply: async () => ({
-          kind: 'conflict' as const,
-          pluginId: expectedDevelopmentPluginId,
-        }),
-        cleanup,
-      });
-    }
-    const currentCatalog = await createPluginRegistryStateStore({ happyHomeDir: params.happyHomeDir }).read();
-    const existingAtPreparation = currentCatalog.plugins[manifest.id];
-    let preservedOptionalSelections:
-      ReturnType<typeof preserveValidPluginOptionalSelections> = null;
-    if (
-      request.development
-      && existingAtPreparation
-      && isPluginTrustRecordAuthorized(existingAtPreparation.install.trust, {
-        pluginId: manifest.id,
-        distribution,
-        realm: hasDaemonExecution(manifest) ? 'daemon' : 'declarative',
-      })
-    ) {
-      // Not the candidate: this is whatever record is installed today, which
-      // may have been acquired from the registry before the operator pointed
-      // the id at a working tree. Derive its provenance from its own source
-      // kind so a published artifact keeps the rules it was admitted under.
-      const previous = await readPluginManifest({
-        manifestPath: existingAtPreparation.source.manifestPath,
-        manifestAuthority: resolved.manifestAuthority,
-        sourceProvenance: pluginSourceProvenanceForKind(existingAtPreparation.source.kind),
-      });
-      const selectedOptionalAccess = existingAtPreparation.install.optionalAccess ?? [];
-      if (
-        previous.ok
-        && previous.manifest.id === manifest.id
-        && !hasReviewSensitivePluginUpdate(previous.manifest, manifest, selectedOptionalAccess)
-      ) {
-        preservedOptionalSelections = preserveValidPluginOptionalSelections(
-          manifest.id,
-          manifest,
-          selectedOptionalAccess,
-        );
-      }
-    }
-    const isCodeDevelopmentSource = request.development
-      && developmentAuthoringSource?.ok
-      && developmentAuthoringSource.kind === 'code';
-    const requiresReview = preservedOptionalSelections === null;
-    const preservesApprovedDevelopmentReview = request.development
-      && developmentChangedPaths !== undefined
-      && !requiresReview;
+    const registryStateStore = createPluginRegistryStateStore({ happyHomeDir: params.happyHomeDir });
+    const preparationSnapshot = await registryStateStore.readSnapshot();
+    const existingAtPreparation = preparationSnapshot.state.plugins[manifest.id];
+    const priorPrincipalDigest = preparationSnapshot.installReviewPrincipalDigestsByPluginId[manifest.id];
+    const priorPrincipalPresentation = preparationSnapshot.installReviewPrincipalPresentationsByPluginId[manifest.id];
+    const approvedAuthorityManifest = preparationSnapshot.approvedAuthorityManifestsByPluginId[manifest.id];
+    let requiresReview = true;
+    let authorityExpansion: PluginAuthorityReviewEvaluation['authorityExpansion'] = [];
+    let preservedOptionalAccess: PluginAuthorityReviewEvaluation['preservedOptionalAccess'] = null;
     let review: ReturnType<typeof projectPluginInstallationReview> | undefined;
     let installReviewPrincipal: ReturnType<typeof derivePluginInstallReviewPrincipal> | undefined;
     try {
-      if (!preservesApprovedDevelopmentReview) {
-        review = projectPluginInstallationReview({
+      review = projectPluginInstallationReview({
           manifest,
           source: {
             kind: 'path',
             locator: resolved.sourceLocator,
-            development: request.development,
+            development: false,
             packageName: null,
             publisher: { status: 'unavailable' },
             signature: { status: 'notProvided' },
             provenance: { status: 'notProvided' },
             curation: { status: 'notApplicable' },
-            updatePolicy: 'reviewEveryUpdate',
+            updatePolicy: 'allowed',
           },
           uiArtifacts: { verification: 'unavailable', contributionIds: [] },
+      });
+      installReviewPrincipal = derivePluginInstallReviewPrincipal(review);
+      if (context?.installedUpdate) {
+        if (
+          context.installedUpdate.pluginId !== manifest.id
+          || !existingAtPreparation
+          || !priorPrincipalDigest
+          || !priorPrincipalPresentation
+          || !isPluginTrustRecordAuthorized(existingAtPreparation.install.trust, {
+            pluginId: manifest.id,
+            distribution,
+          })
+        ) {
+          throw new DaemonPluginChangePreparationError(
+            'plugin_update_trust_unavailable',
+            `Plugin '${context.installedUpdate.pluginId}' has no current reviewed update authority`,
+          );
+        }
+        if (!approvedAuthorityManifest) {
+          throw new DaemonPluginChangePreparationError(
+            'plugin_update_trust_unavailable',
+            `Plugin '${context.installedUpdate.pluginId}' has no approved authority baseline`,
+          );
+        }
+        const authorityEvaluation = evaluatePluginAuthorityReview({
+          previous: approvedAuthorityManifest,
+          candidate: manifest,
+          selectedOptionalAccess: existingAtPreparation.install.optionalAccess ?? [],
         });
-        installReviewPrincipal = derivePluginInstallReviewPrincipal(review);
+        authorityExpansion = authorityEvaluation.authorityExpansion;
+        requiresReview = authorityEvaluation.requiresReview;
+        preservedOptionalAccess = authorityEvaluation.preservedOptionalAccess;
       }
     } catch (error) {
       await cleanup();
       throw error;
     }
 
-    return Object.freeze({
+    const candidate: PreparedDaemonPluginChangeCandidate = Object.freeze({
       pluginId: manifest.id,
       ...(review ? { review } : {}),
+      reviewReason: context?.installedUpdate ? 'authorityExpansion' : 'firstInstall',
+      ...(context?.installedUpdate && existingAtPreparation
+        ? { currentVersion: existingAtPreparation.install.manifestVersion }
+        : {}),
+      authorityExpansion,
       requiresReview,
       async apply(decision, control) {
         const existingAtApply = (
@@ -864,24 +747,26 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
           if (!trust || !isPluginTrustRecordAuthorized(trust, {
             pluginId: manifest.id,
             distribution,
-            realm: hasDaemonExecution(manifest) ? 'daemon' : 'declarative',
           })) {
             return { kind: 'failed' as const, code: 'plugin_install_trust_required' };
           }
           const optionalAccess = decision
-            ? createSelectedPluginOptionalAccess({
+            ? updateSelectedPluginOptionalAccess({
                 pluginId: manifest.id,
-                declarations: manifest.hostAccess.optional,
+                manifest,
+                existing: existingAtApply?.install.optionalAccess ?? [],
                 decisions: decision.optionalSelections,
                 selectedAtMs: approvedAtMs,
               })
-            : preservedOptionalSelections
-              ?? (isCodeDevelopmentSource && manifest.hostAccess.optional.length === 0
-                ? Object.freeze([])
-                : null);
+            : preservedOptionalAccess;
           if (!optionalAccess) {
             return { kind: 'failed' as const, code: 'plugin_install_trust_required' };
           }
+          const committedInstallReviewPrincipal = decision
+            ? installReviewPrincipal
+            : priorPrincipalDigest && priorPrincipalPresentation
+              ? { digest: priorPrincipalDigest, presentation: priorPrincipalPresentation }
+              : undefined;
           const source = {
             ...resolved.sourceSpec,
             kind: 'path' as const,
@@ -892,7 +777,6 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
             manifestPath: candidateManifest.manifestPath,
             resolvedVersion: manifest.version,
             installedAt: existingAtApply?.source.installedAt ?? approvedAtMs,
-            ...(request.development ? { devWatch: true } : {}),
           };
           const catalogRecord: PluginStateRecord = {
             source,
@@ -912,29 +796,21 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
             pluginId: manifest.id,
             catalogRecord,
             trust,
-            updatePolicy: existingAtApply?.install.updatePolicy ?? 'reviewEveryUpdate',
+            updatePolicy: existingAtApply?.install.updatePolicy ?? 'allowed',
             optionalAccess,
+            approvedAuthorityManifest: manifest,
             preparedGeneration,
-            ...(installReviewPrincipal
+            ...(committedInstallReviewPrincipal
               ? {
-                  installReviewPrincipalDigest: installReviewPrincipal.digest,
-                  installReviewPrincipalPresentation: installReviewPrincipal.presentation,
+                  installReviewPrincipalDigest: committedInstallReviewPrincipal.digest,
+                  installReviewPrincipalPresentation: committedInstallReviewPrincipal.presentation,
                 }
-              : {}),
-            ...(preservesApprovedDevelopmentReview && developmentChangedPaths !== undefined
-              ? { developmentChangedPaths }
-              : {}),
-            ...(resolved.developmentBaseGenerationId
-              ? { developmentBaseGenerationId: resolved.developmentBaseGenerationId }
-              : {}),
-            ...(resolved.preparedActivationGraph
-              ? { preparedActivationGraph: resolved.preparedActivationGraph }
               : {}),
           });
           if (transaction.status !== 'committed' && transaction.status !== 'outcomeUnknown') {
             throw new Error(`Path installation ended without a committed registry transaction (${transaction.status})`);
           }
-          const generation = transaction.record.pluginGenerations[
+          const generation = transaction.record.pluginOccurrenceIds[
             manifest.id
           ]?.immutableGenerationId ?? null;
           return projectPluginTransactionChangeResult({
@@ -954,6 +830,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
       },
       cleanup,
     });
+    return candidate;
   };
   return prepare;
 }

@@ -5,6 +5,15 @@ import {
 export type OpenCodePermissionValue =
   ReturnType<typeof resolveAcpToolPermissionPolicy>[string];
 
+const OPEN_CODE_HAPPIER_MCP_ALWAYS_ALLOWED_TOOL_SUFFIXES = [
+  'change_title',
+  'session_title_set',
+  'action_execute',
+  'action_spec_search',
+  'action_spec_get',
+  'action_options_resolve',
+] as const;
+
 export function resolveOpenCodePermissionConfig(
   permissionMode: string | null | undefined,
 ): Readonly<Record<string, OpenCodePermissionValue>> {
@@ -19,6 +28,32 @@ export function buildOpenCodeSessionPermissionRuleset(
     pattern: '*',
     action,
   }));
+}
+
+export function buildOpenCodeSessionScopedPermissionRuleset(
+  permissionMode: string | null | undefined,
+  projection: Readonly<{
+    registrations: readonly Readonly<{ projectedName: string }>[];
+    requiredHappierServerName: string | null;
+  }>,
+): ReadonlyArray<Readonly<{ permission: string; pattern: string; action: OpenCodePermissionValue }>> {
+  const baseRules = buildOpenCodeSessionPermissionRuleset(permissionMode);
+  const ownAction = resolveOpenCodePermissionConfig(permissionMode)['*'];
+  const alias = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return Object.freeze([
+    ...baseRules,
+    { permission: 'happier-session-*', pattern: '*', action: 'deny' as const },
+    ...projection.registrations.map(({ projectedName }) => ({
+      permission: `${alias(projectedName)}_*`, pattern: '*', action: ownAction,
+    })),
+    ...(projection.requiredHappierServerName
+      ? OPEN_CODE_HAPPIER_MCP_ALWAYS_ALLOWED_TOOL_SUFFIXES.map((suffix) => ({
+          permission: `${alias(projection.requiredHappierServerName!)}_${suffix}`,
+          pattern: '*',
+          action: 'allow' as const,
+        }))
+      : []),
+  ]);
 }
 
 export function buildOpenCodePermissionEnv(

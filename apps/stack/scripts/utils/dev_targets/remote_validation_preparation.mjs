@@ -18,23 +18,27 @@ function resolveComponentDir(repoDir, componentRelativeDir) {
 export async function prepareRemoteValidationWorkspace({
   repoDir = resolve(process.cwd()),
   componentRelativeDir = '.',
+  validationKind = 'runtime',
   env = process.env,
   loadWorkspaceBuildOwner = async () => await import('../proc/pm.mjs'),
   loadCliBuildOwner = async () => await import('../../../../cli/scripts/buildSharedDeps.mjs'),
 } = {}) {
   const { componentDir, componentPath } = resolveComponentDir(repoDir, componentRelativeDir);
   if (!componentPath) return { ok: true, built: [], skipped: ['repository-root-script-owned'] };
+  const normalizedComponentPath = componentPath.replaceAll('\\', '/');
+  if (validationKind === 'source-test') {
+    return { ok: true, built: [], skipped: ['workspace-source-test'] };
+  }
+  const livePluginHost = normalizedComponentPath === 'apps/cli' || normalizedComponentPath === 'apps/ui';
+  const buildOptions = { env, ...(livePluginHost ? { isolatePluginFailures: true } : {}) };
 
   const { ensureWorkspacePackagesBuiltForComponent } = await loadWorkspaceBuildOwner();
-  const result = await ensureWorkspacePackagesBuiltForComponent(componentDir, { env });
-  const normalizedComponentPath = componentPath.replaceAll('\\', '/');
-  if (normalizedComponentPath === 'apps/cli' || normalizedComponentPath === 'apps/ui') {
-    if (normalizedComponentPath === 'apps/ui') {
-      // The UI owns only its bundled UI package subset, while the projection
-      // publisher validates the complete CLI-bundled plugin membership before
-      // atomically writing the ignored CLI and platform UI artifacts.
-      await ensureWorkspacePackagesBuiltForComponent(resolve(repoDir, 'apps', 'cli'), { env });
-    }
+  // Typechecks consume dependency dist declarations through package exports.
+  // The existing content-digest owner admits them without the runtime publisher.
+  if (validationKind === 'typecheck') {
+    return await ensureWorkspacePackagesBuiltForComponent(componentDir, buildOptions);
+  }
+  if (livePluginHost) {
     const {
       resolveCliBundledWorkspacePackageNames,
       publishBundledPluginArtifactsAfterWorkspaceBuild,
@@ -47,11 +51,24 @@ export async function prepareRemoteValidationWorkspace({
       repoRoot: resolve(repoDir),
       workspaceNames: resolveCliBundledWorkspacePackageNames({ repoRoot: resolve(repoDir) }),
       env,
+      publicationMode: 'live',
       // These generated files are deliberately replica-owned and absent from
       // Mutagen. Preparation must materialize them, not check a nonexistent
       // local projection or synchronize the primary checkout's stale bytes.
-      bundledPluginArtifactPublication: { mode: 'write' },
+      // Only materialize outputs excluded from the one-way source replica.
+      // Source-synchronized projections remain untouched so the following
+      // check can still detect drift in the authoritative checkout bytes.
+      bundledPluginArtifactPublication: { mode: 'write', targetOwnedOnly: true },
     });
+  }
+  const result = await ensureWorkspacePackagesBuiltForComponent(componentDir, buildOptions);
+  if (normalizedComponentPath === 'apps/ui') {
+    // The UI owns only its bundled UI package subset. The publisher above
+    // makes source-derived plugin manifests and immutable artifact outputs
+    // current before either component preparation can validate a newly
+    // declared artifact, while this pass still prepares the complete CLI host
+    // closure consumed by the UI validation command.
+    await ensureWorkspacePackagesBuiltForComponent(resolve(repoDir, 'apps', 'cli'), buildOptions);
   }
   return result;
 }
@@ -62,9 +79,15 @@ function readComponentRelativeDir(argv) {
   return argument.slice('--component-relative-dir='.length);
 }
 
+function readValidationKind(argv) {
+  const argument = argv.find((value) => value.startsWith('--validation-kind='));
+  return argument ? argument.slice('--validation-kind='.length) : 'runtime';
+}
+
 const entryPath = String(process.argv[1] ?? '').trim();
 if (entryPath && pathToFileURL(resolve(entryPath)).href === import.meta.url) {
   await prepareRemoteValidationWorkspace({
     componentRelativeDir: readComponentRelativeDir(process.argv.slice(2)),
+    validationKind: readValidationKind(process.argv.slice(2)),
   });
 }

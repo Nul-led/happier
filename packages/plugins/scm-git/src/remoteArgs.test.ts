@@ -25,13 +25,15 @@ describe('git remote arg builders', () => {
         expect(buildGitPullArgs({ remote: 'upstream', branch: 'feature/x' } as any)).toEqual([
             'pull',
             '--ff-only',
+            '--no-rebase',
+            '--no-autostash',
             'upstream',
             'feature/x',
         ]);
     });
 
     it('defaults to origin when pull has branch without remote', () => {
-        expect(buildGitPullArgs({ branch: 'feature/x' } as any)).toEqual(['pull', '--ff-only', 'origin', 'feature/x']);
+        expect(buildGitPullArgs({ branch: 'feature/x' } as any)).toEqual(['pull', '--ff-only', '--no-rebase', '--no-autostash', 'origin', 'feature/x']);
     });
 });
 

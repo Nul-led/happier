@@ -6,20 +6,35 @@ import { createOpenCodeServerRuntime } from './runtime.js';
 
 const readyMcpRegistration = Promise.resolve({
   requiredHappier: { status: 'ready' as const },
+  registeredServers: [] as const,
 });
+const emptyMcpProjection = {
+  registrations: [] as const,
+  requiredHappierServerName: null,
+  requiredHappierConfigurationPresent: false,
+} as const;
 
 function createClient(): OpenCodeServerClient {
   return {
     mcpAdd: vi.fn(async () => ({ status: 'connected' as const })),
+    mcpRemove: vi.fn(async () => undefined),
     sessionCreate: vi.fn(async () => ({ id: 'provider-session-1' })),
+    sessionUpdatePermissions: vi.fn(async () => undefined),
+    sessionSetAgent: vi.fn(async () => undefined),
+    sessionReadAgent: vi.fn(async () => null),
+    agentsList: vi.fn(async () => []),
+    sessionSetModel: vi.fn(async () => undefined),
     sessionFork: vi.fn(async () => ({ id: 'provider-session-child' })),
     sessionPromptAsync: vi.fn(async () => undefined),
     sessionAbort: vi.fn(async () => undefined),
     sessionSummarize: vi.fn(async () => undefined),
     sessionStatus: vi.fn(async () => ({ type: 'idle' })),
+    sessionChildInventory: vi.fn(async () => []),
     sessionMessages: vi.fn(async () => []),
     sessionTodo: vi.fn(async () => []),
     permissionReply: vi.fn(async () => undefined),
+    permissionList: vi.fn(async () => []),
+    questionList: vi.fn(async () => []),
     questionReply: vi.fn(async () => undefined),
     questionReject: vi.fn(async () => undefined),
     appSkills: vi.fn(async () => []),
@@ -88,6 +103,7 @@ function createContext(
 async function createRuntime(params: Readonly<{
   client: OpenCodeServerClient;
   askQuestions: OpenCodeRuntimeContext['ui']['askQuestions'];
+  dialect?: 'v1' | 'v2';
 }>) {
   const runtime = createOpenCodeServerRuntime({
     ctx: createContext(params.askQuestions),
@@ -95,7 +111,9 @@ async function createRuntime(params: Readonly<{
     happierSessionId: 'happier-session-1',
     baseUrl: 'http://127.0.0.1:49196',
     client: params.client,
+    ...(params.dialect ? { dialect: params.dialect } : {}),
     mcpRegistration: readyMcpRegistration,
+    mcpProjection: emptyMcpProjection,
   });
   await runtime.openSession({ kind: 'create' });
   return runtime;
@@ -221,6 +239,28 @@ describe('OpenCode native interactions', () => {
     unsubscribe();
   });
 
+  it('keeps released V2 compaction open until the provider terminal event', async () => {
+    const client = createClient();
+    const runtime = await createRuntime({ client, askQuestions: vi.fn(), dialect: 'v2' });
+    await runtime.updateSessionRuntimeConfig({ modelId: 'anthropic/sonnet' });
+    const events: Array<{ kind: string; phase?: string; compactionId?: string }> = [];
+    runtime.subscribeRuntimeEvents((event) => events.push(event));
+
+    await runtime.compactContext({ compactionId: 'compact-v2' });
+    expect(events.filter((event) => event.kind === 'context-compaction')).toEqual([
+      expect.objectContaining({ phase: 'started', compactionId: 'compact-v2' }),
+    ]);
+
+    await runtime.handleProviderEvent({
+      type: 'session.next.compaction.ended',
+      properties: { sessionID: 'provider-session-1' },
+    });
+    expect(events.filter((event) => event.kind === 'context-compaction')).toEqual([
+      expect.objectContaining({ phase: 'started', compactionId: 'compact-v2' }),
+      expect.objectContaining({ phase: 'completed', compactionId: 'compact-v2' }),
+    ]);
+  });
+
   it('uses the provider-configured default model for compaction in a default-model session', async () => {
     const client = createClient();
     vi.mocked(client.globalConfigGet).mockResolvedValueOnce({
@@ -268,6 +308,37 @@ describe('OpenCode native interactions', () => {
     expect(events.filter((event) => event.kind === 'context-compaction')).toEqual([
       expect.objectContaining({ phase: 'started', trigger: 'automatic' }),
       expect.objectContaining({ phase: 'completed', trigger: 'automatic' }),
+    ]);
+  });
+
+  it('projects V2 automatic compaction lifecycle with the provider messageID', async () => {
+    const client = createClient();
+    const runtime = await createRuntime({ client, askQuestions: vi.fn() });
+    const events: Array<{ kind: string; phase?: string; compactionId?: string; trigger?: string }> = [];
+    runtime.subscribeRuntimeEvents((event) => events.push(event));
+
+    await runtime.handleProviderEvent({
+      type: 'session.next.compaction.started',
+      properties: {
+        sessionID: 'provider-session-1',
+        messageID: 'msg_compaction_v2',
+        reason: 'auto',
+      },
+    });
+    await runtime.handleProviderEvent({
+      type: 'session.next.compaction.ended',
+      properties: {
+        sessionID: 'provider-session-1',
+        messageID: 'msg_compaction_v2',
+        reason: 'auto',
+        text: '',
+        recent: '',
+      },
+    });
+
+    expect(events.filter((event) => event.kind === 'context-compaction')).toEqual([
+      expect.objectContaining({ phase: 'started', trigger: 'automatic', compactionId: 'msg_compaction_v2' }),
+      expect.objectContaining({ phase: 'completed', trigger: 'automatic', compactionId: 'msg_compaction_v2' }),
     ]);
   });
 });

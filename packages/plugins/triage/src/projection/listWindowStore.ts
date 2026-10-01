@@ -1,4 +1,4 @@
-import type { PluginCancellationOptions } from '@happier-dev/plugin-sdk';
+import { isPluginError, type PluginCancellationOptions } from '@happier-dev/plugin-sdk';
 import { createCoalescedScheduler } from '@happier-dev/plugin-sdk/async';
 
 import { foldConnectionAnswers } from '../corpus/fold/connectionAnswer.js';
@@ -56,6 +56,13 @@ import {
 export type TriageListWindowErrorV1 = Readonly<{
     code: string;
     message: string;
+    /**
+     * Whether another read can succeed, as the host classified the failure. A
+     * failure nobody classified is worth one more try; absent means that.
+     */
+    retryable?: boolean;
+    /** The host's code and diagnostics, for a support reader, never the sentence. */
+    detail?: string;
 }>;
 
 /**
@@ -277,10 +284,20 @@ function sameAcquisitionLens(left: TriageListLensV1, right: TriageListLensV1): b
 }
 
 function errorFrom(cause: unknown): TriageListWindowErrorV1 {
-    if (cause instanceof Error) {
-        return { code: 'plugin_action_failed', message: cause.message };
+    if (isPluginError(cause)) {
+        return {
+            code: 'plugin_action_failed',
+            message: cause.message,
+            // The host's own verdict: `unsupported_method` or `denied` will
+            // fail the same way however often the reader presses Refresh.
+            retryable: cause.retryable,
+            detail: [cause.code, ...(cause.diagnostics ?? []).map((diagnostic) => diagnostic.code)].join(' · '),
+        };
     }
-    return { code: 'plugin_action_failed', message: 'The list could not be read.' };
+    if (cause instanceof Error) {
+        return { code: 'plugin_action_failed', message: cause.message, retryable: true, detail: cause.message };
+    }
+    return { code: 'plugin_action_failed', message: 'The list could not be read.', retryable: true };
 }
 
 /**

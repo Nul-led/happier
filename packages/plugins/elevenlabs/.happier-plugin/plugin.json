@@ -135,8 +135,7 @@
         },
         "client": {
           "artifactId": "voice-runtime",
-          "exportName": "activate",
-          "modulePath": "./ui/voice"
+          "exportName": "activate"
         },
         "credentials": {
           "hostMediated": {

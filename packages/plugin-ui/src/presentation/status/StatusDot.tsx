@@ -36,6 +36,13 @@ export type HappierStatusDotProps = Readonly<{
   /** Keep the pulsing state visible while disabling the animation. */
   animationEnabled?: boolean;
   /**
+   * A soft ring behind the dot, in this colour (a themed tint such as the
+   * success state's background). The ring is concentric and twice the dot's
+   * size; it is drawn under the dot and never intercepts input. This is the one
+   * halo composition: services, launchpad and stream dots all draw it here.
+   */
+  halo?: string;
+  /**
    * The resolved reduced-motion preference. When omitted the environment value
    * is used; when there is no environment the dot animates.
    */
@@ -49,6 +56,7 @@ function accessibilityProps(accessibilityLabel: string | undefined) {
       accessibilityLabel,
     }
     : {
+      'aria-hidden': true,
       accessibilityElementsHidden: true,
       importantForAccessibility: 'no-hide-descendants' as const,
     };
@@ -63,11 +71,32 @@ function dotStyle(color: string, size: number): ViewStyle {
   };
 }
 
-export function HappierStatusDot(props: HappierStatusDotProps) {
-  if (!props.isPulsing || props.animationEnabled === false) {
-    return <StaticStatusDot {...props} />;
-  }
-  return <MotionAwareStatusDot {...props} />;
+export function HappierStatusDot({ halo, ...props }: HappierStatusDotProps) {
+  const dot = !props.isPulsing || props.animationEnabled === false
+    ? <StaticStatusDot {...props} />
+    : <MotionAwareStatusDot {...props} />;
+  if (!halo) return dot;
+  return (
+    <View
+      testID={props.testID ? `${props.testID}-halo` : undefined}
+      pointerEvents="none"
+      style={haloStyle(props.size ?? DEFAULT_STATUS_DOT_SIZE, halo)}
+    >
+      {dot}
+    </View>
+  );
+}
+
+function haloStyle(size: number, color: string): ViewStyle {
+  const ring = size * 2;
+  return {
+    width: ring,
+    height: ring,
+    borderRadius: ring / 2,
+    backgroundColor: color,
+    alignItems: 'center',
+    justifyContent: 'center',
+  };
 }
 
 function MotionAwareStatusDot(props: HappierStatusDotProps) {

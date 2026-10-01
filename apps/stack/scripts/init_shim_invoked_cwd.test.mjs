@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { dirname, join } from 'node:path';
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -168,9 +168,14 @@ test('hstack init shim prefers the current PATH node for service-mode repo CLI l
   const fakeBinDir = join(tmp, 'bin');
   const pathNodePath = join(fakeBinDir, 'node');
   const pinnedNodePath = join(tmp, 'pinned-node');
+  const toolBinDir = join(tmp, 'tool-bin');
 
   try {
     await mkdir(join(fakeCliRoot, 'bin'), { recursive: true });
+    await mkdir(toolBinDir, { recursive: true });
+    await Promise.all(['grep', 'head', 'sed'].map((command) => (
+      symlink(`/usr/bin/${command}`, join(toolBinDir, command))
+    )));
     await mkdir(fakeBinDir, { recursive: true });
 
     await writeFile(
@@ -250,9 +255,12 @@ test('hstack init shim falls back to HAPPIER_STACK_NODE when PATH has no node', 
   const workspaceDir = join(tmp, 'workspace');
   const fakeCliRoot = join(tmp, 'fake-cli-root');
   const pinnedNodePath = join(tmp, 'pinned-node');
+  const toolBinDir = join(tmp, 'tool-bin');
 
   try {
     await mkdir(join(fakeCliRoot, 'bin'), { recursive: true });
+    await mkdir(toolBinDir, { recursive: true });
+    await Promise.all(['grep', 'head', 'sed'].map((tool) => symlink(`/usr/bin/${tool}`, join(toolBinDir, tool))));
 
     await writeFile(
       join(fakeCliRoot, 'bin', 'hstack.mjs'),
@@ -296,7 +304,7 @@ test('hstack init shim falls back to HAPPIER_STACK_NODE when PATH has no node', 
       {
         cwd: rootDir,
         env: fixtureEnv({
-          PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+          PATH: toolBinDir,
           HAPPIER_STACK_NODE: pinnedNodePath,
           HAPPIER_STACK_SERVICE_MODE: '1',
         }),
@@ -320,9 +328,14 @@ test('hstack init shim fails clearly when repo CLI mode has no node available', 
   const canonicalHomeDir = join(tmp, 'canonical');
   const workspaceDir = join(tmp, 'workspace');
   const fakeCliRoot = join(tmp, 'fake-cli-root');
+  const toolBinDir = join(tmp, 'tool-bin');
 
   try {
     await mkdir(join(fakeCliRoot, 'bin'), { recursive: true });
+    await mkdir(toolBinDir, { recursive: true });
+    await Promise.all(['grep', 'head', 'sed'].map((command) => (
+      symlink(`/usr/bin/${command}`, join(toolBinDir, command))
+    )));
     await writeFile(join(fakeCliRoot, 'bin', 'hstack.mjs'), 'process.exit(0);\n', 'utf8');
 
     const initRes = await runNode(
@@ -346,7 +359,7 @@ test('hstack init shim fails clearly when repo CLI mode has no node available', 
       {
         cwd: rootDir,
         env: fixtureEnv({
-          PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+          PATH: toolBinDir,
           HAPPIER_STACK_NODE: join(tmp, 'missing-node'),
         }),
       }

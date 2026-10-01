@@ -11,7 +11,7 @@ use std::{
 
 #[cfg(desktop)]
 use tauri::{
-    path::BaseDirectory, App, AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition,
+    path::BaseDirectory, AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition,
     PhysicalSize, Runtime, State, WindowEvent,
 };
 
@@ -144,21 +144,9 @@ fn clamp_window_rect_to_monitor(mut rect: Rect, monitor: Rect) -> Rect {
 }
 
 #[cfg(desktop)]
-fn resolve_state_path<R: Runtime>(app: &App<R>) -> tauri::Result<PathBuf> {
-    app.path()
-        .resolve("window-state/main.json", BaseDirectory::AppConfig)
-}
-
-#[cfg(desktop)]
 fn resolve_state_path_handle(app: &AppHandle) -> tauri::Result<PathBuf> {
     app.path()
         .resolve("window-state/main.json", BaseDirectory::AppConfig)
-}
-
-#[cfg(desktop)]
-fn resolve_mode_path<R: Runtime>(app: &App<R>) -> tauri::Result<PathBuf> {
-    app.path()
-        .resolve("window-state/mode.json", BaseDirectory::AppConfig)
 }
 
 #[cfg(desktop)]
@@ -344,13 +332,9 @@ fn apply_main_window_rect<R: Runtime>(
     }
 }
 
-pub fn register<R: Runtime>(app: &mut App<R>) -> tauri::Result<()> {
-    let Some(window) = app.get_webview_window("main") else {
-        return Ok(());
-    };
-
-    let state_path = resolve_state_path(app)?;
-    let mode_path = resolve_mode_path(app)?;
+pub fn configure_main_window(app: &AppHandle, window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let state_path = resolve_state_path_handle(app)?;
+    let mode_path = resolve_mode_path_handle(app)?;
     let persisted = read_json(&state_path);
     let persisted_mode = read_mode(&mode_path);
     let initial_mode = resolve_initial_window_mode(persisted_mode, persisted.is_some());

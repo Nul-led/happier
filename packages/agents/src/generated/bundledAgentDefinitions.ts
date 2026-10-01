@@ -2,12 +2,18 @@
  * GENERATED FILE CONTRACT (PS-04)
  *
  * This file is emitted by:
- * - `scripts/migrations/extensions/generateBundledPluginEntries.ts`
+ * - `apps/cli/scripts/build-owned/generateBundledPluginEntries.ts`
  */
 
 import type { AgentDefinition } from '../definitions/agentDefinition.js';
 
 type BundledAgentDefinition = AgentDefinition;
+
+export const BUNDLED_AGENT_NATIVE_HOME_ENVIRONMENT_KEYS: readonly string[] | null = Object.freeze([
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "PI_CODING_AGENT_DIR"
+]);
 
 export const BUNDLED_AGENT_DEFINITION_IDS: readonly string[] = Object.freeze([
   "antigravity",
@@ -39,7 +45,8 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "loginLaunches": [
         {
           "args": [],
-          "kind": "primary"
+          "kind": "primary",
+          "target": "agent_acp"
         }
       ],
       "machineLoginKey": "antigravity-cli",
@@ -213,7 +220,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "persisted": true
     },
     "tools": {
-      "delivery": "shell_bridge",
+      "delivery": "native_mcp",
       "support": "experimental"
     }
   },
@@ -304,6 +311,16 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
           ]
         }
       },
+      "nativeUpdate": {
+        "args": [
+          "update"
+        ],
+        "installPaths": [
+          ".local/share/claude",
+          ".local/bin/claude.exe"
+        ]
+      },
+      "npmPackageName": "@anthropic-ai/claude-code",
       "recommendationOrder": 10
     }
   },
@@ -382,6 +399,8 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
   "id": "claude",
   "modelConfig": {
     "allowedModes": [
+      "claude-fable-5-1",
+      "claude-opus-5-5",
       "claude-opus-5",
       "claude-sonnet-5",
       "claude-fable-5",
@@ -396,8 +415,19 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
     ],
     "defaultMode": "default",
     "dynamicProbe": "auto",
+    "dynamicProbeControl": {
+      "accountSettingId": "claudeDynamicModelProbeEnabled",
+      "environmentVariable": "HAPPIER_CLAUDE_DYNAMIC_MODEL_PROBE_ENABLED"
+    },
     "nativeCatalogObservation": {
       "connectedServiceId": "claude-subscription",
+      "nativeBearer": {
+        "fileId": ".credentials.json",
+        "jsonPath": [
+          "claudeAiOauth",
+          "accessToken"
+        ]
+      },
       "providerLocalId": "anthropic",
       "purpose": "model_upstream"
     },
@@ -405,7 +435,105 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
     "staticModels": [
       {
         "contextWindowTokens": 1000000,
-        "description": "Latest highest-capability Claude model for the hardest coding and reasoning tasks.",
+        "description": "Latest Claude model for demanding reasoning and long-running agentic work.",
+        "id": "claude-fable-5-1",
+        "modelOptions": [
+          {
+            "currentValue": "high",
+            "id": "reasoning_effort",
+            "name": "Thinking",
+            "options": [
+              {
+                "name": "Low",
+                "value": "low"
+              },
+              {
+                "name": "Medium",
+                "value": "medium"
+              },
+              {
+                "name": "High",
+                "value": "high"
+              },
+              {
+                "name": "XHigh",
+                "value": "xhigh"
+              },
+              {
+                "name": "Max",
+                "value": "max"
+              }
+            ],
+            "type": "select"
+          },
+          {
+            "currentValue": "false",
+            "description": "Maximum coding effort. Forces XHigh Thinking effort while enabled.",
+            "id": "ultracode",
+            "name": "Ultracode",
+            "overridesWhenOn": {
+              "forcedValue": "xhigh",
+              "optionIds": [
+                "reasoning_effort"
+              ]
+            },
+            "type": "boolean"
+          }
+        ],
+        "name": "Fable 5.1"
+      },
+      {
+        "contextWindowTokens": 1000000,
+        "description": "Latest Opus model for long-running agentic coding and knowledge work.",
+        "id": "claude-opus-5-5",
+        "modelOptions": [
+          {
+            "currentValue": "medium",
+            "id": "reasoning_effort",
+            "name": "Thinking",
+            "options": [
+              {
+                "name": "Low",
+                "value": "low"
+              },
+              {
+                "name": "Medium",
+                "value": "medium"
+              },
+              {
+                "name": "High",
+                "value": "high"
+              },
+              {
+                "name": "XHigh",
+                "value": "xhigh"
+              },
+              {
+                "name": "Max",
+                "value": "max"
+              }
+            ],
+            "type": "select"
+          },
+          {
+            "currentValue": "false",
+            "description": "Maximum coding effort. Forces XHigh Thinking effort while enabled.",
+            "id": "ultracode",
+            "name": "Ultracode",
+            "overridesWhenOn": {
+              "forcedValue": "xhigh",
+              "optionIds": [
+                "reasoning_effort"
+              ]
+            },
+            "type": "boolean"
+          }
+        ],
+        "name": "Opus 5.5"
+      },
+      {
+        "contextWindowTokens": 1000000,
+        "description": "Prior Opus model for complex coding and reasoning tasks.",
         "id": "claude-opus-5",
         "modelOptions": [
           {
@@ -503,7 +631,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       },
       {
         "contextWindowTokens": 1000000,
-        "description": "Newest highest-capability generally available Claude model for the hardest coding and reasoning tasks.",
+        "description": "Prior Fable model for demanding coding and reasoning tasks.",
         "id": "claude-fable-5",
         "modelOptions": [
           {
@@ -601,7 +729,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       },
       {
         "contextWindowTokens": 1000000,
-        "description": "Newest highest-capability Claude model for the hardest coding and reasoning tasks.",
+        "description": "Earlier Opus model for complex coding and reasoning tasks.",
         "id": "claude-opus-4-8",
         "modelOptions": [
           {
@@ -802,6 +930,20 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
     "supportsFreeform": true,
     "supportsSelection": true
   },
+  "releasedOutputTranscriptRecordReader": {
+    "nonTranscriptRecordTypes": [
+      "file-history-snapshot",
+      "change",
+      "queue-operation",
+      "rate_limit_event",
+      "attachment",
+      "last-prompt",
+      "mode",
+      "pr-link",
+      "tool_progress",
+      "command_lifecycle"
+    ]
+  },
   "sessionModeDescriptor": {
     "runtimeSwitch": "provider-native",
     "semantics": "agent-modes",
@@ -902,6 +1044,15 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "manual": {
         "kind": "command"
       },
+      "nativeUpdate": {
+        "args": [
+          "update"
+        ],
+        "installPaths": [
+          ".codex/packages/standalone"
+        ]
+      },
+      "npmPackageName": "@openai/codex",
       "recommendationOrder": 20
     }
   },
@@ -952,6 +1103,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
     "id": "codex",
     "localControl": {
       "attachStrategy": "provider_attach",
+      "remoteWritable": true,
       "supported": true,
       "topology": "shared"
     },
@@ -1060,6 +1212,11 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
           "runtimeHandle": "whenPresent"
         },
         {
+          "key": "appServerTransport",
+          "kind": "trimmedString",
+          "runtimeHandle": "whenPresent"
+        },
+        {
           "key": "home",
           "kind": "trimmedString",
           "runtimeHandle": "whenPresent"
@@ -1101,6 +1258,11 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
           },
           {
             "key": "appServerEndpoint",
+            "kind": "trimmedString",
+            "runtimeHandle": "whenPresent"
+          },
+          {
+            "key": "appServerTransport",
             "kind": "trimmedString",
             "runtimeHandle": "whenPresent"
           },
@@ -1237,7 +1399,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "persisted": true
     },
     "tools": {
-      "delivery": "shell_bridge",
+      "delivery": "native_mcp",
       "support": "experimental"
     }
   },
@@ -1286,6 +1448,14 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "managed": null,
       "manual": {
         "kind": "vendor_recipe"
+      },
+      "nativeUpdate": {
+        "args": [
+          "update"
+        ],
+        "installPaths": [
+          ".local/share/cursor-agent"
+        ]
       }
     }
   },
@@ -1326,7 +1496,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "persisted": true
     },
     "tools": {
-      "delivery": "shell_bridge",
+      "delivery": "native_mcp",
       "support": "experimental"
     }
   },
@@ -2027,7 +2197,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "persisted": true
     },
     "tools": {
-      "delivery": "shell_bridge",
+      "delivery": "native_mcp",
       "support": "experimental"
     }
   },
@@ -2430,6 +2600,14 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "manual": {
         "kind": "command"
       },
+      "nativeUpdate": {
+        "args": [
+          "upgrade"
+        ],
+        "installPaths": [
+          ".opencode/bin"
+        ]
+      },
       "recommendationOrder": 40
     }
   },
@@ -2474,9 +2652,6 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
           "overrides": {
             "localControl": null,
             "sessionCapabilities": {
-              "sessionFork": {
-                "fromMessage": "unsupported"
-              },
               "usageLimitRecovery": {
                 "checkNow": "unsupported"
               }
@@ -2495,7 +2670,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
     "sessionCapabilities": {
       "sessionFork": {
         "conversation": "supported",
-        "fromMessage": "supported"
+        "fromMessage": "unsupported"
       },
       "sessionListing": "supported",
       "sessionRollback": {
@@ -2775,7 +2950,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
         "conversation": "unsupported",
         "fromMessage": "unsupported"
       },
-      "sessionListing": "unsupported",
+      "sessionListing": "supported",
       "sessionRollback": {
         "conversation": "unsupported"
       }
@@ -2785,7 +2960,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "persisted": true
     },
     "tools": {
-      "delivery": "shell_bridge",
+      "delivery": "native_mcp",
       "support": "experimental"
     }
   },
@@ -2801,11 +2976,11 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
     "supportsSelection": true
   },
   "sessionModeDescriptor": {
-    "runtimeSwitch": "none",
-    "semantics": "none",
-    "source": "none"
+    "runtimeSwitch": "acp-setSessionMode",
+    "semantics": "agent-modes",
+    "source": "acp"
   },
-  "sessionModesKind": "none"
+  "sessionModesKind": "acpAgentModes"
 }) as const),
   "coderabbit": Object.freeze(({
   "cli": {

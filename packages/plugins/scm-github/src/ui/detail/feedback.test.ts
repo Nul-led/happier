@@ -218,6 +218,10 @@ describe('the GitHub feedback projection', () => {
           id: 'PRR_old', author: 'octocat', body: 'Please revise.', state: 'CHANGES_REQUESTED',
           submittedAtMs: 100, url: null,
         },
+        {
+          id: 'PRR_unknown_time', author: 'octocat', body: '', state: 'COMMENTED',
+          submittedAtMs: null, url: null,
+        },
       ],
       threads: [],
       reviewDecision: 'approved',

@@ -133,7 +133,8 @@ function supervisorBackgroundHarness(input: Readonly<{
             caller: {
               kind: 'plugin',
               pluginId: background.plugin.id,
-              immutableGenerationId: 'discord-generation-1',
+              occurrenceId: 'discord-generation-1',
+              sourceCustody: { kind: 'managed', immutableGenerationId: 'discord-generation-1', installSource: 'npm' },
               contribution: background.contribution,
               materialization: {
                 machineId: 'discord-supervisor-fixture-machine',
@@ -190,7 +191,8 @@ function channelsCoreContext(): PluginInvocationContext {
     caller: {
       kind: 'plugin',
       pluginId: 'happier.channels',
-      immutableGenerationId: 'channels-generation-1',
+      occurrenceId: 'channels-generation-1',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'channels-generation-1', installSource: 'npm' },
       contribution: {
         id: 'connection-delete-v1',
         qualifiedId: 'happier.channels/actions/connection-delete-v1',

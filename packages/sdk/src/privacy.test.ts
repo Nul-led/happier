@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
+import { Server as NotificationServer } from 'socket.io';
 
 import tweetnacl from 'tweetnacl';
 import { describe, expect, it } from 'vitest';
@@ -217,12 +218,15 @@ async function serve(params: Readonly<{
   const server = createServer((request, response) => {
     void handle(request, response).catch((error: unknown) => { failures.push(error); send(response, {}, 500); });
   });
+  const notifications = new NotificationServer(server, { path: '/v1/updates/' });
+  const notificationAuth: unknown[] = [];
+  notifications.on('connection', (socket) => { notificationAuth.push(socket.handshake.auth); });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Expected TCP address');
-  return { endpoint: `http://127.0.0.1:${address.port}`, captured, failures, send,
-    close: async () => { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); },
+  return { endpoint: `http://127.0.0.1:${address.port}`, captured, failures, send, notificationAuth,
+    close: async () => { server.closeAllConnections(); await new Promise<void>((resolve) => notifications.close(() => resolve())); },
   };
 }
 
@@ -242,6 +246,7 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
         teamId: 'private-team-sentinel',
       })).resolves.toEqual({ resources: [], nextCursor: null });
       expect(server.failures).toEqual([]);
+      expect(server.notificationAuth).toEqual([]);
       const actionCall = server.captured.find((call) => call.path.startsWith('/v1/actions/'));
       expect(actionCall?.path).toBe('/v1/actions/teams.credentials.entitled.list');
       expect(actionCall ? JSON.parse(actionCall.body).v : undefined).toBe(2);
@@ -526,6 +531,9 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
       expect(completed).toContain('execution.run.stream.cancel');
       expect(completed).toContain('transcript.unfollow');
       expect(server.failures).toEqual([]);
+      expect(server.notificationAuth).toEqual([expect.objectContaining({
+        token: bearer, clientType: 'session-scoped', sessionId: 'session-1',
+      })]);
       expect(server.captured.filter((call) => call.path.endsWith('/encryption-access'))).toHaveLength(1);
       expect(server.captured.filter((call) => call.path.startsWith('/v1/actions/'))
         .every((call) => JSON.parse(call.body).v === 2)).toBe(true);

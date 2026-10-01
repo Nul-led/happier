@@ -14,11 +14,11 @@ function seed(overrides: Partial<PluginInvocationServicesSeed> = {}): PluginInvo
     return Object.freeze({
         plugin: Object.freeze({ id: 'acme.alpha', version: '1.2.3' }),
         contribution: Object.freeze({ id: 'run', qualifiedId: 'acme.alpha/actions/run' }),
-        generation: '7',
+        occurrenceId: '7',
         correlationId: 'correlation-host-owned',
         surface: 'cli',
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         ...overrides,
     });
 }
@@ -37,7 +37,7 @@ describe('stable invocation logger service', () => {
         const invocationSeed = seed();
         const scope = {
             pluginId: invocationSeed.plugin.id,
-            generation: invocationSeed.generation,
+            occurrenceId: invocationSeed.occurrenceId,
             correlationId: invocationSeed.correlationId,
         };
         secretRedactor.beginInvocation(scope, invocationSeed.signal);
@@ -84,7 +84,7 @@ describe('stable invocation logger service', () => {
         const revokedController = new AbortController();
         const revokedScope = {
             pluginId: invocationSeed.plugin.id,
-            generation: invocationSeed.generation,
+            occurrenceId: invocationSeed.occurrenceId,
             correlationId: 'revoked-correlation',
         };
         secretRedactor.beginInvocation(revokedScope, revokedController.signal);
@@ -105,12 +105,12 @@ describe('stable invocation logger service', () => {
         });
         const scope = {
             pluginId: invocationSeed.plugin.id,
-            generation: invocationSeed.generation,
+            occurrenceId: invocationSeed.occurrenceId,
             correlationId: invocationSeed.correlationId,
         };
         const siblingScope = {
             pluginId: invocationSeed.plugin.id,
-            generation: invocationSeed.generation,
+            occurrenceId: invocationSeed.occurrenceId,
             correlationId: 'concurrent-sibling',
         };
         secretRedactor.beginInvocation(scope, invocationSeed.signal);
@@ -134,17 +134,17 @@ describe('stable invocation logger service', () => {
         secretRedactor.completeInvocation(siblingScope);
         const retiredScope = {
             pluginId: invocationSeed.plugin.id,
-            generation: invocationSeed.generation,
-            correlationId: 'retired-generation',
+            occurrenceId: invocationSeed.occurrenceId,
+            correlationId: 'retired-occurrenceId',
         };
         secretRedactor.beginInvocation(retiredScope, invocationSeed.signal);
         secretRedactor.registerRaw(retiredScope, 'registered-before-retirement');
-        secretRedactor.retireGeneration(invocationSeed.generation, invocationSeed.plugin.id);
-        secretRedactor.registerRaw(retiredScope, 'late-after-generation-retirement');
+        secretRedactor.retireGeneration(invocationSeed.occurrenceId, invocationSeed.plugin.id);
+        secretRedactor.registerRaw(retiredScope, 'late-after-occurrenceId-retirement');
         expect(secretRedactor.redact(retiredScope, 'registered-before-retirement'))
             .toBe('registered-before-retirement');
-        expect(secretRedactor.redact(retiredScope, 'late-after-generation-retirement'))
-            .toBe('late-after-generation-retirement');
+        expect(secretRedactor.redact(retiredScope, 'late-after-occurrenceId-retirement'))
+            .toBe('late-after-occurrenceId-retirement');
     });
 
     it('injects immutable host identity and preserves every severity exactly', () => {
@@ -162,7 +162,7 @@ describe('stable invocation logger service', () => {
             context: {
                 plugin: { id: 'acme.alpha', version: '1.2.3' },
                 contribution: { id: 'run', qualifiedId: 'acme.alpha/actions/run' },
-                generation: '7',
+                occurrenceId: '7',
                 correlationId: 'correlation-host-owned',
                 surface: 'cli',
             },
@@ -257,7 +257,7 @@ describe('stable invocation logger service', () => {
         const secretRedactor = createPluginInvocationSecretRedactor();
         const scope = {
             pluginId: invocationSeed.plugin.id,
-            generation: invocationSeed.generation,
+            occurrenceId: invocationSeed.occurrenceId,
             correlationId: invocationSeed.correlationId,
         };
         secretRedactor.beginInvocation(scope, invocationSeed.signal);
@@ -364,7 +364,7 @@ describe('stable invocation logger service', () => {
         let current = false;
         const staleCapture = capture();
         const stale = createPluginInvocationLogger({
-            seed: seed({ isGenerationCurrent: () => current }),
+            seed: seed({ isOccurrenceCurrent: () => current }),
             sink: staleCapture.sink,
             now: () => 123,
         });
@@ -384,11 +384,11 @@ describe('stable invocation logger service', () => {
         expect(abortedCapture.records).toEqual([]);
     });
 
-    it('rechecks generation after sanitizing plugin-controlled fields', () => {
+    it('rechecks occurrenceId after sanitizing plugin-controlled fields', () => {
         let current = true;
         const { records, sink } = capture();
         const logger = createPluginInvocationLogger({
-            seed: seed({ isGenerationCurrent: () => current }),
+            seed: seed({ isOccurrenceCurrent: () => current }),
             sink,
             now: () => 123,
         });
@@ -404,7 +404,7 @@ describe('stable invocation logger service', () => {
         const runtimeLogger = logger as unknown as Readonly<{
             info(message: string, fields: Readonly<Record<string, unknown>>): void;
         }>;
-        runtimeLogger.info('must not cross generation', fields);
+        runtimeLogger.info('must not cross occurrenceId', fields);
 
         expect(records).toEqual([]);
     });

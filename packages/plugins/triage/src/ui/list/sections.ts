@@ -1,11 +1,7 @@
-import type { ListSectionData } from '@happier-dev/plugin-ui';
+import type { TriageSourceWorkflowSubjectV1 } from '@happier-dev/triage-protocol/v1';
 
-import { CORPUS_LANE, CORPUS_LANES, type CorpusLaneV1 } from '../../corpus/fold/lane.js';
-import {
-  triageEntryRowKey,
-  type TriageListRowV1,
-  type TriageListWindowV1,
-} from '../../projection/listWindow.js';
+import { CORPUS_LANE } from '../../corpus/fold/lane.js';
+import { triageEntryRowKey, type TriageListRowV1 } from '../../projection/listWindow.js';
 import type { TriagePinnedEntryV1 } from '../marks/pinCommand.js';
 import {
   indexTriagePinsByEntry,
@@ -16,161 +12,113 @@ import {
 } from '../marks/pinnedRows.js';
 
 /**
- * The section plan over the mounted window and the reader's durable pins.
+ * The PRs & Issues rows and their ONE grouping axis (PLAN.md r0.41): **Needs you / With an agent / In review /
+ * Everything else**, decided from facts the window already carries, never from a provider id.
  *
- * Sections are a grouping of the window's already-ordered rows, never a second
- * ordering: the window owner decided the order once, and this module only cuts
- * it into the canonical lanes. A row therefore never changes position because
- * it changed section.
+ * The axis is handed to the Collection model as `groups`, which cuts the window's already-ordered rows into
+ * groups; it is never a second ordering, so an entry never moves within its group because it changed group.
  *
- * Pinned is the one section whose membership does not come from a pass. It is
- * ordered by the marks query — newest pin first — and a pinned entry is removed
- * from its lane rather than rendered in both places: one entry is one row, the
- * public `List` requires a unique key per row, and a reader who saw their pin
- * twice would reasonably believe they had pinned it twice.
- *
- * The plan is handed to the public `List`'s sectioned arm, which owns the
- * virtualizer, the flattened traversal order, the roving tab stop and the
- * pending-focus reveal (`core/SURFACE.md` §1.2, §4). Triage adds no section
- * list, no header cell and no navigation of its own — and `List` itself drops a
- * section that has no rows, so an empty lane leaves no labelled header behind.
- *
- * **A section that is not finished says so as its own last row**
- * (`core/SURFACE.md` §4.2). The public `List` publishes no `onEndReached` and
- * no per-section footer, and that turns out to be the better shape for this
- * product: an invisible scroll trigger *implies* a limit, while a labelled row
- * states and announces it. Its explicit Load more control is keyboard-reachable;
- * the statement itself is deliberately skipped by the primary-entry cursor
- * because it has no detail destination. A section that is genuinely exhausted
- * simply has no such row, so its absence is the honest claim of completeness
- * rather than a silence.
+ * **Pinned leads the axis.** A pin is the reader's own durable intent and has no fact to be grouped by (a pin
+ * this mount never walked has no observation at all), so pinned entries are one group ahead of the four, and a
+ * pinned entry is lifted out of its fact group rather than listed twice: one entry is one row, and a reader who
+ * saw their pin twice would believe they had pinned it twice.
  */
+export const TRIAGE_LIST_GROUPS_V1 = Object.freeze([
+  'pinned',
+  'needsYou',
+  'withAgent',
+  'inReview',
+  'everythingElse',
+] as const);
+export type TriageListGroupIdV1 = (typeof TRIAGE_LIST_GROUPS_V1)[number];
+
+/** A source-labelled status fact the source marked primary: the table's signal column, source-neutral. */
+export type TriageListRowSignalV1 = Readonly<{
+  label: string;
+  tone: 'success' | 'warning' | 'danger' | 'info' | 'neutral';
+}>;
+
+/** One Collection item: the display row, the group it is filed under, and what its peek and signal show. */
+export type TriageListItemV1 = Readonly<{
+  key: string;
+  row: TriageListDisplayRowV1;
+  group: TriageListGroupIdV1;
+  /** The source's bounded summary, for the peek. */
+  summary: string | null;
+  signal: TriageListRowSignalV1 | null;
+}>;
 
 /**
- * One item in a section: an entry, or the section's own statement that it is
- * not finished.
- *
- * A continuation row is deliberately NOT a `TriageListDisplayRowV1` with empty
- * fields. It has no canonical entry reference, so it can be neither selected,
- * pinned, focused as an entry, nor addressed by the reducer's visible order,
- * and a shape that let it pretend otherwise would put a row with no identity
- * into every one of those owners.
+ * Who acts next, from the facts on the row:
+ * - **Needs you**: an open entry with a required-attention reason (review requested, assigned, a source's own ask);
+ * - **With an agent**: a linked session is working on it;
+ * - **In review**: a pull request you opened that nothing asks of you, so it waits on someone else;
+ * - **Everything else**: the rest, including every finished entry.
  */
-export type TriageListSectionItemV1 =
-  | Readonly<{ kind: 'entry'; key: string; row: TriageListDisplayRowV1 }>
-  | Readonly<{ kind: 'continuation'; key: string }>;
-
-export type TriageListSectionV1 = ListSectionData<TriageListSectionItemV1>;
-
-/**
- * Which section items name a provider entry.
- *
- * A module constant rather than an inline lambda for the same reason
- * `readTriageListSectionItemKey` is: the shared `List` memoizes its selectable
- * roving entries on this identity, and a new function each render rebuilds them
- * for the whole window on every shell render.
- *
- * This one fact drives both primary activation and bulk eligibility. A
- * continuation row names no entry, so it stays a readable grid row whose
- * visible Load more button is reachable, while List neither invents a dead
- * primary action nor admits it into a bulk set. Entry rows retain both.
- */
-export function isTriageListSectionItemEntry(item: TriageListSectionItemV1): boolean {
-  return item.kind === 'entry';
+export function readTriageListGroupV1(input: Readonly<{
+  row: TriageListRowV1;
+  workflowSubject: TriageSourceWorkflowSubjectV1 | null;
+  agentActive: boolean;
+}>): Exclude<TriageListGroupIdV1, 'pinned'> {
+  const open = input.row.lane === CORPUS_LANE.open;
+  if (open && input.row.attention?.level === 'required') return 'needsYou';
+  if (open && input.agentActive) return 'withAgent';
+  const involvement = input.row.content?.outcome.viewer.involvement ?? [];
+  if (open && input.workflowSubject === 'pullRequest' && involvement.includes('author')) return 'inReview';
+  return 'everythingElse';
 }
 
-/** The one continuation-row key per section; unique across the whole `List`. */
-export function triageContinuationRowKey(sectionKey: string): string {
-  return `continuation:${sectionKey}`;
-}
-
-/** The pinned group's stable section identity. It is not a lane. */
-export const TRIAGE_PINNED_SECTION_KEY = 'pinned';
-
-/**
- * Lane titles. `Open` and `Done` are the two canonical lanes; attention is a
- * per-row fact and deliberately not a third section, so a row never moves
- * between groups because a provider changed its mind about involvement.
- */
-const LANE_TITLES: Readonly<Record<CorpusLaneV1, string>> = Object.freeze({
-  [CORPUS_LANE.open]: 'Open',
-  [CORPUS_LANE.done]: 'Done',
-});
-
-/**
- * Close one section's item list, appending its continuation row when the
- * section is not finished.
- *
- * Only a section that already has rows gets one: the row means "there is more
- * after these", so with nothing to come after, `List` drops the whole empty
- * section and the shell's own coverage-aware empty state is what tells the
- * reader the walk is unfinished (`core/SURFACE.md` §6.2).
- */
-function closeSection(
-  key: string,
-  rows: readonly TriageListDisplayRowV1[],
-  unfinished: boolean,
-): readonly TriageListSectionItemV1[] {
-  const items: TriageListSectionItemV1[] = rows.map(
-    (row) => Object.freeze({ kind: 'entry' as const, key: row.key, row }),
-  );
-  if (unfinished && items.length > 0) {
-    items.push(Object.freeze({ kind: 'continuation' as const, key: triageContinuationRowKey(key) }));
+function readSignal(row: TriageListRowV1 | null): TriageListRowSignalV1 | null {
+  for (const fact of row?.content?.outcome.snapshot.facts ?? []) {
+    if (fact.importance === 'primary' && fact.value.kind === 'status') {
+      return { label: fact.value.value, tone: fact.value.tone };
+    }
   }
-  return Object.freeze(items);
+  return null;
 }
 
-export function planTriageListSections(input: Readonly<{
+export function planTriageListItemsV1(input: Readonly<{
   rows: readonly TriageListRowV1[];
   pins: readonly TriagePinnedEntryV1[];
+  /** The admitted source contribution's workflow subject for this kind, or `null` when none was declared. */
+  workflowSubjectOf: (entryRef: TriageListRowV1['entryRef']) => TriageSourceWorkflowSubjectV1 | null;
   /**
-   * The window's own coverage claim (`projection/listWindow.ts`), which is
-   * `complete` exactly when every applicable lane reported exhaustion and the
-   * row bound did not truncate. It is read rather than re-derived from the
-   * lanes so that one owner decides what "finished" means.
+   * Whether a linked session is working on the entry. No list-level linked-session fact exists yet (session links
+   * are read per entry by the detail read), so the shell supplies none and nothing is filed under With an agent.
    */
-  coverage: TriageListWindowV1['coverage'];
-  /** Whether the bounded marks page left pins it did not carry. */
-  morePins: boolean;
-  /**
-   * How the rows say the words this plugin authors, and whether the window they
-   * came from is still current. Both belong to the row projection rather than
-   * to the renderer: a reader moving row by row never reaches the page's own
-   * freshness line, so each row states it (`core/SURFACE.md` §7.1).
-   */
+  agentActive?: (key: string) => boolean;
+  /** How the rows say the words this plugin authors, and whether the window they came from is current. */
   display?: TriageListRowProjectionOptionsV1;
-}>): readonly TriageListSectionV1[] {
+}>): readonly TriageListItemV1[] {
   const pinIndex = indexTriagePinsByEntry(input.pins);
   const projectedByKey = new Map<string, TriageListRowV1>();
   for (const row of input.rows) projectedByKey.set(triageEntryRowKey(row.entryRef), row);
 
-  const pinnedRows = input.pins.map((pin) => projectTriagePinnedRow(
-    pin,
-    projectedByKey.get(triageEntryRowKey(pin.entryRef)) ?? null,
-    input.display,
-  ));
-
-  const byLane = new Map<CorpusLaneV1, TriageListDisplayRowV1[]>();
-  for (const lane of CORPUS_LANES) byLane.set(lane, []);
-  for (const row of input.rows) {
-    const display = projectTriageWindowRow(row, pinIndex, input.display);
-    if (display.pinned) continue;
-    byLane.get(row.lane)?.push(display);
+  const items: TriageListItemV1[] = input.pins.map((pin) => {
+    const projected = projectedByKey.get(triageEntryRowKey(pin.entryRef)) ?? null;
+    const row = projectTriagePinnedRow(pin, projected, input.display);
+    return Object.freeze({
+      key: row.key,
+      row,
+      group: 'pinned' as const,
+      summary: projected?.content?.outcome.snapshot.summary ?? null,
+      signal: readSignal(projected),
+    });
+  });
+  for (const windowRow of input.rows) {
+    const row = projectTriageWindowRow(windowRow, pinIndex, input.display);
+    if (row.pinned) continue;
+    items.push(Object.freeze({
+      key: row.key,
+      row,
+      group: readTriageListGroupV1({
+        row: windowRow,
+        workflowSubject: input.workflowSubjectOf(windowRow.entryRef),
+        agentActive: input.agentActive?.(row.key) === true,
+      }),
+      summary: windowRow.content?.outcome.snapshot.summary ?? null,
+      signal: readSignal(windowRow),
+    }));
   }
-
-  // Pinned pages from the marks cursor and every other section pages this
-  // window, so the two carry different continuation facts rather than one
-  // blended "there might be more".
-  return Object.freeze([
-    Object.freeze({
-      key: TRIAGE_PINNED_SECTION_KEY,
-      title: 'Pinned',
-      data: closeSection(TRIAGE_PINNED_SECTION_KEY, pinnedRows, input.morePins),
-    }),
-    ...CORPUS_LANES.map((lane) => Object.freeze({
-      key: lane,
-      title: LANE_TITLES[lane],
-      data: closeSection(lane, byLane.get(lane) ?? [], input.coverage === 'partial'),
-    })),
-  ]);
+  return Object.freeze(items);
 }

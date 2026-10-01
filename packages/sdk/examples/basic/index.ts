@@ -8,7 +8,7 @@ if (!token) throw new Error('Create an API Token in Settings and set HAPPIER_TOK
 const happier = connect({ endpoint, token });
 const agentId = process.env.HAPPIER_AGENT_ID?.trim() || 'codex';
 try {
-  const session = await happier.sessions.spawn({ directory: process.cwd(), agent: agentId });
+  const session = await happier.sessions.spawn({ directory: { kind: 'path', path: process.cwd() }, agent: agentId });
   try {
     await session.sendAndWait('Say hello, then wait.', { timeoutSeconds: 300 });
     // Acquire and release one live transcript-follow lease; history is the finite result read.

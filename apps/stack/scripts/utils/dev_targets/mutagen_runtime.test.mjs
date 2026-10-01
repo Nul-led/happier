@@ -41,13 +41,19 @@ test('dev target Mutagen runtime resolves the same stack-scoped daemon state as 
 });
 
 test('Mutagen list parsing distinguishes ready, synchronizing, paused, unhealthy, and missing sessions', () => {
+  const connectedEndpoints = {
+    alpha: { connected: true, scanned: true },
+    beta: { connected: true, scanned: true },
+  };
   const ready = parseMutagenSyncList(JSON.stringify([{
     name: 'happier-linux', paused: false, status: 'watching', successfulCycles: 4,
+    ...connectedEndpoints,
   }]), 'happier-linux');
   assert.equal(ready.state, 'ready');
 
   const synchronizing = parseMutagenSyncList(JSON.stringify([{
     name: 'happier-linux', paused: false, status: 'watching', successfulCycles: 0,
+    ...connectedEndpoints,
   }]), 'happier-linux');
   assert.equal(synchronizing.state, 'synchronizing');
 
@@ -79,6 +85,8 @@ test('Mutagen list parsing keeps the initial synchronization closed until one cy
       name: 'happier-mac',
       paused: false,
       status,
+      alpha: { connected: true, scanned: false },
+      beta: { connected: true, scanned: false },
     }]), 'happier-mac');
     assert.equal(result.state, 'synchronizing', status);
   }
@@ -100,6 +108,8 @@ test('Mutagen list parsing allows commands against moving bytes after a complete
       paused: false,
       status,
       successfulCycles: 7,
+      alpha: { connected: true, scanned: true },
+      beta: { connected: true, scanned: true },
     }]), 'happier-mac');
     assert.equal(result.state, 'ready', status);
   }
@@ -153,6 +163,108 @@ test('Mutagen list parsing rejects a connected session with unresolved conflicts
 
   assert.equal(result.state, 'unhealthy');
   assert.equal(result.lastError, '1 unresolved synchronization conflict: packages/channels-contract');
+});
+
+test('Mutagen list parsing rejects nonterminal scan and transition problems including excluded counts', () => {
+  const base = (overrides = {}) => JSON.stringify([{
+    name: 'happier-mac',
+    paused: false,
+    status: 'watching',
+    successfulCycles: 7,
+    alpha: { connected: true, scanned: true, ...(overrides.alpha ?? {}) },
+    beta: { connected: true, scanned: true, ...(overrides.beta ?? {}) },
+    ...(overrides.session ?? {}),
+  }]);
+
+  const clean = parseMutagenSyncList(base(), 'happier-mac');
+  assert.equal(clean.state, 'ready');
+
+  for (const problem of [
+    { alpha: { scanProblems: [{ path: 'a.txt', error: 'permission denied' }] } },
+    { beta: { scanProblems: [{ path: 'b.txt', error: 'unreadable' }] } },
+    { alpha: { transitionProblems: [{ path: 'c.txt', error: 'apply failed' }] } },
+    { beta: { transitionProblems: [{ path: 'd.txt', error: 'apply failed' }] } },
+    { alpha: { scanProblems: [{ path: 'a.txt' }], excludedScanProblems: 3 } },
+    { beta: { transitionProblems: [{ path: 'd.txt' }], excludedTransitionProblems: 2 } },
+    { session: { excludedConflicts: 1, conflicts: [{ root: 'x' }] } },
+  ]) {
+    const result = parseMutagenSyncList(base(problem), 'happier-mac');
+    assert.equal(result.state, 'unhealthy', JSON.stringify(problem));
+  }
+
+  const excludedAlone = parseMutagenSyncList(base({
+    alpha: { excludedScanProblems: 2, scanProblems: [{ path: 'a.txt' }] },
+  }), 'happier-mac');
+  assert.equal(excludedAlone.state, 'unhealthy');
+});
+
+test('Mutagen list parsing requires connected and scanned endpoints for readiness', () => {
+  const build = (alpha, beta, extra = {}) => JSON.stringify([{
+    name: 'happier-mac',
+    paused: false,
+    status: 'watching',
+    successfulCycles: 7,
+    alpha,
+    beta,
+    ...extra,
+  }]);
+  const connectedScanned = { connected: true, scanned: true };
+
+  assert.equal(parseMutagenSyncList(build(connectedScanned, connectedScanned), 'happier-mac').state, 'ready');
+
+  const disconnected = parseMutagenSyncList(
+    build({ connected: false }, connectedScanned), 'happier-mac',
+  );
+  assert.equal(disconnected.state, 'unhealthy');
+
+  const missingEndpoint = parseMutagenSyncList(JSON.stringify([{
+    name: 'happier-mac', paused: false, status: 'watching', successfulCycles: 7,
+  }]), 'happier-mac');
+  assert.equal(missingEndpoint.state, 'unhealthy');
+
+  const unscanned = parseMutagenSyncList(
+    build({ connected: true, scanned: false }, connectedScanned), 'happier-mac',
+  );
+  assert.equal(unscanned.state, 'synchronizing');
+});
+
+test('Mutagen list parsing fails closed on malformed admission facts', () => {
+  const base = (overrides = {}) => JSON.stringify([{
+    name: 'happier-mac',
+    paused: false,
+    status: 'watching',
+    successfulCycles: 7,
+    conflicts: [],
+    alpha: { connected: true, scanned: true },
+    beta: { connected: true, scanned: true },
+    ...overrides,
+  }]);
+
+  for (const malformed of [
+    { paused: 'false' },
+    { conflicts: {} },
+    { excludedConflicts: -1 },
+    { alpha: { connected: true, scanned: true, scanProblems: {} } },
+    { beta: { connected: true, scanned: true, excludedTransitionProblems: 'none' } },
+  ]) {
+    const result = parseMutagenSyncList(base(malformed), 'happier-mac');
+    assert.equal(result.state, 'unhealthy', JSON.stringify(malformed));
+    assert.match(result.lastError ?? '', /malformed/i, JSON.stringify(malformed));
+  }
+});
+
+test('Mutagen list parsing keeps benign post-flush scanning ready when endpoints are clean', () => {
+  for (const status of ['scanning', 'reconciling', 'transitioning']) {
+    const result = parseMutagenSyncList(JSON.stringify([{
+      name: 'happier-mac',
+      paused: false,
+      status,
+      successfulCycles: 7,
+      alpha: { connected: true, scanned: true },
+      beta: { connected: true, scanned: true },
+    }]), 'happier-mac');
+    assert.equal(result.state, 'ready', status);
+  }
 });
 
 test('Mutagen conflict recovery recognizes deleted alpha roots blocked only by disposable replica artifacts', () => {

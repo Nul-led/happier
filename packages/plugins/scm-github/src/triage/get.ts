@@ -250,6 +250,8 @@ export type GithubPullRequestFactsV1 = Readonly<{
   draft: boolean;
   /** GitHub's provider-computed `mergeable_state`, when it stated one. */
   mergeableState: string | null;
+  /** Native mergeability is unknown while GitHub computes it. */
+  mergeable: boolean | null;
   /** The head commit this read observed, or `null` when the response carried none. */
   headRevision: string | null;
   /** The three revisions the public source snapshot can project after this one read. */
@@ -332,6 +334,7 @@ function readGithubPullRequestFacts(
     merged: raw.merged === true || mergedAt !== '',
     draft: raw.draft === true,
     mergeableState: readNonEmptyString(raw.mergeable_state),
+    mergeable: typeof raw.mergeable === 'boolean' ? raw.mergeable : null,
     headRevision,
     reviewRevision,
     sourceTip: reviewRevision === null ? null : readGithubPullRequestSourceTip(raw, reviewRevision),

@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { createEnvKeyScope } from '@/testkit/env/envScope'
 import { withTempDir } from '@/testkit/fs/tempDir'
 
+export { publishPinnedRunnerSnapshotFixture } from '../../../../../packages/cli-common/tests/pinnedRunnerSnapshot.fixture.mjs'
+
 const SPAWN_HAPPY_CLI_ENV_KEYS = [
   'HAPPIER_CLI_SUBPROCESS_RUNTIME',
   'HAPPIER_CLI_SUBPROCESS_ENTRYPOINT',

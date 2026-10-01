@@ -2,10 +2,12 @@ import {
   HappierStructuredInputV1Schema,
   readStructuredInputMentionSourcesV1,
 } from '@happier-dev/plugin-sdk/sessions';
+import type { AgentSessionInputFilesService } from '@happier-dev/plugin-sdk/agents/runtime';
 
 export type OpenCodePromptPart =
   | Readonly<{ type: 'text'; text: string }>
-  | Readonly<{ type: 'agent'; name: string }>;
+  | Readonly<{ type: 'agent'; name: string }>
+  | Readonly<{ type: 'file'; mime: string; filename?: string; url: string }>;
 
 export class OpenCodePromptProjectionError extends Error {
   constructor(
@@ -23,7 +25,9 @@ export class OpenCodePromptProjectionError extends Error {
 export function buildOpenCodePromptParts(params: Readonly<{
   text: string;
   structuredInput?: unknown;
-}>): readonly OpenCodePromptPart[] {
+  inputFiles?: AgentSessionInputFilesService;
+  signal?: AbortSignal;
+}>): readonly OpenCodePromptPart[] | Promise<readonly OpenCodePromptPart[]> {
   const structured = params.structuredInput === undefined
     ? null
     : HappierStructuredInputV1Schema.safeParse(params.structuredInput);
@@ -41,10 +45,7 @@ export function buildOpenCodePromptParts(params: Readonly<{
       'OpenCode server mode does not accept remote image references',
     );
   }
-  if (images.length > 0) {
-    // The public AgentRuntime context does not expose the host's trusted-upload byte resolver.
-    // Passing the path to OpenCode would bypass digest/size/MIME verification, so server mode
-    // must stay unavailable until it can consume the canonical media projection seam.
+  if (images.length > 0 && !params.inputFiles) {
     throw new OpenCodePromptProjectionError(
       'opencode_image_input_unsupported',
       'OpenCode server mode cannot consume verified image uploads safely',
@@ -58,20 +59,44 @@ export function buildOpenCodePromptParts(params: Readonly<{
 
   const parts: OpenCodePromptPart[] = [];
   if (params.text.length > 0) parts.push({ type: 'text', text: params.text });
-  for (const mention of mentionSources.vendorPluginMentions) {
-    parts.push({ type: 'agent', name: mention.vendorPluginRef });
-  }
-  for (const skill of mentionSources.skillMentions) {
-    parts.push({
-      type: 'text',
-      text: `Use the ${skill.name} skill for this request.`,
-    });
-  }
-  if (parts.length === 0) {
-    throw new OpenCodePromptProjectionError(
-      'opencode_structured_input_invalid',
-      'OpenCode input requires text or supported structured content',
-    );
-  }
-  return Object.freeze(parts);
+  const finishProjection = (): readonly OpenCodePromptPart[] => {
+    for (const mention of mentionSources.vendorPluginMentions) {
+      parts.push({ type: 'agent', name: mention.vendorPluginRef });
+    }
+    for (const skill of mentionSources.skillMentions) {
+      parts.push({
+        type: 'text',
+        text: `Use the ${skill.name} skill for this request.`,
+      });
+    }
+    if (parts.length === 0) {
+      throw new OpenCodePromptProjectionError(
+        'opencode_structured_input_invalid',
+        'OpenCode input requires text or supported structured content',
+      );
+    }
+    return Object.freeze(parts);
+  };
+  if (images.length === 0) return finishProjection();
+  return (async () => {
+    for (const image of images) {
+      const verified = await params.inputFiles!.readVerifiedImage(
+        image,
+        params.signal ? { signal: params.signal } : undefined,
+      );
+      if (!verified) {
+        throw new OpenCodePromptProjectionError(
+          'opencode_image_input_untrusted',
+          'OpenCode image upload could not be verified',
+        );
+      }
+      parts.push({
+        type: 'file',
+        mime: verified.mimeType,
+        ...(verified.filename ? { filename: verified.filename } : {}),
+        url: verified.url,
+      });
+    }
+    return finishProjection();
+  })();
 }

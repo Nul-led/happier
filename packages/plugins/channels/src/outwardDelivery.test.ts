@@ -94,12 +94,14 @@ function targetedProviderDeliveryContributions(): TargetedContributionsService {
         dispose() {},
         async readCurrent(): Promise<TargetedContributionSnapshot<TContribution>> {
           return {
-            generation: 'channels-test-generation',
+            occurrenceId: 'channels-test-occurrence',
+            sourceCustody: { kind: 'development', registeredRootId: 'channels-test-root' },
             contributions: [{
               contributor: {
                 pluginId: providerTransportOrigin.materializationRef.pluginId,
                 contributionId: 'delivery-test-provider',
-                immutableGenerationId: 'delivery-test-generation',
+                occurrenceId: 'delivery-test-occurrence',
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'delivery-test-generation', installSource: 'npm' },
               },
               protocol: { id: 'happier.channels/providers', version: 1 },
               operations: {
@@ -130,7 +132,6 @@ function providerConnectionRow() {
     providerPluginId: providerTransportOrigin.materializationRef.pluginId,
     providerContributionSelection: {
       contributionId: 'delivery-test-provider',
-      immutableGenerationId: 'delivery-test-generation',
     },
     providerSetupInput: { source: 'test' },
     credentialRef: null,

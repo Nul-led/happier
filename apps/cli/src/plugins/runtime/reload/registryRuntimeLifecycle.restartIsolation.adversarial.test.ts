@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
+import { PluginManifestV2Schema } from '@happier-dev/protocol';
 
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 import {
@@ -48,7 +49,7 @@ function createUnusedConnectedAccountsOwner(): StablePluginConnectedAccountsOwne
   });
 }
 
-type FixtureInstallInput = Omit<CommitPluginRegistryInstallationInput, 'preparedGeneration'> & Readonly<{
+type FixtureInstallInput = Omit<CommitPluginRegistryInstallationInput, 'preparedGeneration' | 'approvedAuthorityManifest'> & Readonly<{
   sourceRootPath: string;
   manifestRelativePath: string;
 }>;
@@ -68,7 +69,14 @@ async function installFixtureCandidate(
     createdAtMs: Date.now(),
   });
   try {
-    return await store.install({ ...installation, preparedGeneration });
+    return await store.install({
+      ...installation,
+      approvedAuthorityManifest: PluginManifestV2Schema.parse(createPluginManifestV2Fixture({
+        id: input.pluginId,
+        version: input.catalogRecord.install.manifestVersion,
+      })),
+      preparedGeneration,
+    });
   } finally {
     await preparedGeneration.cleanup();
   }
@@ -141,13 +149,13 @@ async function createPluginFixture(
             manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: version, trust, updatePolicy: 'reviewEveryUpdate' },
+          install: { mode: 'link', manifestVersion: version, trust, updatePolicy: 'allowed' },
           state: { enabled: true },
         },
       },
     }).plugins[pluginId]!,
     trust,
-    updatePolicy: 'reviewEveryUpdate' as const,
+    updatePolicy: 'allowed' as const,
     optionalAccess: Object.freeze([]),
   });
   return { counterPath, createInput, writeManifest };

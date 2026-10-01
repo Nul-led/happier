@@ -82,13 +82,12 @@ describe('subscribeSseJson', () => {
     expect(reader.cancel).not.toHaveBeenCalled();
   });
 
-  it('parses JSON data frames and ignores non-data SSE fields', async () => {
+  it('awaits each valid JSON frame before admitting the next, ignoring malformed and non-data frames', async () => {
     const encoder = new TextEncoder();
     const chunks = [
       // `id:` is parsed as a field rather than payload, but is not surfaced:
       // neither OpenCode event route supports resuming from one.
-      encoder.encode('id: evt-1\ndata: {"type":"hello"}\n\n'),
-      encoder.encode('event: message\ndata: {"type":"bye"}\n\n'),
+      encoder.encode('id: evt-1\ndata: {"type":"hello"}\n\ndata: malformed-json\n\nevent: message\ndata: {"type":"bye"}\n\n'),
       encoder.encode(': heartbeat\n\n'),
     ];
     const fetch = vi.fn(async () => ({
@@ -105,7 +104,12 @@ describe('subscribeSseJson', () => {
         }),
       },
     } as unknown as Response));
-    const onMessage = vi.fn();
+    const deliveries: string[] = [];
+    const onMessage = vi.fn(async (message: { type: string }) => {
+      deliveries.push(`${message.type}:start`);
+      await Promise.resolve();
+      deliveries.push(`${message.type}:complete`);
+    });
 
     const subscription = await subscribeSseJson<{ type: string }>({
       url: 'http://127.0.0.1:9999/global/event',
@@ -120,5 +124,6 @@ describe('subscribeSseJson', () => {
       [{ type: 'hello' }],
       [{ type: 'bye' }],
     ]);
+    expect(deliveries).toEqual(['hello:start', 'hello:complete', 'bye:start', 'bye:complete']);
   });
 });

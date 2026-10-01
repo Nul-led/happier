@@ -145,7 +145,7 @@ describe('plugin generation materialized-integrity contraction', () => {
     expect(references).toEqual([]);
   });
 
-  it('keeps bundled package integrity at the build boundary, outside runtime generation authority', async () => {
+  it('removes bundled immutable-generation artifact authority from runtime and build generation', async () => {
     const productionSources = await readAllProductionSources();
     const runtimeIntegrityReaders = productionSources.filter(({ source }) => (
       source.includes('BUNDLED_FIRST_PARTY_SOURCE_ARTIFACT_INTEGRITIES')
@@ -159,17 +159,12 @@ describe('plugin generation materialized-integrity contraction', () => {
       ),
       'utf8',
     );
-    const assignmentStart = generatorSource.indexOf(
-      'function assignBundledImmutableArtifactGenerationIds(',
+    expect(generatorSource).not.toContain(
+      'assignBundledImmutableArtifactGenerationIds',
     );
-    const assignmentEnd = generatorSource.indexOf(
-      'function createCanonicalWorkspacePackageRootsReader(',
-      assignmentStart,
+    expect(generatorSource).not.toContain('sourceArtifactIntegrity');
+    expect(generatorSource).not.toContain(
+      'generatedBundledPluginArtifacts',
     );
-    expect(assignmentStart).toBeGreaterThanOrEqual(0);
-    expect(assignmentEnd).toBeGreaterThan(assignmentStart);
-    const assignmentSource = generatorSource.slice(assignmentStart, assignmentEnd);
-    expect(assignmentSource).not.toContain('sourceArtifactIntegrity');
-    expect(assignmentSource).not.toContain('digest');
   });
 });

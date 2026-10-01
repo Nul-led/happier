@@ -2,6 +2,7 @@ import { defineAccountCollection } from '@happier-dev/plugin-sdk/collections';
 import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
 import {
     MAX_TRIAGE_IDENTIFIER_UTF8_BYTES_V1,
+    MAX_TRIAGE_LINKED_SESSIONS_PAGE_SIZE_V1,
     MAX_TRIAGE_TEXT_UTF8_BYTES_V1,
     TriageConfiguredSourceInstanceV1JsonSchema,
     TriageEntryRefV1JsonSchema,
@@ -60,6 +61,14 @@ const IDENTIFIER_SCHEMA = boundedText(MAX_TRIAGE_IDENTIFIER_UTF8_BYTES_V1);
 // ASCII bytes; the slash-qualified projection therefore reaches 513 bytes.
 const SOURCE_QUALIFIED_ID_SCHEMA = boundedText(513);
 const TEXT_SCHEMA = boundedText(MAX_TRIAGE_TEXT_UTF8_BYTES_V1);
+
+/** The two display values a mark keeps so it stays nameable on its own bytes. */
+const MARK_DISPLAY_SCHEMA: PluginJsonSchema = {
+    type: 'object',
+    properties: { title: TEXT_SCHEMA, scopeLabel: TEXT_SCHEMA },
+    required: ['title', 'scopeLabel'],
+    additionalProperties: false,
+};
 
 export const CORPUS_SOURCE_INSTANCES_COLLECTION = defineAccountCollection({
     id: CORPUS_SOURCE_INSTANCES_COLLECTION_ID,
@@ -208,10 +217,34 @@ export const CORPUS_USER_MARKS_COLLECTION = defineAccountCollection({
             [CORPUS_USER_MARKS_FIELD.pinned]: { type: 'boolean' },
             [CORPUS_USER_MARKS_FIELD.markedAtMs]: TIMESTAMP_MS_SCHEMA,
             [CORPUS_USER_MARKS_FIELD.entryRef]: TriageEntryRefV1JsonSchema,
-            [CORPUS_USER_MARKS_FIELD.displayAtMark]: {
+            [CORPUS_USER_MARKS_FIELD.displayAtMark]: MARK_DISPLAY_SCHEMA,
+            // The reader's fix-PR choice (`design/FIX-LINK.md`). Private payload:
+            // never projected, never indexed, sealed on an E2EE Account. Each
+            // list holds at most one detail page of refs; the writer refuses more.
+            [CORPUS_USER_MARKS_FIELD.fixPullRequests]: {
                 type: 'object',
-                properties: { title: TEXT_SCHEMA, scopeLabel: TEXT_SCHEMA },
-                required: ['title', 'scopeLabel'],
+                properties: {
+                    linked: {
+                        type: 'array',
+                        maxItems: MAX_TRIAGE_LINKED_SESSIONS_PAGE_SIZE_V1,
+                        items: {
+                            type: 'object',
+                            properties: {
+                                entryRef: TriageEntryRefV1JsonSchema,
+                                displayAtLink: MARK_DISPLAY_SCHEMA,
+                                linkedAtMs: TIMESTAMP_MS_SCHEMA,
+                            },
+                            required: ['entryRef', 'displayAtLink', 'linkedAtMs'],
+                            additionalProperties: false,
+                        },
+                    },
+                    dismissed: {
+                        type: 'array',
+                        maxItems: MAX_TRIAGE_LINKED_SESSIONS_PAGE_SIZE_V1,
+                        items: TriageEntryRefV1JsonSchema,
+                    },
+                },
+                required: ['linked', 'dismissed'],
                 additionalProperties: false,
             },
         },

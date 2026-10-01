@@ -40,6 +40,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Server as SocketIoServer } from 'socket.io';
 import tweetnacl from 'tweetnacl';
+import { MACHINE_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import {
@@ -287,6 +288,7 @@ function startHomeApplication({ mint, signingKey, invokeMachineRpc, storedConten
       },
       machines: {
         enabled: true,
+        peerMediation: { enabled: true },
         transfer: {
           enabled: true,
           directPeer: { enabled: true },
@@ -321,6 +323,21 @@ function startHomeApplication({ mint, signingKey, invokeMachineRpc, storedConten
     if (url === '/v1/auth/ping' && request.method === 'GET') {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    // A scoped Machine control RPC reads the Home's authenticated Machine row
+    // to resolve its persisted content mode. Serve the same published plain
+    // marker as the real Home route; omitting the row prevents the production
+    // transfer owner from reaching prepare, grant minting, or machine/1.
+    if (url === `/v1/machines/${MACHINE_ID}` && request.method === 'GET') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        machine: {
+          id: MACHINE_ID,
+          kind: 'persistent',
+          dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
+        },
+      }));
       return;
     }
     if (url === '/v1/features' || url === '/v1/features/authenticated') {

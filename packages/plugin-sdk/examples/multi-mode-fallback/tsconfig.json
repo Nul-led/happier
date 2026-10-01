@@ -13,6 +13,6 @@
     "skipLibCheck": true,
     "jsx": "react"
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "ui/**/*.ts", "ui/**/*.tsx", "build/**/*.ts", "pluginUiBuild.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "ui/**/*.ts", "ui/**/*.tsx", "build/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

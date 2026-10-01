@@ -106,6 +106,159 @@ function createUi(overrides?: Partial<PluginInteractions>): PluginInteractions {
 }
 
 describe('Codex app-server canonical interaction bridge', () => {
+  it('maps async multi-question agent messages through shared interactions and sends one Codex reply', async () => {
+    const fixture = createFixture();
+    const askQuestions = vi.fn(async () => ({
+      requestId: 'async-questions-1',
+      kind: 'questions' as const,
+      status: 'answered' as const,
+      answers: {
+        'async-question-0': { kind: 'singleChoice' as const, answer: { kind: 'choice' as const, choiceId: 'Production' } },
+        'async-question-1': { kind: 'text' as const, value: 'Ship after tests' },
+      },
+    }));
+    const sendUserMessage = vi.fn(async () => {});
+    const handleAsyncQuestionNotification = registerCodexAppServerInteractionHandlers({
+      client: fixture.client,
+      ui: createUi({ askQuestions }),
+      sendUserMessage,
+      getThreadId: () => 'thread-1',
+    });
+
+    handleAsyncQuestionNotification({
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: {
+        id: 'message-1',
+        type: 'agentMessage',
+        delivery: 'async',
+        text: 'Choose an environment\n- Staging\n- Production\n\nAdd release context',
+        questions: [
+          { title: 'Choose an environment', options: ['Staging', 'Production'] },
+          { title: 'Add release context' },
+        ],
+      },
+    });
+
+    await vi.waitFor(() => expect(sendUserMessage).toHaveBeenCalledTimes(1));
+    expect(askQuestions).toHaveBeenCalledWith({
+      kind: 'questions',
+      title: 'Codex has questions',
+      questions: [
+        {
+          id: 'async-question-0',
+          prompt: 'Choose an environment',
+          type: 'singleChoice',
+          required: true,
+          choices: [
+            { id: 'Staging', label: 'Staging' },
+            { id: 'Production', label: 'Production' },
+          ],
+          allowCustom: true,
+        },
+        {
+          id: 'async-question-1',
+          prompt: 'Add release context',
+          type: 'text',
+          required: true,
+        },
+      ],
+    }, expect.anything());
+    expect(sendUserMessage).toHaveBeenCalledWith({
+      idempotencyKey: expect.stringMatching(/^codex-async-question:/),
+      toolCallId: 'message-1',
+      text: '<send_user_message_question_reply>\n'
+        + '[{"answer":"Production","question":"Choose an environment","questionItemId":"[\\"request_user_input_async\\",\\"message-1\\",0]"},{"answer":"Ship after tests","question":"Add release context","questionItemId":"[\\"request_user_input_async\\",\\"message-1\\",1]"}]\n'
+        + '</send_user_message_question_reply>',
+    });
+  });
+
+  it('uses shared form limits and the Codex option projection for oversized async input', async () => {
+    const fixture = createFixture();
+    const askQuestions = vi.fn();
+    const sendUserMessage = vi.fn();
+    const handleAsyncQuestionNotification = registerCodexAppServerInteractionHandlers({
+      client: fixture.client,
+      ui: createUi({ askQuestions }),
+      sendUserMessage,
+      getThreadId: () => 'thread-1',
+    });
+
+    expect(handleAsyncQuestionNotification({
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: {
+        id: 'message-oversized',
+        type: 'agentMessage',
+        delivery: 'async',
+        text: 'An oversized form',
+        questions: Array.from({ length: 33 }, (_, index) => ({ title: `Question ${index + 1}` })),
+      },
+    })).toBe(false);
+    expect(askQuestions).not.toHaveBeenCalled();
+    expect(sendUserMessage).not.toHaveBeenCalled();
+
+    expect(handleAsyncQuestionNotification({
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: {
+        id: 'message-too-many-options',
+        type: 'agentMessage',
+        delivery: 'async',
+        text: 'A form with too many choices',
+        questions: [{
+          title: 'Choose one',
+          options: Array.from({ length: 65 }, (_, index) => `Option ${index + 1}`),
+        }],
+      },
+    })).toBe(true);
+    await vi.waitFor(() => expect(askQuestions).toHaveBeenCalledTimes(1));
+    const request = askQuestions.mock.calls[0]?.[0];
+    expect(request?.kind).toBe('questions');
+    if (request?.kind !== 'questions') throw new Error('Expected a questions request');
+    const question = request.questions[0];
+    expect(question?.type).toBe('singleChoice');
+    if (question?.type !== 'singleChoice' && question?.type !== 'multipleChoice') {
+      throw new Error('Expected a choice question');
+    }
+    expect(question.choices).toHaveLength(32);
+    expect(question.choices[0]?.label).toBe('Option 1');
+    expect(question.choices[31]?.label).toBe('Option 32');
+    expect(sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it('reports an unexpected async question service failure', async () => {
+    const fixture = createFixture();
+    const askQuestions = vi.fn(async () => {
+      throw new Error('interaction service failed');
+    });
+    const sendUserMessage = vi.fn();
+    const onAsyncQuestionDeliveryError = vi.fn();
+    const handleAsyncQuestionNotification = registerCodexAppServerInteractionHandlers({
+      client: fixture.client,
+      ui: createUi({ askQuestions }),
+      sendUserMessage,
+      onAsyncQuestionDeliveryError,
+      getThreadId: () => 'thread-1',
+    });
+
+    expect(handleAsyncQuestionNotification({
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: {
+        id: 'message-interaction-failure',
+        type: 'agentMessage',
+        delivery: 'async',
+        text: 'Choose one',
+        questions: [{ title: 'Choose one', options: ['First', 'Second'] }],
+      },
+    })).toBe(true);
+    await vi.waitFor(() => expect(onAsyncQuestionDeliveryError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'interaction service failed' }),
+    ));
+    expect(sendUserMessage).not.toHaveBeenCalled();
+  });
+
   it('registers all current app-server interaction methods and maps approvals without a provider-owned store', async () => {
     const fixture = createFixture();
     const requestApproval = vi.fn()

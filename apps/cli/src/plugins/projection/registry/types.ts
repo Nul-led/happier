@@ -21,6 +21,7 @@ import type {
   PluginOpenableContentViewerContributionV1,
   PluginPromptAssetContributionV1,
   PluginExecutionRunProfileContributionV2,
+  PluginRoleDeclarationV1,
   PluginHostedWebContributionV1,
   PluginSessionHeaderActionDescriptorV1,
   PluginTranscriptActivityContributionV1,
@@ -51,6 +52,7 @@ import type {
   VoiceModelPackContributionV1,
   VoiceProviderContribution,
   NormalizedPluginAccountCollectionContractV1,
+  PluginCollectionMigrationArtifactReferenceV1,
   PluginContributionPointV1,
   PluginJsonSchemaV2,
   PluginComposerAttachmentContributionV1,
@@ -63,8 +65,9 @@ import type {
   RehydratedPluginContributionPointOperationV1,
   RehydratedPluginContributionPointSurfaceV1,
 } from '@happier-dev/protocol';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import type { HostStructuredMessageDescriptorV1 } from '@/plugins/runtime/invocation/services/structuredMessageDescriptor';
-import type { PluginUiArtifactsManifestV1 } from '@happier-dev/protocol/plugins/ui';
+import type { PluginUiArtifactsManifestV2 } from '@happier-dev/protocol/plugins/ui';
 import type { PluginRuntimeRegistration } from '@happier-dev/plugin-sdk/host/registration';
 import type { ProtocolJsonValue } from '@happier-dev/plugin-sdk/protocol';
 import type { AgentCliRuntimeDescriptor } from '@happier-dev/cli-common/agents';
@@ -101,7 +104,7 @@ export type ResolvedUiSettingsGroupV2Contribution = ResolvedTargetUiContribution
 export type ResolvedUiSettingsPageV2Contribution = ResolvedTargetUiContribution<PluginUiSettingsPageV1>;
 export type ResolvedUiRendererV2Contribution = ResolvedTargetUiContribution<PluginUiRendererV2> & Readonly<{
     pluginRootPath?: string;
-    generatedUiArtifactsManifest?: PluginUiArtifactsManifestV1;
+    generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
 }>;
 export type ResolvedUiTranslationBundleV2Contribution = Readonly<
     Omit<ResolvedTargetUiContribution<PluginUiTranslationBundleV2>, 'identity'> & {
@@ -114,6 +117,7 @@ export type ResolvedComposerAttachmentContribution = ResolvedTargetUiContributio
 export type ResolvedComposerReferenceContribution = ResolvedTargetUiContribution<
     PluginComposerReferenceProviderContributionV1
 >;
+export type ResolvedRoleContribution = ResolvedTargetUiContribution<PluginRoleDeclarationV1>;
 export type ResolvedSearchProviderContribution = ResolvedTargetUiContribution<
     PluginSearchProviderContributionV1
 >;
@@ -131,9 +135,13 @@ export type ResolvedVoiceModelPackContribution = ResolvedTargetUiContribution<Vo
 export type ResolvedVoiceProviderContribution = ResolvedTargetUiContribution<VoiceProviderContribution> & Readonly<{
     pluginRootPath?: string;
     sourceSpec?: PluginSourceSpecV1;
-    generatedUiArtifactsManifest?: PluginUiArtifactsManifestV1;
+    generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
 }>;
-export type ResolvedAccountCollectionContribution = ResolvedTargetUiContribution<NormalizedPluginAccountCollectionContractV1>;
+export type ResolvedAccountCollectionContribution = ResolvedTargetUiContribution<NormalizedPluginAccountCollectionContractV1> & Readonly<{
+    pluginRootPath?: string;
+    generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
+    migrationArtifact?: PluginCollectionMigrationArtifactReferenceV1;
+}>;
 /** Cold target-owned declarations; admission remains below this registry boundary. */
 export type ResolvedPluginContributionPointDeclaration = ResolvedTargetUiContribution<PluginContributionPointV1>;
 /** Cold contributor declarations; they have no execution authority until admitted. */
@@ -142,7 +150,7 @@ export type ResolvedTargetedPluginContributionDeclaration = ResolvedTargetUiCont
 export type AdmittedTargetedContributionContributor = Readonly<{
     pluginId: string;
     contributionId: string;
-    immutableGenerationId: string;
+    occurrenceId: PluginRuntimeOccurrenceId;
 }>;
 
 /**
@@ -211,7 +219,7 @@ export type AdmittedTargetedContributionSnapshot = Readonly<{
     target: Readonly<{
         pluginId: string;
         pointId: string;
-        immutableGenerationId: string;
+        occurrenceId: PluginRuntimeOccurrenceId;
     }>;
     contributions: readonly AdmittedTargetedContribution[];
 }>;
@@ -326,15 +334,15 @@ type ProviderRuntimeRegistrationValue = Extract<
 
 export type ResolvedManagedProviderRuntime = Readonly<{
     runtime: NonNullable<ProviderRuntimeRegistrationValue['managedRuntime']>;
-    activationGeneration: string;
-    immutableGenerationId: string;
+    activationOccurrenceId: string;
+    sourceCustody: import('@/plugins/runtime/sourceAuthority').PluginSourceCustody;
     isCurrent(): boolean;
 }>;
 
 export type ResolvedProviderCatalogParsers = Readonly<{
     parsersByFormat: NonNullable<ProviderRuntimeRegistrationValue['catalogParsers']>;
-    activationGeneration: string;
-    immutableGenerationId: string;
+    activationOccurrenceId: string;
+    sourceCustody: import('@/plugins/runtime/sourceAuthority').PluginSourceCustody;
     isCurrent(): boolean;
 }>;
 
@@ -364,7 +372,7 @@ export type ResolvedActionContribution = Readonly<{
     devDaemonEntryPath?: string | null;
     sourceSpec?: PluginSourceSpecV1;
     /** Signed generated UI graph retained only for the Action's exact client executable. */
-    generatedUiArtifactsManifest?: PluginUiArtifactsManifestV1;
+    generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
     localizedPresentation?: ResolvedActionLocalizedPresentation;
     definition: ResolvedActionDefinition;
 }>;
@@ -632,13 +640,13 @@ export type ResolvedEventContribution = Readonly<{
  * Cold, current Event-automation composer facts derived by the resolved
  * contribution registry. This is deliberately not an Event registry: it is a
  * bounded view over one exact Event declaration and its same-plugin bound
- * Actions, each fenced to the current immutable plugin generation.
+ * Actions, each fenced to the current process-local plugin occurrence.
  */
 export type ResolvedAutomationEligibleEventAction = Readonly<{
     /** Canonical plugin-qualified Action identity. */
     id: string;
     identity: PluginContributionIdentityV1;
-    immutableGenerationId: string;
+    occurrenceId: PluginRuntimeOccurrenceId;
     title: string;
     description: string | null;
     inputSchema: ResolvedActionDefinition['inputSchema'];
@@ -650,7 +658,7 @@ export type ResolvedAutomationEligibleEvent = Readonly<{
         /** Canonical plugin-qualified Event identity. */
         id: string;
         identity: PluginContributionIdentityV1;
-        immutableGenerationId: string;
+        occurrenceId: PluginRuntimeOccurrenceId;
         title: string;
         description: string | null;
         payloadSchema?: ResolvedEventDeclaration['payloadSchema'];
@@ -854,6 +862,7 @@ export type ResolvedContributionInputs = Readonly<{
     notificationChannels?: readonly ResolvedNotificationChannelContribution[];
     events?: readonly ResolvedEventContribution[];
     executionRunProfiles?: readonly ResolvedExecutionRunProfileContribution[];
+    roles?: readonly ResolvedRoleContribution[];
     mcpServers?: readonly ResolvedMcpServerContribution[];
     mcpDiscoverySources?: readonly ResolvedMcpDiscoverySourceContribution[];
     managedDependencies?: readonly ResolvedInstallableContribution[];
@@ -872,6 +881,8 @@ export type ResolvedContributionInputs = Readonly<{
     materializationIdsByPluginId?: Readonly<Record<string, string>>;
     /** Canonical committed generations used by cold targeted-contribution admission. */
     immutableGenerationIdsByPluginId?: Readonly<Record<string, string>>;
+    /** Candidate-local activation occurrences; never persisted or published before adoption. */
+    occurrenceIdsByPluginId?: Readonly<Record<string, PluginRuntimeOccurrenceId>>;
     pluginDiagnosticsByPluginId?: Readonly<Record<string, readonly PluginCompatibilityDiagnostic[]>>;
 }>;
 
@@ -910,6 +921,7 @@ export type ResolvedContributionRegistry = Readonly<{
     /** Current cold Event-automation composer projection; never an Event store or activation registry. */
     automationEligibleEvents?: readonly ResolvedAutomationEligibleEvent[];
     executionRunProfiles?: readonly ResolvedExecutionRunProfileContribution[];
+    roles?: readonly ResolvedRoleContribution[];
     mcpServers?: readonly ResolvedMcpServerContribution[];
     mcpDiscoverySources?: readonly ResolvedMcpDiscoverySourceContribution[];
     managedDependencies?: readonly ResolvedInstallableContribution[];
@@ -935,6 +947,7 @@ export type ResolvedContributionRegistry = Readonly<{
     /** Exact current materialization IDs captured with this registry lease. */
     materializationIdsByPluginId?: Readonly<Record<string, string>>;
     immutableGenerationIdsByPluginId?: Readonly<Record<string, string>>;
+    occurrenceIdsByPluginId?: Readonly<Record<string, PluginRuntimeOccurrenceId>>;
     actionsById?: ReadonlyMap<string, ResolvedActionContribution>;
     toolsById?: ReadonlyMap<string, ResolvedToolContribution>;
     commandsById?: ReadonlyMap<string, ResolvedCommandContribution>;

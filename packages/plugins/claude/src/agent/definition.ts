@@ -1,6 +1,14 @@
 import type { AgentModelConfig } from '@happier-dev/plugin-sdk/agents';
 
 import { CLAUDE_AGENT_MODEL_CONFIG } from './models.js';
+import { INTERNAL_CLAUDE_EVENT_TYPES } from './transcripts/internalEventTypes.js';
+import { claudeAuthStateSharingDescriptor } from './auth/services/stateSharing.js';
+
+const { providerId: _providerId, ...stateSharing } = claudeAuthStateSharingDescriptor;
+export const AGENT_STATE_SHARING_DESCRIPTOR = {
+  ...stateSharing,
+  nativeHome: { environmentKey: 'CLAUDE_CONFIG_DIR', defaultRelativePath: '.claude' },
+} as const;
 
 function defineAgentWithPublicModelConfig<TDefinition extends Readonly<Record<string, unknown>>>(
   definition: TDefinition,
@@ -64,4 +72,7 @@ export const AGENT_DEFINITION = defineAgentWithPublicModelConfig({
     runtimeSwitch: 'provider-native',
   },
   sessionModesKind: 'staticAgentModes',
+  releasedOutputTranscriptRecordReader: {
+    nonTranscriptRecordTypes: [...INTERNAL_CLAUDE_EVENT_TYPES],
+  },
 } as const, CLAUDE_AGENT_MODEL_CONFIG);

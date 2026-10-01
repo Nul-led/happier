@@ -77,13 +77,17 @@ function providerSelection(testkit: PluginTestkit): PluginTargetedContributionSe
   return {
     target: {
       pluginId: CHANNELS_PROVIDER_POINT_REF.targetPluginId,
-      immutableGenerationId: snapshot.generation,
+      sourceCustody: snapshot.sourceCustody,
     },
     point: {
       pointId: CHANNELS_PROVIDER_POINT_REF.id,
       protocol: CHANNELS_PROVIDER_POINT_REF.protocol,
     },
-    contributor: contribution.contributor,
+    contributor: {
+      pluginId: contribution.contributor.pluginId,
+      contributionId: contribution.contributor.contributionId,
+      sourceCustody: contribution.contributor.sourceCustody,
+    },
   };
 }
 
@@ -339,7 +343,6 @@ describe('Channels first-party provider composition', () => {
         providerPluginId: 'happier.channel.telegram',
         providerContributionSelection: {
           contributionId: 'telegram-provider',
-          immutableGenerationId: 'composed-generation',
         },
         providerSetupInput: { credentialRef: telegramCredential },
         credentialRef: telegramCredential,

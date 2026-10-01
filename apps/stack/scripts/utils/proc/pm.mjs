@@ -32,19 +32,14 @@ async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf-8'));
 }
 
+/**
+ * Service mode is the explicit `HAPPIER_STACK_SERVICE_MODE` the service installer writes
+ * (`service.mjs`), the same fact every other stack consumer reads. A parent pid of 1 is not
+ * evidence: a dev watcher whose launching parent exited is re-parented to init too.
+ */
 function isServiceMode(env = process.env) {
   const raw = String(env?.HAPPIER_STACK_SERVICE_MODE ?? '').trim();
-  if (raw) return raw !== '0';
-
-  // In CI, we prefer deterministic builds and want failures to surface.
-  const isCi = Boolean(String(env?.CI ?? '').trim());
-  if (isCi) return false;
-
-  const isInteractive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-  if (isInteractive) return false;
-
-  // launchd (macOS) and systemd (Linux) typically run as pid 1.
-  return process.ppid === 1;
+  return raw !== '' && raw !== '0';
 }
 
 function parsePositiveEnvInt(envValue, fallback) {
@@ -158,10 +153,9 @@ async function readUsableCliDistState(distEntrypoint) {
     if (!entryStat.isFile() || entryStat.size === 0n) return null;
     const { assertNoMissingLocalImports } = await loadSourceWorkspaceModule('distLocalImports.mjs');
     await assertNoMissingLocalImports({ distDir: dirname(distEntrypoint), entryPath: distEntrypoint });
-    const manifestStat = await stat(integrity.manifestPath, { bigint: true });
     const inputFingerprint = String(integrity.manifest?.inputFingerprint ?? '').trim().toLowerCase();
     return {
-      manifestMtimeNs: manifestStat.mtimeNs,
+      fingerprint: integrity.fingerprint,
       inputFingerprint: /^[a-f0-9]{64}$/.test(inputFingerprint) ? inputFingerprint : null,
     };
   } catch {
@@ -169,20 +163,17 @@ async function readUsableCliDistState(distEntrypoint) {
   }
 }
 
-async function readUsableCliDistFreshness(distEntrypoint) {
-  return (await readUsableCliDistState(distEntrypoint))?.manifestMtimeNs ?? null;
+export async function readUsableCliDistFreshness(distEntrypoint) {
+  return (await readUsableCliDistState(distEntrypoint))?.fingerprint ?? null;
 }
 
-async function isCliDistFreshForInputs(distEntrypoint, inputFreshness) {
+export async function isCliDistFreshForInputs(distEntrypoint, inputFreshness) {
   const distState = await readUsableCliDistState(distEntrypoint);
   if (distState === null) return false;
-  if (inputFreshness === null) return true;
+  if (inputFreshness === null) return false;
   const inputFingerprint = String(inputFreshness.fingerprint ?? '').trim().toLowerCase();
-  if (inputFingerprint) {
-    return distState.inputFingerprint === inputFingerprint;
-  }
-  return inputFreshness.newestMtimeNs === null
-    || inputFreshness.newestMtimeNs <= distState.manifestMtimeNs;
+  return /^[a-f0-9]{64}$/.test(inputFingerprint)
+    && distState.inputFingerprint === inputFingerprint;
 }
 
 const packageManagerSearchEnvByPreparedEnv = new WeakMap();
@@ -551,7 +542,7 @@ async function ensureUiPostinstallOutputs(componentDir, installDir, { quiet = fa
   if (typeof componentPkg?.scripts?.['postinstall:real'] !== 'string') return;
 
   const requiredRelativePath = join('lib', 'module', 'web', 'streamingReveal.js');
-  const readMissingOutputs = () => {
+  const inspectLegacyOutputReadiness = () => {
     const packageDirs = findInstalledEnrichedMarkdownPackageDirs(componentDir, installDir);
     if (packageDirs.length === 0) {
       return [join(componentDir, 'node_modules', 'react-native-enriched-markdown', requiredRelativePath)];
@@ -560,7 +551,22 @@ async function ensureUiPostinstallOutputs(componentDir, installDir, { quiet = fa
       .map((packageDir) => join(packageDir, requiredRelativePath))
       .filter((outputPath) => !existsSync(outputPath));
   };
-  if (readMissingOutputs().length === 0) return;
+  const inspectPostinstallReadiness = async () => {
+    const canonicalUiPreflightPath = join(componentDir, 'scripts', 'ensureWorkspacePackagesBuilt.mjs');
+    if (await pathExists(canonicalUiPreflightPath)) {
+      const canonicalUiPreflight = await import(pathToFileURL(canonicalUiPreflightPath).href);
+      if (typeof canonicalUiPreflight.verifyUiPatchedDependencies === 'function') {
+        try {
+          await canonicalUiPreflight.verifyUiPatchedDependencies({ uiPackageDir: componentDir });
+          return [];
+        } catch (error) {
+          return [error instanceof Error ? error.message : String(error)];
+        }
+      }
+    }
+    return inspectLegacyOutputReadiness();
+  };
+  if ((await inspectPostinstallReadiness()).length === 0) return;
 
   const env = pmIn
     ? (envIn ?? process.env)
@@ -572,26 +578,49 @@ async function ensureUiPostinstallOutputs(componentDir, installDir, { quiet = fa
     console.log('[local] repairing happier-ui postinstall outputs...');
   }
 
-  if (pm.name === 'yarn') {
-    await ensureYarnReady({ dir: installDir, env, quiet, pm });
-    await runPm(pm, ['-s', 'workspace', '@happier-dev/app', 'postinstall:real'], {
-      cwd: installDir,
-      stdio,
-      env,
-    });
-  } else {
+  const runUiPostinstall = async () => {
+    if (pm.name === 'yarn') {
+      await ensureYarnReady({ dir: installDir, env, quiet, pm });
+      await runPm(pm, ['-s', 'workspace', '@happier-dev/app', 'postinstall:real'], {
+        cwd: installDir,
+        stdio,
+        env,
+      });
+      return;
+    }
     await runPm(pm, ['run', '-s', 'postinstall:real'], {
       cwd: componentDir,
       stdio,
       env,
     });
+  };
+
+  try {
+    await runUiPostinstall();
+  } catch {
+    // patch-package is intentionally not idempotent across changed patch inputs:
+    // a synchronized dev target can retain bytes from the previous patch while
+    // receiving the newer patch file. Restore pristine dependency bytes through
+    // the package-manager owner, without running lifecycle scripts against the
+    // mixed tree, then apply the one canonical UI postinstall again.
+    const repairArgs = buildDependencyInstallArgs(pm.name, {
+      force: true,
+      preserveLockfile: String(env?.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1',
+    });
+    repairArgs.push('--ignore-scripts');
+    if (!quiet) {
+      // eslint-disable-next-line no-console
+      console.log('[local] repairing mixed happier-ui patched dependency bytes...');
+    }
+    await runPm(pm, repairArgs, { cwd: installDir, stdio, env });
+    await runUiPostinstall();
   }
 
-  const missingOutputs = readMissingOutputs();
-  if (missingOutputs.length > 0) {
+  const readinessFailures = await inspectPostinstallReadiness();
+  if (readinessFailures.length > 0) {
     throw new Error(
-      `[local] happier-ui postinstall completed without required patched outputs:\n${missingOutputs
-        .map((outputPath) => `- ${outputPath}`)
+      `[local] happier-ui postinstall completed without satisfying patched dependency readiness:\n${readinessFailures
+        .map((failure) => `- ${failure}`)
         .join('\n')}`,
     );
   }
@@ -883,6 +912,7 @@ const stackWorkspaceBuildBoundary = {
     if (pm.name === 'yarn') {
       await ensureYarnReady({ dir: packageDir, env, quiet, pm });
       await runPm(pm, ['-s', 'build'], {
+        ownedProcessGroup: true,
         cwd: packageDir,
         stdio,
         env,
@@ -892,6 +922,7 @@ const stackWorkspaceBuildBoundary = {
       return;
     }
     await runPm(pm, ['run', '-s', 'build'], {
+      ownedProcessGroup: true,
       cwd: packageDir,
       stdio,
       env,
@@ -1032,7 +1063,12 @@ export async function inspectUsableSourceDevSharedDepsLastGreen(repoRoot, {
   });
 }
 
-export async function ensureCliBuilt(cliDir, { buildCli, quiet = false, env: envIn = process.env } = {}) {
+export async function ensureCliBuilt(cliDir, {
+  buildCli,
+  quiet = false,
+  env: envIn = process.env,
+  platform = process.platform,
+} = {}) {
   const distEntrypoint = join(cliDir, 'dist', 'index.mjs');
   const invocationDistFreshness = await readUsableCliDistFreshness(distEntrypoint);
   const invocationInputFreshness = await readHappyCliRuntimeInputFreshness(cliDir);
@@ -1049,6 +1085,7 @@ export async function ensureCliBuilt(cliDir, { buildCli, quiet = false, env: env
         cliDir,
         env: envIn,
         quiet,
+        platform,
       });
     }
     return { sourceDevPreparation };
@@ -1195,11 +1232,9 @@ export async function ensureCliBuilt(cliDir, { buildCli, quiet = false, env: env
       const buildEnv = {
         ...env,
         HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: heldLockValue,
-        ...(inputFreshness?.fingerprint
-          ? { HAPPIER_CLI_BUILD_INPUT_FINGERPRINT: inputFreshness.fingerprint }
-          : {}),
       };
       await runPm(pm, ['build:prepared'], {
+        ownedProcessGroup: true,
         cwd: cliDir,
         env: buildEnv,
         stdio: quiet ? 'ignore' : 'inherit',

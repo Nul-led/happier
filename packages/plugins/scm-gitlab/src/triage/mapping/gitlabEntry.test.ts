@@ -73,7 +73,7 @@ describe('merge-request mapping', () => {
     expect(projectGitlabMergeRequestState(rowOf(mergeRequestVariants.locked)))
       .toEqual({ presentation: 'active', nativeLabel: 'Locked' });
     expect(projectGitlabMergeRequestState(rowOf(mergeRequestList[1])))
-      .toEqual({ presentation: 'closed', nativeLabel: 'Merged' });
+      .toEqual({ presentation: 'resolved', nativeLabel: 'Merged' });
     expect(projectGitlabMergeRequestState(rowOf(mergeRequestVariants.closed)))
       .toEqual({ presentation: 'closed', nativeLabel: 'Closed' });
     // An unrecognized native state stays `unknown` with its own bounded label; it

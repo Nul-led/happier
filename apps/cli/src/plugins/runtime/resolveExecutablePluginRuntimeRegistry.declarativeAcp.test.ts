@@ -117,7 +117,7 @@ describe('resolveExecutablePluginRuntimeRegistry declarative ACP admission', () 
                     kind: 'localPath',
                     canonicalPath: pluginRoot,
                 },
-                updatePolicy: 'reviewEveryUpdate',
+                updatePolicy: 'allowed',
                 createdAtMs: 1,
                 immutableGenerationId: `declarative-${sourceKind}-generation`,
             });
@@ -160,7 +160,6 @@ describe('resolveExecutablePluginRuntimeRegistry declarative ACP admission', () 
                         record,
                     }]]),
                     rejectedGenerations: new Map(),
-                    unavailableBundledPackageNames: new Set(),
                     isCurrent: async () => true,
                 },
             });
@@ -364,23 +363,22 @@ describe('resolveExecutablePluginRuntimeRegistry declarative ACP admission', () 
                 commit: null,
                 generations: new Map(),
                 rejectedGenerations: new Map(),
-                unavailableBundledPackageNames: new Set(),
                 isCurrent: async () => true,
             },
         });
 
         try {
             const lease = runtimeRegistry.agentRuntimesByAgentId.get(agentId);
-            expect(lease).toMatchObject({ pluginId, agentId, generation: '17' });
+            expect(lease).toMatchObject({ pluginId, agentId, occurrenceId: '17' });
             const services = await runtimeRegistry.createAgentInvocationServices({
                 pluginId,
                 pluginVersion: '1.0.0',
                 agentId,
-                generation: '17',
+                occurrenceId: '17',
                 correlationId: 'declarative-agent-services',
                 cwd: happyHomeDir,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             await expect(services.storage.daemon.set('proof', 'catalog-owned')).resolves.toBeUndefined();
             await expect(services.storage.daemon.get('proof')).resolves.toBe('catalog-owned');

@@ -43,7 +43,7 @@ describe('runtimeKinds', () => {
     expect(resolveAgentRuntimeControlSurface('opencode', 'server')).toMatchObject({
       sessionStorage: { direct: true, persisted: true },
       sessionCapabilities: {
-        sessionFork: { conversation: 'supported', fromMessage: 'supported' },
+        sessionFork: { conversation: 'unsupported', fromMessage: 'unsupported' },
         usageLimitRecovery: { checkNow: 'unsupported' },
       },
       localControl: { supported: true },
@@ -52,7 +52,7 @@ describe('runtimeKinds', () => {
     expect(resolveAgentRuntimeControlSurface('opencode', 'acp')).toMatchObject({
       sessionStorage: { direct: false, persisted: true },
       sessionCapabilities: {
-        sessionFork: { conversation: 'supported', fromMessage: 'unsupported' },
+        sessionFork: { conversation: 'unsupported', fromMessage: 'unsupported' },
         usageLimitRecovery: { checkNow: 'unsupported' },
       },
       localControl: null,

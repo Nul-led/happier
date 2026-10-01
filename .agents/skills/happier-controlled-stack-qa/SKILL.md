@@ -78,7 +78,16 @@ node ./apps/stack/scripts/repo_local.mjs stack env <qa-stack> set HAPPIER_STACK_
 
 Generic `stack new` inherits auth from `main` unless told otherwise. `--no-copy-auth` is mandatory here so that a controlled stack has no unapproved credential provenance.
 
-Seed authentication only when needed and from a human-approved source:
+For a fresh QA-local Account, leave the new stack unseeded until its selected runtime is started. Create the Account in that stack's web UI, then run guided CLI login against the same stack:
+
+```bash
+node ./apps/stack/scripts/repo_local.mjs stack auth <qa-stack> login --no-open
+node ./apps/stack/scripts/repo_local.mjs stack auth <qa-stack> status --json
+```
+
+Approve the login link in the QA web session and require `auth.ok: true` from status before CLI or daemon QA. `login --print --json` only prints the underlying command; it does not mint credentials. Do not record the link or token in reports or logs.
+
+If the QA contract calls for an existing Account instead, seed only from a human-approved source:
 
 ```bash
 node ./apps/stack/scripts/repo_local.mjs stack auth <human-approved-source> -- status --json
@@ -133,19 +142,23 @@ node ./apps/stack/scripts/repo_local.mjs stack build <qa-stack> --server --daemo
 node ./apps/stack/scripts/repo_local.mjs stack runtime <qa-stack> activate --all --json
 ```
 
+If the shared publication fails (for example, another program's in-flight compile error in the moving checkout), do not retry in a loop or build elsewhere. Keep QA on the last complete snapshot that the consumer can select, record the snapshot id and the publication failure, and mark any evidence that needs the newer bytes as blocked on publication.
+
+A live publication may exclude a broken optional bundled plugin and still succeed. The daemon catalog then shows that plugin as a disabled `load_error` row carrying its build diagnostic, while required plugins still fail publication. Before attributing a missing plugin surface to a product defect, check the catalog diagnostic and record excluded plugins with the result.
+
 Use only the changed component flag when narrower (`--server` or `--daemon`). `runtime activate --all` composes the latest authority artifacts into one complete snapshot and selects it for the consumer; it does not restart the consumer or the producer's running services. Run one build request and wait for it. Do not launch retrying publishers, a second monitor-owned build, another artifact store, or a direct build against the human's producer lifecycle.
 
 Borrowed Expo does not need a new web build. Managed server and web artifacts are independent: a server-only request publishes server code/support without a web export. Strict snapshot UI requires an explicit `--web` request. Runtime snapshots reference canonical producer payloads and managed support references are dev/QA-only; release/self-host packaging uses its existing per-target self-contained builders directly and does not consume or flatten a managed snapshot.
 
 Selecting a snapshot does not restart a running consumer.
 
-Start the default borrowed-Expo stack from built server/daemon bytes:
+Start the default borrowed-Expo stack from built server/daemon bytes. The `start` process is the stack's long-lived lifecycle owner, so use Stack's detached background mode when no TUI is needed:
 
 ```bash
-node ./apps/stack/scripts/repo_local.mjs tui stack start <qa-stack> --runtime --mobile
+node ./apps/stack/scripts/repo_local.mjs stack start <qa-stack> --background --runtime --no-browser
 ```
 
-Use `node ./apps/stack/scripts/repo_local.mjs stack start <qa-stack> --runtime --no-browser` when a TUI is inappropriate. Do not stop or restart a human-owned TUI to obtain this stack.
+Use `node ./apps/stack/scripts/repo_local.mjs tui stack start <qa-stack> --runtime --mobile` when operating an interactive TUI. Do not stop or restart a human-owned TUI to obtain this stack. A still-running foreground start is expected; it is not evidence of a hang.
 
 Before relying on QA results, inspect:
 
@@ -191,7 +204,7 @@ Selection is non-disruptive. Restart before claiming a server or daemon change i
 
 ### Default: fast controlled-live Expo
 
-With the producer reference already configured, use:
+With the producer reference already configured, use the detached `stack start --background --runtime --no-browser` command above. For an interactive TUI, use:
 
 ```bash
 node ./apps/stack/scripts/repo_local.mjs tui stack start <qa-stack> --runtime --mobile
@@ -204,6 +217,13 @@ For browser QA, use the generated consumer-origin URL with its consumer `server`
 Installed native development clients may use the advertised or tunnelled producer Metro endpoint, but `happier_hmr=0` does not disable native Fast Refresh.
 
 If borrowed Expo is degraded, diagnose the producer and consumer. Do not create a competing local Expo. Switch to strict snapshot UI only when that serves the requested QA contract; otherwise report the blocked UI prerequisite.
+
+Stability against a moving development stack comes from the controlled-live mode itself. Server and daemon run from the selected snapshot and never hot-reload. For the UI:
+1. Open the consumer URL with `happier_hmr=0` once.
+2. Keep that tab for the whole QA round, and warm the routes you will exercise: lazy chunks come from the producer's Metro, so a route opened for the first time while producer Expo restarts can fail.
+3. Reload deliberately only when you want the producer's newer UI, then record it.
+
+Strict snapshot UI is not the default answer to churn. A web artifact is content-addressed by UI source fingerprint and reused by every consumer that selects that snapshot. But in a moving checkout nearly every UI edit needs a fresh full `expo export`, which costs minutes and substantial memory. Use it when producer Expo is unavailable or keeps crashing for the duration of the round, or when exact reproducible UI bytes are required. Record the UI mode in the handoff.
 
 ### Explicit strict snapshot UI
 
@@ -221,3 +241,4 @@ node ./apps/stack/scripts/repo_local.mjs tui stack start <qa-stack> --runtime
 - Never delete, replace, or share its database without the normal authorization required for that exact data owner.
 - Do not treat selecting a snapshot, a still-running process, or wiring registration as proof that new bytes loaded.
 - Report the stack name, loaded snapshot id, UI mode, terminal QA result, skipped checks, and residual risk in the handoff.
+- Each controlled stack runs its own server and daemon on the authoritative machine. Heavy source validation (tests, typechecks, broad searches) still follows `.agents/skills/happier-remote-work` and routes through `hstack-exec`. Do not run it locally just because a QA stack is local.

@@ -32,7 +32,7 @@ function snapshot(sourceUrl: string, pluginId: string): MarketplaceIndexSourceSn
       compatibility: { happier: '>=1', platforms: ['linux'] },
       summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
       review: { status: 'approved', reviewedAt: '2026-07-13T00:00:00.000Z' },
-      categories: [], media: [], updatePolicy: 'reviewSensitiveChanges', links: {},
+      categories: [], media: [], updatePolicy: 'allowed', links: {},
     }],
     diagnostics: [],
   };
@@ -46,7 +46,7 @@ function communityEntries(count: number): MarketplaceIndexSourceSnapshotV1['entr
       ...entry,
       distribution: { ...entry.distribution, packageName: `@acme/community-${suffix}` },
       review: { status: 'unreviewed' as const, reviewedAt: null },
-      updatePolicy: 'reviewEveryUpdate' as const,
+      updatePolicy: 'allowed' as const,
     };
   });
 }
@@ -120,7 +120,7 @@ describe('createMarketplaceIndexService', () => {
         };
         if (source.kind !== 'curated') {
           document.entries[0]!.review = { status: 'unreviewed', reviewedAt: null };
-          document.entries[0]!.updatePolicy = 'reviewEveryUpdate';
+          document.entries[0]!.updatePolicy = 'allowed';
         }
         return document;
       },
@@ -320,8 +320,8 @@ describe('createMarketplaceIndexService', () => {
           source: { id: source.id, title: source.title, kind: 'user', sourceUrl: source.sourceUrl },
           freshness: { state: 'fresh', fetchedAtMs: 1 },
           entries: [
-            ...snapshot(source.sourceUrl, 'acme.other').entries.map((entry) => ({ ...entry, pluginId: 'acme.other', review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'reviewEveryUpdate' as const })),
-            ...snapshot(source.sourceUrl, 'acme.wanted').entries.map((entry) => ({ ...entry, pluginId: 'acme.wanted', review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'reviewEveryUpdate' as const })),
+            ...snapshot(source.sourceUrl, 'acme.other').entries.map((entry) => ({ ...entry, pluginId: 'acme.other', review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'allowed' as const })),
+            ...snapshot(source.sourceUrl, 'acme.wanted').entries.map((entry) => ({ ...entry, pluginId: 'acme.wanted', review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'allowed' as const })),
           ],
           diagnostics: [],
         };
@@ -348,7 +348,7 @@ describe('createMarketplaceIndexService', () => {
         source: { id: source.id, title: source.title, kind: 'user', sourceUrl: source.sourceUrl },
         freshness: { state: 'fresh', fetchedAtMs: 1 },
         entries: snapshot(source.sourceUrl, 'acme.private').entries.map((entry) => ({
-          ...entry, pluginId: 'acme.private', review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'reviewEveryUpdate' as const,
+          ...entry, pluginId: 'acme.private', review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'allowed' as const,
         })),
         diagnostics: [],
       }),

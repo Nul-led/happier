@@ -48,6 +48,12 @@ const TriageSavedViewOrderV1Schema = defineProtocolUnion([
     defineProtocolLiteral('smart'),
 ]);
 
+/** How the view presents its rows (`settings/savedViews.ts`); absent from a writer that predates views. */
+const TriageSavedViewPresentationV1Schema = defineProtocolUnion([
+    defineProtocolLiteral('list'),
+    defineProtocolLiteral('board'),
+]);
+
 const TriageSavedViewV1Schema = defineProtocolObject({
     viewId: triageViewId,
     label: triageViewLabel,
@@ -55,6 +61,7 @@ const TriageSavedViewV1Schema = defineProtocolObject({
     filters: TriageListFilterSelectionV1Schema,
     order: TriageSavedViewOrderV1Schema,
     smartPolicy: TriageSmartPolicyV1Schema,
+    view: TriageSavedViewPresentationV1Schema.optional(),
 }, { policy: 'closed' });
 
 export const TriageReadSavedViewsInputV1Schema = defineProtocolObject({
@@ -89,6 +96,7 @@ const TriageSavedViewDraftV1Schema = {
     filters: TriageListFilterSelectionV1Schema,
     order: TriageSavedViewOrderV1Schema,
     smartPolicy: TriageSmartPolicyV1Schema,
+    view: TriageSavedViewPresentationV1Schema.optional(),
 } as const;
 
 /**
@@ -152,6 +160,7 @@ export const TriageAdministerSavedViewResultV1Schema = defineProtocolObject({
         defineProtocolLiteral('filterValue'),
         defineProtocolLiteral('order'),
         defineProtocolLiteral('smartPolicy'),
+        defineProtocolLiteral('view'),
         defineProtocolLiteral('valueTooLarge'),
     ]).optional(),
     /** The authoritative set after an applied write; omitted otherwise. */

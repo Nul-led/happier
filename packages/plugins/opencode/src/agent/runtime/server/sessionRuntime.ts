@@ -1,9 +1,12 @@
 import type {
   AgentSessionOpenRequest,
   AgentSessionRuntime,
+  AgentAuthoredSessionRuntimeCapabilities,
   AgentSessionRuntimeContext,
   AgentSessionRuntimeEvent,
   AgentSessionSendRequest,
+  AgentSessionModelsSnapshot,
+  AgentSessionModesSnapshot,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import { AgentRuntimeJsonValueSchema } from '@happier-dev/plugin-sdk/agents/runtime';
 import {
@@ -61,7 +64,9 @@ function mapIssue(issue: OpenCodeRuntimeIssue) {
   };
 }
 
-function mapRuntimeEvent(event: OpenCodeRuntimeEvent): NativeEventInput | null {
+function mapRuntimeEvent(
+  event: Exclude<OpenCodeRuntimeEvent, { kind: 'model-catalog-observed' | 'mode-catalog-observed' }>,
+): NativeEventInput | null {
   if (event.kind === 'turn-start') {
     return { kind: 'turn-start', turnId: event.turnId, startedBy: 'host' };
   }
@@ -198,7 +203,11 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
   request: AgentSessionOpenRequest;
   disposeOperations(): Promise<void>;
   models?: AgentSessionRuntimeContext['session']['services']['models'];
+  modes?: AgentSessionRuntimeContext['session']['services']['modes'];
+  inputFiles?: NonNullable<AgentSessionRuntimeContext['session']['services']['inputFiles']>;
   bindActiveSkillsReader?: OpenCodeActiveSkillsReaderRegistrar;
+  runtimeCapabilities: AgentAuthoredSessionRuntimeCapabilities;
+  prepareProviderCliAttach?: NonNullable<AgentSessionRuntime['prepareProviderCliAttach']>;
 }>): OpenCodeNativeSessionRuntime {
   const launchPermissionIntent = params.request.configuration?.permissionIntent.value ?? null;
   const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
@@ -213,22 +222,35 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
   const canonicalProviderBindingModelId = params.request.providerBinding
     ? params.request.providerBinding.model.id.trim()
     : null;
-  const modelListeners = new Set<(snapshot: Readonly<{
-    models: readonly Readonly<{ id: string; name: string }>[];
-    currentModelId: string | null;
-  }>) => void>();
-  const readModels = () => ({
-    models: effectiveModelId
-      ? [{ id: effectiveModelId, name: effectiveModelId }]
-      : [],
-    currentModelId: effectiveModelId,
-  });
+  const modelListeners = new Set<(snapshot: AgentSessionModelsSnapshot) => void>();
+  const readModels = () => {
+    const catalog = params.operations.readModelCatalog();
+    // A configured Provider owns its public membership; OpenCode's private dispatch carrier does not.
+    return {
+      ...(!params.request.providerBinding && catalog.models !== null
+        ? catalog
+        : {
+            observedAt: 0,
+            models: effectiveModelId ? [{ id: effectiveModelId, name: effectiveModelId }] : [],
+          }),
+      currentModelId: effectiveModelId,
+    };
+  };
   const modelsBinding = params.models?.bind({
     read: readModels,
     subscribe(listener) {
       modelListeners.add(listener);
       listener(readModels());
       return { dispose: () => { modelListeners.delete(listener); } };
+    },
+  });
+  const modeListeners = new Set<(snapshot: AgentSessionModesSnapshot) => void>();
+  const modesBinding = params.modes?.bind({
+    read: () => params.operations.readModeCatalog(),
+    subscribe(listener) {
+      modeListeners.add(listener);
+      listener(params.operations.readModeCatalog());
+      return { dispose: () => { modeListeners.delete(listener); } };
     },
   });
   const publishEffectiveModel = (dispatchedModelId: string | null | undefined): void => {
@@ -321,6 +343,16 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
     return pending;
   };
   const unsubscribeOperations = params.operations.subscribeRuntimeEvents((event) => {
+    if (event.kind === 'mode-catalog-observed') {
+      const snapshot = params.operations.readModeCatalog();
+      for (const listener of Array.from(modeListeners)) listener(snapshot);
+      return;
+    }
+    if (event.kind === 'model-catalog-observed') {
+      const snapshot = readModels();
+      for (const listener of Array.from(modelListeners)) listener(snapshot);
+      return;
+    }
     const deferUntilCustody = pendingSend?.custody === 'pending' ? pendingSend : null;
     publishProviderIdentity();
     if (event.kind === 'turn-start') {
@@ -421,10 +453,15 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
     }
     let ownedPendingSend: PendingSend | null = null;
     try {
-      const promptParts = buildOpenCodePromptParts({
+      const promptProjection = buildOpenCodePromptParts({
         text: request.input.text,
         structuredInput: request.input.structuredInput,
+        ...(params.inputFiles ? { inputFiles: params.inputFiles } : {}),
+        ...(options?.signal ? { signal: options.signal } : {}),
       });
+      const promptParts = Array.isArray(promptProjection)
+        ? promptProjection
+        : await promptProjection;
       if (request.delivery.kind === 'followUp') {
         await waitForCompletion(options?.signal);
         if (disposed) {
@@ -591,6 +628,10 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
     async () => normalizeOpenCodeSkills(await params.operations.listSkills()),
   ) ?? null;
   return {
+    runtimeCapabilities: params.runtimeCapabilities,
+    ...(params.prepareProviderCliAttach
+      ? { prepareProviderCliAttach: params.prepareProviderCliAttach }
+      : {}),
     send,
     async cancel(request) {
       if (!active || activeTurnId !== request.turnId) return { status: 'notRunning' };
@@ -619,11 +660,13 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
       }
       try {
         const projection = projectOpenCodeSessionConfiguration(request);
+        let deferred = false;
         for (const update of projection.updates) {
-          await params.operations.updateSessionRuntimeConfig(update);
+          if (await params.operations.updateSessionRuntimeConfig(update) === 'deferred') deferred = true;
         }
+        if (!deferred) publishEffectiveModel(request.model.value);
         return {
-          status: 'applied',
+          status: deferred ? 'deferred' : 'applied',
           changed: projection.changed,
         };
       } catch (error) {
@@ -693,6 +736,8 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
       terminalWaiters.clear();
       modelListeners.clear();
       modelsBinding?.dispose();
+      modesBinding?.dispose();
+      modeListeners.clear();
       active = false;
       activeTurnId = null;
       disposingPendingSend?.deferredRuntimeEvents.dispose();

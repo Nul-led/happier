@@ -3,35 +3,17 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const filesystemBoundary = vi.hoisted(() => ({
-  realpathCallsByPath: new Map<string, number>(),
-}));
-
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return {
-    ...actual,
-    realpath: async (...args: Parameters<typeof actual.realpath>) => {
-      const path = String(args[0]);
-      filesystemBoundary.realpathCallsByPath.set(
-        path,
-        (filesystemBoundary.realpathCallsByPath.get(path) ?? 0) + 1,
-      );
-      return await actual.realpath(...args);
-    },
-  };
-});
-
-import { createDaemonPluginChangeService } from './changeService';
+import { createDaemonPluginChangeService as createBaseDaemonPluginChangeService } from './changeService';
 import type {
   PluginChangeDecisionResult,
   PluginChangeRequest,
   PluginChangeRequestResult,
 } from './changeContract';
-import { createDaemonPathPluginChangePreparer } from './pathChangePreparer';
+import { createDaemonPathPluginChangePreparer as createBaseDaemonPathPluginChangePreparer } from './pathChangePreparer';
 import { derivePluginInstallReviewPrincipal } from './installReviewPrincipal';
 import {
   createPluginRegistryStateStore,
+  type PluginDevelopmentRuntimeCandidate,
   type PluginRegistryRuntimeCandidate,
   type PluginRegistryRuntimeLifecycle,
 } from '@/plugins/store/registry/currentState';
@@ -42,23 +24,127 @@ import {
 } from '@/plugins/store/registry/generationStore';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { loadPluginModule, loadVerifiedPluginModule } from '@/plugins/runtime/loadPluginModule';
-import {
-  materializePluginDevelopmentCandidate,
-  type RunManagedPluginPnpmBoundary,
-} from './developmentCandidateMaterializer';
+import type { RunManagedPluginPnpmBoundary } from './developmentCandidateMaterializer';
 import {
   startPluginDevelopmentSourceObserver,
   type PluginDevelopmentSourceObservationDelivery,
 } from '@/plugins/authoring/sourceObserver';
 import { successfulManagedPluginPnpmBoundary as successfulManagedPnpmBoundary } from '@/plugins/testkit/managedPnpmBoundary';
 import { requestUserPluginChange } from './changeClient';
+import { updateSelectedPluginOptionalAccess } from './optionalAccessSelections';
+import { preserveValidPluginOptionalSelections } from './updateReviewPolicy';
 
 const BUNDLED_PLUGIN_ROOT = resolve(import.meta.dirname, '../../../../../packages/plugins/codex');
 
 const roots: string[] = [];
 
+type PathPreparerParams = Parameters<typeof createBaseDaemonPathPluginChangePreparer>[0];
+const pathPreparerOwners = new WeakMap<
+  ReturnType<typeof createBaseDaemonPathPluginChangePreparer>,
+  Readonly<{ happyHomeDir: string; runtimeLifecycle: PluginRegistryRuntimeLifecycle }>
+>();
+
+/**
+ * The path-preparer suite owns candidate preparation, while the daemon runtime
+ * owner owns source-in-place adoption. Keep that genuine boundary in the
+ * harness, but commit through the real registry authority owner so development
+ * reviews exercise the same catalog/baseline state as production.
+ */
+function createDaemonPathPluginChangePreparer(params: PathPreparerParams) {
+  const prepare = createBaseDaemonPathPluginChangePreparer({
+    ...params,
+    runPluginUiArtifactBuild: params.runPluginUiArtifactBuild
+      ?? (async (input) => ({ ok: true as const, projectRoot: input.projectRoot, built: false })),
+  });
+  pathPreparerOwners.set(prepare, {
+    happyHomeDir: params.happyHomeDir,
+    runtimeLifecycle: params.runtimeLifecycle,
+  });
+  return prepare;
+}
+
+function preservePathPreparerOwner(
+  source: ReturnType<typeof createBaseDaemonPathPluginChangePreparer>,
+  wrapped: ReturnType<typeof createBaseDaemonPathPluginChangePreparer>,
+) {
+  const owner = pathPreparerOwners.get(source);
+  if (owner) pathPreparerOwners.set(wrapped, owner);
+  return wrapped;
+}
+
+function createDaemonPluginChangeService(
+  params: Parameters<typeof createBaseDaemonPluginChangeService>[0],
+) {
+  const owner = pathPreparerOwners.get(params.prepare);
+  return createBaseDaemonPluginChangeService({
+    ...params,
+    ...(owner
+      ? {
+          applyDevelopment: async (candidate, decision) => {
+            const optionalAccess = decision
+              ? updateSelectedPluginOptionalAccess({
+                  pluginId: candidate.pluginId,
+                  manifest: candidate.manifest,
+                  existing: candidate.priorOptionalAccess ?? [],
+                  decisions: decision.optionalSelections,
+                  selectedAtMs: Date.now(),
+                })
+              : preserveValidPluginOptionalSelections(
+                  candidate.pluginId,
+                  candidate.manifest,
+                  candidate.priorOptionalAccess ?? [],
+                );
+            if (!optionalAccess || candidate.registryRevision === undefined) {
+              return { kind: 'failed' as const, code: 'plugin_install_trust_required' };
+            }
+            const principal = decision
+              ? candidate.installReviewPrincipal
+              : candidate.priorInstallReviewPrincipal;
+            const preparedRuntime = owner.runtimeLifecycle.prepareDevelopment
+              ? await owner.runtimeLifecycle.prepareDevelopment(candidate)
+              : null;
+            try {
+              const committed = await createPluginRegistryStateStore({
+                happyHomeDir: owner.happyHomeDir,
+                runtimeLifecycle: owner.runtimeLifecycle,
+              }).approveDevelopmentAuthorityWithResult({
+                pluginId: candidate.pluginId,
+                expectedRevision: candidate.registryRevision,
+                approvedAuthorityManifest: candidate.manifest,
+                catalogRecord: candidate.catalogRecord,
+                trust: candidate.trust,
+                updatePolicy: candidate.updatePolicy,
+                optionalAccess,
+                ...(principal
+                  ? {
+                      installReviewPrincipalDigest: principal.digest,
+                      installReviewPrincipalPresentation: principal.presentation,
+                    }
+                  : {}),
+              });
+              if (!committed) {
+                await preparedRuntime?.abort();
+                return { kind: 'conflict' as const, pluginId: candidate.pluginId };
+              }
+              await preparedRuntime?.adopt();
+              return {
+                kind: 'committed' as const,
+                pluginId: candidate.pluginId,
+                desiredGeneration: null,
+                appliedGeneration: null,
+                pendingSurfaces: Object.freeze([]),
+              };
+            } catch (error) {
+              await preparedRuntime?.abort();
+              throw error;
+            }
+          },
+        }
+      : {}),
+  });
+}
+
 afterEach(async () => {
-  filesystemBoundary.realpathCallsByPath.clear();
   await Promise.all(roots.splice(0).map(async (root) => await rm(root, { recursive: true, force: true })));
 });
 
@@ -73,7 +159,7 @@ async function createDescriptorPlugin(params?: Readonly<{
   const root = await mkdtemp(join(tmpdir(), 'happier-plugin-change-'));
   roots.push(root);
   await mkdir(join(root, '.happier-plugin'), { recursive: true });
-  await writeFile(join(root, '.happier-plugin', 'plugin.json'), JSON.stringify({
+  const manifest = {
     schemaVersion: 2,
     id: params?.pluginId ?? 'acme.descriptor',
     version: '1.0.0',
@@ -116,7 +202,16 @@ async function createDescriptorPlugin(params?: Readonly<{
         translations: [],
       },
     } : {},
-  }));
+  };
+  await writeFile(join(root, '.happier-plugin', 'plugin.json'), JSON.stringify(manifest));
+  if (params?.development) {
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'index.ts'), [
+      `export const manifest = ${JSON.stringify(manifest)};`,
+      'export function activate(): void {}',
+      '',
+    ].join('\n'), 'utf8');
+  }
   await writeFile(join(root, 'payload.txt'), 'reviewed bytes');
   return root;
 }
@@ -150,9 +245,6 @@ async function loadCurrentDevelopmentSentinel(input: Readonly<{
       committedAuthorization: {
         pluginId: generation.pluginId,
           immutableGenerationId: generation.immutableGenerationId,
-          distribution: generation.installation.source.distribution,
-          trust: generation.installation.trust,
-          isCurrent: current.isCurrent,
       },
     },
     cacheKey: generation.immutableGenerationId,
@@ -161,6 +253,183 @@ async function loadCurrentDevelopmentSentinel(input: Readonly<{
 }
 
 describe('createDaemonPathPluginChangePreparer', () => {
+  it('returns an ephemeral source-in-place candidate without writing a development generation', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-source-in-place-home-'));
+    const sourceRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-source-in-place-root-'));
+    roots.push(happyHomeDir, sourceRoot);
+    const sourcePath = join(sourceRoot, 'plugin.ts');
+    await writeFile(sourcePath, [
+      "export const manifest = { schemaVersion: 2, id: 'acme.source-in-place', version: '1.0.0',",
+      "displayName: 'Source in place', engines: { happier: '^0.2.0' }, runtime: { apiVersion: 1 },",
+      'hostAccess: { required: [], optional: [] }, contributes: {} };',
+      'export function activate() {}',
+    ].join('\n'), 'utf8');
+    const runManagedPluginPnpm = vi.fn(successfulManagedPnpmBoundary);
+    const prepare = createDaemonPathPluginChangePreparer({
+      happyHomeDir,
+      runtimeLifecycle: {
+        prepare: async () => {
+          throw new Error('source-in-place preparation must not enter the managed registry lifecycle');
+        },
+      },
+      runManagedPluginPnpm,
+    });
+
+    const approval = await prepare({
+      kind: 'development',
+      sourceRootPath: sourcePath,
+      observedRevision: 7,
+      changedPaths: ['plugin.ts'],
+    });
+    expect(approval).toMatchObject({ kind: 'projectTrustApprovalRequired' });
+    if (!('kind' in approval) || approval.kind !== 'projectTrustApprovalRequired') return;
+    const candidate = await approval.continueAfterProjectTrustApproval();
+
+    expect(candidate).toMatchObject({
+      kind: 'preparedDevelopmentCandidate',
+      pluginId: 'acme.source-in-place',
+      sourceAuthority: {
+        kind: 'development',
+        observedRevision: 7,
+        canonicalRoot: sourceRoot,
+      },
+      preparedActivationGraph: {
+        rootPath: sourceRoot,
+        entryPath: sourcePath,
+      },
+    });
+    expect(runManagedPluginPnpm).not.toHaveBeenCalled();
+    const generationEntries = await readdir(resolvePluginStorePaths({ happyHomeDir }).generationsDir)
+      .catch((error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? [] : Promise.reject(error));
+    expect(generationEntries).toEqual([]);
+    await candidate.cleanup();
+    await expect(readFile(sourcePath, 'utf8')).resolves.toContain('acme.source-in-place');
+  });
+
+  it('delegates already-registered development-root trust to the daemon root owner', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-registered-root-home-'));
+    const sourceRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-registered-root-source-'));
+    roots.push(happyHomeDir, sourceRoot);
+    const sourcePath = join(sourceRoot, 'plugin.ts');
+    await writeFile(sourcePath, [
+      "export const manifest = { schemaVersion: 2, id: 'acme.registered-root', version: '1.0.0',",
+      "displayName: 'Registered root', engines: { happier: '^0.2.0' }, runtime: { apiVersion: 1 },",
+      'hostAccess: { required: [], optional: [] }, contributes: {} };',
+      'export function activate() {}',
+    ].join('\n'), 'utf8');
+    const isRegisteredDevelopmentRoot = vi.fn((path: string) => path === sourcePath);
+    const prepare = createDaemonPathPluginChangePreparer({
+      happyHomeDir,
+      runtimeLifecycle: {
+        prepare: async () => {
+          throw new Error('development preparation must not enter the managed lifecycle');
+        },
+      },
+      isRegisteredDevelopmentRoot,
+      runManagedPluginPnpm: successfulManagedPnpmBoundary,
+    });
+
+    const candidate = await prepare({
+      kind: 'development',
+      sourceRootPath: sourcePath,
+      observedRevision: 1,
+    });
+
+    expect(isRegisteredDevelopmentRoot).toHaveBeenCalledWith(sourcePath);
+    expect(candidate).toMatchObject({
+      kind: 'preparedDevelopmentCandidate',
+      pluginId: 'acme.registered-root',
+      sourceAuthority: { observedRevision: 1 },
+    });
+    expect(candidate).not.toHaveProperty('kind', 'projectTrustApprovalRequired');
+    await candidate.cleanup();
+  });
+
+  it('never reopens review for a development change after restart, even when it widens required access', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-development-authority-restart-'));
+    roots.push(happyHomeDir);
+    const pluginRoot = await createDescriptorPlugin({ development: true });
+    await mkdir(join(pluginRoot, 'src'), { recursive: true });
+    await writeFile(join(pluginRoot, 'src', 'index.ts'), 'export function activate() {}\n', 'utf8');
+    const runtimeLifecycle: PluginRegistryRuntimeLifecycle = {
+      prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }),
+    };
+    const createPrepare = () => createDaemonPathPluginChangePreparer({
+      happyHomeDir,
+      runtimeLifecycle,
+      runManagedPluginPnpm: successfulManagedPnpmBoundary,
+      runPluginUiArtifactBuild: async (input) => ({
+        ok: true as const,
+        projectRoot: input.projectRoot,
+        built: false,
+      }),
+    });
+
+    const first = await createPrepare()({
+      kind: 'development',
+      sourceRootPath: pluginRoot,
+    });
+    if (!('kind' in first) || first.kind !== 'preparedDevelopmentCandidate') {
+      throw new Error('Expected first development candidate');
+    }
+    expect(first).toMatchObject({ requiresReview: true, reviewReason: 'firstInstall' });
+    await expect(createPluginRegistryStateStore({ happyHomeDir, runtimeLifecycle })
+      .approveDevelopmentAuthorityWithResult({
+        pluginId: first.pluginId,
+        expectedRevision: first.registryRevision!,
+        approvedAuthorityManifest: first.manifest,
+        catalogRecord: first.catalogRecord,
+        trust: first.trust,
+        updatePolicy: first.updatePolicy,
+        optionalAccess: [],
+        installReviewPrincipalDigest: first.installReviewPrincipal!.digest,
+        installReviewPrincipalPresentation: first.installReviewPrincipal!.presentation,
+      })).resolves.toMatchObject({ transaction: { status: 'committed' } });
+    await first.cleanup();
+
+    const neutralAfterRestart = await createPrepare()({
+      kind: 'development',
+      pluginId: first.pluginId,
+      sourceRootPath: pluginRoot,
+      observedRevision: 2,
+      changedPaths: ['src/index.ts'],
+    });
+    expect(neutralAfterRestart).toMatchObject({
+      kind: 'preparedDevelopmentCandidate',
+      requiresReview: false,
+      authorityExpansion: [],
+    });
+    await neutralAfterRestart.cleanup();
+
+    const manifestPath = join(pluginRoot, '.happier-plugin', 'plugin.json');
+    const widenedManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+    widenedManifest.hostAccess = {
+      required: [{
+        id: 'api',
+        capability: 'network',
+        reason: 'Call the plugin API',
+        scope: { targets: [{ kind: 'fixedOrigin', origin: 'https://api.example.test' }] },
+      }],
+      optional: [],
+    };
+    await writeFile(manifestPath, JSON.stringify(widenedManifest), 'utf8');
+
+    const widenedAfterRestart = await createPrepare()({
+      kind: 'development',
+      pluginId: first.pluginId,
+      sourceRootPath: pluginRoot,
+      observedRevision: 3,
+      changedPaths: ['.happier-plugin/plugin.json'],
+    });
+    // Development plugins never prompt on change (PPS §9 ruling (a), refined).
+    expect(widenedAfterRestart).toMatchObject({
+      kind: 'preparedDevelopmentCandidate',
+      requiresReview: false,
+      authorityExpansion: [],
+    });
+    await widenedAfterRestart.cleanup();
+  });
+
   it('sets update policy through the existing transaction path without review or executable reactivation', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-policy-'));
     roots.push(happyHomeDir);
@@ -177,7 +446,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
               adopt: async () => Object.freeze(Object.fromEntries(
                 candidate.changedPluginIds.map((pluginId) => [
                   pluginId,
-                  candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null,
+                  candidate.pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null,
                 ]),
               )),
             };
@@ -220,10 +489,14 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.requestPluginChange({
       kind: 'setUpdatePolicy',
       pluginId: 'acme.descriptor',
-      policy: 'reviewSensitiveChanges',
+      policy: 'allowed',
     })).resolves.toMatchObject({
-      kind: 'failed',
-      code: 'plugin_update_policy_unsupported',
+      kind: 'committed',
+      pluginId: 'acme.descriptor',
+      appliedGeneration: null,
+    });
+    await expect(createPluginRegistryStateStore({ happyHomeDir }).read()).resolves.toMatchObject({
+      plugins: { 'acme.descriptor': { install: { updatePolicy: 'allowed' } } },
     });
     await service.shutdown();
   });
@@ -263,7 +536,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
             candidate.changedPluginIds.map((pluginId) => [
               pluginId,
               candidate.installationState.plugins[pluginId]?.enabled === true
-                ? candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null
+                ? candidate.pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null
                 : null,
             ]),
           )),
@@ -324,11 +597,11 @@ describe('createDaemonPathPluginChangePreparer', () => {
       locator: pluginRoot,
       development: false,
     });
-    await writeFile(join(pluginRoot, 'payload.txt'), 'development rebuild', 'utf8');
-    await applyAndObserve('development rebuild', {
-      kind: 'development',
-      pluginId: 'acme.descriptor',
-      sourceRootPath: pluginRoot,
+    await writeFile(join(pluginRoot, 'payload.txt'), 'managed rebuild', 'utf8');
+    await applyAndObserve('managed rebuild', {
+      kind: 'installPath',
+      locator: pluginRoot,
+      development: false,
     });
     const contributionRemovalManifest = JSON.parse(
       await readFile(manifestPath, 'utf8'),
@@ -336,9 +609,9 @@ describe('createDaemonPathPluginChangePreparer', () => {
     contributionRemovalManifest.contributes = {};
     await writeFile(manifestPath, JSON.stringify(contributionRemovalManifest), 'utf8');
     await applyAndObserve('ordinary contribution removal', {
-      kind: 'development',
-      pluginId: 'acme.descriptor',
-      sourceRootPath: pluginRoot,
+      kind: 'installPath',
+      locator: pluginRoot,
+      development: false,
     });
     await applyAndObserve('manual rollback', {
       kind: 'rollback',
@@ -373,7 +646,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
         runningSessionDisposition: 'retainRunningSessions',
       },
       {
-        cause: 'development rebuild',
+        cause: 'managed rebuild',
         mutationKind: 'install',
         runningSessionDisposition: 'retainRunningSessions',
       },
@@ -431,189 +704,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
     expect(hardRevocationRevisions[8]).toBe(hardRevocationRevisions[7]);
   });
 
-  it('fails closed and removes the owned candidate when pnpm emits a symlinked dependency', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
-    const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-dev-symlink-output-'));
-    const outsideRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-dev-outside-'));
-    roots.push(happyHomeDir, pluginRoot, outsideRoot);
-    await writeFile(join(pluginRoot, 'package.json'), JSON.stringify({ dependencies: { escaped: '1.0.0' } }), 'utf8');
-    await writeFile(join(pluginRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
-    await writeFile(join(outsideRoot, 'index.js'), 'export default true;\n', 'utf8');
-    let candidateRoot: string | undefined;
-
-    await expect(materializePluginDevelopmentCandidate({
-      happyHomeDir,
-      sourceRootPath: pluginRoot,
-    }, {
-      runManagedPluginPnpm: async (input) => {
-        candidateRoot = input.projectRoot;
-        await mkdir(join(input.projectRoot, 'node_modules'), { recursive: true });
-        await symlink(outsideRoot, join(input.projectRoot, 'node_modules', 'escaped'), 'dir');
-        return { ok: true, result: { exitCode: 0, signal: null, stdout: '', stderr: '' } };
-      },
-    })).rejects.toThrow(/symbolic link/i);
-
-    expect(candidateRoot).toBeDefined();
-    await expect(lstat(candidateRoot!)).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('does not canonicalize every regular installed dependency file while verifying the contained tree', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
-    const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-dev-regular-files-'));
-    roots.push(happyHomeDir, pluginRoot);
-    await writeFile(join(pluginRoot, 'package.json'), JSON.stringify({ dependencies: { fixture: '1.0.0' } }), 'utf8');
-    await writeFile(join(pluginRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
-
-    const dependencyFiles = [
-      join('node_modules', 'fixture', 'index.js'),
-      join('node_modules', 'fixture', 'nested', 'payload.js'),
-      join('node_modules', 'fixture', 'nested', 'metadata.json'),
-    ];
-    filesystemBoundary.realpathCallsByPath.clear();
-
-    const materialized = await materializePluginDevelopmentCandidate({
-      happyHomeDir,
-      sourceRootPath: pluginRoot,
-    }, {
-      runManagedPluginPnpm: async (input) => {
-        await mkdir(join(input.projectRoot, 'node_modules', 'fixture', 'nested'), { recursive: true });
-        await Promise.all(dependencyFiles.map(async (relativePath) => {
-          await writeFile(join(input.projectRoot, relativePath), 'export {};\n', 'utf8');
-        }));
-        return { ok: true, result: { exitCode: 0, signal: null, stdout: '', stderr: '' } };
-      },
-    });
-
-    expect(filesystemBoundary.realpathCallsByPath.get(join(materialized.rootPath, 'node_modules'))).toBe(1);
-    for (const relativePath of dependencyFiles) {
-      expect(filesystemBoundary.realpathCallsByPath.get(join(materialized.rootPath, relativePath)) ?? 0).toBe(0);
-    }
-
-    await materialized.cleanup();
-  });
-
-  it('removes pnpm executable links that are not part of the daemon runtime closure', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
-    const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-dev-bin-links-'));
-    roots.push(happyHomeDir, pluginRoot);
-    await writeFile(join(pluginRoot, 'package.json'), JSON.stringify({
-      dependencies: { '@happier-dev/plugin-sdk': '0.0.0' },
-    }), 'utf8');
-    await writeFile(join(pluginRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
-
-    const materialized = await materializePluginDevelopmentCandidate({
-      happyHomeDir,
-      sourceRootPath: pluginRoot,
-    }, {
-      runManagedPluginPnpm: async (input) => {
-        const sdkRoot = join(input.projectRoot, 'node_modules', '@happier-dev', 'plugin-sdk');
-        await mkdir(join(sdkRoot, 'dist'), { recursive: true });
-        await mkdir(join(input.projectRoot, 'node_modules', '.bin'), { recursive: true });
-        await writeFile(join(sdkRoot, 'dist', 'bin.js'), 'export {};\n', 'utf8');
-        await symlink(
-          join('..', '@happier-dev', 'plugin-sdk', 'dist', 'bin.js'),
-          join(input.projectRoot, 'node_modules', '.bin', 'happier-plugin-build-ui'),
-          'file',
-        );
-        return { ok: true, result: { exitCode: 0, signal: null, stdout: '', stderr: '' } };
-      },
-    });
-
-    await expect(lstat(join(materialized.rootPath, 'node_modules', '.bin'))).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(readFile(
-      join(materialized.rootPath, 'node_modules', '@happier-dev', 'plugin-sdk', 'dist', 'bin.js'),
-      'utf8',
-    )).resolves.toBe('export {};\n');
-    await materialized.cleanup();
-  });
-
-  it('drops author-owned dist so the daemon-owned UI build is the only development artifact producer', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
-    const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-dev-ui-artifacts-'));
-    roots.push(happyHomeDir, pluginRoot);
-    await writeFile(join(pluginRoot, 'package.json'), JSON.stringify({ name: 'happier-plugin-ui-dev' }), 'utf8');
-    await mkdir(join(pluginRoot, 'src'), { recursive: true });
-    await writeFile(join(pluginRoot, 'src', 'index.ts'), 'export const activate = () => {};\n', 'utf8');
-    await mkdir(join(pluginRoot, 'dist', 'happier-plugin-ui', 'react-native', 'main-native', 'web'), { recursive: true });
-    await writeFile(join(pluginRoot, 'dist', 'index.js'), 'export const activate = () => {};\n', 'utf8');
-    await writeFile(
-      join(pluginRoot, 'dist', 'happier-plugin-ui', 'ui-artifacts.json'),
-      JSON.stringify({ version: 1, entries: [] }),
-      'utf8',
-    );
-    await writeFile(
-      join(pluginRoot, 'dist', 'happier-plugin-ui', 'react-native', 'main-native', 'web', 'entry.mjs.bundle'),
-      'export function renderSurface() {}\n',
-      'utf8',
-    );
-
-    const materialized = await materializePluginDevelopmentCandidate({
-      happyHomeDir,
-      sourceRootPath: pluginRoot,
-    }, { runManagedPluginPnpm: successfulManagedPnpmBoundary });
-
-    await expect(lstat(join(materialized.rootPath, 'dist', 'happier-plugin-ui')))
-      .rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(lstat(join(materialized.rootPath, 'dist', 'index.js'))).rejects.toMatchObject({ code: 'ENOENT' });
-    await materialized.cleanup();
-  });
-
-  it('resolves a lockless development source before freezing an author-supplied lock', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
-    const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-dev-lock-policy-'));
-    roots.push(happyHomeDir, pluginRoot);
-    await writeFile(join(pluginRoot, 'package.json'), JSON.stringify({
-      name: 'acme-lock-policy',
-      version: '1.0.0',
-      dependencies: { 'fixture-dependency': '1.0.0' },
-    }), 'utf8');
-
-    const installArguments: Array<readonly string[]> = [];
-    const runManagedPluginPnpm = async (input: Readonly<{
-      projectRoot: string;
-      args: readonly string[];
-    }>) => {
-      installArguments.push(input.args);
-      await mkdir(join(input.projectRoot, 'node_modules', 'fixture-dependency'), { recursive: true });
-      await writeFile(
-        join(input.projectRoot, 'node_modules', 'fixture-dependency', 'index.js'),
-        'export const fixture = true;\n',
-        'utf8',
-      );
-      return await successfulManagedPnpmBoundary();
-    };
-
-    const lockless = await materializePluginDevelopmentCandidate({
-      happyHomeDir,
-      sourceRootPath: pluginRoot,
-    }, { runManagedPluginPnpm });
-    await lockless.cleanup();
-
-    await writeFile(join(pluginRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
-    const locked = await materializePluginDevelopmentCandidate({
-      happyHomeDir,
-      sourceRootPath: pluginRoot,
-    }, { runManagedPluginPnpm });
-    await locked.cleanup();
-
-    expect(installArguments).toEqual([
-      [
-        'install',
-        '--ignore-scripts',
-        '--config.node-linker=hoisted',
-        '--package-import-method=copy',
-      ],
-      [
-        'install',
-        '--ignore-scripts',
-        '--frozen-lockfile',
-        '--config.node-linker=hoisted',
-        '--package-import-method=copy',
-      ],
-    ]);
-  });
-
-  it('materializes a regular-file development dependency closure before immutable Jiti activation', async () => {
+  it('prepares a regular-file development dependency closure in place before runtime adoption', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
     roots.push(happyHomeDir);
     const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-dev-closure-'));
@@ -642,7 +733,9 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await writeFile(join(pluginRoot, 'src', 'index.ts'), [
       "import { value } from 'runtime-dependency';",
       "import { value as developmentValue } from 'development-only-dependency';",
+      "export const manifest = { schemaVersion: 2, id: 'acme.dev-closure', version: '1.0.0', displayName: 'Development closure', engines: { happier: '^0.2.0' }, runtime: { apiVersion: 1 }, entrypoints: { daemon: './dist/index.js', development: './src/index.ts' }, hostAccess: { required: [], optional: [] }, contributes: {} };",
       'export const activatedValue: string = `${value}:${developmentValue}`;',
+      'export function activate(): void {}',
       '',
     ].join('\n'), 'utf8');
     const authorRuntimePackageRoot = join(
@@ -693,22 +786,26 @@ describe('createDaemonPathPluginChangePreparer', () => {
         result: { exitCode: 0, signal: null, stdout: '', stderr: '' },
       };
     });
+    let preparedDevelopmentEntryPath: string | undefined;
     const service = createDaemonPluginChangeService({
       prepare: createDaemonPathPluginChangePreparer({
         happyHomeDir,
         runtimeLifecycle: {
           prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }),
+          prepareDevelopment: async (candidate) => {
+            preparedDevelopmentEntryPath = candidate.preparedActivationGraph.entryPath;
+            return { abort: async () => undefined, adopt: async () => undefined };
+          },
         },
         runManagedPluginPnpm,
       }),
       createPendingChangeId: () => 'pending-development-closure',
     });
     const begun = await service.requestPluginChange({
-      kind: 'installPath',
-      locator: pluginRoot,
-      development: true,
+      kind: 'development',
+      sourceRootPath: pluginRoot,
     });
-    if (begun.kind !== 'reviewRequired') throw new Error('Expected review');
+    if (begun.kind !== 'reviewRequired') throw new Error(`Expected review, received ${begun.kind}${begun.kind === 'failed' ? ` (${begun.code}: ${begun.message ?? ''})` : ''}`);
 
     const result = await service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
@@ -716,56 +813,34 @@ describe('createDaemonPathPluginChangePreparer', () => {
     });
     expect(result).toMatchObject({ kind: 'committed', pluginId: 'acme.dev-closure' });
     expect(materializedCandidateRoot).toBeDefined();
-    await expect(lstat(materializedCandidateRoot!)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await realpath(materializedCandidateRoot!)).toBe(await realpath(pluginRoot));
+    await expect(lstat(materializedCandidateRoot!)).resolves.toBeDefined();
     expect(runManagedPluginPnpm).toHaveBeenCalledWith({
-      projectRoot: expect.any(String),
+      projectRoot: await realpath(pluginRoot),
       args: [
         'install',
         '--ignore-scripts',
         '--frozen-lockfile',
-        '--config.node-linker=hoisted',
-        '--package-import-method=copy',
       ],
       sdkRegistryOrigin: null,
     });
-    await rm(join(pluginRoot, 'node_modules'), { recursive: true, force: true });
-
-    const current = await readCurrentCommittedPluginGenerations(resolvePluginStorePaths({ happyHomeDir }));
-    const generation = current?.generations.get('acme.dev-closure');
-    expect(generation).toBeDefined();
-    const pendingDirectories = [generation!.rootPath];
-    while (pendingDirectories.length > 0) {
-      const directory = pendingDirectories.pop()!;
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
-        const entryPath = join(directory, entry.name);
-        expect((await lstat(entryPath)).isSymbolicLink()).toBe(false);
-        if (entry.isDirectory()) pendingDirectories.push(entryPath);
-      }
-    }
-    await expect(readFile(join(generation!.rootPath, 'node_modules', 'development-only-dependency', 'index.js'), 'utf8'))
+    await expect(readFile(join(pluginRoot, 'node_modules', 'development-only-dependency', 'index.js'), 'utf8'))
       .resolves.toContain('materialized-development-value');
-    await expect(readFile(join(generation!.rootPath, '.npmrc'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(readFile(join(generation!.rootPath, 'pnpm-lock.yaml'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-    if (!generation!.installation?.trust) throw new Error('Expected committed installation authorization');
-    const loaded = await loadPluginModule({
-      source: {
-        kind: 'file_backed',
-        entryPath: join(generation!.rootPath, 'dist', 'index.js'),
-        devEntryPath: join(generation!.rootPath, 'src', 'index.ts'),
-        useDevelopmentEntry: true,
-        trustPolicy: 'prompt',
-        committedAuthorization: {
-          pluginId: generation!.pluginId,
-          immutableGenerationId: generation!.immutableGenerationId,
-          distribution: generation!.installation.source.distribution,
-          trust: generation!.installation.trust,
-          isCurrent: current!.isCurrent,
+    await expect(readFile(join(pluginRoot, '.npmrc'), 'utf8')).resolves.toContain('must-not-persist');
+    await expect(readFile(join(pluginRoot, 'pnpm-lock.yaml'), 'utf8')).resolves.toContain('lockfileVersion');
+    expect(preparedDevelopmentEntryPath).toBe(await realpath(join(pluginRoot, 'src', 'index.ts')));
+    await expect(createPluginRegistryStateStore({ happyHomeDir }).read()).resolves.toMatchObject({
+      plugins: {
+        'acme.dev-closure': {
+          source: { kind: 'path', devWatch: true },
         },
       },
-      cacheKey: generation!.immutableGenerationId,
     });
-    expect((loaded as { activatedValue?: string }).activatedValue)
-      .toBe('materialized-runtime-value:materialized-development-value');
+    await expect(createPluginRegistryStateStore({ happyHomeDir }).readSnapshot()).resolves.toMatchObject({
+      approvedAuthorityManifestsByPluginId: {
+        'acme.dev-closure': { id: 'acme.dev-closure', version: '1.0.0' },
+      },
+    });
   });
 
   it('rebuilds repeated development candidates while preserving their reviewed source snapshots', async () => {
@@ -777,7 +852,13 @@ describe('createDaemonPathPluginChangePreparer', () => {
     });
     await mkdir(join(pluginRoot, 'src'), { recursive: true });
     const entryPath = join(pluginRoot, 'src', 'index.ts');
-    await writeFile(entryPath, "export const sentinel = 'before';\nexport function activate(): void {}\n", 'utf8');
+    const sourceForSentinel = (sentinel: string) => [
+      "export const manifest = { schemaVersion: 2, id: 'acme.repeated-development', version: '1.0.0', displayName: 'Descriptor', engines: { happier: '^0.2.0' }, runtime: { apiVersion: 1 }, entrypoints: { development: './src/index.ts' }, hostAccess: { required: [], optional: [] }, contributes: {} };",
+      `export const sentinel = '${sentinel}';`,
+      'export function activate(): void {}',
+      '',
+    ].join('\n');
+    await writeFile(entryPath, sourceForSentinel('before'), 'utf8');
     await writeFile(join(pluginRoot, 'package.json'), JSON.stringify({
       name: 'happier-plugin-acme-repeated-development',
       version: '0.1.0',
@@ -795,37 +876,43 @@ describe('createDaemonPathPluginChangePreparer', () => {
       );
       return await successfulManagedPnpmBoundary();
     });
+    const appliedSentinels: string[] = [];
     const prepare = createDaemonPathPluginChangePreparer({
       happyHomeDir,
       runtimeLifecycle: {
         prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }),
+        prepareDevelopment: async (candidate) => {
+          const preparedSource = await readFile(candidate.preparedActivationGraph.entryPath, 'utf8');
+          appliedSentinels.push(/export const sentinel = '([^']+)'/.exec(preparedSource)?.[1] ?? 'missing');
+          return { abort: async () => undefined, adopt: async () => undefined };
+        },
       },
       runManagedPluginPnpm,
     });
     const preservedReviewResults: Array<unknown> = [];
     const service = createDaemonPluginChangeService({
-      prepare: async (request) => {
+      prepare: preservePathPreparerOwner(prepare, async (request) => {
         const prepared = await prepare(request);
         if (request.kind === 'development' && request.changedPaths?.[0] === 'src/index.ts') {
           preservedReviewResults.push(prepared.review);
         }
         return prepared;
-      },
+      }),
       createPendingChangeId: () => 'pending-repeated-development',
     });
     const initial = await service.requestPluginChange({
-      kind: 'installPath',
-      locator: pluginRoot,
-      development: true,
+      kind: 'development',
+      sourceRootPath: pluginRoot,
     });
-    if (initial.kind !== 'reviewRequired') throw new Error('Expected initial review');
+    if (initial.kind !== 'reviewRequired') throw new Error(`Expected initial review, received ${initial.kind}${initial.kind === 'failed' ? ` (${initial.code}: ${initial.message ?? ''})` : ''}`);
     await service.decidePluginChange({
       pendingChangeId: initial.pendingChangeId,
       decision: 'installAndTrust',
     });
+    expect(appliedSentinels).toEqual(['before']);
+    appliedSentinels.length = 0;
     runManagedPluginPnpm.mockClear();
 
-    const appliedSentinels: string[] = [];
     let observerFailure: unknown;
     const observer = await startPluginDevelopmentSourceObserver({
       projectRoot: pluginRoot,
@@ -846,11 +933,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
           if (result.kind !== 'committed') {
             throw new Error(`Unexpected package-root development update: ${result.kind}`);
           }
-          appliedSentinels.push((await loadCurrentDevelopmentSentinel({
-            happyHomeDir,
-            pluginId: 'acme.repeated-development',
-            developmentEntryRelativePath: 'src/index.ts',
-          })) ?? 'missing');
           return 'adopted';
         } catch (error) {
           observerFailure = error;
@@ -865,7 +947,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
         const startedAt = performance.now();
         await writeFile(
           entryPath,
-          `export const sentinel = '${sentinel}';\nexport function activate(): void {}\n`,
+          sourceForSentinel(sentinel),
           'utf8',
         );
         await vi.waitFor(() => {
@@ -873,13 +955,8 @@ describe('createDaemonPathPluginChangePreparer', () => {
           expect(appliedSentinels.at(-1)).toBe(sentinel);
         }, { timeout: 10_000, interval: 25 });
         expect(runManagedPluginPnpm).not.toHaveBeenCalled();
-        const current = await readCurrentCommittedPluginGenerations(
-          resolvePluginStorePaths({ happyHomeDir }),
-        );
-        const generation = current?.generations.get('acme.repeated-development');
-        expect(generation).toBeDefined();
         await expect(readFile(
-          join(generation!.rootPath, 'node_modules', 'fixture-dependency', 'index.js'),
+          join(pluginRoot, 'node_modules', 'fixture-dependency', 'index.js'),
           'utf8',
         )).resolves.toContain('installed-once');
         editToInvocationDurationsMs.push(performance.now() - startedAt);
@@ -887,6 +964,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
     } finally {
       observer.stop();
     }
+    await new Promise<void>((resolveStopped) => setTimeout(resolveStopped, 100));
     expect(preservedReviewResults).toEqual(Array.from({ length: 10 }, () => undefined));
     if (process.env.HAPPIER_REPORT_PLUGIN_DEV_TIMING === '1') {
       const sorted = [...editToInvocationDurationsMs].sort((left, right) => left - right);
@@ -921,7 +999,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
 
     await writeFile(
       entryPath,
-      "export const sentinel = 'after-dependency-change';\nexport function activate(): void {}\n",
+      sourceForSentinel('after-dependency-change'),
       'utf8',
     );
     await expect(service.requestPluginChange({
@@ -936,7 +1014,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
   });
 
-  it('conflicts a stale source-only candidate instead of dropping a same-plugin successor generation', async () => {
+  it('serializes overlapping neutral source-only adoptions through the current authority state', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-development-currentness-home-'));
     const sourceRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-development-currentness-source-'));
     roots.push(happyHomeDir, sourceRoot);
@@ -986,35 +1064,23 @@ describe('createDaemonPathPluginChangePreparer', () => {
       }),
       createPendingChangeId: () => 'pending-development-currentness',
     });
-    const readCurrentGeneration = async () => {
-      const current = await readCurrentCommittedPluginGenerations(
-        resolvePluginStorePaths({ happyHomeDir }),
-      );
-      const generation = current?.generations.get(pluginId);
-      if (!generation) throw new Error('Expected current development generation');
-      return generation;
-    };
+    const readCurrentRevision = async () => (
+      (await readPluginRegistryCommitRecord(resolvePluginStorePaths({ happyHomeDir })))
+        ?.installationState.revisionId ?? null
+    );
 
     const initial = await service.requestPluginChange({
       kind: 'development',
       sourceRootPath: sourceRoot,
     });
-    if (initial.kind !== 'sourceRootReviewRequired') {
+    if (initial.kind !== 'reviewRequired' || initial.reviewKind !== 'projectTrust') {
       throw new Error(`Expected source-root review, received ${initial.kind}`);
     }
-    const initialPackageReview = await service.decidePluginChange({
-      pendingChangeId: initial.pendingChangeId,
-      decision: 'trustSourceRoot',
-    });
-    if (initialPackageReview.kind !== 'reviewRequired') {
-      throw new Error(`Expected package review, received ${initialPackageReview.kind}`);
-    }
     await expect(service.decidePluginChange({
-      pendingChangeId: initialPackageReview.pendingChangeId,
-      decision: 'installAndTrust',
-      optionalSelections: [],
+      pendingChangeId: initial.pendingChangeId,
+      decision: 'installAndTrust', optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId });
-    const generationG = await readCurrentGeneration();
+    const revisionG = await readCurrentRevision();
 
     pauseNextDevelopmentBuild = true;
     await writeFile(join(sourceRoot, 'src', 'a.ts'), "export const value = 'a';\n", 'utf8');
@@ -1033,17 +1099,12 @@ describe('createDaemonPathPluginChangePreparer', () => {
       sourceRootPath: sourceRoot,
       changedPaths: ['src/b.ts'],
     })).resolves.toMatchObject({ kind: 'committed', pluginId });
-    const generationH = await readCurrentGeneration();
-    expect(generationH.immutableGenerationId).not.toBe(generationG.immutableGenerationId);
-    await expect(readFile(join(generationH.rootPath, 'src', 'a.ts'), 'utf8')).resolves.toContain("'g'");
-    await expect(readFile(join(generationH.rootPath, 'src', 'b.ts'), 'utf8')).resolves.toContain("'b'");
+    const revisionH = await readCurrentRevision();
+    expect(revisionH).not.toBe(revisionG);
 
     releaseFirstSourceOnlyBuild();
-    await expect(staleA).resolves.toEqual({ kind: 'conflict', pluginId });
-    const afterStaleConflict = await readCurrentGeneration();
-    expect(afterStaleConflict.immutableGenerationId).toBe(generationH.immutableGenerationId);
-    await expect(readFile(join(afterStaleConflict.rootPath, 'src', 'a.ts'), 'utf8')).resolves.toContain("'g'");
-    await expect(readFile(join(afterStaleConflict.rootPath, 'src', 'b.ts'), 'utf8')).resolves.toContain("'b'");
+    await expect(staleA).resolves.toMatchObject({ kind: 'committed', pluginId });
+    expect(await readCurrentRevision()).not.toBe(revisionH);
 
     await expect(service.requestPluginChange({
       kind: 'development',
@@ -1051,9 +1112,9 @@ describe('createDaemonPathPluginChangePreparer', () => {
       sourceRootPath: sourceRoot,
       changedPaths: ['src/a.ts'],
     })).resolves.toMatchObject({ kind: 'committed', pluginId });
-    const merged = await readCurrentGeneration();
-    await expect(readFile(join(merged.rootPath, 'src', 'a.ts'), 'utf8')).resolves.toContain("'a'");
-    await expect(readFile(join(merged.rootPath, 'src', 'b.ts'), 'utf8')).resolves.toContain("'b'");
+    expect(await readCurrentRevision()).not.toBe(revisionH);
+    await expect(readFile(join(sourceRoot, 'src', 'a.ts'), 'utf8')).resolves.toContain("'a'");
+    await expect(readFile(join(sourceRoot, 'src', 'b.ts'), 'utf8')).resolves.toContain("'b'");
   });
 
   it('evaluates and adopts a literal one-file development source without author JSON or package installation', async () => {
@@ -1075,6 +1136,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
     };
     await writeSource('before');
     const runManagedPluginPnpm = vi.fn(successfulManagedPnpmBoundary);
+    const preparedSentinels: string[] = [];
     const service = createDaemonPluginChangeService({
       prepare: createDaemonPathPluginChangePreparer({
         happyHomeDir,
@@ -1084,10 +1146,15 @@ describe('createDaemonPathPluginChangePreparer', () => {
             adopt: async () => Object.freeze(Object.fromEntries(
               candidate.changedPluginIds.map((pluginId) => [
                 pluginId,
-                candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null,
+                candidate.pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null,
               ]),
             )),
           }),
+          prepareDevelopment: async (candidate) => {
+            const preparedSource = await readFile(candidate.preparedActivationGraph.entryPath, 'utf8');
+            preparedSentinels.push(/export const sentinel = '([^']+)'/.exec(preparedSource)?.[1] ?? 'missing');
+            return { abort: async () => undefined, adopt: async () => undefined };
+          },
         },
         runManagedPluginPnpm,
       }),
@@ -1109,10 +1176,10 @@ describe('createDaemonPathPluginChangePreparer', () => {
             ? { changedPaths: observation.request.changedPaths }
             : {}),
         });
-        if (result.kind === 'sourceRootReviewRequired') {
+        if (result.kind === 'reviewRequired' && result.reviewKind === 'projectTrust') {
           result = await service.decidePluginChange({
             pendingChangeId: result.pendingChangeId,
-            decision: 'trustSourceRoot',
+            decision: 'installAndTrust', optionalSelections: [],
           });
         }
         if (result.kind === 'reviewRequired') {
@@ -1122,11 +1189,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
           });
         }
         if (result.kind !== 'committed') throw new Error(`Unexpected one-file update: ${result.kind}`);
-        appliedSentinels.push((await loadCurrentDevelopmentSentinel({
-          happyHomeDir,
-          pluginId: 'acme.one-file-live',
-          developmentEntryRelativePath: 'plugin.ts',
-        })) ?? 'missing');
+        appliedSentinels.push(preparedSentinels.at(-1) ?? 'missing');
         return 'adopted';
       },
     });
@@ -1162,37 +1225,22 @@ describe('createDaemonPathPluginChangePreparer', () => {
       }));
     }
 
-    const current = await readCurrentCommittedPluginGenerations(
-      resolvePluginStorePaths({ happyHomeDir }),
-    );
-    const generation = current?.generations.get('acme.one-file-live');
-    expect(generation).toBeDefined();
-    await expect(readFile(join(generation!.rootPath, '.happier-plugin', 'plugin.json'), 'utf8'))
-      .resolves.toContain('"development": "./plugin.ts"');
-    await expect(readFile(join(generation!.rootPath, 'package.json'), 'utf8'))
-      .rejects.toMatchObject({ code: 'ENOENT' });
-    if (!generation?.installation?.trust) throw new Error('Expected one-file development authorization');
-    const loaded = await loadPluginModule({
-      source: {
-        kind: 'file_backed',
-        entryPath: join(generation.rootPath, 'plugin.ts'),
-        devEntryPath: join(generation.rootPath, 'plugin.ts'),
-        useDevelopmentEntry: true,
-        trustPolicy: 'prompt',
-        committedAuthorization: {
-          pluginId: generation.pluginId,
-          immutableGenerationId: generation.immutableGenerationId,
-          distribution: generation.installation.source.distribution,
-          trust: generation.installation.trust,
-          isCurrent: current!.isCurrent,
+    await expect(createPluginRegistryStateStore({ happyHomeDir }).read()).resolves.toMatchObject({
+      plugins: {
+        'acme.one-file-live': {
+          source: { kind: 'path', devWatch: true, resolvedPath: await realpath(sourceRoot) },
         },
       },
-      cacheKey: generation.immutableGenerationId,
     });
-    expect((loaded as { sentinel?: string }).sentinel).toBe('edit-10');
+    await expect(createPluginRegistryStateStore({ happyHomeDir }).readSnapshot()).resolves.toMatchObject({
+      approvedAuthorityManifestsByPluginId: {
+        'acme.one-file-live': { id: 'acme.one-file-live' },
+      },
+    });
+    await expect(readFile(sourcePath, 'utf8')).resolves.toContain("sentinel = 'edit-10'");
   });
 
-  it('requires separate source-root and package trust confirmations before activating a one-file development plugin', async () => {
+  it('requires one remembered project trust confirmation before activating a one-file development plugin', async () => {
     const approvalWindowStartMs = Date.now();
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-one-file-trust-home-'));
     const sourceRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-one-file-trust-source-'));
@@ -1211,29 +1259,16 @@ describe('createDaemonPathPluginChangePreparer', () => {
       '',
     ].join('\n'), 'utf8');
 
-    const preparedCandidates: PluginRegistryRuntimeCandidate[] = [];
+    const preparedDevelopmentCandidates: PluginDevelopmentRuntimeCandidate[] = [];
     let pendingChangeSequence = 0;
     const service = createDaemonPluginChangeService({
       prepare: createDaemonPathPluginChangePreparer({
         happyHomeDir,
         runtimeLifecycle: {
-          prepare: async (candidate) => {
-            preparedCandidates.push(candidate);
-            const preparedModules = Reflect.get(
-              candidate,
-              'preparedActivationGraphsByPluginId',
-            ) as ReadonlyMap<string, Readonly<{ module: Readonly<Record<string, unknown>> }>> | undefined;
-            const activate = preparedModules?.get('acme.one-file-trust')?.module.activate;
-            if (typeof activate === 'function') activate();
-            return {
-              abort: async () => undefined,
-              adopt: async () => Object.freeze(Object.fromEntries(
-                candidate.changedPluginIds.map((pluginId) => [
-                  pluginId,
-                  candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null,
-                ]),
-              )),
-            };
+          prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }),
+          prepareDevelopment: async (candidate) => {
+            preparedDevelopmentCandidates.push(candidate);
+            return { abort: async () => undefined, adopt: async () => undefined };
           },
         },
         runManagedPluginPnpm: vi.fn(successfulManagedPnpmBoundary),
@@ -1242,17 +1277,16 @@ describe('createDaemonPathPluginChangePreparer', () => {
     });
 
     const cancelled = await service.requestPluginChange({
-      kind: 'installPath',
-      locator: sourcePath,
-      development: true,
+      kind: 'development',
+      sourceRootPath: sourcePath,
     });
     if (cancelled.kind === 'failed') throw new Error(cancelled.message ?? cancelled.code);
     expect(cancelled).toMatchObject({
-      kind: 'sourceRootReviewRequired',
+      kind: 'reviewRequired', reviewKind: 'projectTrust',
       review: { source: { kind: 'path', locator: await realpath(sourcePath) } },
     });
     await expect(readFile(counterPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-    if (cancelled.kind !== 'sourceRootReviewRequired') return;
+    if (cancelled.kind !== 'reviewRequired' || cancelled.reviewKind !== 'projectTrust') return;
     await expect(service.decidePluginChange({
       pendingChangeId: cancelled.pendingChangeId,
       decision: 'cancel',
@@ -1287,41 +1321,31 @@ describe('createDaemonPathPluginChangePreparer', () => {
     });
 
     const initial = observedRequests[0];
-    expect(initial).toMatchObject({ kind: 'sourceRootReviewRequired' });
-    if (initial?.kind !== 'sourceRootReviewRequired') return;
+    expect(initial).toMatchObject({ kind: 'reviewRequired', reviewKind: 'projectTrust' });
+    if (initial?.kind !== 'reviewRequired' || initial.reviewKind !== 'projectTrust') return;
     expect(observedDecisions[0]).toMatchObject({
-      kind: 'reviewRequired',
-      pendingChangeId: initial.pendingChangeId,
-      review: { pluginId: 'acme.one-file-trust' },
+      kind: 'committed',
+      pluginId: 'acme.one-file-trust',
     });
     expect(decideChange).toHaveBeenNthCalledWith(1, {
       pendingChangeId: initial.pendingChangeId,
-      decision: 'trustSourceRoot',
-    });
-    expect(decideChange).toHaveBeenNthCalledWith(2, {
-      pendingChangeId: initial.pendingChangeId,
-      decision: 'installAndTrust',
-      optionalSelections: [],
+      decision: 'installAndTrust', optionalSelections: [],
     });
     expect(confirmations.mock.calls.map(([message]) => message)).toEqual([
-      expect.stringContaining('Trust this plugin development source root?'),
-      expect.stringContaining('Install & Trust One file trust'),
+      expect.stringContaining('Trust this plugin project source?'),
     ]);
     // The decision carried no timestamp of its own, so the persisted approval
     // time can only have come from the daemon clock at apply time.
     const trustedState = await createPluginRegistryStateStore({ happyHomeDir }).read();
     expect(trustedState.plugins['acme.one-file-trust']?.install.trust?.approvedAtMs)
       .toBeGreaterThanOrEqual(approvalWindowStartMs);
-    expect(await readFile(counterPath, 'utf8')).toBe('module\nactivate\n');
-    expect(preparedCandidates).toHaveLength(1);
-    const preparedModules = Reflect.get(
-      preparedCandidates[0]!,
-      'preparedActivationGraphsByPluginId',
-    ) as ReadonlyMap<string, Readonly<{ module: Readonly<Record<string, unknown>> }>> | undefined;
-    expect(preparedModules?.get('acme.one-file-trust')?.module.activate).toEqual(expect.any(Function));
+    expect(await readFile(counterPath, 'utf8')).toBe('module\n');
+    expect(preparedDevelopmentCandidates).toHaveLength(1);
+    expect(preparedDevelopmentCandidates[0]?.preparedActivationGraph.module.activate)
+      .toEqual(expect.any(Function));
   });
 
-  it('persists package trust while optional access remains selection-only across edits', async () => {
+  it('separates initial project code trust from required authority and undisclosed optional access', async () => {
     const approvalWindowStartMs = Date.now();
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-one-file-optional-home-'));
     const sourceRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-one-file-optional-source-'));
@@ -1332,7 +1356,10 @@ describe('createDaemonPathPluginChangePreparer', () => {
         'export const manifest = {',
         "  schemaVersion: 2, id: 'acme.one-file-optional', version: '1.0.0',",
         "  displayName: 'One file optional', engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
-        '  hostAccess: { required: [], optional: [{',
+        '  hostAccess: { required: [{',
+        "    id: 'api', capability: 'network', reason: 'Call the plugin API',",
+        "    scope: { targets: [{ kind: 'fixedOrigin', origin: 'https://api.example.test' }] },",
+        '  }], optional: [{',
         "    id: 'project-sessions', capability: 'sessions', reason: 'Read selected project sessions',",
         "    scope: { access: ['read'], projectIds: ['project-a'] },",
         '  }] }, contributes: {},',
@@ -1352,7 +1379,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
             adopt: async () => Object.freeze(Object.fromEntries(
               candidate.changedPluginIds.map((pluginId) => [
                 pluginId,
-                candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null,
+                candidate.pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null,
               ]),
             )),
           }),
@@ -1365,37 +1392,32 @@ describe('createDaemonPathPluginChangePreparer', () => {
       kind: 'development',
       sourceRootPath: sourcePath,
     });
-    if (requested.kind !== 'sourceRootReviewRequired') {
+    if (requested.kind !== 'reviewRequired' || requested.reviewKind !== 'projectTrust') {
       throw new Error(`Expected source-root review, received ${requested.kind}`);
     }
-    const approved = await service.decidePluginChange({
+    const authorityReview = await service.decidePluginChange({
       pendingChangeId: requested.pendingChangeId,
-      decision: 'trustSourceRoot',
+      decision: 'installAndTrust', optionalSelections: [],
     });
-    expect(approved).toMatchObject({
+    expect(authorityReview).toMatchObject({
       kind: 'reviewRequired',
-      review: {
-        pluginId: 'acme.one-file-optional',
-        optionalHostAccess: [expect.objectContaining({ id: 'project-sessions' })],
-      },
+      reviewKind: 'installation',
+      reason: 'authorityExpansion',
+      authorityExpansion: expect.arrayContaining(['requiredHostAccess']),
+      review: { pluginId: 'acme.one-file-optional' },
     });
-    if (approved.kind !== 'reviewRequired') return;
+    if (authorityReview.kind !== 'reviewRequired' || authorityReview.reviewKind !== 'installation') return;
     await expect(service.decidePluginChange({
-      pendingChangeId: approved.pendingChangeId,
-      decision: 'installAndTrust',
-      optionalSelections: [{ accessId: 'project-sessions', selected: true }],
+      pendingChangeId: authorityReview.pendingChangeId,
+      decision: 'installAndTrust', optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.one-file-optional' });
 
-    // Both stamps come from the daemon clock at apply time, and a selection is
-    // recorded as of the same approval it belongs to.
+    // Project trust admits the code but does not silently select an optional
+    // host resource that was not part of the project-trust disclosure.
     const approvedState = await createPluginRegistryStateStore({ happyHomeDir }).read();
     const approvedInstall = approvedState.plugins['acme.one-file-optional']?.install;
     expect(approvedInstall?.trust?.approvedAtMs).toBeGreaterThanOrEqual(approvalWindowStartMs);
-    expect(approvedInstall?.optionalAccess).toMatchObject([{
-      accessId: 'project-sessions',
-      capability: 'sessions',
-      selectedAtMs: approvedInstall?.trust?.approvedAtMs,
-    }]);
+    expect(approvedInstall?.optionalAccess).toEqual([]);
 
     await writeSource('updated');
     await expect(service.requestPluginChange({
@@ -1410,10 +1432,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
         'acme.one-file-optional': {
           install: {
             trust: { approvedAtMs: approvedInstall?.trust?.approvedAtMs },
-            optionalAccess: [{
-              accessId: 'project-sessions',
-              selectedAtMs: approvedInstall?.optionalAccess?.[0]?.selectedAtMs,
-            }],
+            optionalAccess: [],
           },
         },
       },
@@ -1467,28 +1486,20 @@ describe('createDaemonPathPluginChangePreparer', () => {
       happyHomeDir,
       runManagedPluginPnpm,
       runtimeLifecycle: {
-        prepare: async (candidate) => {
-          const reference = candidate.pluginGenerations['acme.owned-graph'];
-          if (!reference) throw new Error('Expected owned graph generation');
-          const rootPath = join(
-            resolvePluginStorePaths({ happyHomeDir }).generationsDir,
-            reference.immutableGenerationId,
-          );
+        prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }),
+        prepareDevelopment: async (candidate) => {
+          const graph = candidate.preparedActivationGraph;
+          const rootPath = graph.rootPath;
           preparedRoots.push(rootPath);
-          const graph = candidate.preparedActivationGraphsByPluginId?.get('acme.owned-graph');
-          if (!graph) throw new Error('Expected prepared activation graph');
           const leaf = await loadVerifiedPluginModule({
             entryPath: join(rootPath, 'src', 'leaf.ts'),
             loadMode: 'source-ts',
-            generationScope: graph.generationScope,
+            generationScope: graph.candidateScope,
           });
           const activate = graph.module.activate;
           if (typeof activate !== 'function') throw new Error('Expected activation export');
           expect(activate()).toBe(leaf.marker);
-          return {
-            abort: async () => undefined,
-            adopt: async () => undefined,
-          };
+          return { abort: async () => undefined, adopt: async () => undefined };
         },
       },
     });
@@ -1502,29 +1513,16 @@ describe('createDaemonPathPluginChangePreparer', () => {
       sourceRootPath: sourceRoot,
     });
     if (unapproved.kind === 'failed') throw new Error(unapproved.message ?? unapproved.code);
-    expect(unapproved.kind).toBe('sourceRootReviewRequired');
+    expect(unapproved.kind).toBe('reviewRequired');
     await expect(readFile(logPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-    if (unapproved.kind !== 'sourceRootReviewRequired') return;
-    const packageReview = await service.decidePluginChange({
-      pendingChangeId: unapproved.pendingChangeId,
-      decision: 'trustSourceRoot',
-    });
-    expect(packageReview).toMatchObject({
-      kind: 'reviewRequired',
-      review: { pluginId: 'acme.owned-graph' },
-    });
-    if (packageReview.kind !== 'reviewRequired') return;
+    if (unapproved.kind !== 'reviewRequired' || unapproved.reviewKind !== 'projectTrust') return;
     await expect(service.decidePluginChange({
-      pendingChangeId: packageReview.pendingChangeId,
-      decision: 'installAndTrust',
-      optionalSelections: [],
+      pendingChangeId: unapproved.pendingChangeId,
+      decision: 'installAndTrust', optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.owned-graph' });
     expect(await readFile(logPath, 'utf8')).toBe('leaf\nmodule:initial\nactivate:initial\n');
-    const committed = await readCurrentCommittedPluginGenerations(
-      resolvePluginStorePaths({ happyHomeDir }),
-    );
     expect(await Promise.all(preparedRoots.map(async (path) => await realpath(path)))).toEqual([
-      committed?.generations.get('acme.owned-graph')?.rootPath,
+      await realpath(sourceRoot),
     ]);
 
     runManagedPluginPnpm.mockClear();
@@ -1548,11 +1546,8 @@ describe('createDaemonPathPluginChangePreparer', () => {
       changedPaths: ['src/index.ts'],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.owned-graph' });
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
-    const sourceEditGeneration = (await readCurrentCommittedPluginGenerations(
-      resolvePluginStorePaths({ happyHomeDir }),
-    ))?.generations.get('acme.owned-graph');
     await expect(readFile(
-      join(sourceEditGeneration!.rootPath, 'node_modules', 'fixture-dependency', 'index.js'),
+      join(sourceRoot, 'node_modules', 'fixture-dependency', 'index.js'),
       'utf8',
     )).resolves.toContain("retained = 'dependency'");
     expect(await readFile(logPath, 'utf8')).toBe([
@@ -1573,16 +1568,23 @@ describe('createDaemonPathPluginChangePreparer', () => {
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.owned-graph' });
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(2);
 
-    const generationsDir = resolvePluginStorePaths({ happyHomeDir }).generationsDir;
-    const generationsBeforeConflict = (await readdir(generationsDir)).sort();
+    const revisionBeforeConflict = (await readPluginRegistryCommitRecord(
+      resolvePluginStorePaths({ happyHomeDir }),
+    ))?.installationState.revisionId;
     await writeEntry('identity-conflict', 'acme.substituted-graph');
     await expect(service.requestPluginChange({
       kind: 'development',
       pluginId: 'acme.owned-graph',
       sourceRootPath: sourceRoot,
       changedPaths: ['src/index.ts'],
-    })).resolves.toEqual({ kind: 'conflict', pluginId: 'acme.owned-graph' });
-    expect((await readdir(generationsDir)).sort()).toEqual(generationsBeforeConflict);
+    })).resolves.toMatchObject({
+      kind: 'failed',
+      code: 'plugin_change_preparation_failed',
+      message: expect.stringContaining("identity changed from 'acme.owned-graph' to 'acme.substituted-graph'"),
+    });
+    expect((await readPluginRegistryCommitRecord(
+      resolvePluginStorePaths({ happyHomeDir }),
+    ))?.installationState.revisionId).toBe(revisionBeforeConflict);
     expect(await readFile(logPath, 'utf8')).toContain('module:identity-conflict\n');
     expect(await readFile(logPath, 'utf8')).not.toContain('activate:identity-conflict\n');
   });
@@ -1669,19 +1671,11 @@ describe('createDaemonPathPluginChangePreparer', () => {
       kind: 'development',
       sourceRootPath: sourceRoot,
     });
-    expect(sourceRootReview.kind).toBe('sourceRootReviewRequired');
-    if (sourceRootReview.kind !== 'sourceRootReviewRequired') return;
-    const initialPackageReview = await service.decidePluginChange({
-      pendingChangeId: sourceRootReview.pendingChangeId,
-      decision: 'trustSourceRoot',
-    });
-    if (initialPackageReview.kind !== 'reviewRequired') {
-      throw new Error(`Expected package review, received ${initialPackageReview.kind}`);
-    }
+    expect(sourceRootReview.kind).toBe('reviewRequired');
+    if (sourceRootReview.kind !== 'reviewRequired' || sourceRootReview.reviewKind !== 'projectTrust') return;
     await expect(service.decidePluginChange({
-      pendingChangeId: initialPackageReview.pendingChangeId,
-      decision: 'installAndTrust',
-      optionalSelections: [],
+      pendingChangeId: sourceRootReview.pendingChangeId,
+      decision: 'installAndTrust', optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.development-closure' });
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
     expect(runManagedPluginPnpm.mock.calls[0]?.[0]?.args).not.toContain('--prod');
@@ -1696,14 +1690,10 @@ describe('createDaemonPathPluginChangePreparer', () => {
       changedPaths: ['src/ui-byte.txt'],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.development-closure' });
     expect(runManagedPluginPnpm).not.toHaveBeenCalled();
-    const sourceOnlyGeneration = (await readCurrentCommittedPluginGenerations(
-      resolvePluginStorePaths({ happyHomeDir }),
-    ))?.generations.get('acme.development-closure');
-    expect(sourceOnlyGeneration).toBeDefined();
     expect(uiBuildRoots).toHaveLength(2);
-    expect(uiBuildRoots[1]).not.toBe(sourceRoot);
+    expect(await realpath(uiBuildRoots[1]!)).toBe(await realpath(sourceRoot));
     await expect(readFile(
-      join(sourceOnlyGeneration!.rootPath, 'dist', 'happier-plugin-ui', 'ui-byte.txt'),
+      join(sourceRoot, 'dist', 'happier-plugin-ui', 'ui-byte.txt'),
       'utf8',
     )).resolves.toBe('second-ui-byte\n');
 
@@ -1718,15 +1708,14 @@ describe('createDaemonPathPluginChangePreparer', () => {
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.development-closure' });
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
     expect(runManagedPluginPnpm.mock.calls[0]?.[0]?.args).not.toContain('--prod');
-    const dependencyChangedGeneration = (await readCurrentCommittedPluginGenerations(
-      resolvePluginStorePaths({ happyHomeDir }),
-    ))?.generations.get('acme.development-closure');
     await expect(readFile(
-      join(dependencyChangedGeneration!.rootPath, 'node_modules', 'fixture-added-dependency', 'index.js'),
+      join(sourceRoot, 'node_modules', 'fixture-added-dependency', 'index.js'),
       'utf8',
     )).resolves.toContain('fixture-added-dependency');
 
-    const retainedGenerationId = dependencyChangedGeneration!.immutableGenerationId;
+    const retainedRevisionId = (await readPluginRegistryCommitRecord(
+      resolvePluginStorePaths({ happyHomeDir }),
+    ))?.installationState.revisionId;
     const completedUiBuilds = uiBuildRoots.length;
     await writePackage(['fixture-added-dependency', 'fixture-retry-dependency']);
     await writeEntry(['fixture-added-dependency', 'fixture-retry-dependency']);
@@ -1745,9 +1734,9 @@ describe('createDaemonPathPluginChangePreparer', () => {
       message: expect.stringContaining('managed dependency materializer unavailable'),
     });
     expect(uiBuildRoots).toHaveLength(completedUiBuilds);
-    expect((await readCurrentCommittedPluginGenerations(
+    expect((await readPluginRegistryCommitRecord(
       resolvePluginStorePaths({ happyHomeDir }),
-    ))?.generations.get('acme.development-closure')?.immutableGenerationId).toBe(retainedGenerationId);
+    ))?.installationState.revisionId).toBe(retainedRevisionId);
 
     // The source observer retains the failed dependency batch. Its next real
     // edit therefore rejoins the package update instead of incorrectly
@@ -1761,12 +1750,11 @@ describe('createDaemonPathPluginChangePreparer', () => {
       changedPaths: ['package.json', 'src/index.ts', 'src/ui-byte.txt'],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.development-closure' });
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
-    const rejoinedGeneration = (await readCurrentCommittedPluginGenerations(
+    expect((await readPluginRegistryCommitRecord(
       resolvePluginStorePaths({ happyHomeDir }),
-    ))?.generations.get('acme.development-closure');
-    expect(rejoinedGeneration?.immutableGenerationId).not.toBe(retainedGenerationId);
+    ))?.installationState.revisionId).not.toBe(retainedRevisionId);
     await expect(readFile(
-      join(rejoinedGeneration!.rootPath, 'node_modules', 'fixture-retry-dependency', 'index.js'),
+      join(sourceRoot, 'node_modules', 'fixture-retry-dependency', 'index.js'),
       'utf8',
     )).resolves.toContain('fixture-retry-dependency');
 
@@ -1793,13 +1781,13 @@ describe('createDaemonPathPluginChangePreparer', () => {
       sourceRootPath: sourceRoot,
       changedPaths: ['src/ui-byte.txt'],
     });
-    expect(ordinaryGenerationSourceReview.kind).toBe('sourceRootReviewRequired');
-    if (ordinaryGenerationSourceReview.kind !== 'sourceRootReviewRequired') return;
+    expect(ordinaryGenerationSourceReview.kind).toBe('reviewRequired');
+    if (ordinaryGenerationSourceReview.kind !== 'reviewRequired' || ordinaryGenerationSourceReview.reviewKind !== 'projectTrust') return;
     await expect(service.decidePluginChange({
       pendingChangeId: ordinaryGenerationSourceReview.pendingChangeId,
-      decision: 'trustSourceRoot',
+      decision: 'installAndTrust', optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.development-closure' });
-    expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
+    expect(runManagedPluginPnpm).not.toHaveBeenCalled();
     await expect(service.requestPluginChange({
       kind: 'uninstall',
       pluginId: 'acme.development-closure',
@@ -1845,12 +1833,12 @@ describe('createDaemonPathPluginChangePreparer', () => {
     });
     const manualChangedPaths: Array<readonly string[] | undefined> = [];
     const service = createDaemonPluginChangeService({
-      prepare: async (request) => {
+      prepare: preservePathPreparerOwner(prepare, async (request) => {
         if (request.kind === 'development' && request.pluginId === 'acme.manual-delete') {
           manualChangedPaths.push(request.changedPaths);
         }
         return await prepare(request);
-      },
+      }),
       createPendingChangeId: () => 'pending-manual-delete',
     });
 
@@ -1858,27 +1846,15 @@ describe('createDaemonPathPluginChangePreparer', () => {
       kind: 'development',
       sourceRootPath: sourceRoot,
     });
-    if (initial.kind !== 'sourceRootReviewRequired') {
+    if (initial.kind !== 'reviewRequired' || initial.reviewKind !== 'projectTrust') {
       throw new Error(`Expected source-root review, received ${initial.kind}`);
     }
-    const initialPackageReview = await service.decidePluginChange({
-      pendingChangeId: initial.pendingChangeId,
-      decision: 'trustSourceRoot',
-    });
-    if (initialPackageReview.kind !== 'reviewRequired') {
-      throw new Error(`Expected package review, received ${initialPackageReview.kind}`);
-    }
     await expect(service.decidePluginChange({
-      pendingChangeId: initialPackageReview.pendingChangeId,
-      decision: 'installAndTrust',
-      optionalSelections: [],
+      pendingChangeId: initial.pendingChangeId,
+      decision: 'installAndTrust', optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.manual-delete' });
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
-    const before = await readCurrentCommittedPluginGenerations(
-      resolvePluginStorePaths({ happyHomeDir }),
-    );
-    const beforeGeneration = before?.generations.get('acme.manual-delete');
-    expect(beforeGeneration?.record.files.map((file) => file.relativePath)).toContain('src/obsolete.ts');
+    await expect(readFile(deletedSourcePath, 'utf8')).resolves.toContain('initial');
     await rm(deletedSourcePath);
     runManagedPluginPnpm.mockClear();
     await expect(service.requestPluginChange({
@@ -1889,16 +1865,10 @@ describe('createDaemonPathPluginChangePreparer', () => {
 
     expect(manualChangedPaths).toEqual([undefined]);
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
-    const after = await readCurrentCommittedPluginGenerations(
-      resolvePluginStorePaths({ happyHomeDir }),
-    );
-    const afterGeneration = after?.generations.get('acme.manual-delete');
-    expect(afterGeneration?.record.files.map((file) => file.relativePath))
-      .not.toContain('src/obsolete.ts');
-    await expect(readFile(join(afterGeneration!.rootPath, 'src', 'obsolete.ts'), 'utf8'))
+    await expect(readFile(deletedSourcePath, 'utf8'))
       .rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(
-      join(afterGeneration!.rootPath, 'node_modules', 'fixture-dependency', 'index.js'),
+      join(sourceRoot, 'node_modules', 'fixture-dependency', 'index.js'),
       'utf8',
     )).resolves.toContain("dependency = 'retained'");
   });
@@ -1953,25 +1923,17 @@ describe('createDaemonPathPluginChangePreparer', () => {
       kind: 'development',
       sourceRootPath: sourceRoot,
     });
-    if (initial.kind !== 'sourceRootReviewRequired') {
+    if (initial.kind !== 'reviewRequired' || initial.reviewKind !== 'projectTrust') {
       throw new Error(`Expected source-root review, received ${initial.kind}`);
     }
-    const initialPackageReview = await service.decidePluginChange({
-      pendingChangeId: initial.pendingChangeId,
-      decision: 'trustSourceRoot',
-    });
-    if (initialPackageReview.kind !== 'reviewRequired') {
-      throw new Error(`Expected package review, received ${initialPackageReview.kind}`);
-    }
     await expect(service.decidePluginChange({
-      pendingChangeId: initialPackageReview.pendingChangeId,
-      decision: 'installAndTrust',
-      optionalSelections: [],
+      pendingChangeId: initial.pendingChangeId,
+      decision: 'installAndTrust', optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.sensitive-inputs' });
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
-    const installedGeneration = (await readCurrentCommittedPluginGenerations(
+    const installedRevision = (await readPluginRegistryCommitRecord(
       resolvePluginStorePaths({ happyHomeDir }),
-    ))?.generations.get('acme.sensitive-inputs');
+    ))?.installationState.revisionId;
     runManagedPluginPnpm.mockClear();
     await writeEntry('after-manual-reload');
     await expect(service.requestPluginChange({
@@ -1981,15 +1943,13 @@ describe('createDaemonPathPluginChangePreparer', () => {
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.sensitive-inputs' });
 
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
-    const reloadedGeneration = (await readCurrentCommittedPluginGenerations(
+    expect((await readPluginRegistryCommitRecord(
       resolvePluginStorePaths({ happyHomeDir }),
-    ))?.generations.get('acme.sensitive-inputs');
-    expect(reloadedGeneration?.immutableGenerationId)
-      .not.toBe(installedGeneration?.immutableGenerationId);
-    await expect(readFile(join(reloadedGeneration!.rootPath, 'src', 'index.ts'), 'utf8'))
+    ))?.installationState.revisionId).not.toBe(installedRevision);
+    await expect(readFile(join(sourceRoot, 'src', 'index.ts'), 'utf8'))
       .resolves.toContain("sentinel = 'after-manual-reload'");
-    await expect(readFile(join(reloadedGeneration!.rootPath, '.npmrc'), 'utf8'))
-      .rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(sourceRoot, '.npmrc'), 'utf8'))
+      .resolves.toContain('must-not-be-digested');
   });
 
   it('rejects source-root substitution after approval and before evaluation', async () => {
@@ -2023,13 +1983,13 @@ describe('createDaemonPathPluginChangePreparer', () => {
       kind: 'development',
       sourceRootPath: locator,
     });
-    expect(requested.kind).toBe('sourceRootReviewRequired');
-    if (requested.kind !== 'sourceRootReviewRequired') return;
+    expect(requested.kind).toBe('reviewRequired');
+    if (requested.kind !== 'reviewRequired' || requested.reviewKind !== 'projectTrust') return;
     await rm(locator);
     await symlink(secondRoot, locator, 'file');
     await expect(service.decidePluginChange({
       pendingChangeId: requested.pendingChangeId,
-      decision: 'trustSourceRoot',
+      decision: 'installAndTrust', optionalSelections: [],
     })).resolves.toMatchObject({
       kind: 'failed',
       code: 'plugin_change_preparation_failed',
@@ -2041,7 +2001,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
   // Local development remains externally admitted even when its source is also
   // used to generate a bundled artifact. Exact generated artifact custody is a
   // separate fact owned by the generated-artifact resolver.
-  it('prepares a local development source under its reserved id without granting bundled authority', async () => {
+  it('requires an explicit development entrypoint for a bundled source working tree', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-bundled-dev-'));
     roots.push(happyHomeDir);
     const bundledManifest = JSON.parse(
@@ -2057,14 +2017,10 @@ describe('createDaemonPathPluginChangePreparer', () => {
       runPluginUiArtifactBuild: async (input) => ({ ok: true as const, projectRoot: input.projectRoot, built: false }),
     });
 
-    const prepared = await prepare({
-      kind: 'installPath',
-      locator: BUNDLED_PLUGIN_ROOT,
-      development: true,
-    });
-
-    expect(prepared).toMatchObject({ pluginId: bundledManifest.id });
-    await prepared.cleanup();
+    await expect(prepare({
+      kind: 'development',
+      sourceRootPath: BUNDLED_PLUGIN_ROOT,
+    })).rejects.toThrow('has no development entrypoint');
   }, 180_000);
 
   // C1: an external plugin developed from a local working tree is the same
@@ -2075,7 +2031,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
   it('prepares a development install of an external local path plugin under a reserved id', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-external-reserved-'));
     roots.push(happyHomeDir);
-    const pluginRoot = await createDescriptorPlugin({ pluginId: 'happier.agent.fake' });
+    const pluginRoot = await createDescriptorPlugin({ pluginId: 'happier.agent.fake', development: true });
     const prepare = createDaemonPathPluginChangePreparer({
       happyHomeDir,
       runtimeLifecycle: {
@@ -2086,9 +2042,8 @@ describe('createDaemonPathPluginChangePreparer', () => {
     });
 
     const prepared = await prepare({
-      kind: 'installPath',
-      locator: pluginRoot,
-      development: true,
+      kind: 'development',
+      sourceRootPath: pluginRoot,
     });
 
     expect(prepared).toMatchObject({ pluginId: 'happier.agent.fake' });
@@ -2111,8 +2066,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
       pluginId: 'acme.development-only',
       development: true,
     });
-    await mkdir(join(developmentOnlyRoot, 'src'), { recursive: true });
-    await writeFile(join(developmentOnlyRoot, 'src', 'index.ts'), 'export function activate(): void {}\n', 'utf8');
     const prepare = createDaemonPathPluginChangePreparer({
       happyHomeDir,
       runtimeLifecycle: {
@@ -2137,7 +2090,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
         contributions: [{ family: 'ui.renderers', count: 1 }],
         uiArtifacts: { status: 'unavailable', contributionIds: ['main-native'] },
         compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
       },
     });
     expect(reactNativeOnly).not.toHaveProperty('review.integrity');
@@ -2165,7 +2118,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const adopt = vi.fn(async () => Object.freeze(Object.fromEntries(
       (preparedCandidate?.changedPluginIds ?? []).map((pluginId) => [
         pluginId,
-        preparedCandidate?.pluginGenerations[pluginId]?.immutableGenerationId ?? null,
+        preparedCandidate?.pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null,
       ]),
     )));
     const prepareRuntime = vi.fn(async (candidate: PluginRegistryRuntimeCandidate) => {
@@ -2186,10 +2139,10 @@ describe('createDaemonPathPluginChangePreparer', () => {
       development: false,
     });
     expect(begun).toEqual(expect.objectContaining({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: expect.objectContaining({ pluginId: 'acme.descriptor', executableRealms: [] }),
     }));
-    if (begun.kind !== 'reviewRequired') throw new Error('Expected review');
+    if (begun.kind !== 'reviewRequired' || begun.reviewKind !== 'installation') throw new Error('Expected review');
 
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
@@ -2210,47 +2163,26 @@ describe('createDaemonPathPluginChangePreparer', () => {
       });
   });
 
-  it('reports the generation committed by its own transaction when currentness advances before the response', async () => {
+  it('reports the managed generation committed by its own transaction', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
     roots.push(happyHomeDir);
-    const pluginRoot = await createDescriptorPlugin();
+    const pluginRoot = await createDescriptorPlugin({ development: true });
     let preparePath!: ReturnType<typeof createDaemonPathPluginChangePreparer>;
-    let runtimePreparationCount = 0;
     let firstGeneration: string | undefined;
-    let laterGeneration: string | undefined;
     const runtimeLifecycle: PluginRegistryRuntimeLifecycle = {
       prepare: async (candidate) => {
-        runtimePreparationCount += 1;
-        const generation = candidate.pluginGenerations['acme.descriptor']?.immutableGenerationId;
+        const generation = candidate.pluginOccurrenceIds['acme.descriptor']?.immutableGenerationId;
         if (!generation) throw new Error('Expected descriptor generation');
-        if (runtimePreparationCount === 1) firstGeneration = generation;
-        else laterGeneration = generation;
-        const isFirst = runtimePreparationCount === 1;
+        firstGeneration = generation;
         const appliedGenerationsByPluginId = Object.freeze(Object.fromEntries(
           candidate.changedPluginIds.map((pluginId) => [
             pluginId,
-            candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null,
+            candidate.pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null,
           ]),
         ));
         return {
           abort: async () => undefined,
-          adopt: async () => {
-            if (!isFirst) return appliedGenerationsByPluginId;
-            await writeFile(join(pluginRoot, 'payload.txt'), 'later generation bytes');
-            const laterPrepared = await preparePath({
-              kind: 'installPath',
-              locator: pluginRoot,
-              development: true,
-            });
-            if ('kind' in laterPrepared) throw new Error('Unexpected source-root review for descriptor plugin');
-            const laterResult = await laterPrepared.apply(undefined);
-            expect(laterResult).toMatchObject({
-              kind: 'committed',
-              desiredGeneration: laterGeneration,
-              appliedGeneration: laterGeneration,
-            });
-            return appliedGenerationsByPluginId;
-          },
+          adopt: async () => appliedGenerationsByPluginId,
         };
       },
     };
@@ -2277,8 +2209,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     });
 
     expect(firstGeneration).toBeDefined();
-    expect(laterGeneration).toBeDefined();
-    expect(laterGeneration).not.toBe(firstGeneration);
     expect(result).toMatchObject({
       kind: 'committed',
       desiredGeneration: firstGeneration,
@@ -2289,7 +2219,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
   it('installs the daemon-owned non-development candidate reviewed before source bytes change', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
     roots.push(happyHomeDir);
-    const pluginRoot = await createDescriptorPlugin();
+    const pluginRoot = await createDescriptorPlugin({ development: true });
     const service = createDaemonPluginChangeService({
       prepare: createDaemonPathPluginChangePreparer({
         happyHomeDir,
@@ -2343,7 +2273,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
       development: false,
     });
     expect(begun).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: { optionalHostAccess: [{ id: 'project-sessions', capability: 'sessions' }] },
     });
     if (begun.kind !== 'reviewRequired') throw new Error('Expected review');
@@ -2363,10 +2293,63 @@ describe('createDaemonPathPluginChangePreparer', () => {
     }]);
   });
 
+  it('reopens a managed-path update when its persisted optional selection is stale', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-stale-optional-path-home-'));
+    roots.push(happyHomeDir);
+    const pluginRoot = await createDescriptorPlugin({ optionalSessions: true });
+    const runtimeLifecycle: PluginRegistryRuntimeLifecycle = {
+      prepare: async (candidate) => ({
+        abort: async () => undefined,
+        adopt: async () => Object.freeze(Object.fromEntries(
+          candidate.changedPluginIds.map((pluginId) => [
+            pluginId,
+            candidate.pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null,
+          ]),
+        )),
+      }),
+    };
+    const preparePath = createDaemonPathPluginChangePreparer({
+      happyHomeDir,
+      runtimeLifecycle,
+      runManagedPluginPnpm: successfulManagedPnpmBoundary,
+    });
+    let installed = false;
+    const service = createDaemonPluginChangeService({
+      prepare: async (request) => await preparePath(
+        request,
+        installed ? { installedUpdate: { pluginId: 'acme.descriptor' } } : undefined,
+      ),
+    });
+    const first = await service.requestPluginChange({ kind: 'installPath', locator: pluginRoot, development: false });
+    if (first.kind !== 'reviewRequired' || first.reviewKind !== 'installation') throw new Error('Expected initial review');
+    await service.decidePluginChange({
+      pendingChangeId: first.pendingChangeId,
+      decision: 'installAndTrust',
+      optionalSelections: [{ accessId: 'project-sessions', selected: true }],
+    });
+    installed = true;
+    const manifestPath = join(pluginRoot, '.happier-plugin', 'plugin.json');
+    const widened = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+      hostAccess: { optional: Array<{ scope: { access: string[] } }> };
+    };
+    widened.hostAccess.optional[0]!.scope.access.push('write');
+    await writeFile(manifestPath, JSON.stringify(widened), 'utf8');
+
+    await expect(service.requestPluginChange({
+      kind: 'installPath',
+      locator: pluginRoot,
+      development: false,
+    })).resolves.toMatchObject({
+      kind: 'reviewRequired',
+      reason: 'authorityExpansion',
+      authorityExpansion: expect.arrayContaining(['selectedOptionalHostAccess']),
+    });
+  });
+
   it('reuses source trust for later development replacements without another review', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
     roots.push(happyHomeDir);
-    const pluginRoot = await createDescriptorPlugin();
+    const pluginRoot = await createDescriptorPlugin({ development: true });
     const service = createDaemonPluginChangeService({
       prepare: createDaemonPathPluginChangePreparer({
         happyHomeDir,
@@ -2377,29 +2360,37 @@ describe('createDaemonPathPluginChangePreparer', () => {
       }),
       createPendingChangeId: () => 'pending-development',
     });
-    const first = await service.requestPluginChange({
-      kind: 'installPath',
-      locator: pluginRoot,
-      development: true,
+    let first: PluginChangeRequestResult | PluginChangeDecisionResult = await service.requestPluginChange({
+      kind: 'development',
+      sourceRootPath: pluginRoot,
     });
-    if (first.kind !== 'reviewRequired') throw new Error('Expected initial review');
-    await service.decidePluginChange({
-      pendingChangeId: first.pendingChangeId,
-      decision: 'installAndTrust',
-    });
+    if (first.kind === 'reviewRequired' && first.reviewKind === 'projectTrust') {
+      first = await service.decidePluginChange({
+        pendingChangeId: first.pendingChangeId,
+        decision: 'installAndTrust', optionalSelections: [],
+      });
+    }
+    if (first.kind === 'reviewRequired') {
+      first = await service.decidePluginChange({
+        pendingChangeId: first.pendingChangeId,
+        decision: 'installAndTrust',
+      });
+    }
+    expect(first).toMatchObject({ kind: 'committed', pluginId: 'acme.descriptor' });
     await writeFile(join(pluginRoot, 'payload.txt'), 'development edit');
 
     await expect(service.requestPluginChange({
-      kind: 'installPath',
-      locator: pluginRoot,
-      development: true,
+      kind: 'development',
+      pluginId: 'acme.descriptor',
+      sourceRootPath: pluginRoot,
     })).resolves.toEqual(expect.objectContaining({ kind: 'committed', pluginId: 'acme.descriptor' }));
   });
 
-  it('reuses source trust when a trusted development replacement narrows ambient required access', async () => {
+  it('reuses source trust for trusted development replacements that narrow or widen required access', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
     roots.push(happyHomeDir);
     const pluginRoot = await createDescriptorPlugin({
+      development: true,
       requiredNetworkOrigins: ['https://api.example.test', 'https://secondary.example.test'],
     });
     const service = createDaemonPluginChangeService({
@@ -2411,11 +2402,16 @@ describe('createDaemonPathPluginChangePreparer', () => {
         runManagedPluginPnpm: successfulManagedPnpmBoundary,
       }),
     });
-    const first = await service.requestPluginChange({
-      kind: 'installPath',
-      locator: pluginRoot,
-      development: true,
+    let first: PluginChangeRequestResult | PluginChangeDecisionResult = await service.requestPluginChange({
+      kind: 'development',
+      sourceRootPath: pluginRoot,
     });
+    if (first.kind === 'reviewRequired' && first.reviewKind === 'projectTrust') {
+      first = await service.decidePluginChange({
+        pendingChangeId: first.pendingChangeId,
+        decision: 'installAndTrust', optionalSelections: [],
+      });
+    }
     if (first.kind !== 'reviewRequired') throw new Error('Expected initial review');
     await service.decidePluginChange({
       pendingChangeId: first.pendingChangeId,
@@ -2437,41 +2433,40 @@ describe('createDaemonPathPluginChangePreparer', () => {
       origin: 'https://api.example.test',
     }];
     await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    await writeFile(join(pluginRoot, 'src', 'index.ts'), [
+      `export const manifest = ${JSON.stringify(manifest)};`,
+      'export function activate(): void {}',
+      '',
+    ].join('\n'), 'utf8');
 
     await expect(service.requestPluginChange({
-      kind: 'installPath',
-      locator: pluginRoot,
-      development: true,
+      kind: 'development',
+      sourceRootPath: pluginRoot,
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.descriptor' });
 
-    // Re-adding the dropped origin reaches past the narrowed grant and reopens
-    // the decision.
+    // Re-adding the dropped origin widens reach, but a development change never
+    // prompts (PPS §9 ruling (a), refined).
     hostAccess.required[0]!.scope.targets = [
       { kind: 'fixedOrigin', origin: 'https://api.example.test' },
       { kind: 'fixedOrigin', origin: 'https://secondary.example.test' },
     ];
     await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    await writeFile(join(pluginRoot, 'src', 'index.ts'), [
+      `export const manifest = ${JSON.stringify(manifest)};`,
+      'export function activate(): void {}',
+      '',
+    ].join('\n'), 'utf8');
 
     await expect(service.requestPluginChange({
-      kind: 'installPath',
-      locator: pluginRoot,
-      development: true,
-    })).resolves.toMatchObject({
-      kind: 'reviewRequired',
-      review: {
-        pluginId: 'acme.descriptor',
-        requiredHostAccess: [expect.objectContaining({
-          id: 'api',
-          capability: 'network',
-        })],
-      },
-    });
+      kind: 'development',
+      sourceRootPath: pluginRoot,
+    })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.descriptor' });
   });
 
   it('rejects a development source whose manifest identity changed after observation', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
     roots.push(happyHomeDir);
-    const pluginRoot = await createDescriptorPlugin({ pluginId: 'acme.changed' });
+    const pluginRoot = await createDescriptorPlugin({ pluginId: 'acme.changed', development: true });
     const runManagedPluginPnpm = vi.fn(successfulManagedPnpmBoundary);
     const service = createDaemonPluginChangeService({
       prepare: createDaemonPathPluginChangePreparer({
@@ -2487,12 +2482,13 @@ describe('createDaemonPathPluginChangePreparer', () => {
       kind: 'development',
       pluginId: 'acme.observed',
       sourceRootPath: pluginRoot,
-    })).resolves.toEqual({
-      kind: 'conflict',
-      pluginId: 'acme.observed',
+    })).resolves.toMatchObject({
+      kind: 'failed',
+      code: 'plugin_change_preparation_failed',
+      message: expect.stringContaining("identity changed from 'acme.observed' to 'acme.changed'"),
     });
 
-    expect(runManagedPluginPnpm).not.toHaveBeenCalled();
+    expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
     await expect(
       createPluginRegistryStateStore({ happyHomeDir }).read(),
     ).resolves.toMatchObject({ plugins: {} });
@@ -2501,7 +2497,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
   it('rejects a prepared replacement when the same plugin state changes before apply', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
     roots.push(happyHomeDir);
-    const pluginRoot = await createDescriptorPlugin();
+    const pluginRoot = await createDescriptorPlugin({ development: true });
     const runtimeLifecycle = {
       prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }),
     };
@@ -2514,23 +2510,36 @@ describe('createDaemonPathPluginChangePreparer', () => {
       prepare,
       createPendingChangeId: () => 'pending-development-conflict',
     });
-    const first = await service.requestPluginChange({
-      kind: 'installPath',
-      locator: pluginRoot,
-      development: true,
+    let first: PluginChangeRequestResult | PluginChangeDecisionResult = await service.requestPluginChange({
+      kind: 'development',
+      sourceRootPath: pluginRoot,
     });
+    if (first.kind === 'reviewRequired' && first.reviewKind === 'projectTrust') {
+      first = await service.decidePluginChange({
+        pendingChangeId: first.pendingChangeId,
+        decision: 'installAndTrust', optionalSelections: [],
+      });
+    }
     if (first.kind !== 'reviewRequired') throw new Error('Expected initial review');
     await service.decidePluginChange({
       pendingChangeId: first.pendingChangeId,
       decision: 'installAndTrust',
     });
 
-    const prepared = await prepare({
-      kind: 'installPath',
-      locator: pluginRoot,
-      development: true,
+    const preparedOrSourceApproval = await prepare({
+      kind: 'development',
+      pluginId: 'acme.descriptor',
+      sourceRootPath: pluginRoot,
     });
-    if ('kind' in prepared) throw new Error('Unexpected source-root review for descriptor plugin');
+    const prepared = 'kind' in preparedOrSourceApproval
+      && preparedOrSourceApproval.kind === 'projectTrustApprovalRequired'
+      ? await preparedOrSourceApproval.continueAfterProjectTrustApproval()
+      : preparedOrSourceApproval;
+    if ('kind' in prepared && prepared.kind === 'preparedDevelopmentCandidate') {
+      // Expected current source-in-place candidate.
+    } else if ('kind' in prepared) {
+      throw new Error(`Unexpected prepared change kind: ${prepared.kind}`);
+    }
     expect(prepared.requiresReview).toBe(false);
 
     const takeoverStore = createPluginRegistryStateStore({ happyHomeDir, runtimeLifecycle });
@@ -2551,10 +2560,34 @@ describe('createDaemonPathPluginChangePreparer', () => {
       };
     });
 
-    await expect(prepared.apply(undefined)).resolves.toEqual({
-      kind: 'conflict',
-      pluginId: 'acme.descriptor',
-    });
+    if (!('kind' in prepared) || prepared.kind !== 'preparedDevelopmentCandidate') {
+      throw new Error('Expected prepared development candidate');
+    }
+    const optionalAccess = preserveValidPluginOptionalSelections(
+      prepared.pluginId,
+      prepared.manifest,
+      prepared.priorOptionalAccess ?? [],
+    );
+    if (!optionalAccess || prepared.registryRevision === undefined) {
+      throw new Error('Expected a complete prepared development authority candidate');
+    }
+    await expect(createPluginRegistryStateStore({ happyHomeDir, runtimeLifecycle })
+      .approveDevelopmentAuthorityWithResult({
+        pluginId: prepared.pluginId,
+        expectedRevision: prepared.registryRevision,
+        approvedAuthorityManifest: prepared.manifest,
+        catalogRecord: prepared.catalogRecord,
+        trust: prepared.trust,
+        updatePolicy: prepared.updatePolicy,
+        optionalAccess,
+        ...(prepared.priorInstallReviewPrincipal
+          ? {
+              installReviewPrincipalDigest: prepared.priorInstallReviewPrincipal.digest,
+              installReviewPrincipalPresentation: prepared.priorInstallReviewPrincipal.presentation,
+            }
+          : {}),
+      })).resolves.toBeNull();
+    await prepared.cleanup();
   });
 
   it('routes enablement and uninstall through the same daemon lifecycle and reports pending custody cleanup', async () => {
@@ -2567,7 +2600,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
         candidate.changedPluginIds.map((pluginId) => [
           pluginId,
           candidate.installationState.plugins[pluginId]?.enabled === true
-            ? candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null
+            ? candidate.pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null
             : null,
         ]),
       )),
@@ -2814,7 +2847,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
               candidate.changedPluginIds.map((pluginId) => [
                 pluginId,
                 candidate.installationState.plugins[pluginId]?.enabled === true
-                  ? candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null
+                  ? candidate.pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null
                   : null,
               ]),
             )),
@@ -2962,7 +2995,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
               candidate.changedPluginIds.map((pluginId) => [
                 pluginId,
                 candidate.installationState.plugins[pluginId]?.enabled === true
-                  ? candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null
+                  ? candidate.pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null
                   : null,
               ]),
             )),

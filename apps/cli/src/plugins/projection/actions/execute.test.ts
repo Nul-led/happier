@@ -17,6 +17,8 @@ import { createTargetActionHostBindingResolver } from '@/plugins/runtime/hostAcc
 import { createUnavailablePluginServicesFactory } from '@/plugins/runtime/invocation/services/factory';
 import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
 import { createPluginActionCallerMaterializationFixture } from '@/plugins/runtime/invocation/services/actionCaller.testkit';
+import { createManagedPluginSourceCustody } from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import { createProductionPluginInvocationServiceOwners } from '@/plugins/runtime/invocation/services/production';
 import { createTargetActionInvocationRegistry as createTargetActionInvocationRegistryBase } from '@/plugins/runtime/invocation/targetActionRegistry';
 import type { TargetActionInvocationRegistration } from '@/plugins/runtime/invocation/targetActionRegistry';
@@ -25,11 +27,31 @@ import {
   resetActiveAccountSettingsSnapshotForTests,
   setActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
-import { executePluginActionIfAvailable } from './execute';
+import { executeContributedAction } from '@/plugins/runtime/invocation/actions/executeContributedAction';
 
 type SafeResolvedActionContribution = Omit<ResolvedActionContribution, 'definition'> & Readonly<{
   definition: Extract<ResolvedActionDefinition, Readonly<{ dangerLevel: 'safe' }>>;
 }>;
+
+const fixtureOccurrenceIds = new Map<string, ReturnType<typeof createPluginRuntimeOccurrenceId>>();
+
+function readFixtureOccurrenceId(pluginId: string) {
+  const existing = fixtureOccurrenceIds.get(pluginId);
+  if (existing) return existing;
+  const created = createPluginRuntimeOccurrenceId(pluginId);
+  fixtureOccurrenceIds.set(pluginId, created);
+  return created;
+}
+
+function createManagedPluginRuntimeIdentity(
+  pluginId: string,
+  immutableGenerationId: string,
+) {
+  return {
+    occurrenceId: readFixtureOccurrenceId(pluginId),
+    sourceCustody: createManagedPluginSourceCustody(immutableGenerationId),
+  };
+}
 
 function createTargetActionInvocationRegistry(
   params: Omit<Parameters<typeof createTargetActionInvocationRegistryBase>[0], 'createServices' | 'resolveHostBinding' | 'resolveAuthorizationFacts'>
@@ -38,9 +60,9 @@ function createTargetActionInvocationRegistry(
   return createTargetActionInvocationRegistryBase({
     resolveAuthorizationFacts: (action) => ({
       generation: {
-        targetGeneration: action.generation,
-        desiredGeneration: action.generation,
-        appliedGeneration: action.generation,
+        targetGeneration: action.occurrenceId,
+        desiredGeneration: action.occurrenceId,
+        appliedGeneration: action.occurrenceId,
       },
       resourceSelections: [],
       scopedGrants: [],
@@ -48,6 +70,7 @@ function createTargetActionInvocationRegistry(
     }),
     resolveHostBinding: createTargetActionHostBindingResolver(),
     createServices: createUnavailablePluginServicesFactory(),
+    readCurrentPluginOccurrenceId: readFixtureOccurrenceId,
     ...params,
   });
 }
@@ -60,8 +83,10 @@ function createTargetActionRegistration(params: Readonly<{
   return {
     pluginId: params.action.pluginId ?? '',
     pluginVersion: '1.0.0',
-    generation: '7',
-    ...(params.immutableGenerationId ? { immutableGenerationId: params.immutableGenerationId } : {}),
+    ...createManagedPluginRuntimeIdentity(
+      params.action.pluginId ?? '',
+      params.immutableGenerationId ?? `${params.action.pluginId ?? 'plugin'}-immutable-generation`,
+    ),
     localId: params.action.definition.id,
     definition: {
       id: params.action.definition.id,
@@ -236,12 +261,10 @@ function createExecutableRegistry(params: Readonly<{
   commands?: readonly ResolvedCommandContribution[];
   tools?: readonly ResolvedToolContribution[];
   targetActionInvocations?: ReturnType<typeof createTargetActionInvocationRegistry>;
+  readPluginOccurrenceId?: ResolvedExecutablePluginRuntimeRegistry['readPluginOccurrenceId'];
   resolveCurrentPluginExecutionOrigin?: ResolvedExecutablePluginRuntimeRegistry['resolveCurrentPluginExecutionOrigin'];
-  resolveCurrentPluginImmutableGenerationId?: (pluginId: string) => Promise<string | null>;
   activateContributionsOnDemand: ResolvedExecutablePluginRuntimeRegistry['activateContributionsOnDemand'];
-}>): ResolvedExecutablePluginRuntimeRegistry & Readonly<{
-  resolveCurrentPluginImmutableGenerationId?: (pluginId: string) => Promise<string | null>;
-}> {
+}>): ResolvedExecutablePluginRuntimeRegistry {
   const contributes = createRegistry(params.action, {
     commands: params.commands,
     tools: params.tools,
@@ -251,6 +274,7 @@ function createExecutableRegistry(params: Readonly<{
     contributes: contributes as ResolvedExecutablePluginRuntimeRegistry['contributes'],
     generation: 7,
     targetActionInvocations: params.targetActionInvocations,
+    readPluginOccurrenceId: params.readPluginOccurrenceId ?? readFixtureOccurrenceId,
     hookHandlersByHookId: new Map(),
     agentRuntimesByAgentId: new Map(),
     scmHostingProvidersById: new Map(),
@@ -260,9 +284,6 @@ function createExecutableRegistry(params: Readonly<{
     ...(params.resolveCurrentPluginExecutionOrigin
       ? { resolveCurrentPluginExecutionOrigin: params.resolveCurrentPluginExecutionOrigin }
       : {}),
-    ...(params.resolveCurrentPluginImmutableGenerationId
-      ? { resolveCurrentPluginImmutableGenerationId: params.resolveCurrentPluginImmutableGenerationId }
-      : {}),
     createAgentInvocationServices: async () => createUnavailablePluginServices(),
     resolvePromptAssetBlocks: async () => [],
     retireConsumers: () => {},
@@ -270,7 +291,7 @@ function createExecutableRegistry(params: Readonly<{
   };
 }
 
-describe('executePluginActionIfAvailable', () => {
+describe('executeContributedAction', () => {
   it('fails closed before activation for disabled external and bundled contributed Actions', async () => {
     const previousSettings = process.env.HAPPIER_ACTIONS_SETTINGS_V1;
     process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
@@ -290,7 +311,7 @@ describe('executePluginActionIfAvailable', () => {
         });
         const activateContributionsOnDemand = vi.fn(async () => []);
 
-        await expect(executePluginActionIfAvailable({
+        await expect(executeContributedAction({
           runtimeRegistry: createExecutableRegistry({
             action,
             targetActionInvocations,
@@ -358,7 +379,7 @@ describe('executePluginActionIfAvailable', () => {
       });
       const activateContributionsOnDemand = vi.fn(async () => []);
 
-      await expect(executePluginActionIfAvailable({
+      await expect(executeContributedAction({
         runtimeRegistry: createExecutableRegistry({
           action,
           targetActionInvocations,
@@ -382,7 +403,7 @@ describe('executePluginActionIfAvailable', () => {
       // A plugin-authority ingress stamps the invocation surface itself, so the
       // live Account settings gate reads the `plugin` surface entry (not
       // disabled here) even though the `api` entry above is disabled.
-      await expect(executePluginActionIfAvailable({
+      await expect(executeContributedAction({
         runtimeRegistry: createExecutableRegistry({
           action,
           targetActionInvocations,
@@ -404,7 +425,7 @@ describe('executePluginActionIfAvailable', () => {
       // caller stamped with the `api` invocation origin is refused by the same
       // live Account settings before the handler is entered.
       handler.mockClear();
-      await expect(executePluginActionIfAvailable({
+      await expect(executeContributedAction({
         runtimeRegistry: createExecutableRegistry({
           action,
           targetActionInvocations,
@@ -422,7 +443,7 @@ describe('executePluginActionIfAvailable', () => {
               id: 'dashboard',
               qualifiedId: 'acme.mounted/dashboard',
             },
-            immutableGenerationId: 'acme-mounted-generation-1',
+            ...createManagedPluginRuntimeIdentity('acme.mounted', 'acme-mounted-generation-1'),
             materialization: {
               machineId: 'machine-1',
               materializationId: 'materialization-mounted-current',
@@ -490,7 +511,7 @@ describe('executePluginActionIfAvailable', () => {
       });
       const invoke = async (requestCurrentIntent?: (request: TargetActionCurrentIntentRequest) => Promise<
         Readonly<{ status: 'approved'; fingerprint: string } | { status: 'rejected' | 'unavailable'; code: string }>
-      >) => await executePluginActionIfAvailable({
+      >) => await executeContributedAction({
         runtimeRegistry,
         actionId: action.definition.id,
         input: {},
@@ -502,7 +523,7 @@ describe('executePluginActionIfAvailable', () => {
             kind: 'plugin',
             pluginId: 'acme.caller',
             contribution: { id: 'dispatcher', qualifiedId: 'acme.caller/actions/dispatcher' },
-            immutableGenerationId: 'acme-caller-generation-1',
+            ...createManagedPluginRuntimeIdentity('acme.caller', 'acme-caller-generation-1'),
             materialization: {
               pluginId: 'acme.caller',
               machineId: 'machine-1',
@@ -585,7 +606,7 @@ describe('executePluginActionIfAvailable', () => {
         approve = (value) => resolve(value);
       }));
 
-      const invocation = executePluginActionIfAvailable({
+      const invocation = executeContributedAction({
         runtimeRegistry: createExecutableRegistry({
           action,
           targetActionInvocations,
@@ -631,7 +652,6 @@ describe('executePluginActionIfAvailable', () => {
           target: 'client',
           client: {
             artifactId: 'client-actions',
-            modulePath: './client-actions.js',
             exportName: 'activate',
           },
           platforms: ['web'],
@@ -643,7 +663,7 @@ describe('executePluginActionIfAvailable', () => {
       actions: [createTargetActionRegistration({ action, handler: daemonHandler })],
     });
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: createExecutableRegistry({
         action,
         targetActionInvocations,
@@ -730,7 +750,7 @@ describe('executePluginActionIfAvailable', () => {
             message: 'Plugin action registry is not yet committed',
           };
         }
-        const attempt = await executePluginActionIfAvailable({
+        const attempt = await executeContributedAction({
           runtimeRegistry,
           actionId: `${request.action.pluginId}/${request.action.localId}`,
           input: request.input,
@@ -797,9 +817,9 @@ describe('executePluginActionIfAvailable', () => {
       readActions: () => registrations,
       resolveAuthorizationFacts: (action) => ({
         generation: {
-          targetGeneration: action.generation,
-          desiredGeneration: action.generation,
-          appliedGeneration: action.generation,
+          targetGeneration: action.occurrenceId,
+          desiredGeneration: action.occurrenceId,
+          appliedGeneration: action.occurrenceId,
         },
         resourceSelections: [],
         scopedGrants: [],
@@ -807,6 +827,7 @@ describe('executePluginActionIfAvailable', () => {
       }),
       resolveHostBinding: serviceOwners.resolveHostBinding,
       createServices: serviceOwners.createServices,
+      readCurrentPluginOccurrenceId: readFixtureOccurrenceId,
       resolveCurrentPluginMaterializationRef: (pluginId) => materializations.get(pluginId) ?? null,
     });
     const activateContributionsOnDemand = vi.fn(async (requests) => {
@@ -850,7 +871,7 @@ describe('executePluginActionIfAvailable', () => {
     };
     runtimeRegistry = activeRuntimeRegistry;
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: activeRuntimeRegistry,
       actionId: 'acme.alpha/start',
       input: {},
@@ -866,7 +887,8 @@ describe('executePluginActionIfAvailable', () => {
         kind: 'plugin',
         pluginId: 'acme.alpha',
         contribution: { id: 'start', qualifiedId: 'acme.alpha/actions/start' },
-        immutableGenerationId: 'acme.alpha-immutable-generation',
+        occurrenceId: expect.any(String),
+        sourceCustody: createManagedPluginSourceCustody('acme.alpha-immutable-generation'),
         materialization: alphaMaterialization,
         originSurface: 'cli',
       },
@@ -877,7 +899,8 @@ describe('executePluginActionIfAvailable', () => {
         kind: 'plugin',
         pluginId: 'acme.beta',
         contribution: { id: 'continue', qualifiedId: 'acme.beta/actions/continue' },
-        immutableGenerationId: 'acme.beta-immutable-generation',
+        occurrenceId: expect.any(String),
+        sourceCustody: createManagedPluginSourceCustody('acme.beta-immutable-generation'),
         materialization: betaMaterialization,
         originSurface: 'cli',
       },
@@ -923,7 +946,7 @@ describe('executePluginActionIfAvailable', () => {
     // `plugin` declaration is a plugin-authority capability, so the mounted UI
     // press is refused before the handler is entered instead of riding the
     // plugin declaration.
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: createExecutableRegistry({
         action,
         targetActionInvocations,
@@ -941,7 +964,7 @@ describe('executePluginActionIfAvailable', () => {
             id: 'dashboard',
             qualifiedId: 'acme.mounted/dashboard',
           },
-          immutableGenerationId: 'acme-mounted-generation-1',
+          ...createManagedPluginRuntimeIdentity('acme.mounted', 'acme-mounted-generation-1'),
           materialization: {
             machineId: 'machine-1',
             materializationId: 'materialization-mounted-current',
@@ -994,7 +1017,7 @@ describe('executePluginActionIfAvailable', () => {
     });
     const signal = new AbortController().signal;
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: createExecutableRegistry({
         action,
         targetActionInvocations,
@@ -1011,7 +1034,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
-          immutableGenerationId: 'acme-caller-generation-1',
+          ...createManagedPluginRuntimeIdentity('acme.caller', 'acme-caller-generation-1'),
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1079,7 +1102,7 @@ describe('executePluginActionIfAvailable', () => {
       actions: [createTargetActionRegistration({ action, handler: target })],
     });
 
-    const attempt = await executePluginActionIfAvailable({
+    const attempt = await executeContributedAction({
       runtimeRegistry: createExecutableRegistry({
         action,
         targetActionInvocations,
@@ -1095,7 +1118,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
-          immutableGenerationId: 'acme-caller-generation-1',
+          ...createManagedPluginRuntimeIdentity('acme.caller', 'acme-caller-generation-1'),
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1139,7 +1162,7 @@ describe('executePluginActionIfAvailable', () => {
       actions: [createTargetActionRegistration({ action, handler: target })],
     });
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: createExecutableRegistry({
         action,
         targetActionInvocations,
@@ -1154,7 +1177,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
-          immutableGenerationId: 'acme-caller-generation-1',
+          ...createManagedPluginRuntimeIdentity('acme.caller', 'acme-caller-generation-1'),
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1209,7 +1232,7 @@ describe('executePluginActionIfAvailable', () => {
       actions: [createTargetActionRegistration({ action, handler: target })],
     });
 
-    const attempt = await executePluginActionIfAvailable({
+    const attempt = await executeContributedAction({
       runtimeRegistry: createExecutableRegistry({
         action,
         targetActionInvocations,
@@ -1233,7 +1256,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
-          immutableGenerationId: 'acme-caller-generation-1',
+          ...createManagedPluginRuntimeIdentity('acme.caller', 'acme-caller-generation-1'),
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1294,7 +1317,7 @@ describe('executePluginActionIfAvailable', () => {
       actions: [createTargetActionRegistration({ action, handler: target })],
     });
 
-    const attempt = await executePluginActionIfAvailable({
+    const attempt = await executeContributedAction({
       runtimeRegistry: createExecutableRegistry({
         action,
         targetActionInvocations,
@@ -1310,7 +1333,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
-          immutableGenerationId: 'acme-caller-generation-1',
+          ...createManagedPluginRuntimeIdentity('acme.caller', 'acme-caller-generation-1'),
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1368,7 +1391,7 @@ describe('executePluginActionIfAvailable', () => {
       actions: [createTargetActionRegistration({ action, handler: target })],
     });
 
-    const attempt = await executePluginActionIfAvailable({
+    const attempt = await executeContributedAction({
       runtimeRegistry: createExecutableRegistry({
         action,
         targetActionInvocations,
@@ -1383,7 +1406,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
-          immutableGenerationId: 'acme-caller-generation-1',
+          ...createManagedPluginRuntimeIdentity('acme.caller', 'acme-caller-generation-1'),
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1401,7 +1424,7 @@ describe('executePluginActionIfAvailable', () => {
     expect(resolveCurrentPluginExecutionOrigin).not.toHaveBeenCalled();
   });
 
-  it('rejects a stale admitted contributor generation before cold activation and admits the fresh binding', async () => {
+  it('rejects only the replaced contributor occurrence while an unrelated plugin remains valid', async () => {
     const externalAction = createAction('/unused/daemon.mjs', 'publish');
     const replacementAction: ResolvedActionContribution = {
       ...externalAction,
@@ -1416,33 +1439,54 @@ describe('executePluginActionIfAvailable', () => {
       },
     };
     const replacementHandler = vi.fn(async () => ({ handledBy: 'replacement' }));
+    const unrelatedAction: ResolvedActionContribution = {
+      ...replacementAction,
+      pluginId: 'acme.unrelated',
+      definition: {
+        ...replacementAction.definition,
+        id: 'unrelated-publish',
+      },
+    };
+    const unrelatedHandler = vi.fn(async () => ({ handledBy: 'unrelated' }));
     const targetActionInvocations = createTargetActionInvocationRegistry({
-      actions: [createTargetActionRegistration({
-        action: replacementAction,
-        handler: replacementHandler,
-      })],
+      actions: [
+        createTargetActionRegistration({ action: replacementAction, handler: replacementHandler }),
+        createTargetActionRegistration({ action: unrelatedAction, handler: unrelatedHandler }),
+      ],
     });
-    const runtimeRegistry = createExecutableRegistry({
+    const baseRuntimeRegistry = createExecutableRegistry({
       action: replacementAction,
       targetActionInvocations,
-      resolveCurrentPluginImmutableGenerationId: async (pluginId) => (
-        pluginId === 'acme.contributor' ? 'generation-b' : null
-      ),
+      readPluginOccurrenceId: (pluginId) => ({
+        'acme.contributor': 'occurrence-a-replacement',
+        'acme.unrelated': 'occurrence-b-stable',
+      }[pluginId] as never ?? null),
       activateContributionsOnDemand: async () => [],
     });
+    const runtimeRegistry: ResolvedExecutablePluginRuntimeRegistry = {
+      ...baseRuntimeRegistry,
+      contributes: {
+        ...baseRuntimeRegistry.contributes,
+        actions: [replacementAction, unrelatedAction],
+        actionsById: new Map([
+          [replacementAction.definition.id, replacementAction],
+          [unrelatedAction.definition.id, unrelatedAction],
+        ]),
+      },
+    };
 
     const staleRequest = {
       runtimeRegistry,
       actionId: replacementAction.definition.id,
       input: { title: 'Ready' },
-      expectedContributorImmutableGenerationId: 'generation-a',
+      expectedContributorOccurrenceId: 'occurrence-a-retired',
       context: {
         surface: 'plugin' as const,
         caller: {
           kind: 'plugin' as const,
           pluginId: 'acme.target',
           contribution: { id: 'providers', qualifiedId: 'acme.target/points/providers' },
-          immutableGenerationId: 'acme-target-generation-1',
+          ...createManagedPluginRuntimeIdentity('acme.target', 'acme-target-generation-1'),
           materialization: {
             pluginId: 'acme.target',
             machineId: 'machine-target',
@@ -1451,31 +1495,31 @@ describe('executePluginActionIfAvailable', () => {
         },
       },
     };
-    const staleAttempt = await executePluginActionIfAvailable(staleRequest);
+    const staleAttempt = await executeContributedAction(staleRequest);
 
     expect(staleAttempt).toEqual({
       matched: true,
       result: {
         ok: false,
         errorCode: 'plugin_action_generation_retired',
-        error: 'Admitted contributor generation is no longer current',
+        error: 'Admitted contributor occurrence is no longer current',
         actionHandlerInvocation: 'notStarted',
       },
     });
     expect(replacementHandler).not.toHaveBeenCalled();
 
-    const freshRequest = {
+    const unrelatedRequest = {
       runtimeRegistry,
-      actionId: replacementAction.definition.id,
+      actionId: unrelatedAction.definition.id,
       input: { title: 'Ready' },
-      expectedContributorImmutableGenerationId: 'generation-b',
+      expectedContributorOccurrenceId: 'occurrence-b-stable',
       context: {
         surface: 'plugin' as const,
         caller: {
           kind: 'plugin' as const,
           pluginId: 'acme.target',
           contribution: { id: 'providers', qualifiedId: 'acme.target/points/providers' },
-          immutableGenerationId: 'acme-target-generation-1',
+          ...createManagedPluginRuntimeIdentity('acme.target', 'acme-target-generation-1'),
           materialization: {
             pluginId: 'acme.target',
             machineId: 'machine-target',
@@ -1484,14 +1528,15 @@ describe('executePluginActionIfAvailable', () => {
         },
       },
     };
-    await expect(executePluginActionIfAvailable(freshRequest)).resolves.toEqual({
+    await expect(executeContributedAction(unrelatedRequest)).resolves.toEqual({
       matched: true,
-      result: { ok: true, result: { handledBy: 'replacement' } },
+      result: { ok: true, result: { handledBy: 'unrelated' } },
     });
-    expect(replacementHandler).toHaveBeenCalledOnce();
+    expect(unrelatedHandler).toHaveBeenCalledOnce();
+    expect(replacementHandler).not.toHaveBeenCalled();
   });
 
-  it('preserves a known admitted contributor result when its generation retires during the handler', async () => {
+  it('preserves a known admitted contributor result when its occurrence retires during the handler', async () => {
     const externalAction = createAction('/unused/daemon.mjs', 'publish');
     const action: ResolvedActionContribution = {
       ...externalAction,
@@ -1505,9 +1550,9 @@ describe('executePluginActionIfAvailable', () => {
         contributionSurfaces: ['plugin'],
       },
     };
-    let immutableGenerationId = 'generation-a';
+    let occurrenceId = 'occurrence-a';
     const handler = vi.fn(async () => {
-      immutableGenerationId = 'generation-b';
+      occurrenceId = 'occurrence-b';
       return { handledBy: 'retired-a' };
     });
     const targetActionInvocations = createTargetActionInvocationRegistry({
@@ -1516,8 +1561,8 @@ describe('executePluginActionIfAvailable', () => {
     const runtimeRegistry = createExecutableRegistry({
       action,
       targetActionInvocations,
-      resolveCurrentPluginImmutableGenerationId: async (pluginId) => (
-        pluginId === 'acme.contributor' ? immutableGenerationId : null
+      readPluginOccurrenceId: (pluginId) => (
+        pluginId === 'acme.contributor' ? occurrenceId as never : null
       ),
       activateContributionsOnDemand: async () => [],
     });
@@ -1526,14 +1571,14 @@ describe('executePluginActionIfAvailable', () => {
       runtimeRegistry,
       actionId: action.definition.id,
       input: { title: 'Ready' },
-      expectedContributorImmutableGenerationId: 'generation-a',
+      expectedContributorOccurrenceId: 'occurrence-a',
       context: {
         surface: 'plugin' as const,
         caller: {
           kind: 'plugin' as const,
           pluginId: 'acme.target',
           contribution: { id: 'providers', qualifiedId: 'acme.target/points/providers' },
-          immutableGenerationId: 'acme-target-generation-1',
+          ...createManagedPluginRuntimeIdentity('acme.target', 'acme-target-generation-1'),
           materialization: {
             pluginId: 'acme.target',
             machineId: 'machine-target',
@@ -1542,7 +1587,7 @@ describe('executePluginActionIfAvailable', () => {
         },
       },
     };
-    await expect(executePluginActionIfAvailable(request)).resolves.toEqual({
+    await expect(executeContributedAction(request)).resolves.toEqual({
       matched: true,
       result: {
         ok: true,
@@ -1578,8 +1623,8 @@ describe('executePluginActionIfAvailable', () => {
       ...createExecutableRegistry({
         action,
         targetActionInvocations,
-        resolveCurrentPluginImmutableGenerationId: async (pluginId) => (
-          pluginId === 'acme.contributor' ? 'generation-a' : null
+        readPluginOccurrenceId: (pluginId) => (
+          pluginId === 'acme.contributor' ? 'occurrence-a' as never : null
         ),
         activateContributionsOnDemand: async () => [],
       }),
@@ -1598,7 +1643,7 @@ describe('executePluginActionIfAvailable', () => {
       runtimeRegistry,
       actionId: action.definition.id,
       input: { title: 'Ready' },
-      expectedContributorImmutableGenerationId: 'generation-a',
+      expectedContributorOccurrenceId: 'occurrence-a',
       expectedContributorMaterializationId: 'materialization-a',
       context: {
         surface: 'plugin' as const,
@@ -1606,7 +1651,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin' as const,
           pluginId: 'acme.target',
           contribution: { id: 'providers', qualifiedId: 'acme.target/points/providers' },
-          immutableGenerationId: 'acme-target-generation-1',
+          ...createManagedPluginRuntimeIdentity('acme.target', 'acme-target-generation-1'),
           materialization: {
             pluginId: 'acme.target',
             machineId: 'machine-target',
@@ -1616,7 +1661,7 @@ describe('executePluginActionIfAvailable', () => {
       },
     };
 
-    await expect(executePluginActionIfAvailable(request)).resolves.toEqual({
+    await expect(executeContributedAction(request)).resolves.toEqual({
       matched: true,
       result: {
         ok: true,
@@ -1649,7 +1694,7 @@ describe('executePluginActionIfAvailable', () => {
       actions: [{
         pluginId: 'acme.action.plugin',
         pluginVersion: '1.0.0',
-        generation: '7',
+        occurrenceId: createPluginRuntimeOccurrenceId('acme.action.plugin'),
         localId: 'mint-client-auth',
         definition: {
           id: 'mint-client-auth',
@@ -1673,7 +1718,7 @@ describe('executePluginActionIfAvailable', () => {
       },
     };
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: registry,
       actionId: 'acme.action.plugin/mint-client-auth',
       input: {},
@@ -1699,7 +1744,7 @@ describe('executePluginActionIfAvailable', () => {
     const target = vi.fn(async () => ({ executedBy: 'target' }));
     const targetActionInvocations = createTargetActionInvocationRegistry({
       actions: [{
-        pluginId: 'acme.action.plugin', pluginVersion: '1.0.0', generation: '7', localId: 'run',
+        pluginId: 'acme.action.plugin', pluginVersion: '1.0.0', occurrenceId: createPluginRuntimeOccurrenceId('acme.action.plugin'), localId: 'run',
         definition: {
           id: 'run', dangerLevel: 'safe', scopes: ['global'], surfaces: ['cli'],
           resultSchema: { type: 'object', required: ['executedBy'], properties: { executedBy: { const: 'target' } } },
@@ -1713,7 +1758,7 @@ describe('executePluginActionIfAvailable', () => {
       activateContributionsOnDemand: async () => [],
     });
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: registry, actionId: 'run', input: {}, context: { surface: 'cli' },
     })).resolves.toEqual({ matched: true, result: { ok: true, result: { executedBy: 'target' } } });
     expect(target).toHaveBeenCalledTimes(1);
@@ -1730,7 +1775,7 @@ describe('executePluginActionIfAvailable', () => {
       activateContributionsOnDemand: async () => [],
     });
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: registry,
       actionId: action.definition.id,
       input: {},
@@ -1760,7 +1805,7 @@ describe('executePluginActionIfAvailable', () => {
       activateContributionsOnDemand: async () => [],
     });
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: registry,
       actionId: action.definition.id,
       input: {},
@@ -1782,14 +1827,14 @@ describe('executePluginActionIfAvailable', () => {
     };
     const targetActionInvocations = createTargetActionInvocationRegistry({
       actions: [{
-        pluginId: 'acme.action.plugin', pluginVersion: '1.0.0', generation: '7', localId: 'run',
+        pluginId: 'acme.action.plugin', pluginVersion: '1.0.0', occurrenceId: createPluginRuntimeOccurrenceId('acme.action.plugin'), localId: 'run',
         definition: { id: 'run', dangerLevel: 'safe', scopes: ['global'], surfaces: ['cli'] },
         handler: async () => { throw new Error('target failed'); },
       }],
     });
     const registry = createExecutableRegistry({ action, targetActionInvocations, activateContributionsOnDemand: async () => [] });
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: registry, actionId: 'run', input: {}, context: { surface: 'cli' },
     })).resolves.toMatchObject({ matched: true, result: { ok: false, errorCode: 'plugin_action_execution_failed' } });
   });
@@ -1804,7 +1849,7 @@ describe('executePluginActionIfAvailable', () => {
     };
     const targetActionInvocations = createTargetActionInvocationRegistry({
       actions: [{
-        pluginId: 'acme.action.plugin', pluginVersion: '1.0.0', generation: '7', localId: 'run',
+        pluginId: 'acme.action.plugin', pluginVersion: '1.0.0', occurrenceId: createPluginRuntimeOccurrenceId('acme.action.plugin'), localId: 'run',
         definition: {
           id: 'run', dangerLevel: 'safe', scopes: ['global'], surfaces: ['cli'],
           resultSchema: { type: 'object', required: ['owner'], properties: { owner: { const: 'target' } } },
@@ -1816,7 +1861,7 @@ describe('executePluginActionIfAvailable', () => {
       action, targetActionInvocations, activateContributionsOnDemand: async () => [],
     });
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: registry, actionId: 'run', input: {}, context: { surface: 'cli' },
     })).resolves.toMatchObject({
       matched: true,
@@ -1839,7 +1884,7 @@ describe('executePluginActionIfAvailable', () => {
       activateContributionsOnDemand: async () => [],
     });
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: registry,
       actionId: action.definition.id,
       input: {},
@@ -1870,7 +1915,7 @@ describe('executePluginActionIfAvailable', () => {
       action, targetActionInvocations, activateContributionsOnDemand,
     });
 
-    await expect(executePluginActionIfAvailable({
+    await expect(executeContributedAction({
       runtimeRegistry: registry, actionId: 'run', input: {}, context: { surface: 'cli' },
     })).resolves.toMatchObject({
       matched: true,
@@ -1888,8 +1933,8 @@ describe('executePluginActionIfAvailable', () => {
     const beta = { ...createAction('/unused/b.mjs', 'run'), pluginId: 'acme.beta' };
     const targetActionInvocations = createTargetActionInvocationRegistry({
       actions: [
-        { pluginId: 'acme.alpha', pluginVersion: '1', generation: '7', localId: 'run', definition: { id: 'run', dangerLevel: 'safe', scopes: ['global'], surfaces: ['cli'] }, handler: async () => ({ owner: 'alpha' }) },
-        { pluginId: 'acme.beta', pluginVersion: '1', generation: '7', localId: 'run', definition: { id: 'run', dangerLevel: 'safe', scopes: ['global'], surfaces: ['cli'] }, handler: async () => ({ owner: 'beta' }) },
+        { pluginId: 'acme.alpha', pluginVersion: '1', occurrenceId: createPluginRuntimeOccurrenceId('acme.alpha'), localId: 'run', definition: { id: 'run', dangerLevel: 'safe', scopes: ['global'], surfaces: ['cli'] }, handler: async () => ({ owner: 'alpha' }) },
+        { pluginId: 'acme.beta', pluginVersion: '1', occurrenceId: createPluginRuntimeOccurrenceId('acme.beta'), localId: 'run', definition: { id: 'run', dangerLevel: 'safe', scopes: ['global'], surfaces: ['cli'] }, handler: async () => ({ owner: 'beta' }) },
       ],
     });
     const base = createExecutableRegistry({ action: alpha, targetActionInvocations, activateContributionsOnDemand: async () => [] });
@@ -1900,9 +1945,9 @@ describe('executePluginActionIfAvailable', () => {
     };
     const runtimeRegistry = { ...base, contributes };
 
-    await expect(executePluginActionIfAvailable({ runtimeRegistry, actionId: 'acme.beta/run', input: {}, context: { surface: 'cli' } }))
+    await expect(executeContributedAction({ runtimeRegistry, actionId: 'acme.beta/run', input: {}, context: { surface: 'cli' } }))
       .resolves.toEqual({ matched: true, result: { ok: true, result: { owner: 'beta' } } });
-    await expect(executePluginActionIfAvailable({ runtimeRegistry, actionId: 'run', input: {}, context: { surface: 'cli' } }))
+    await expect(executeContributedAction({ runtimeRegistry, actionId: 'run', input: {}, context: { surface: 'cli' } }))
       .resolves.toEqual({ matched: false });
   });
 
@@ -1910,7 +1955,7 @@ describe('executePluginActionIfAvailable', () => {
     const action = { ...createAction('/unused/a.mjs', 'run'), pluginId: 'acme.alpha' };
     const targetActionInvocations = createTargetActionInvocationRegistry({
       actions: [{
-        pluginId: 'acme.alpha', pluginVersion: '1', generation: '7', localId: 'run',
+        pluginId: 'acme.alpha', pluginVersion: '1', occurrenceId: createPluginRuntimeOccurrenceId('acme.alpha'), localId: 'run',
         definition: { id: 'run', dangerLevel: 'safe', scopes: ['global'], surfaces: ['cli'] },
         handler: async () => ({ owner: 'alpha' }),
       }],
@@ -1921,9 +1966,9 @@ describe('executePluginActionIfAvailable', () => {
       contributes: { ...base.contributes, actionsById: new Map([['acme.alpha/run', action]]) },
     };
 
-    await expect(executePluginActionIfAvailable({ runtimeRegistry, actionId: 'run', input: {}, context: { surface: 'cli' } }))
+    await expect(executeContributedAction({ runtimeRegistry, actionId: 'run', input: {}, context: { surface: 'cli' } }))
       .resolves.toEqual({ matched: false });
-    await expect(executePluginActionIfAvailable({ runtimeRegistry, actionId: 'acme.alpha/run', input: {}, context: { surface: 'cli' } }))
+    await expect(executeContributedAction({ runtimeRegistry, actionId: 'acme.alpha/run', input: {}, context: { surface: 'cli' } }))
       .resolves.toEqual({ matched: true, result: { ok: true, result: { owner: 'alpha' } } });
   });
 
@@ -1933,7 +1978,7 @@ describe('executePluginActionIfAvailable', () => {
     await writeFile(daemonEntryPath, 'throw new Error("static action module must not be imported");\n', 'utf8');
     const action = createAction(daemonEntryPath);
 
-    const result = await executePluginActionIfAvailable({
+    const result = await executeContributedAction({
       registry: createRegistry(action),
       actionId: 'acme.review.start',
       input: { scope: 'diff' },
@@ -1983,7 +2028,7 @@ describe('executePluginActionIfAvailable', () => {
       },
     });
 
-    const result = await executePluginActionIfAvailable({
+    const result = await executeContributedAction({
       runtimeRegistry: registry,
       actionId: action.definition.id,
       input: { scope: 'command' },
@@ -2042,7 +2087,7 @@ describe('executePluginActionIfAvailable', () => {
       },
     });
 
-    const result = await executePluginActionIfAvailable({
+    const result = await executeContributedAction({
       runtimeRegistry: registry,
       actionId: action.definition.id,
       input: { scope: 'tool' },
@@ -2091,7 +2136,7 @@ describe('executePluginActionIfAvailable', () => {
       }],
     });
 
-    const result = await executePluginActionIfAvailable({
+    const result = await executeContributedAction({
       runtimeRegistry: registry,
       actionId: action.definition.id,
       input: {},
@@ -2129,7 +2174,7 @@ describe('executePluginActionIfAvailable', () => {
     });
     const registry = createExecutableRegistry({ action, targetActionInvocations, activateContributionsOnDemand });
 
-    const result = await executePluginActionIfAvailable({
+    const result = await executeContributedAction({
       runtimeRegistry: registry,
       actionId: action.definition.id,
       input: {},
@@ -2166,7 +2211,7 @@ describe('executePluginActionIfAvailable', () => {
     const handler = vi.fn(async () => ({ ok: true }));
     const targetActionInvocations = createTargetActionInvocationRegistry({
       actions: [{
-        pluginId: 'acme.action.plugin', pluginVersion: '1.0.0', generation: '7', localId: 'run',
+        pluginId: 'acme.action.plugin', pluginVersion: '1.0.0', occurrenceId: createPluginRuntimeOccurrenceId('acme.action.plugin'), localId: 'run',
         definition: {
           id: 'run', dangerLevel: 'safe', scopes: ['global'], surfaces: ['cli'],
           inputSchema: action.definition.inputSchema,
@@ -2175,7 +2220,7 @@ describe('executePluginActionIfAvailable', () => {
       }],
     });
 
-    const result = await executePluginActionIfAvailable({
+    const result = await executeContributedAction({
       runtimeRegistry: createExecutableRegistry({
         action,
         targetActionInvocations,
@@ -2237,7 +2282,7 @@ describe('executePluginActionIfAvailable', () => {
       actions: [createTargetActionRegistration({ action, handler })],
     });
 
-    const result = await executePluginActionIfAvailable({
+    const result = await executeContributedAction({
       runtimeRegistry: createExecutableRegistry({
         action,
         targetActionInvocations,
@@ -2280,7 +2325,7 @@ describe('executePluginActionIfAvailable', () => {
       actions: [createTargetActionRegistration({ action, handler })],
     });
 
-    const result = await executePluginActionIfAvailable({
+    const result = await executeContributedAction({
       runtimeRegistry: createExecutableRegistry({
         action,
         targetActionInvocations,
@@ -2308,7 +2353,7 @@ describe('executePluginActionIfAvailable', () => {
     const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-action-exec-'));
     const daemonEntryPath = await writeActionDaemon(pluginRoot);
 
-    const result = await executePluginActionIfAvailable({
+    const result = await executeContributedAction({
       registry: createRegistry(createAction(daemonEntryPath)),
       actionId: 'acme.review.start',
       input: {},
@@ -2330,7 +2375,7 @@ describe('executePluginActionIfAvailable', () => {
   });
 
   it('does not activate plugin runtime while checking built-in action ids', async () => {
-    const result = await executePluginActionIfAvailable({
+    const result = await executeContributedAction({
       actionId: 'session.list',
       input: { limit: 2 },
       context: {
@@ -2342,7 +2387,7 @@ describe('executePluginActionIfAvailable', () => {
   });
 
   it('does not synthesize a process-local runtime for external action ids', async () => {
-    const result = await executePluginActionIfAvailable({
+    const result = await executeContributedAction({
       actionId: 'acme.review.start',
       input: {},
       context: {

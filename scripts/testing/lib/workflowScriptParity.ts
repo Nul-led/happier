@@ -37,7 +37,6 @@ export type GovernanceCommandId =
   | 'test:migration:inventory'
   | 'test:migration:v2-zero:enforce'
   | 'test:migration:bundled-plugin-projections'
-  | 'test:migration:bundled-plugin-runtime-determinism'
   | 'test:migration:governance';
 
 const CANONICAL_LANE_PARITY: readonly ParityDefinition[] = Object.freeze([
@@ -225,25 +224,9 @@ const GOVERNANCE_COMMAND_PARITY: readonly ParityDefinition[] = Object.freeze([
     workflowMode: 'any',
     triggerMode: 'local-only',
     requiredScriptBodyPatterns: [
-      /scripts\/migrations\/extensions\/generateBundledPluginEntries\.ts/,
+      /apps\/cli\/scripts\/build-owned\/generateBundledPluginEntries\.ts/,
       /--mode check/,
       /--scope projections/,
-    ],
-  },
-  {
-    // Same publisher, the other question: the re-stage inlines the current
-    // shared workspace output into every bundled runtime, so byte equality is a
-    // whole-repo build-determinism signal and carries its own name.
-    id: 'test:migration:bundled-plugin-runtime-determinism',
-    rootScriptName: 'test:migration:bundled-plugin-runtime-determinism',
-    docsCommands: [],
-    workflowCommands: ['yarn test:migration:governance'],
-    workflowMode: 'any',
-    triggerMode: 'local-only',
-    requiredScriptBodyPatterns: [
-      /scripts\/migrations\/extensions\/generateBundledPluginEntries\.ts/,
-      /--mode check/,
-      /--scope all/,
     ],
   },
   {
@@ -257,7 +240,6 @@ const GOVERNANCE_COMMAND_PARITY: readonly ParityDefinition[] = Object.freeze([
       /test:migration:v2-zero:enforce/,
       /test:migration:wire-compat/,
       /test:migration:bundled-plugin-projections/,
-      /test:migration:bundled-plugin-runtime-determinism/,
     ],
   },
 ]);

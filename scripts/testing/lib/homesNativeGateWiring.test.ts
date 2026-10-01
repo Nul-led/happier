@@ -16,8 +16,8 @@ test('the Home Iroh native gate runs by default and is selectable through manual
   assert.match(workflow, /ci_summary:[\s\S]*needs: \[[^\]]*home-iroh-real/u);
   assert.match(dispatch, /custom_checks:[\s\S]*home_iroh_real/u);
   assert.match(dispatch, /outputs:[\s\S]*run_home_iroh_real: \$\{\{ steps\.flags\.outputs\.run_home_iroh_real \}\}/u);
-  assert.match(dispatch, /if \[ "\$\{profile\}" = "full" \]; then[\s\S]*run_home_iroh_real=true/u);
-  assert.match(dispatch, /if has home_iroh_real; then run_home_iroh_real=true; fi/u);
+  assert.match(dispatch, /run: node scripts\/pipeline\/checks\/resolve-checks-plan\.mjs --target hosted/u);
+  assert.doesNotMatch(dispatch, /if has home_iroh_real; then run_home_iroh_real=true; fi/u);
   assert.match(dispatch, /run_home_iroh_real: \$\{\{ needs\.resolve\.outputs\.run_home_iroh_real == 'true' \}\}/u);
 });
 

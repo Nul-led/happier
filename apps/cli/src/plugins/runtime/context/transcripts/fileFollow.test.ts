@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,6 +29,140 @@ function createDeferred(): Readonly<{
 }
 
 describe('createPluginTranscriptFileFollowService', () => {
+    it('follows the exact SessionStart transcript when its file is created after the hook', async () => {
+        const root = await createTempRoot('happier-plugin-file-follow-late-');
+        const filePath = join(root, 'provider-session.jsonl');
+        const registry = createTranscriptFileFollowPathGrantRegistry();
+        const scope = { kind: 'session' as const, sessionId: 'session-late' };
+        const received: string[] = [];
+        try {
+            await registry.grant({
+                pluginId: 'acme.transcript',
+                runtimeId: 'runtime-late',
+                scope,
+                path: filePath,
+                reason: 'providerTranscriptSource',
+                evidence: { kind: 'sessionStartTranscriptPath', providerSessionId: 'provider-late' },
+            });
+            const service = createPluginTranscriptFileFollowService({
+                pluginId: 'acme.transcript',
+                runtimeId: 'runtime-late',
+                readSessionId: () => scope.sessionId,
+                fileFollowPathGrants: registry,
+            });
+            const handle = await service.follow({
+                path: filePath,
+                startAt: 'beginning',
+                onLine: ({ line }) => { received.push(line); },
+            });
+            await writeFile(filePath, '{"created":"after-hook"}\n', 'utf8');
+            await handle.drainNow();
+            expect(received).toEqual(['{"created":"after-hook"}']);
+            await expect(registry.canFollowPath({
+                pluginId: 'acme.transcript',
+                runtimeId: 'runtime-late',
+                scope,
+                path: join(root, 'other.jsonl'),
+            })).resolves.toBe(false);
+            await handle.close();
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('follows the exact SessionStart transcript when its project directory is also new', async () => {
+        const root = await createTempRoot('happier-plugin-file-follow-new-project-');
+        const projectDir = join(root, 'projects', 'new-project');
+        const filePath = join(projectDir, 'provider-session.jsonl');
+        const scope = { kind: 'session' as const, sessionId: 'session-new-project' };
+        const registry = createTranscriptFileFollowPathGrantRegistry();
+        const received: string[] = [];
+        try {
+            await registry.grant({
+                pluginId: 'acme.transcript', runtimeId: 'runtime-new-project', scope, path: filePath,
+                reason: 'providerTranscriptSource',
+                evidence: { kind: 'sessionStartTranscriptPath', providerSessionId: 'provider-new-project' },
+            });
+            const service = createPluginTranscriptFileFollowService({
+                pluginId: 'acme.transcript', runtimeId: 'runtime-new-project',
+                readSessionId: () => scope.sessionId, fileFollowPathGrants: registry,
+            });
+            const handle = await service.follow({
+                path: filePath, startAt: 'beginning', onLine: ({ line }) => { received.push(line); },
+            });
+            await mkdir(projectDir, { recursive: true });
+            await writeFile(filePath, '{"created":"after-project"}\n', 'utf8');
+            await handle.drainNow();
+            expect(received).toEqual(['{"created":"after-project"}']);
+            await handle.close();
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('does not turn a pending SessionStart grant into a symlink or sibling grant', async () => {
+        const root = await createTempRoot('happier-plugin-file-follow-late-boundary-');
+        const outsideRoot = await createTempRoot('happier-plugin-file-follow-late-outside-');
+        const filePath = join(root, 'provider-session.jsonl');
+        const outsidePath = join(outsideRoot, 'outside.jsonl');
+        const scope = { kind: 'session' as const, sessionId: 'session-late' };
+        const registry = createTranscriptFileFollowPathGrantRegistry();
+        try {
+            await registry.grant({
+                pluginId: 'acme.transcript',
+                runtimeId: 'runtime-late',
+                scope,
+                path: filePath,
+                reason: 'providerTranscriptSource',
+                evidence: { kind: 'sessionStartTranscriptPath', providerSessionId: 'provider-late' },
+            });
+            await writeFile(outsidePath, '{"outside":true}\n', 'utf8');
+            await symlink(outsidePath, filePath);
+            await expect(registry.canFollowPath({
+                pluginId: 'acme.transcript', runtimeId: 'runtime-late', scope, path: filePath,
+            })).resolves.toBe(false);
+            await expect(registry.canFollowPath({
+                pluginId: 'acme.transcript', runtimeId: 'runtime-late', scope, path: outsidePath,
+            })).resolves.toBe(false);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+            await rm(outsideRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('does not disclose a symlink target when a pending follower was already attached', async () => {
+        const root = await createTempRoot('happier-plugin-file-follow-late-attached-');
+        const outsideRoot = await createTempRoot('happier-plugin-file-follow-late-target-');
+        const filePath = join(root, 'provider-session.jsonl');
+        const outsidePath = join(outsideRoot, 'outside.jsonl');
+        const scope = { kind: 'session' as const, sessionId: 'session-late' };
+        const registry = createTranscriptFileFollowPathGrantRegistry();
+        const received: string[] = [];
+        try {
+            await registry.grant({
+                pluginId: 'acme.transcript', runtimeId: 'runtime-late', scope, path: filePath,
+                reason: 'providerTranscriptSource',
+                evidence: { kind: 'sessionStartTranscriptPath', providerSessionId: 'provider-late' },
+            });
+            const service = createPluginTranscriptFileFollowService({
+                pluginId: 'acme.transcript', runtimeId: 'runtime-late',
+                readSessionId: () => scope.sessionId,
+                fileFollowPathGrants: registry,
+            });
+            const handle = await service.follow({
+                path: filePath, startAt: 'beginning', onLine: ({ line }) => { received.push(line); },
+            });
+            await writeFile(outsidePath, '{"outside":true}\n', 'utf8');
+            await symlink(outsidePath, filePath);
+            await handle.drainNow();
+            expect(received).toEqual([]);
+            await handle.close();
+        } finally {
+            await rm(root, { recursive: true, force: true });
+            await rm(outsideRoot, { recursive: true, force: true });
+        }
+    });
+
     it('fails closed for ungranted transcript paths', async () => {
         const root = await createTempRoot('happier-plugin-file-follow-denied-');
         const filePath = join(root, 'session.jsonl');

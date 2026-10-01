@@ -11,6 +11,7 @@ import { createBlockingApprovalCoordinator } from '../../../../session/actions/a
 import { createStablePluginApprovalQueueOwner } from './approvalQueue';
 import { createPluginActionCallerMaterializationFixture } from './actionCaller.testkit';
 import type { PluginInvocationServicesSeed } from './types';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 const pluginMaterialization = createPluginActionCallerMaterializationFixture('acme.plugin');
 
@@ -20,13 +21,13 @@ function seed(overrides: Partial<PluginInvocationServicesSeed> = {}): PluginInvo
         contribution: { id: 'action', qualifiedId: 'acme.plugin/actions/action' },
         resolveCurrentPluginMaterializationRef:
             pluginMaterialization.resolveCurrentPluginMaterializationRef,
-        generation: 'generation-1',
-        immutableGenerationId: 'immutable-generation-1',
+        occurrenceId: createPluginRuntimeOccurrenceId('acme.plugin'),
+        sourceCustody: { kind: 'development', registeredRootId: 'plugin-root' },
         correlationId: 'correlation-1',
         surface: 'agent',
         session: { id: 'session-1' },
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         ...overrides,
     };
 }
@@ -125,7 +126,8 @@ describe('stable plugin approval queue owner', () => {
                     kind: 'plugin',
                     pluginId: 'acme.plugin',
                     contributionLocalId: 'action',
-                    immutableGenerationId: 'immutable-generation-1',
+                    occurrenceId: expect.any(String),
+                    sourceCustody: { kind: 'development', registeredRootId: 'plugin-root' },
                     materialization: pluginMaterialization.materialization,
                 },
             }),
@@ -172,7 +174,7 @@ describe('stable plugin approval queue owner', () => {
         );
     });
 
-    it('rechecks generation currentness after awaiting the executor resolver and before the Action effect', async () => {
+    it('rechecks occurrenceId currentness after awaiting the executor resolver and before the Action effect', async () => {
         let current = true;
         let releaseResolver!: () => void;
         const resolverGate = new Promise<void>((resolve) => {
@@ -187,7 +189,7 @@ describe('stable plugin approval queue owner', () => {
                 await resolverGate;
                 return { execute };
             },
-        }).bind(seed({ isGenerationCurrent: () => current }));
+        }).bind(seed({ isOccurrenceCurrent: () => current }));
 
         const pending = queue.list();
         await vi.waitFor(() => expect(releaseResolver).toBeTypeOf('function'));
@@ -229,7 +231,7 @@ describe('stable plugin approval queue owner', () => {
                     caller: expect.objectContaining({
                         kind: 'plugin',
                         pluginId: 'acme.plugin',
-                        immutableGenerationId: 'immutable-generation-1',
+                        sourceCustody: { kind: 'development', registeredRootId: 'plugin-root' },
                     }),
                 }),
             }),

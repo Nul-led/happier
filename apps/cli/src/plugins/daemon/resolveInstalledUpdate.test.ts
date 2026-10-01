@@ -42,7 +42,7 @@ function npmRecord(
 
 describe('resolveInstalledPluginUpdate', () => {
   it('preserves the daemon-owned npm channel and policy while leaving version resolution open', () => {
-    expect(resolveInstalledPluginUpdate('acme.example', npmRecord('reviewSensitiveChanges'))).toEqual({
+    expect(resolveInstalledPluginUpdate('acme.example', npmRecord('allowed'))).toEqual({
       kind: 'npm',
       request: {
         kind: 'installNpm',
@@ -51,19 +51,19 @@ describe('resolveInstalledPluginUpdate', () => {
         registryOrigin: 'https://registry.example.test',
         registryProfileId: 'registry_private',
       },
-      updatePolicy: 'reviewSensitiveChanges',
+      updatePolicy: 'allowed',
     });
   });
 
-  it('defaults an unpublished record without an explicit policy to reviewEveryUpdate', () => {
+  it('defaults an unpublished record without an explicit policy to allowed', () => {
     expect(resolveInstalledPluginUpdate('acme.example', npmRecord(undefined)))
-      .toMatchObject({ kind: 'npm', updatePolicy: 'reviewEveryUpdate' });
+      .toMatchObject({ kind: 'npm', updatePolicy: 'allowed' });
   });
 
   it('keeps preview updates on the same prerelease line and above the installed version', () => {
     expect(resolveInstalledPluginUpdate(
       'acme.example',
-      npmRecord('reviewEveryUpdate', '2.0.0-beta.1'),
+      npmRecord('allowed', '2.0.0-beta.1'),
     )).toMatchObject({
       kind: 'npm',
       request: {
@@ -77,10 +77,10 @@ describe('resolveInstalledPluginUpdate', () => {
       .toThrowError(expect.objectContaining({ code: 'plugin_update_pinned' }));
   });
 
-  it('resolves reviewSensitiveChanges updates from the trusted npm channel alone — no curated binding required', () => {
+  it('resolves allowed updates from the trusted npm channel alone — no curated binding required', () => {
     // Curation is discovery/recommendation only: the trust record's exact npm
     // origin/package/profile is the whole update channel.
-    const resolution = resolveInstalledPluginUpdate('acme.example', npmRecord('reviewSensitiveChanges'));
+    const resolution = resolveInstalledPluginUpdate('acme.example', npmRecord('allowed'));
     expect(resolution.kind).toBe('npm');
     if (resolution.kind === 'npm') {
       expect(resolution.request.packageName).toBe('@acme/example');
@@ -90,7 +90,7 @@ describe('resolveInstalledPluginUpdate', () => {
 
   it('uses the trusted canonical local path for development updates', () => {
     const record: PluginStateRecord = {
-      ...npmRecord('reviewEveryUpdate'),
+      ...npmRecord('allowed'),
       source: {
         kind: 'path',
         locator: '/stale/consumer/path',
@@ -103,7 +103,7 @@ describe('resolveInstalledPluginUpdate', () => {
       install: {
         mode: 'link',
         manifestVersion: '1.0.0',
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         trust: {
           pluginId: 'acme.example',
           state: 'trusted',
@@ -116,13 +116,8 @@ describe('resolveInstalledPluginUpdate', () => {
       },
     };
 
-    expect(resolveInstalledPluginUpdate('acme.example', record)).toEqual({
-      kind: 'path',
-      request: {
-        kind: 'installPath',
-        locator: '/canonical/source',
-        development: true,
-      },
-    });
+    expect(() => resolveInstalledPluginUpdate('acme.example', record)).toThrow(
+      "Development plugin 'acme.example' advances through its registered source observer",
+    );
   });
 });

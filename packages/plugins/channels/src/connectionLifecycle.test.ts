@@ -56,7 +56,6 @@ describe('Conversation connection lifecycle', () => {
         transportOrigin,
         providerContributionSelection: {
           contributionId: 'durable-push-contribution',
-          immutableGenerationId: 'durable-push-generation',
         },
         stopRequest: {
           v: 1,
@@ -107,7 +106,6 @@ describe('Conversation connection lifecycle', () => {
         transportOrigin,
         providerContributionSelection: {
           contributionId: 'durable-push-contribution',
-          immutableGenerationId: 'durable-push-generation',
         },
         stopRequest: {
           v: 1,
@@ -159,7 +157,6 @@ describe('Conversation connection lifecycle', () => {
     } as const;
     const providerContributionSelection = {
       contributionId: 'old-delete-contribution',
-      immutableGenerationId: 'old-delete-generation',
     } as const;
     const deleting = startConversationConnectionDelete({
       current: connection({
@@ -273,7 +270,6 @@ describe('Conversation connection lifecycle', () => {
         // so later stop resolution cannot fall back to the current selection.
         providerContributionSelection: {
           contributionId: 'incumbent-contribution-a',
-          immutableGenerationId: 'incumbent-generation-a',
         },
         stopRequest: {
           v: 1,
@@ -369,7 +365,6 @@ describe('Conversation connection lifecycle', () => {
         },
         providerContributionSelection: {
           contributionId: 'incumbent-contribution',
-          immutableGenerationId: 'incumbent-generation',
         },
         predecessorTransportKind: 'socket',
         endpointRetarget: 'notRequired',
@@ -480,7 +475,6 @@ describe('Conversation connection lifecycle', () => {
         transportOrigin: oldTransportOrigin,
         providerContributionSelection: {
           contributionId: 'old-contribution',
-          immutableGenerationId: 'old-generation',
         },
         stopRequest: {
           v: 1,
@@ -1107,7 +1101,6 @@ describe('Conversation connection transfer predecessor custody', () => {
         transportOrigin,
         providerContributionSelection: {
           contributionId: 'transfer-contribution',
-          immutableGenerationId: 'transfer-generation',
         },
         stopRequest: { ...transferStopRequest(), authorityEpoch: current.authorityEpoch + 1 },
         predecessorTransportKind: input.predecessorTransportKind,
@@ -1129,7 +1122,6 @@ describe('Conversation connection transfer predecessor custody', () => {
         transportOrigin,
         providerContributionSelection: {
           contributionId: 'transfer-contribution',
-          immutableGenerationId: 'transfer-generation',
         },
         stopRequest: {
           ...transferStopRequest(),
@@ -1290,7 +1282,6 @@ describe('Conversation connection transfer predecessor custody', () => {
           transportOrigin,
           providerContributionSelection: {
             contributionId: 'transfer-contribution',
-            immutableGenerationId: 'transfer-generation',
           },
           stopRequest: { ...transferStopRequest(), reason: 'delete' as const },
           predecessorTransportKind,

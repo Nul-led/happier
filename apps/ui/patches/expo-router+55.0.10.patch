@@ -504,10 +504,10 @@ index 1c7dc5f..04740db 100644
          index: nonModalIndex,
      };
 diff --git a/node_modules/expo-router/build/modal/web/ModalStackRouteDrawer.js b/node_modules/expo-router/build/modal/web/ModalStackRouteDrawer.js
-index 04cdab6..51665eb 100644
+index 04cdab6..77362f9 100644
 --- a/node_modules/expo-router/build/modal/web/ModalStackRouteDrawer.js
 +++ b/node_modules/expo-router/build/modal/web/ModalStackRouteDrawer.js
-@@ -9,6 +9,62 @@ const react_1 = __importDefault(require("react"));
+@@ -9,11 +9,65 @@ const react_1 = __importDefault(require("react"));
  const vaul_1 = require("vaul");
  const modalStyles_1 = __importDefault(require("./modalStyles"));
  const utils_1 = require("./utils");
@@ -569,8 +569,14 @@ index 04cdab6..51665eb 100644
 +};
  function ModalStackRouteDrawer({ routeKey, options, dismissible, renderScreen, onDismiss, themeColors, }) {
      const [open, setOpen] = react_1.default.useState(true);
-     // Determine sheet vs. modal with an SSR-safe hook. The first render (during
-@@ -136,24 +192,36 @@ function ModalStackRouteDrawer({ routeKey, options, dismissible, renderScreen, o
+-    // Determine sheet vs. modal with an SSR-safe hook. The first render (during
+-    // hydration) always assumes mobile/sheet to match the server markup; an
+-    // effect then updates the state after mount if the viewport is desktop.
++    // Determine sheet vs. modal from the viewport (read on the first render, see utils.js).
+     const isDesktop = (0, utils_1.useIsDesktop)();
+     const isSheet = !isDesktop;
+     // Resolve snap points logic.
+@@ -136,24 +190,41 @@ function ModalStackRouteDrawer({ routeKey, options, dismissible, renderScreen, o
              fadeFromIndex,
          }
          : {};
@@ -579,10 +585,16 @@ index 04cdab6..51665eb 100644
 +        : typeof options.headerTitle === 'string'
 +            ? options.headerTitle
 +            : '';
++    // HAPPIER PATCH(expo-router-web-modal-first-commit-mount)
++    // Radix mounts a portal without a container one commit late, so the screen's nested navigator
++    // registered after the container had already emitted its state, and linking rewrote a cold-loaded
++    // `/parent/child` URL to `/parent`. An explicit container renders the screen in the first commit.
++    const portalContainer = typeof document === 'undefined' ? undefined : document.body;
      return (<vaul_1.Drawer.Root key={`${routeKey}-${isSheet ? 'sheet' : 'modal'}`} open={open} dismissible={dismissible ?? options.gestureEnabled ?? true} onAnimationEnd={handleOpenChange} shouldScaleBackground autoFocus onOpenChange={setOpen} {...sheetProps}>
-       <vaul_1.Drawer.Portal>
+-      <vaul_1.Drawer.Portal>
 -        <vaul_1.Drawer.Overlay className={modalStyles_1.default.overlay} style={options.webModalStyle?.overlayBackground
 -            ? {
++      <vaul_1.Drawer.Portal container={portalContainer}>
 +        <vaul_1.Drawer.Overlay className={modalStyles_1.default.overlay} style={{
 +            ...criticalOverlayStyle,
 +            ...(options.webModalStyle?.overlayBackground
@@ -614,3 +626,36 @@ index 04cdab6..51665eb 100644
            </div>
          </vaul_1.Drawer.Content>
        </vaul_1.Drawer.Portal>
+diff --git a/node_modules/expo-router/build/modal/web/utils.js b/node_modules/expo-router/build/modal/web/utils.js
+index 308e970..8246bd9 100644
+--- a/node_modules/expo-router/build/modal/web/utils.js
++++ b/node_modules/expo-router/build/modal/web/utils.js
+@@ -22,17 +22,23 @@ function isTransparentModalPresentation(options) {
+     const presentation = options?.presentation;
+     return presentation === 'transparentModal' || presentation === 'containedTransparentModal';
+ }
++// HAPPIER PATCH(expo-router-web-modal-first-commit-mount)
++// The app is a single-page web build (no server markup to match), so the first render reads the
++// viewport. Starting at `false` and flipping after mount re-keyed the route-modal drawer from sheet to
++// modal on every desktop open, mounting its screen twice.
++function readIsDesktop(isWeb, breakpoint) {
++    if (!isWeb || typeof window === 'undefined' || typeof window.matchMedia !== 'function')
++        return false;
++    return window.matchMedia(`(min-width: ${breakpoint}px)`).matches;
++}
+ /**
+- * SSR-safe viewport detection: initial render always returns `false` so that
+- * server and client markup match. The actual media query evaluation happens
+- * after mount.
++ * Viewport detection that follows the media query; the first render already reads it.
+  *
+  * @internal
+  */
+ function useIsDesktop(breakpoint = 768) {
+     const isWeb = process.env.EXPO_OS === 'web';
+-    // Ensure server-side and initial client render agree (mobile first).
+-    const [isDesktop, setIsDesktop] = react_1.default.useState(false);
++    const [isDesktop, setIsDesktop] = react_1.default.useState(() => readIsDesktop(isWeb, breakpoint));
+     react_1.default.useEffect(() => {
+         if (!isWeb || typeof window === 'undefined')
+             return;

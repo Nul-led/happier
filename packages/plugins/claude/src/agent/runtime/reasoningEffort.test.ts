@@ -99,7 +99,8 @@ describe('buildClaudeEffortCliArgs', () => {
   });
 
   it('treats the generic opus alias as the current flagship Claude model for default effort resolution', () => {
-    expect(buildClaudeEffortCliArgs({ modelId: 'opus', effort: 'high' })).toEqual([]);
+    expect(buildClaudeEffortCliArgs({ modelId: 'opus', effort: 'medium' })).toEqual([]);
+    expect(buildClaudeEffortCliArgs({ modelId: 'opus', effort: 'high' })).toEqual(['--effort', 'high']);
     expect(buildClaudeEffortCliArgs({ modelId: 'opus', effort: 'xhigh' })).toEqual(['--effort', 'xhigh']);
   });
 

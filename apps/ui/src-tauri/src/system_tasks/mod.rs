@@ -20,6 +20,16 @@ use std::thread;
 use tauri::{AppHandle, Emitter, State};
 
 const MAX_STDOUT_LINE_BYTES: usize = 16 * 1024;
+/// R16 — tells hsetup which desktop app launched it (the bundle identifier), so the services it
+/// installs for that app name it and macOS Login Items attributes them to Happier.
+const DESKTOP_BUNDLE_ID_ENV: &str = "HAPPIER_DESKTOP_BUNDLE_ID";
+static DESKTOP_BUNDLE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Called once at app start with the app's identifier (`tauri.conf.json` `identifier`, which is
+/// the macOS bundle identifier).
+pub fn set_desktop_bundle_id(identifier: &str) {
+    let _ = DESKTOP_BUNDLE_ID.set(identifier.to_string());
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +62,91 @@ pub async fn start_system_task(
     monitor_child_output(app, system_tasks, task_id.clone(), child, stdout);
 
     Ok(StartSystemTaskResponse { task_id })
+}
+
+/// How a task the native side ran for itself ended.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum NativeTaskOutcome {
+    Succeeded(Option<serde_json::Value>),
+    Failed { code: String, message: String },
+}
+
+/// Runs one system task for the native side itself (the tray in menu-bar mode, where no web UI
+/// exists to start it), through the same hsetup executor and output protocol as
+/// [`start_system_task`], and blocks the calling thread until its result. It is only ever used for
+/// tasks that never prompt: stdin is closed after the spec, so a prompt would read end-of-input
+/// and fail by name instead of waiting for an answer nobody can give.
+pub(crate) fn run_system_task_for_native(app: &AppHandle, spec_json: &str) -> NativeTaskOutcome {
+    let failed = |code: &str, message: String| NativeTaskOutcome::Failed {
+        code: code.to_string(),
+        message,
+    };
+    if let Err(message) = parse_system_task_spec_json(spec_json) {
+        return failed("invalid_spec", message);
+    }
+    let hsetup_path = match hsetup_path::resolve_hsetup_path(app) {
+        Ok(path) => path,
+        Err(message) => return failed("executor_unavailable", message),
+    };
+    let mut child = match spawn_hsetup_child(&hsetup_path, spec_json) {
+        Ok(child) => child,
+        Err(message) => return failed("executor_unavailable", message),
+    };
+    drop(child.stdin.take());
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        return failed(
+            "executor_unavailable",
+            "Failed to capture system task stdout.".to_string(),
+        );
+    };
+    // Drain the real child boundary: a piped stderr must not block hsetup before its result.
+    let stderr = child.stderr.take().map(|mut stderr| {
+        thread::spawn(move || {
+            let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        })
+    });
+    let outcome = read_native_task_outcome(&mut BufReader::new(stdout));
+    if outcome.is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    if let Some(stderr) = stderr {
+        let _ = stderr.join();
+    }
+    outcome.unwrap_or_else(|| {
+        failed(
+            "executor_ended_without_result",
+            "System task executor exited without a final result.".to_string(),
+        )
+    })
+}
+
+fn read_native_task_outcome<R: std::io::BufRead>(reader: &mut R) -> Option<NativeTaskOutcome> {
+    let mut buffer = Vec::new();
+    loop {
+        match read_json_line(reader, &mut buffer, MAX_STDOUT_LINE_BYTES) {
+            Ok(ReadJsonLine::Line(line)) => match parse_output_line(&line) {
+                Some(OutputPayload::Result(SystemTaskResult::Success(result))) => {
+                    return Some(NativeTaskOutcome::Succeeded(result.data));
+                }
+                Some(OutputPayload::Result(SystemTaskResult::Failure(result))) => {
+                    return Some(NativeTaskOutcome::Failed {
+                        code: result.error.code,
+                        message: result.error.message,
+                    });
+                }
+                _ => {}
+            },
+            Ok(ReadJsonLine::LimitExceeded) => {
+                return Some(NativeTaskOutcome::Failed {
+                    code: "output_limit_exceeded".to_string(),
+                    message: "System task executor exceeded the output limit.".to_string(),
+                })
+            }
+            Ok(ReadJsonLine::Eof) | Err(_) => return None,
+        }
+    }
 }
 
 #[tauri::command]
@@ -516,6 +611,9 @@ fn spawn_hsetup_child(hsetup_path: &Path, spec_json: &str) -> Result<Child, Stri
 
 fn create_hsetup_run_command(hsetup_path: &Path) -> Command {
     let mut command = Command::new(hsetup_path);
+    if let Some(bundle_id) = DESKTOP_BUNDLE_ID.get() {
+        command.env(DESKTOP_BUNDLE_ID_ENV, bundle_id);
+    }
     command
         .arg("system-tasks")
         .arg("run")
@@ -528,8 +626,8 @@ fn create_hsetup_run_command(hsetup_path: &Path) -> Command {
 #[cfg(test)]
 mod tests {
     use super::{
-        monitor_child_output_with_emitters, request_child_cancel, send_prompt_answer_to_task,
-        spawn_hsetup_child,
+        monitor_child_output_with_emitters, read_native_task_outcome, request_child_cancel,
+        send_prompt_answer_to_task, spawn_hsetup_child, NativeTaskOutcome,
     };
     use crate::system_tasks::SystemTasksState;
     use std::fs;
@@ -904,5 +1002,35 @@ mod tests {
 
         assert!(error.contains("does not exist"));
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn a_native_run_skips_events_and_returns_the_final_result() {
+        let output = concat!(
+            r#"{"protocolVersion":1,"taskId":"t","tsMs":1,"type":"progress","stepId":"s","message":null,"data":null}"#,
+            "\n",
+            r#"{"protocolVersion":1,"taskId":"t","ok":true,"data":{"serviceInstalled":true}}"#,
+            "\n",
+        );
+        let outcome = read_native_task_outcome(&mut std::io::Cursor::new(output.as_bytes()));
+        assert_eq!(
+            outcome,
+            Some(NativeTaskOutcome::Succeeded(Some(
+                serde_json::json!({ "serviceInstalled": true })
+            )))
+        );
+
+        let failed = r#"{"protocolVersion":1,"taskId":"t","ok":false,"error":{"code":"service_user_owned","message":"left as it is"}}"#;
+        assert_eq!(
+            read_native_task_outcome(&mut std::io::Cursor::new(failed.as_bytes())),
+            Some(NativeTaskOutcome::Failed {
+                code: "service_user_owned".to_string(),
+                message: "left as it is".to_string(),
+            })
+        );
+        assert_eq!(
+            read_native_task_outcome(&mut std::io::Cursor::new(b"not json\n".as_slice())),
+            None
+        );
     }
 }

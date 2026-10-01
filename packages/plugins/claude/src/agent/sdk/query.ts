@@ -7,8 +7,10 @@ import type {
     QueryOptions,
     QueryPrompt,
     SDKMessage,
+    SDKUserMessage,
 } from './types.js';
 import { materializeClaudeMcpConfigArgsForSpawn } from '../mcp/materializeConfigArgs.js';
+import { materializeClaudeStartupInstructions } from '../runtime/startupInstructions.js';
 
 export type ClaudeSdkExecResult = Readonly<{
     exitCode: number | null;
@@ -155,7 +157,7 @@ function buildClaudeArgs(prompt: QueryPrompt, options: QueryOptions = {}): strin
     if (typeof options.systemPrompt === 'object' && options.systemPrompt.append) {
         args.push('--append-system-prompt', options.systemPrompt.append);
     }
-    if (options.appendSystemPrompt) args.push('--append-system-prompt', options.appendSystemPrompt);
+    if (options.appendSystemPrompt && !options.appendSystemPromptFile) args.push('--append-system-prompt', options.appendSystemPrompt);
     if (options.maxTurns) args.push('--max-turns', String(options.maxTurns));
     if (options.model) args.push('--model', options.model);
     if (options.effort) args.push('--effort', options.effort);
@@ -407,7 +409,7 @@ export class ClaudeSdkQuery implements AsyncIterableIterator<SDKMessage> {
         });
     }
 
-    async sendUserMessage(text: string): Promise<ClaudeSdkPromptTransportOutcome> {
+    async sendUserMessage(text: SDKUserMessage['message']['content']): Promise<ClaudeSdkPromptTransportOutcome> {
         let handle: ClaudeSdkExecClientHandle;
         try {
             handle = await this.handlePromise;
@@ -486,14 +488,26 @@ export class ClaudeSdkQuery implements AsyncIterableIterator<SDKMessage> {
         const materializedMcpConfig = materializeClaudeMcpConfigArgsForSpawn(
             buildClaudeArgs(this.config.prompt, options),
         );
-        this.cleanupSpawnArtifacts = materializedMcpConfig.cleanup;
+        let startup: ReturnType<typeof materializeClaudeStartupInstructions> | undefined;
+        try {
+            if (options.appendSystemPromptFile && options.appendSystemPrompt) {
+                startup = materializeClaudeStartupInstructions(options.appendSystemPrompt);
+            }
+        } catch (error) {
+            await materializedMcpConfig.cleanup();
+            throw error;
+        }
+        const cleanup = async () => {
+            await Promise.all([materializedMcpConfig.cleanup(), startup?.cleanup()]);
+        };
+        this.cleanupSpawnArtifacts = cleanup;
         let handle: ClaudeSdkExecClientHandle;
         try {
             handle = await this.ctx.spawnClient({
                 launch: {
                     kind: 'agent-cli',
                     agentId: 'claude',
-                    args: materializedMcpConfig.args,
+                    args: [...materializedMcpConfig.args, ...(startup?.args ?? [])],
                     cwd: options.cwd,
                     env,
                 },
@@ -504,7 +518,7 @@ export class ClaudeSdkQuery implements AsyncIterableIterator<SDKMessage> {
                 protocol: { kind: 'json-stream' },
             }, { signal: options.abort });
         } catch (error) {
-            await materializedMcpConfig.cleanup();
+            await cleanup();
             throw error;
         }
         this.handle = handle;
@@ -514,7 +528,7 @@ export class ClaudeSdkQuery implements AsyncIterableIterator<SDKMessage> {
         void this.pumpPrompt(handle.client, this.config.prompt, options.abort);
         handle.process.exit.then(
             async (result) => {
-                await materializedMcpConfig.cleanup();
+                await cleanup();
                 this.exitResult = result;
                 this.rejectPendingControlResponses(
                     new Error('Claude SDK process exited before control response.'),
@@ -539,7 +553,7 @@ export class ClaudeSdkQuery implements AsyncIterableIterator<SDKMessage> {
                 this.messages.finish();
             },
             async (error) => {
-                await materializedMcpConfig.cleanup();
+                await cleanup();
                 this.messages.fail(error instanceof Error ? error : new Error(String(error)));
             },
         );

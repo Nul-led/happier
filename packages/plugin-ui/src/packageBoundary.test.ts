@@ -183,7 +183,7 @@ describe('author package boundary', () => {
     expect(prepareCandidate).toContain('build');
     expect(prepack.indexOf('prepare:api-governance')).toBeLessThan(prepack.indexOf('check:api-governance:prepared'));
     expect(packageJson.scripts?.pretypecheck).toBeUndefined();
-    expect(packageJson.scripts?.prebuild).toBe('yarn --cwd ../plugin-sdk -s check:public-toolchain');
+    expect(packageJson.scripts?.prebuild).toBeUndefined();
     expect(packageJson.scripts?.['typecheck:local']).toBe(
       'yarn --cwd ../plugin-sdk -s check:public-toolchain && node ../../scripts/workspaces/runTypeScriptCli.mjs --noEmit -p tsconfig.json',
     );
@@ -276,7 +276,7 @@ describe('author package boundary', () => {
     expect(publicHostApiProviderProps).not.toContain('ephemeralSharedScope');
   });
 
-  it('keeps plugin-ui bundled while the production host transforms shared source', () => {
+  it('host-provides the complete plugin-ui runtime family as one narrow singleton closure', () => {
     const packageRoot = resolve(new URL('.', import.meta.url).pathname, '..');
     const repositoryRoot = resolve(packageRoot, '../..');
     const runtimeFacts = readFileSync(
@@ -285,14 +285,24 @@ describe('author package boundary', () => {
     );
     const babelConfig = readFileSync(join(repositoryRoot, 'apps/ui/babel.config.js'), 'utf8');
     const webClosure = runtimeFacts.match(/PLUGIN_UI_HOST_RUNTIME_EXTERNAL_SPECIFIERS\s*=\s*Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/u)?.[1] ?? '';
-    const nativeClosure = runtimeFacts.match(/PLUGIN_UI_HOST_NATIVE_RUNTIME_EXTERNAL_SPECIFIERS\s*=\s*Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/u)?.[1] ?? '';
-
-    expect(webClosure).not.toContain('@happier-dev/plugin-ui');
-    expect(nativeClosure).not.toContain('@happier-dev/plugin-ui');
+    for (const specifier of [
+      '@happier-dev/plugin-ui',
+      '@happier-dev/plugin-ui/components',
+      '@happier-dev/plugin-ui/hostApi',
+      '@happier-dev/plugin-ui/data',
+      '@happier-dev/plugin-ui/presentation',
+      '@happier-dev/plugin-ui/environment',
+      '@happier-dev/plugin-ui/advanced',
+    ]) {
+      expect(webClosure).toContain(`'${specifier}'`);
+    }
+    for (const forbidden of ['zod', '@happier-dev/protocol', 'ajv', 'semver', '@happier-dev/plugin-sdk']) {
+      expect(webClosure).not.toContain(`'${forbidden}'`);
+    }
     expect(babelConfig).toContain("autoProcessPaths: ['packages/plugin-ui/src']");
   });
 
-  it('keeps the external NodeNext, Vite, and Metro fixtures on public package imports', () => {
+  it('keeps the external NodeNext, browser, and native fixtures on public package imports', () => {
     const packageRoot = resolve(new URL('.', import.meta.url).pathname, '..');
     const fixtureRoot = join(packageRoot, 'fixtures/external-authoring');
     const fixtureSources = collectSourceFiles(join(fixtureRoot, 'src'));
@@ -328,17 +338,12 @@ describe('author package boundary', () => {
     for (const config of [
       'tsconfig.nodenext.json',
       'tsconfig.vite.json',
-      'tsconfig.metro.json',
       'tsconfig.voice-native.json',
       'tsconfig.runtime.json',
-      'vite.config.ts',
+      'vite.browser.config.ts',
     ]) {
       expect(readFileSync(join(fixtureRoot, config), 'utf8')).not.toContain('paths');
     }
-    const metroConfig = JSON.parse(
-      readFileSync(join(fixtureRoot, 'tsconfig.metro.json'), 'utf8'),
-    ) as { compilerOptions?: { customConditions?: string[] } };
-    expect(metroConfig.compilerOptions?.customConditions).toContain('react-native');
     const voiceNativeConfig = JSON.parse(
       readFileSync(join(fixtureRoot, 'tsconfig.voice-native.json'), 'utf8'),
     ) as { compilerOptions?: { customConditions?: string[]; lib?: string[]; skipLibCheck?: boolean; types?: string[] } };

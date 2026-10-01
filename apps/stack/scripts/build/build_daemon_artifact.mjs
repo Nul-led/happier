@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { access, mkdir, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -10,6 +12,9 @@ import {
   writeCliBinaryArtifactRuntimeAssetBuildManifest,
 } from '@happier-dev/cli-common/componentArtifacts';
 import { withWorkspaceBundleLock } from '@happier-dev/cli-common/workspaceBundleLock';
+import { resolveWorkspaceBundlesFromPackageJson } from '@happier-dev/cli-common/workspaces';
+
+import { readWorkspaceBuildInputs, readWorkspacePackageInputFingerprint } from '../../../../scripts/workspaces/ensureWorkspacePackagesBuilt.mjs';
 
 import {
   artifactPayloadDir,
@@ -21,7 +26,7 @@ import { resolveStackComponentArtifactDir } from '../runtime/shared/runtime_path
 import { buildIntoTempThenReplace } from '../utils/fs/atomic_dir_swap.mjs';
 import { runCapture } from '../utils/proc/proc.mjs';
 
-const DAEMON_SUPPORT_DIRECTORIES = Object.freeze(['node_modules', 'tools', 'scripts']);
+const DAEMON_SUPPORT_DIRECTORIES = Object.freeze(['node_modules', 'tools', 'scripts', '.project']);
 
 function readDaemonSupportWorkspaceRuntimeIdentity(manifest) {
   const workspaceRuntimeIdentity = String(manifest?.daemonWorkspaceRuntimeIdentity ?? '').trim().toLowerCase();
@@ -33,6 +38,34 @@ function readDaemonSupportWorkspaceRuntimeIdentity(manifest) {
 
 function resolveDaemonArtifactRepoDir({ rootDir, sourceMetadata }) {
   return String(sourceMetadata?.repoDir ?? rootDir ?? '').trim();
+}
+
+export function readDaemonWorkspaceSourceFingerprint({ repoDir }) {
+  const hash = createHash('sha256');
+  hash.update('happier:daemon-workspace-source:v1\0');
+  const bundles = resolveWorkspaceBundlesFromPackageJson({
+    repoRoot: repoDir,
+    hostPackageDir: join(repoDir, 'apps', 'cli'),
+  });
+  for (const { packageName, srcDir } of bundles) {
+    hash.update(`${packageName}\0${readWorkspacePackageInputFingerprint({
+      packageDir: srcDir,
+      includeShippedFiles: true,
+      excludeGeneratedPluginManifest: true,
+    })}\0`);
+  }
+  // Packaged plugin resources are derived from the single publisher and its
+  // build-owned helpers. Reuse the source input owner so renderer-only edits
+  // invalidate support too, while tests and generated outputs stay excluded.
+  const cliDir = join(repoDir, 'apps', 'cli');
+  const generatorInput = 'scripts/build-owned/generateBundledPluginEntries.ts';
+  hash.update(readFileSync(join(cliDir, generatorInput)));
+  for (const input of readWorkspaceBuildInputs(cliDir)) {
+    if (input === generatorInput || !input.startsWith('scripts/build-owned/')) continue;
+    hash.update(`${input}\0`);
+    hash.update(readFileSync(join(cliDir, input)));
+  }
+  return hash.digest('hex');
 }
 
 export async function readDaemonSupportGoVersion({
@@ -58,10 +91,12 @@ export async function readDaemonSupportGoVersion({
 export async function resolveDaemonSupportArtifactFingerprint({
   rootDir,
   sourceMetadata,
+  workspaceSourceFingerprint,
   env = process.env,
   runCaptureImpl = runCapture,
   resolveCurrentBinaryTargetImpl = resolveCurrentBinaryTarget,
   readCliBinaryArtifactSupportIdentityImpl = readCliBinaryArtifactSupportIdentity,
+  readDaemonWorkspaceSourceFingerprintImpl = readDaemonWorkspaceSourceFingerprint,
 } = {}) {
   const repoDir = resolveDaemonArtifactRepoDir({ rootDir, sourceMetadata });
   if (!repoDir) throw new Error('[build] daemon support identity requires a repository directory.');
@@ -75,6 +110,8 @@ export async function resolveDaemonSupportArtifactFingerprint({
     repoRoot: repoDir,
     target,
     goVersion,
+    workspaceSourceFingerprint: workspaceSourceFingerprint
+      ?? readDaemonWorkspaceSourceFingerprintImpl({ repoDir }),
   });
   const fingerprint = String(identity?.fingerprint ?? '').trim();
   if (!fingerprint) throw new Error('[build] daemon support identity did not produce a fingerprint.');
@@ -121,6 +158,7 @@ async function buildDaemonSupportArtifact({
   stackBaseDir,
   supportArtifactFingerprint,
   sourceMetadata,
+  workspaceSourceFingerprint,
   target,
   env,
   runCaptureImpl,
@@ -169,6 +207,7 @@ async function buildDaemonSupportArtifact({
         env,
         supportArtifactFingerprint,
         goVersion,
+        workspaceSourceFingerprint,
       });
       await writeArtifactManifest({
         artifactDir: tmpArtifactDir,
@@ -208,6 +247,9 @@ export async function buildDaemonArtifact({
   artifactFingerprint,
   supportArtifactFingerprint,
   sourceMetadata,
+  preparedWorkspacePublication,
+  requiredCliDistInputFingerprint,
+  workspaceSourceFingerprint,
   forceRebuild = false,
   env = process.env,
   resolveDaemonSupportArtifactFingerprintImpl = resolveDaemonSupportArtifactFingerprint,
@@ -261,6 +303,8 @@ export async function buildDaemonArtifact({
       target,
       externals,
       env,
+      preparedWorkspacePublication,
+      requiredCliDistInputFingerprint,
     });
     const currentSupportArtifactFingerprint = String(
       await resolveDaemonSupportArtifactFingerprintImpl({ rootDir, sourceMetadata, env }),
@@ -275,6 +319,7 @@ export async function buildDaemonArtifact({
       stackBaseDir: resolvedStackBaseDir,
       supportArtifactFingerprint: resolvedSupportArtifactFingerprint,
       sourceMetadata,
+      workspaceSourceFingerprint,
       target,
       env,
       runCaptureImpl,

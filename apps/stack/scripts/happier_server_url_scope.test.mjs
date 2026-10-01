@@ -34,7 +34,8 @@ test('hstack happier --server-url clears stack-scoped HAPPIER_ACTIVE_SERVER_ID',
     ...process.env,
     // Keep the test hermetic: do not load a real stack env file.
     HAPPIER_STACK_STACK: 'test-stack',
-    HAPPIER_STACK_ENV_FILE: join(rootDir, 'scripts', 'nonexistent-env'),
+    HAPPIER_STACK_ENV_FILE: '',
+    HAPPIER_STACK_DISABLE_STACK_ENV_AUTOLOAD: '1',
     HAPPIER_STACK_REPO_DIR: fixture.dir,
     HAPPIER_HOME_DIR: join(fixture.dir, '.happy-home'),
     // Simulate a stack-scoped active server id (common in stack env files).

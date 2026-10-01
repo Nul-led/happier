@@ -154,7 +154,6 @@ const telegramConnectionAuthority = {
   providerPluginId: telegramProviderPluginId,
   providerContributionSelection: {
     contributionId: 'telegram-test-provider',
-    immutableGenerationId: 'telegram-test-generation',
   },
   providerSetupInput: { source: 'test' },
   credentialRef: {
@@ -202,7 +201,8 @@ function targetedTelegramPollContribution(
         dispose() {},
         async readCurrent(): Promise<TargetedContributionSnapshot<TContribution>> {
           return {
-            generation: 'channels-test-generation',
+            occurrenceId: 'channels-test-occurrence',
+            sourceCustody: { kind: 'development', registeredRootId: 'channels-test-root' },
             contributions: (
               readAdmittedContributions?.() ?? [admittedTelegramProviderContribution]
             ) as unknown as readonly TContribution[],
@@ -1206,7 +1206,8 @@ function createIngressHarness(options: IngressHarnessOptions = {}) {
         id: 'channel-poller',
         qualifiedId: 'happier.channel.telegram/background/channel-poller',
       },
-      immutableGenerationId: 'channels-ingress-telegram-fixture-generation',
+      occurrenceId: 'channels-ingress-telegram-fixture-occurrence',
+      sourceCustody: { kind: 'development', registeredRootId: 'channels-ingress-telegram-root' },
       materialization: channelConnection().payload.transportOrigin.materializationRef,
     },
     signal: new AbortController().signal,
@@ -4109,7 +4110,8 @@ describe('Conversation provider observation ingress', () => {
           id: 'channel-poller',
           qualifiedId: 'happier.channel.telegram/background/channel-poller',
         },
-        immutableGenerationId: 'channels-ingress-telegram-fixture-generation',
+        occurrenceId: 'channels-ingress-telegram-fixture-occurrence',
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-ingress-telegram-root' },
         materialization: {
           pluginId: String(materialization.pluginId),
           machineId: String(materialization.machineId),
@@ -4143,7 +4145,8 @@ describe('Conversation provider observation ingress', () => {
           id: 'channel-poller',
           qualifiedId: `${String(payload.providerPluginId)}/background/channel-poller`,
         },
-        immutableGenerationId: 'channels-ingress-provider-fixture-generation',
+        occurrenceId: 'channels-ingress-provider-fixture-occurrence',
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-ingress-provider-root' },
         materialization: {
           pluginId: String(materialization.pluginId),
           machineId: String(materialization.machineId),
@@ -4613,7 +4616,7 @@ describe('Conversation provider observation ingress', () => {
     }
   });
 
-  it('refuses delayed ingress whose retained contribution generation was replaced while it waited', async () => {
+  it('re-admits delayed ingress through stable contribution identity after its provider occurrence is replaced', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
     try {
@@ -4636,13 +4639,14 @@ describe('Conversation provider observation ingress', () => {
         ...admittedTelegramProviderContribution,
         contributor: {
           ...admittedTelegramProviderContribution.contributor,
-          immutableGenerationId: 'telegram-test-generation-2',
+          occurrenceId: 'telegram-test-occurrence-2',
+          sourceCustody: { kind: 'managed', immutableGenerationId: 'telegram-test-generation-2', installSource: 'npm' },
         },
       }];
       vi.setSystemTime(1_100);
       await expect(runConversationIngressDueWorkForInvocation({ now: 1_100 }, harness.context))
         .resolves.toBe(1);
-      expect(harness.send).not.toHaveBeenCalled();
+      expect(harness.send).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
@@ -6752,7 +6756,8 @@ describe('Conversation checkpointed-poll ingress', () => {
               id: 'ingress-supervisor',
               qualifiedId: 'happier.channels/background/ingress-supervisor',
             },
-            immutableGenerationId: 'channels-ingress-supervisor-fixture-generation',
+            occurrenceId: 'channels-ingress-supervisor-fixture-occurrence',
+            sourceCustody: { kind: 'development', registeredRootId: 'channels-ingress-supervisor-root' },
             materialization: channelConnection().payload.transportOrigin.materializationRef,
           },
           signal,

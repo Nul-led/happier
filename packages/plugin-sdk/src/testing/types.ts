@@ -10,6 +10,7 @@ import type { PresentationService } from '../interactions.js';
 import type { AdmittedTargetedOperationExecutionHandle } from '../actions/service.js';
 import type { PluginTestkitManifest } from '../manifest.js';
 import type { PluginServices } from '../services/index.js';
+import type { PluginTargetedContributionSourceCustodyV1 } from '../targetedContributionAuthoring.js';
 import type {
     TargetedContributionPointRef,
     TargetedContributionSnapshot,
@@ -24,7 +25,8 @@ export type PluginTestkitTargetedContributionFixtureEntry = Readonly<{
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     protocol: Readonly<{
         id: string;

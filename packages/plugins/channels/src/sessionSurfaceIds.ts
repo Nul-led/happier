@@ -28,3 +28,15 @@ export const CHANNELS_SESSION_COMPOSER_ATTENTION_STATE_RESOURCE_ID =
  * that declares the page and the UI artifact that opens it.
  */
 export const CHANNELS_SETTINGS_PAGE_ID = 'connections';
+
+/**
+ * The Channels app destination: its page (the rail entry and the one owner of
+ * conversation bindings), the renderer its column and Home widget share, and
+ * the Home widget. The page's location under its root is a binding id, so a
+ * column row, the widget and the Session tab all open one conversation with
+ * `openSurface(CHANNELS_PAGE_VIEW_ID, undefined, { subPath: bindingId })`.
+ */
+export const CHANNELS_PAGE_VIEW_ID = 'conversations';
+export const CHANNELS_HOME_WIDGET_ID = 'conversations-widget';
+export const CHANNELS_GLANCE_RENDERER_ID = 'channels-glance';
+export const CHANNELS_GLANCE_BUNDLE_ID = 'channels-glance-native';

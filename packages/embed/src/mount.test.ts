@@ -1,0 +1,242 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mountHappierSession } from './index.js';
+import type { EmbedOptions } from './index.js';
+
+// jsdom has no transferable MessageChannel. Only this browser transport is faked;
+// parsing, lifecycle, requested target and credential arbitration stay real.
+class Port {
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  postMessage = vi.fn();
+  start = vi.fn();
+  close = vi.fn();
+  receive(data: unknown) { this.onmessage?.({ data }); }
+}
+const channels: { port1: Port; port2: Port }[] = [];
+const publicKey = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+const credential = { token: 'hap_v1_test', expiresAt: '2030-01-01T00:00:00.000Z' };
+const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
+
+function mount(sessionId?: string) {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const getCredential = vi.fn<EmbedOptions['getCredential']>(async () => credential);
+  const onStateChange = vi.fn();
+  const onSessionCreated = vi.fn();
+  const onError = vi.fn();
+  const handle = mountHappierSession(container, { happierUrl: 'https://app.happier.dev', sessionId, getCredential, onStateChange, onSessionCreated, onError });
+  const frame = container.querySelector('iframe')!;
+  const url = new URL(frame.src);
+  const identity = { instanceId: url.searchParams.get('i')!, mountNonce: url.searchParams.get('n')! };
+  const post = vi.spyOn(frame.contentWindow!, 'postMessage');
+  const ready = (overrides: Partial<MessageEventInit> = {}, data: unknown = { kind: 'ready', bridgeVersion: 1, identity, embedPublicKey: publicKey }) => window.dispatchEvent(new MessageEvent('message', { data, origin: 'https://app.happier.dev', source: frame.contentWindow, ...overrides }));
+  const receive = (payload: unknown, sequence: number) => channels.at(-1)!.port1.receive({ version: 1, identity, sequence, payload });
+  return { container, frame, identity, getCredential, onStateChange, onSessionCreated, onError, handle, post, ready, receive };
+}
+
+describe('embed host', () => {
+  it('keeps a ready created chat and its pending renewal when the host echoes its session id', async () => {
+    const m = mount(); m.ready(); await flush();
+    m.receive({ kind: 'session.created', sessionId: 'N' }, 1);
+    m.receive({ kind: 'state', sessionId: 'N', phase: 'ready' }, 2);
+    let resolve!: (value: typeof credential) => void;
+    m.getCredential.mockImplementationOnce(() => new Promise((complete) => { resolve = complete; }));
+    m.receive({ kind: 'credential.request', sessionId: 'N', embedPublicKey: publicKey, reason: 'expiring' }, 3);
+    m.handle.open('N');
+    expect(channels[0].port1.postMessage).not.toHaveBeenCalled();
+    resolve(credential); await flush();
+    expect(channels[0].port1.postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: 'result', requestSequence: 3 }));
+    m.handle.destroy();
+  });
+  it('keeps an attributed exchange alive when React feeds the creation fact back as its target', async () => {
+    const m = mount(); m.ready(); await flush();
+    m.onSessionCreated.mockImplementation(({ sessionId }: { sessionId: string }) => m.handle.open(sessionId));
+    m.receive({ kind: 'session.created', sessionId: 'N' }, 1);
+    expect(channels[0].port1.postMessage).not.toHaveBeenCalled();
+    m.receive({ kind: 'credential.request', sessionId: 'N', embedPublicKey: publicKey, reason: 'created',
+      createdByTokenId: '00000000-0000-4000-8000-000000000001' }, 2);
+    await flush();
+    expect(channels[0].port1.postMessage).toHaveBeenCalledWith(expect.objectContaining({ kind: 'result', requestSequence: 2 }));
+    m.handle.destroy();
+  });
+  beforeEach(() => {
+    channels.length = 0;
+    vi.stubGlobal('MessageChannel', class { port1 = new Port(); port2 = new Port(); constructor() { channels.push(this); } });
+  });
+  afterEach(() => { document.body.replaceChildren(); vi.unstubAllGlobals(); vi.useRealTimers(); });
+  it('opens a titled, sandboxed new-chat frame without navigating its parent', () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const handle = mountHappierSession(container, { happierUrl: 'https://app.happier.dev', getCredential: vi.fn() });
+    const frame = container.querySelector('iframe');
+    expect(frame?.title).toBe('Chat');
+    expect(new URL(frame!.src).pathname).toBe('/embed/new');
+    expect(frame?.getAttribute('sandbox')).toContain('allow-popups-to-escape-sandbox');
+    expect(frame?.getAttribute('sandbox')).not.toContain('allow-top-navigation');
+    expect(container.querySelector('[role="status"]')).not.toBeNull();
+    handle.destroy();
+  });
+  it('restarts initial credential selection for a switch and drops pending results on destruction', async () => {
+    const m = mount('A');
+    let resolveA!: (value: typeof credential) => void;
+    m.getCredential.mockImplementationOnce(() => new Promise((r) => { resolveA = r; }));
+    m.ready();
+    m.handle.open('B'); await flush();
+    expect(m.getCredential).toHaveBeenLastCalledWith({ sessionId: 'B', embedPublicKey: publicKey, reason: 'initial' });
+    expect(m.post).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ payload: { kind: 'init', identity: m.identity, sessionId: 'B', credential } }), 'https://app.happier.dev', [channels[0].port2]);
+    resolveA(credential); await flush();
+    expect(m.post).toHaveBeenCalledTimes(1);
+    let resolveB!: (value: typeof credential) => void;
+    m.getCredential.mockImplementationOnce(() => new Promise((r) => { resolveB = r; }));
+    m.receive({ kind: 'credential.request', sessionId: 'B', embedPublicKey: publicKey, reason: 'rejected' }, 1);
+    m.handle.destroy(); resolveB(credential); await flush();
+    expect(channels[0].port1.postMessage).not.toHaveBeenCalled();
+  });
+  it('reports typed credential failure to the frame without sending malformed credentials', async () => {
+    const m = mount('A'); m.ready(); await flush();
+    m.getCredential.mockRejectedValueOnce({ code: 'session_key_not_transferable' });
+    m.receive({ kind: 'credential.request', sessionId: 'A', embedPublicKey: publicKey, reason: 'rejected' }, 1);
+    await flush();
+    expect(channels[0].port1.postMessage).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error', requestSequence: 1, payload: { code: 'session_key_not_transferable' } }));
+    expect(m.onError).toHaveBeenCalledWith('session_key_not_transferable');
+    m.handle.destroy();
+  });
+  it('admits only the exact source, origin and identity; delivers init only to the exact origin', async () => {
+    const m = mount('A');
+    m.ready({ origin: 'https://evil.example' });
+    m.ready({ source: window });
+    m.ready({}, { kind: 'ready', bridgeVersion: 1, identity: { ...m.identity, mountNonce: 'foreign' }, embedPublicKey: publicKey });
+    m.ready({}, { kind: 'ready', bridgeVersion: 1, identity: m.identity, embedPublicKey: publicKey, unexpected: true });
+    expect(m.getCredential).not.toHaveBeenCalled();
+    m.ready(); await flush();
+    expect(m.getCredential).toHaveBeenCalledExactlyOnceWith({ sessionId: 'A', embedPublicKey: publicKey, reason: 'initial' });
+    expect(m.post).toHaveBeenCalledWith(expect.objectContaining({ direction: 'hostToFrame', payload: { kind: 'init', identity: m.identity, sessionId: 'A', credential } }), 'https://app.happier.dev', [channels[0].port2]);
+    m.receive({ kind: 'state', sessionId: 'A', phase: 'ready', activity: 'idle' }, 1);
+    expect(m.container.querySelector('[role="status"]')).toBeNull();
+    m.handle.destroy();
+  });
+  it('deduplicates request sequences and drops credentials superseded by open or destroy', async () => {
+    const m = mount('A'); m.ready(); await flush();
+    let resolve!: (value: typeof credential) => void;
+    m.getCredential.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    m.receive({ kind: 'credential.request', sessionId: 'A', embedPublicKey: publicKey, reason: 'expiring' }, 2);
+    m.receive({ kind: 'credential.request', sessionId: 'A', embedPublicKey: publicKey, reason: 'expiring' }, 2);
+    expect(m.getCredential).toHaveBeenCalledTimes(2);
+    m.handle.open('B'); resolve(credential); await flush();
+    expect(channels[0].port1.postMessage.mock.calls.some(([value]) => value.kind === 'result')).toBe(false);
+    m.receive({ kind: 'credential.request', sessionId: 'B', embedPublicKey: publicKey, reason: 'open' }, 3);
+    await flush();
+    expect(channels[0].port1.postMessage).toHaveBeenCalledWith(expect.objectContaining({ kind: 'result', requestSequence: 3, payload: credential }));
+    m.handle.destroy();
+    expect(channels[0].port1.close).toHaveBeenCalled();
+    expect(m.container.querySelector('iframe')).toBeNull();
+    m.ready(); await flush(); expect(m.getCredential).toHaveBeenCalledTimes(3);
+  });
+  it('forwards created attribution once and keeps explicit current target through reload', async () => {
+    const childTokenId = '00000000-0000-4000-8000-000000000001';
+    const m = mount(); m.ready(); await flush();
+    expect(m.getCredential).toHaveBeenCalledWith({ embedPublicKey: publicKey, reason: 'initial' });
+    m.receive({ kind: 'session.created', sessionId: 'N' }, 1);
+    m.receive({ kind: 'session.created', sessionId: 'N' }, 2);
+    expect(m.onSessionCreated).toHaveBeenCalledExactlyOnceWith({ sessionId: 'N' });
+    m.ready(); await flush();
+    expect(m.getCredential).toHaveBeenLastCalledWith({ embedPublicKey: publicKey, reason: 'initial' });
+    m.receive({ kind: 'credential.request', sessionId: 'N', embedPublicKey: publicKey, reason: 'created', createdByTokenId: childTokenId }, 3);
+    await flush();
+    expect(m.getCredential).toHaveBeenCalledWith({ sessionId: 'N', embedPublicKey: publicKey, reason: 'created', createdByTokenId: childTokenId });
+    m.receive({ kind: 'state', sessionId: 'N', phase: 'ready' }, 4);
+    m.ready(); await flush();
+    expect(m.getCredential).toHaveBeenLastCalledWith({ sessionId: 'N', embedPublicKey: publicKey, reason: 'initial' });
+    m.handle.open('X');
+    m.receive({ kind: 'session.created', sessionId: 'Late' }, 1);
+    expect(m.onSessionCreated).toHaveBeenLastCalledWith({ sessionId: 'Late' });
+    m.ready(); await flush();
+    expect(m.getCredential).toHaveBeenLastCalledWith({ sessionId: 'X', embedPublicKey: publicKey, reason: 'initial' });
+    m.handle.destroy();
+  });
+  it('rejects reflected host pushes, foreign identities and malformed state on the port', async () => {
+    const m = mount('A'); m.ready(); await flush();
+    channels[0].port1.receive({ version: 1, identity: m.identity, sequence: 1, direction: 'hostToFrame', payload: { kind: 'state', sessionId: 'A', phase: 'ready' } });
+    channels[0].port1.receive({ version: 1, identity: { ...m.identity, instanceId: 'foreign' }, sequence: 2, payload: { kind: 'state', sessionId: 'A', phase: 'ready' } });
+    m.receive({ kind: 'state', sessionId: 'A', phase: 'ready', extra: true }, 3);
+    expect(m.onStateChange).not.toHaveBeenCalled();
+    m.handle.destroy();
+  });
+  it('answers only the latest request even when both requests name the same session', async () => {
+    const m = mount('A'); m.ready(); await flush();
+    let resolveOld!: (value: typeof credential) => void;
+    m.getCredential.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
+    m.receive({ kind: 'credential.request', sessionId: 'A', embedPublicKey: publicKey, reason: 'expiring' }, 1);
+    m.receive({ kind: 'credential.request', sessionId: 'A', embedPublicKey: publicKey, reason: 'rejected' }, 2);
+    await flush(); resolveOld(credential); await flush();
+    expect(channels[0].port1.postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ requestSequence: 2, kind: 'result' }));
+    m.getCredential.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
+    m.receive({ kind: 'credential.request', sessionId: 'A', embedPublicKey: publicKey, reason: 'expiring' }, 3);
+    m.handle.open('B'); resolveOld(credential); await flush();
+    expect(channels[0].port1.postMessage.mock.calls.filter(([envelope]) => envelope.kind === 'result')).toHaveLength(1);
+    m.handle.destroy();
+  });
+  it('accepts sequence zero from a restarted guest and ignores higher queued sequences from its retired port', async () => {
+    const m = mount('A'); m.ready(); await flush();
+    m.receive({ kind: 'state', sessionId: 'A', phase: 'ready' }, 100);
+    const queued = channels[0].port1.onmessage;
+    const freshPublicKey = 'AQ' + 'A'.repeat(41);
+    m.ready({}, { kind: 'ready', bridgeVersion: 1, identity: m.identity, embedPublicKey: freshPublicKey }); await flush();
+    expect(channels[0].port1.close).toHaveBeenCalled();
+    m.receive({ kind: 'credential.request', sessionId: 'A', embedPublicKey: freshPublicKey, reason: 'expiring' }, 0);
+    await flush();
+    expect(channels[1].port1.postMessage).toHaveBeenCalledWith(expect.objectContaining({ kind: 'result', requestSequence: 0, payload: credential }));
+    m.receive({ kind: 'state', sessionId: 'A', phase: 'ready', activity: 'working' }, 1);
+    expect(m.onStateChange).toHaveBeenLastCalledWith({ sessionId: 'A', phase: 'ready', activity: 'working' });
+    queued?.({ data: { version: 1, identity: m.identity, sequence: 101, payload: { kind: 'credential.request', sessionId: 'A', embedPublicKey: publicKey, reason: 'expiring' } } });
+    expect(m.getCredential).toHaveBeenCalledTimes(3);
+    expect(m.post.mock.calls.map(([envelope]) => envelope.sequence)).toEqual([0, 1]);
+    m.handle.destroy();
+  });
+  it('closes both channel ends when the browser cannot transfer the initial port', async () => {
+    const m = mount('A');
+    m.post.mockImplementationOnce(() => { throw new DOMException('Transfer failed', 'DataCloneError'); });
+    m.ready(); await flush();
+    expect(channels[0].port1.close).toHaveBeenCalled();
+    expect(channels[0].port2.close).toHaveBeenCalled();
+    expect(m.onError).toHaveBeenCalledWith('credential_unavailable');
+    m.handle.destroy();
+  });
+  it('projects the exact backend-issued credential without exposing its attribution id to the frame', async () => {
+    const m = mount('A');
+    m.getCredential.mockResolvedValueOnce({ ...credential, tokenId: '00000000-0000-4000-8000-000000000001' });
+    m.ready(); await flush();
+    expect(m.post).toHaveBeenCalledWith(expect.objectContaining({ payload: { kind: 'init', identity: m.identity, sessionId: 'A', credential } }), 'https://app.happier.dev', [channels[0].port2]);
+    m.getCredential.mockResolvedValueOnce({ ...credential, tokenId: '00000000-0000-4000-8000-000000000002' });
+    m.receive({ kind: 'credential.request', sessionId: 'A', embedPublicKey: publicKey, reason: 'expiring' }, 1);
+    await flush();
+    expect(channels[0].port1.postMessage).toHaveBeenCalledWith(expect.objectContaining({ kind: 'result', payload: credential }));
+    m.handle.destroy();
+  });
+  it('rejects unknown backend result fields rather than stripping arbitrary keys', async () => {
+    const m = mount('A');
+    // JavaScript backends are untyped at this callback boundary.
+    // @ts-expect-error Deliberately exercise an invalid issued-credential result.
+    m.getCredential.mockResolvedValueOnce({ ...credential, tokenId: '00000000-0000-4000-8000-000000000001', unexpected: true });
+    m.ready(); await flush();
+    expect(m.post).not.toHaveBeenCalled();
+    expect(m.onError).toHaveBeenCalledWith('credential_unavailable');
+    m.handle.destroy();
+  });
+  it('keeps the last good presentation when an update is malformed', async () => {
+    const m = mount('A'); m.ready(); await flush();
+    m.handle.update({ style: { radius: 'soft' }, title: 'Lead A' });
+    // JavaScript consumers can still supply a malformed presentation payload.
+    // @ts-expect-error Invalid radius deliberately crosses the public validation boundary.
+    m.handle.update({ style: { radius: 'invalid' }, title: 'Ignored' });
+    expect(m.frame.title).toBe('Lead A');
+    expect(channels[0].port1.postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ payload: { kind: 'configure', style: { v: 1, radius: 'soft' } } }));
+    m.handle.destroy();
+  });
+  it('reports the hosted-web 30-second ready deadline and ignores late pending work on destroy', async () => {
+    vi.useFakeTimers();
+    const m = mount('A');
+    vi.advanceTimersByTime(30_000);
+    expect(m.onError).toHaveBeenCalledExactlyOnceWith('frame_unreachable');
+    m.handle.destroy();
+  });
+});

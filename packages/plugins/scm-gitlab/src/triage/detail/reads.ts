@@ -38,6 +38,7 @@ import {
   projectGitlabDiscussionRows,
   projectGitlabNoteRows,
   projectGitlabPipelineRollup,
+  projectGitlabPipelineJobs,
   projectGitlabPipelineRows,
   type GitlabChangedFilesProjectionV1,
   type GitlabPageProjectionV1,
@@ -280,17 +281,23 @@ export type GitlabPipelinesReadV1 = GitlabDetailPageV1<GitlabProjectedPipelineRo
   /** `null` whenever the per-job breakdown could not be read, never zeroes. */
   rollup: GitlabPipelineRollupV1 | null;
   rollupPipelineId: string | null;
+  jobs: ReturnType<typeof projectGitlabPipelineJobs> & Readonly<{ total: number | null }>;
 }>;
 
 async function readCompleteGitlabPipelineRollup(
   firstUrl: string,
   dependencies: GitlabDetailReadDependenciesV1,
-): Promise<GitlabPipelineRollupV1 | null> {
+): Promise<Readonly<{ rollup: GitlabPipelineRollupV1 | null; jobs: GitlabPipelinesReadV1['jobs'] }>> {
   let url = firstUrl;
   const visited = new Set<string>();
   let failingCount = 0;
   let runningCount = 0;
   let passingCount = 0;
+  let total = 0;
+  const rows: GitlabPipelinesReadV1['jobs']['rows'][number][] = [];
+  let projectionTruncated = false;
+  let incomplete = false;
+  const partial = () => ({ rollup: null, jobs: { rows, total: null, incomplete: true, projectionTruncated } });
 
   while (!visited.has(url)) {
     visited.add(url);
@@ -301,10 +308,15 @@ async function readCompleteGitlabPipelineRollup(
       signal: dependencies.signal,
       nowMs: dependencies.nowMs,
     });
-    if (jobs.kind === 'failed') return null;
+    if (jobs.kind === 'failed') return partial();
 
+    const projected = projectGitlabPipelineJobs(jobs.response.body);
+    rows.push(...projected.rows);
+    incomplete ||= projected.incomplete;
+    projectionTruncated ||= projected.projectionTruncated;
     const pageRollup = projectGitlabPipelineRollup(jobs.response.body);
-    if (pageRollup === null) return null;
+    if (pageRollup === null) return partial();
+    total += Array.isArray(jobs.response.body) ? jobs.response.body.length : 0;
     failingCount += pageRollup.failingCount;
     runningCount += pageRollup.runningCount;
     passingCount += pageRollup.passingCount;
@@ -314,13 +326,16 @@ async function readCompleteGitlabPipelineRollup(
       dependencies.invocation.origin.normalized,
     );
     if (next.kind === 'end') {
-      return Object.freeze({ failingCount, runningCount, passingCount });
+      return Object.freeze({
+        rollup: Object.freeze({ failingCount, runningCount, passingCount }),
+        jobs: { rows, total, incomplete, projectionTruncated },
+      });
     }
-    if (next.kind !== 'next' || visited.has(next.url)) return null;
+    if (next.kind !== 'next' || visited.has(next.url)) return partial();
     url = next.url;
   }
 
-  return null;
+  return partial();
 }
 
 /**
@@ -351,13 +366,17 @@ export async function readGitlabPipelinesPage(
   if (!page.ok) return failed(page.failure);
 
   const newest = page.value.rows[0];
+  const unknownJobs: GitlabPipelinesReadV1['jobs'] = { rows: [], total: null, incomplete: true, projectionTruncated: false };
   if (newest === undefined) {
-    return succeeded(Object.freeze({ ...page.value, rollup: null, rollupPipelineId: null }));
+    return succeeded(Object.freeze({ ...page.value, rollup: null, rollupPipelineId: null,
+      jobs: page.value.omittedRowCount === 0 && page.value.incomplete === null
+        ? { rows: [], total: 0, incomplete: false, projectionTruncated: false } : unknownJobs,
+    }));
   }
 
   const pipelineId = Number(newest.id);
   if (!Number.isSafeInteger(pipelineId) || pipelineId < 1) {
-    return succeeded(Object.freeze({ ...page.value, rollup: null, rollupPipelineId: null }));
+    return succeeded(Object.freeze({ ...page.value, rollup: null, rollupPipelineId: null, jobs: unknownJobs }));
   }
 
   let jobsUrl: string;
@@ -369,14 +388,15 @@ export async function readGitlabPipelinesPage(
       perPage: input.perPage,
     });
   } catch {
-    return succeeded(Object.freeze({ ...page.value, rollup: null, rollupPipelineId: null }));
+    return succeeded(Object.freeze({ ...page.value, rollup: null, rollupPipelineId: null, jobs: unknownJobs }));
   }
 
-  const rollup = await readCompleteGitlabPipelineRollup(jobsUrl, dependencies);
+  const { rollup, jobs } = await readCompleteGitlabPipelineRollup(jobsUrl, dependencies);
   return succeeded(Object.freeze({
     ...page.value,
     rollup,
     rollupPipelineId: rollup === null ? null : newest.id,
+    jobs,
   }));
 }
 

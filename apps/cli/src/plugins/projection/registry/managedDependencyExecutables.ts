@@ -10,7 +10,19 @@ import {
     type PluginManagedDependencyContributionV2,
 } from '@happier-dev/protocol';
 
-import type { ResolvedInstallableContribution } from './types';
+import type { ResolvedAgentContribution, ResolvedInstallableContribution } from './types';
+
+/** Process grants permit alternate modes; only the selected transport requires its executable for setup. */
+export function resolveAgentRuntimeManagedDependencyId(
+    agent: Pick<ResolvedAgentContribution, 'richDefinition'>,
+): string | null {
+    const definition = agent.richDefinition?.definition;
+    const runtime = definition && 'runtime' in definition ? definition.runtime : undefined;
+    return runtime?.kind === 'acp' && runtime.transport.kind === 'stdio'
+        && runtime.transport.executable.kind === 'managedDependency'
+        ? runtime.transport.executable.id
+        : null;
+}
 
 export type ResolvedExecutableManagedDependency = Readonly<
     Omit<ResolvedInstallableContribution, 'definition'> & {
@@ -184,6 +196,9 @@ export function projectPinnedArchiveInstallableDescriptor(
         source: {
             kind: 'pinned_archive',
             version: input.source.version,
+            ...(input.source.archiveExtractionLimits
+                ? { archiveExtractionLimits: input.source.archiveExtractionLimits }
+                : {}),
             assetsByPlatform: input.source.assetsByPlatform,
         },
         binary: {

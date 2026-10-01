@@ -119,7 +119,7 @@ describe('startEntrySession', () => {
         ]);
         const spawn = invoker.callsFor('session.spawn_new')[0]?.input;
         expect(spawn).toMatchObject({
-            directory: '/projects/example',
+            directory: { kind: 'path', path: '/projects/example' },
             creationKey: 'creation-key-a',
         });
         // Nothing was composed here: the caller supplied no prompt body, and
@@ -390,7 +390,7 @@ describe('startEntrySession', () => {
             delivery: 'notRequested',
         });
         expect(invoker.callsFor('session.spawn_new')[0]?.input).toMatchObject({
-            directory: '/projects/example',
+            directory: { kind: 'path', path: '/projects/example' },
         });
     });
 
@@ -423,7 +423,7 @@ describe('startEntrySession', () => {
         // one the source prepared — never a path Triage chose.
         expect(source.calls).toHaveLength(1);
         expect(invoker.callsFor('session.spawn_new')[0]?.input).toMatchObject({
-            directory: '/workspaces/example-review',
+            directory: { kind: 'path', path: '/workspaces/example-review' },
         });
     });
 
@@ -620,6 +620,9 @@ describe('startEntrySession', () => {
         const spawns = invoker.callsFor('session.spawn_new');
         expect(spawns).toHaveLength(2);
         expect(spawns[1]?.input).toEqual(spawns[0]?.input);
+        expect(spawns[1]?.input).toMatchObject({
+            directory: { kind: 'path', path: PREPARED_FACTS.directory },
+        });
         expect(invoker.callsFor('session.message.send')).toHaveLength(1);
     });
 

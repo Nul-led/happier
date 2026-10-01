@@ -1,9 +1,11 @@
+import { act, useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { mountThroughReactNativeWeb } from '../rnwMount.testSupport.js';
 import { createHostApiStub, createSurfaceContext } from '../surfaceFixture.testSupport.js';
 import { PluginUiProvider } from './PluginUiProvider.js';
-import { Row, Screen, ScrollArea, Stack } from './Layout.js';
+import { Button } from './Button.js';
+import { ListDetailLayout, Row, Screen, ScrollArea, Stack } from './Layout.js';
 
 /**
  * React Native Web keeps a node's layout observer callback on the host element
@@ -27,6 +29,151 @@ function mountLayout(
 }
 
 describe('plugin-ui semantic layout', () => {
+  it('holds the split with an idle detail so the first selection does not reflow the list', async () => {
+    // Without a selection the list took the whole width, and the first press
+    // snapped it to its split share under the pointer. An idle detail keeps
+    // the split geometry stable wherever both panes fit, and stays out of the
+    // way when they do not.
+    const context = createSurfaceContext();
+    const hostApi = createHostApiStub(context);
+    const content = (selected: boolean) => (
+      <PluginUiProvider hostApi={hostApi} context={context}>
+        <ListDetailLayout
+          testID="panes"
+          listTestID="list-pane"
+          detailTestID="detail-pane"
+          minListWidth={300}
+          minDetailWidth={400}
+          preferredListRatio={0.4}
+          list={<Stack />}
+          detail={selected ? <Button title="Detail action" /> : null}
+          idleDetail={<Button title="Nothing selected" />}
+        />
+      </PluginUiProvider>
+    );
+    const mount = mountThroughReactNativeWeb(content(false));
+    const listPane = () => mount.container.querySelector('[data-testid="list-pane"]') as HTMLElement;
+    const detailPane = () => mount.container.querySelector('[data-testid="detail-pane"]') as HTMLElement;
+    const measure = (width: number) => {
+      const node = mount.container.querySelector('[data-testid="panes"]');
+      const handler = Reflect.get(node!, DOM_LAYOUT_HANDLER_NAME) as (event: unknown) => void;
+      act(() => handler({ nativeEvent: { layout: { x: 0, y: 0, width, height: 600 } } }));
+    };
+
+    try {
+      measure(900);
+      const idleListFlex = listPane().style.flexGrow;
+      expect(detailPane().getAttribute('aria-hidden')).not.toBe('true');
+      expect(detailPane().textContent).toContain('Nothing selected');
+
+      await mount.render(content(true));
+      expect(listPane().style.flexGrow).toBe(idleListFlex);
+      expect(detailPane().textContent).toContain('Detail action');
+
+      // Stacked: with nothing selected the list is the page, not a placeholder.
+      await mount.render(content(false));
+      measure(500);
+      expect(listPane().getAttribute('aria-hidden')).not.toBe('true');
+      expect(detailPane().getAttribute('aria-hidden')).toBe('true');
+    } finally {
+      mount.unmount();
+    }
+  });
+
+  it('keeps both pane instances while selection and measured width change', async () => {
+    function Counter() {
+      const [count, setCount] = useState(0);
+      return <Button title={`Count ${count}`} onPress={() => setCount((value) => value + 1)} />;
+    }
+    const context = createSurfaceContext();
+    const hostApi = createHostApiStub(context);
+    const content = (detailActive: boolean, minDetailWidth = 400) => (
+      <PluginUiProvider hostApi={hostApi} context={context}>
+        <ListDetailLayout
+          testID="panes"
+          listTestID="list-pane"
+          detailTestID="detail-pane"
+          minListWidth={300}
+          minDetailWidth={minDetailWidth}
+          preferredListRatio={0.4}
+          gap="small"
+          list={<Counter />}
+          detail={<Button title="Detail action" />}
+          detailActive={detailActive}
+        />
+      </PluginUiProvider>
+    );
+    const mount = mountThroughReactNativeWeb(content(false));
+    const listPane = mount.container.querySelector('[data-testid="list-pane"]') as HTMLElement;
+    const detailPane = mount.container.querySelector('[data-testid="detail-pane"]') as HTMLElement;
+    const counter = listPane.querySelector('[role="button"]') as HTMLElement;
+    const detailAction = detailPane.querySelector('[role="button"]');
+    const measure = (width: number) => {
+      const node = mount.container.querySelector('[data-testid="panes"]');
+      const handler = Reflect.get(node!, DOM_LAYOUT_HANDLER_NAME) as (event: unknown) => void;
+      act(() => handler({ nativeEvent: { layout: { x: 0, y: 0, width, height: 600 } } }));
+    };
+
+    try {
+      act(() => counter.click());
+      expect(counter.textContent).toBe('Count 1');
+      expect(detailPane.getAttribute('aria-hidden')).toBe('true');
+
+      // Opening detail before the first measurement must not guess a split.
+      await mount.render(content(true));
+      expect(listPane.getAttribute('aria-hidden')).toBe('true');
+      expect(detailPane.getAttribute('aria-hidden')).not.toBe('true');
+
+      measure(900);
+      expect(listPane.getAttribute('aria-hidden')).not.toBe('true');
+      expect(detailPane.getAttribute('aria-hidden')).not.toBe('true');
+
+      // Larger readable content can collapse the panes without another resize.
+      await mount.render(content(true, 700));
+      expect(listPane.getAttribute('aria-hidden')).toBe('true');
+      expect(detailPane.querySelector('[role="button"]')).toBe(detailAction);
+
+      await mount.render(content(false));
+      expect(listPane.querySelector('[role="button"]')).toBe(counter);
+      expect(counter.textContent).toBe('Count 1');
+      expect(listPane.getAttribute('aria-hidden')).not.toBe('true');
+      expect(detailPane.getAttribute('aria-hidden')).toBe('true');
+    } finally {
+      mount.unmount();
+    }
+  });
+
+  it('reports measured layout to its list slot and includes the semantic gutter in the fit', () => {
+    const context = createSurfaceContext();
+    const layouts: unknown[] = [];
+    const mount = mountLayout(
+      <ListDetailLayout
+        testID="panes"
+        minListWidth={300}
+        minDetailWidth={400}
+        preferredListRatio={0.4}
+        gap="small"
+        list={(layout) => { layouts.push(layout); return <Stack />; }}
+        detail={<Stack />}
+      />,
+      context,
+    );
+    const node = mount.container.querySelector('[data-testid="panes"]');
+    const handler = Reflect.get(node!, DOM_LAYOUT_HANDLER_NAME) as (event: unknown) => void;
+    const measure = (width: number) => act(() => handler({
+      nativeEvent: { layout: { x: 0, y: 0, width, height: 600 } },
+    }));
+    try {
+      expect(layouts.at(-1)).toBeNull();
+      measure(700 + context.theme.spacing.small - 1);
+      expect(layouts.at(-1)).toEqual({ mode: 'stacked' });
+      measure(700 + context.theme.spacing.small);
+      expect(layouts.at(-1)).toEqual({ mode: 'split', listRatio: 300 / 700 });
+    } finally {
+      mount.unmount();
+    }
+  });
+
   it('renders real RN hosts for every layout box', () => {
     const mount = mountLayout(
       <Screen testID="screen" safeArea>

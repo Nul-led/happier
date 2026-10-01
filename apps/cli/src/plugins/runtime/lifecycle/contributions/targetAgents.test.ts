@@ -34,7 +34,7 @@ import {
 import {
     createDeclarativeAcpAgentRuntimeRegistry,
     createTargetAgentRuntimeRegistry,
-} from './targetAgents';
+} from './targetAgents.testkit';
 import {
     createExternalSessionObservationReconciler,
 } from '../../../../api/session/external/leases/createExternalSessionObservationReconciler';
@@ -204,17 +204,17 @@ function target(pluginId = 'happier.agent.fixture'): ActivationTarget {
 function registration(params: Readonly<{
     pluginId?: string;
     localId?: string;
-    generation?: string;
+    occurrenceId?: string;
     factory: AgentRuntimeFactory;
     providerBinding?: AgentProviderBindingAdapter;
 }>): Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }> {
     return {
         pluginId: params.pluginId ?? 'happier.agent.fixture',
-        generation: params.generation ?? 'generation-7',
+        occurrenceId: params.occurrenceId ?? 'generation-7',
         registration: {
             family: 'agents',
             localId: params.localId ?? 'assistant',
@@ -226,15 +226,15 @@ function registration(params: Readonly<{
 function externalSessionsRegistration(params?: Readonly<{
     pluginId?: string;
     localId?: string;
-    generation?: string;
+    occurrenceId?: string;
 }>): Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }> {
     return {
         pluginId: params?.pluginId ?? 'happier.agent.fixture',
-        generation: params?.generation ?? 'generation-7',
+        occurrenceId: params?.occurrenceId ?? 'generation-7',
         registration: {
             family: 'agents',
             localId: params?.localId ?? 'assistant',
@@ -246,16 +246,16 @@ function externalSessionsRegistration(params?: Readonly<{
 function terminalRegistration(params?: Readonly<{
     pluginId?: string;
     localId?: string;
-    generation?: string;
+    occurrenceId?: string;
     terminal?: AgentTerminalSurface;
 }>): Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }> {
     return {
         pluginId: params?.pluginId ?? 'happier.agent.fixture',
-        generation: params?.generation ?? 'generation-7',
+        occurrenceId: params?.occurrenceId ?? 'generation-7',
         registration: {
             family: 'agents',
             localId: params?.localId ?? 'assistant',
@@ -271,7 +271,7 @@ function terminalRegistration(params?: Readonly<{
 function observationRegistration(params?: Readonly<{
     pluginId?: string;
     localId?: string;
-    generation?: string;
+    occurrenceId?: string;
     observation?: AgentExternalSessionObservationContribution;
     externalSessionHooks?: AgentExternalSessionHooksContribution;
     externalSessionTakeover?: AgentExternalSessionTakeoverContribution;
@@ -279,12 +279,12 @@ function observationRegistration(params?: Readonly<{
     terminalPromptSubmitVerification?: AgentTerminalPromptSubmitVerificationPolicyV1;
 }>): Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }> {
     return {
         pluginId: params?.pluginId ?? 'happier.agent.fixture',
-        generation: params?.generation ?? 'generation-7',
+        occurrenceId: params?.occurrenceId ?? 'generation-7',
         registration: {
             family: 'agents',
             localId: params?.localId ?? 'assistant',
@@ -313,12 +313,12 @@ function externalSessionHooksRegistration(params?: Readonly<{
     contribution?: AgentExternalSessionHooksContribution;
 }>): Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }> {
     return {
         pluginId: 'happier.agent.fixture',
-        generation: 'generation-7',
+        occurrenceId: 'generation-7',
         registration: {
             family: 'agents',
             localId: 'assistant',
@@ -435,12 +435,12 @@ function declaringExternalSessionsRegistration(
         NonNullable<AgentExternalSessionsContribution['resolveManagedEndpointService']>,
 ): Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }> {
     return {
         pluginId: 'happier.agent.fixture',
-        generation: 'generation-7',
+        occurrenceId: 'generation-7',
         registration: {
             family: 'agents',
             localId: 'assistant',
@@ -488,7 +488,7 @@ describe('contribution-owned External Sessions managed endpoint', () => {
             activationTargets: [target()],
             targetRegistrations: [{
                 pluginId: 'happier.agent.fixture',
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 registration: {
                     family: 'agents',
                     localId: 'assistant',
@@ -501,7 +501,7 @@ describe('contribution-owned External Sessions managed endpoint', () => {
                     },
                 } as ContributionRuntimeRegistration,
             }],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             managedEndpointRead: runnerEndpointRead,
             createAgentInvocationServices: managed.createAgentInvocationServices,
@@ -576,7 +576,7 @@ describe('contribution-owned External Sessions managed endpoint', () => {
             activationTargets: [target()],
             targetRegistrations: [{
                 pluginId: 'happier.agent.fixture',
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 registration: {
                     family: 'agents',
                     localId: 'assistant',
@@ -588,7 +588,7 @@ describe('contribution-owned External Sessions managed endpoint', () => {
                     },
                 } as ContributionRuntimeRegistration,
             }],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             managedEndpointRead: runnerEndpointRead,
             createAgentInvocationServices: managed.createAgentInvocationServices,
@@ -645,7 +645,7 @@ describe('contribution-owned External Sessions managed endpoint', () => {
                     },
                 } as ContributionRuntimeRegistration,
             }],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             createAgentInvocationServices: managed.createAgentInvocationServices,
             onDuplicate: vi.fn(),
@@ -738,7 +738,7 @@ describe('contribution-owned External Sessions managed endpoint', () => {
                     },
                 } as ContributionRuntimeRegistration,
             }],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             createAgentInvocationServices: managed.createAgentInvocationServices,
             onDuplicate: vi.fn(),
@@ -772,7 +772,7 @@ describe('contribution-owned External Sessions managed endpoint', () => {
             targetRegistrations: [
                 declaringExternalSessionsRegistration(resolveManagedEndpointService),
             ],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             createAgentInvocationServices: managed.createAgentInvocationServices,
             onDuplicate: vi.fn(),
@@ -856,7 +856,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({ observation })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             managedEndpointRead,
             onDuplicate: vi.fn(),
@@ -912,10 +912,14 @@ describe('target Agent runtime registry', () => {
             identity: {
                 pluginId: 'happier.agent.fixture',
                 agentId: 'assistant',
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 contributionQualifiedId:
                     'happier.agent.fixture/agents/assistant',
-                immutableGenerationId: null,
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'generation-7',
+                    installSource: 'localPath',
+                },
             },
             source: managedEndpointSource,
         }));
@@ -992,7 +996,7 @@ describe('target Agent runtime registry', () => {
             targetRegistrations: [observationRegistration({
                 observation: createObservationContribution({ reconcile }),
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             managedEndpointRead: vi.fn(async () => exactRead),
             onDuplicate: vi.fn(),
@@ -1062,7 +1066,7 @@ describe('target Agent runtime registry', () => {
                     },
                 }),
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             managedEndpointRead: vi.fn(async () => exactRead),
             onDuplicate: vi.fn(),
@@ -1125,7 +1129,7 @@ describe('target Agent runtime registry', () => {
                     },
                 }),
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             managedEndpointRead: vi.fn(async () => exactRead),
             onDuplicate: vi.fn(),
@@ -1167,7 +1171,7 @@ describe('target Agent runtime registry', () => {
                 targetRegistrations: [observationRegistration({
                     observation: createObservationContribution({ acquire }),
                 })],
-                isGenerationActive: () => current,
+                isOccurrenceCurrent: () => current,
                 retirementSignal: retirement.signal,
                 managedEndpointRead,
                 onDuplicate: vi.fn(),
@@ -1200,6 +1204,7 @@ describe('target Agent runtime registry', () => {
             await Promise.resolve();
             expect(acquire).not.toHaveBeenCalled();
             await expect(acquisition).rejects.toThrow(/retired generation/u);
+            await expect(acquisition).rejects.toMatchObject({ code: 'unavailable', retryable: true });
         } finally {
             vi.useRealTimers();
         }
@@ -1223,7 +1228,7 @@ describe('target Agent runtime registry', () => {
                 targetRegistrations: [observationRegistration({
                     observation: createObservationContribution({ reconcile }),
                 })],
-                isGenerationActive: () => true,
+                isOccurrenceCurrent: () => true,
                 retirementSignal: new AbortController().signal,
                 managedEndpointRead,
                 onDuplicate: vi.fn(),
@@ -1251,6 +1256,8 @@ describe('target Agent runtime registry', () => {
             expect(bindSignal?.aborted).toBe(true);
             expect(await readPromiseStateAfterMicrotasks(reconciliation)).toBe('rejected');
             await expect(reconciliation).rejects.toThrow(/timed out/u);
+            // A deadline is a typed, retryable Agent timeout — not an internal error.
+            await expect(reconciliation).rejects.toMatchObject({ code: 'timeout', retryable: true });
             expect(reconcile).not.toHaveBeenCalled();
             expect(vi.getTimerCount()).toBe(0);
 
@@ -1280,7 +1287,7 @@ describe('target Agent runtime registry', () => {
                     },
                 }),
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             onDuplicate: vi.fn(),
         } as never)).toThrow(/retirement signal/i);
     });
@@ -1324,8 +1331,8 @@ describe('target Agent runtime registry', () => {
                 },
             }],
             registered: new Map(),
-            generation: 'generation-9',
-            isGenerationActive: () => true,
+            occurrenceId: 'generation-9',
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
         });
 
@@ -1334,7 +1341,7 @@ describe('target Agent runtime registry', () => {
             pluginId: 'acme.declarative',
             pluginVersion: '2.3.4',
             agentId: 'declarative-agent',
-            generation: 'generation-9',
+            occurrenceId: 'generation-9',
             hasPrimaryRuntime: true,
         });
         if (!lease?.hasPrimaryRuntime) throw new Error('Expected a primary Agent runtime lease');
@@ -1394,8 +1401,8 @@ describe('target Agent runtime registry', () => {
         };
         const common = {
             agents: [agent],
-            generation: 'generation-9',
-            isGenerationActive: () => true,
+            occurrenceId: 'generation-9',
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
         };
 
@@ -1410,8 +1417,13 @@ describe('target Agent runtime registry', () => {
                 pluginVersion: '2.3.4',
                 agentId,
                 localAgentId: agentId,
-                generation: 'generation-9',
+                occurrenceId: 'generation-9',
                 immutableGenerationId: null,
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'fixture-custody:acme.declarative:generation-9',
+                    installSource: 'localPath',
+                },
                 hasPrimaryRuntime: false,
                 externalSessions: {} as never,
                 retirementSignal: TEST_RETIREMENT_SIGNAL,
@@ -1467,8 +1479,8 @@ describe('target Agent runtime registry', () => {
                 },
             }],
             registered: new Map(),
-            generation: 'generation-9',
-            isGenerationActive: () => true,
+            occurrenceId: 'generation-9',
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
         });
 
@@ -1514,8 +1526,8 @@ describe('target Agent runtime registry', () => {
                 },
             }],
             registered: new Map(),
-            generation: 'generation-9',
-            isGenerationActive: () => true,
+            occurrenceId: 'generation-9',
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
         });
 
@@ -1537,7 +1549,7 @@ describe('target Agent runtime registry', () => {
             activationTargets: [target()],
             targetRegistrations: [registration({ factory })],
             immutableGenerationIdsByPluginId: new Map([['happier.agent.fixture', 'immutable-generation-content-digest']]),
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -1547,7 +1559,7 @@ describe('target Agent runtime registry', () => {
             pluginId: 'happier.agent.fixture',
             pluginVersion: '0.0.0',
             agentId: 'assistant',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             immutableGenerationId: 'immutable-generation-content-digest',
             providerBinding,
             hasPrimaryRuntime: true,
@@ -1588,7 +1600,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [registration({ factory })],
-            isGenerationActive: () => !retirement.signal.aborted,
+            isOccurrenceCurrent: () => !retirement.signal.aborted,
             retirementSignal: retirement.signal,
             onDuplicate: vi.fn(),
         });
@@ -1618,14 +1630,14 @@ describe('target Agent runtime registry', () => {
     it('retains a direct runner factory binding without host-only lease fields', () => {
         const host = createContributionRegistrationHost({
             pluginId: 'happier.agent.fixture',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{
                 family: 'agents',
                 localId: 'assistant',
                 target: { realm: 'daemon' },
                 requiredFields: ['factory', 'sessionRunnerFactory'],
             }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const factory: AgentRuntimeFactory = async () => ({
             sessions: {
@@ -1662,13 +1674,13 @@ describe('target Agent runtime registry', () => {
             activationTargets: [target()],
             targetRegistrations: [{
                 pluginId: 'happier.agent.fixture',
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 registration: committed,
             }],
             immutableGenerationIdsByPluginId: new Map([
                 ['happier.agent.fixture', 'immutable-generation-7'],
             ]),
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant');
@@ -1682,7 +1694,11 @@ describe('target Agent runtime registry', () => {
             pluginVersion: '0.0.0',
             agentId: 'assistant',
             localAgentId: 'assistant',
-            immutableGenerationId: 'immutable-generation-7',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'immutable-generation-7',
+                installSource: 'localPath',
+            },
             locator,
             normalizedModulePath: 'agent/runtime.js',
             loadMode: 'immutable-js',
@@ -1690,6 +1706,66 @@ describe('target Agent runtime registry', () => {
         expect(lease).not.toHaveProperty('workflowRunRecordSessionOpen');
         expect(lease).not.toHaveProperty('issueRunnerExecutionGrant');
         expect(lease).not.toHaveProperty('manifestDigest');
+    });
+
+    it('takes a bundled factory binding from the published manifest when registration drifts', () => {
+        const registeredLocator = {
+            module: './agent/b.mjs', export: 'createB', runtimeApiVersion: 1 as const,
+        };
+        const publishedLocator = {
+            module: './agent/a.mjs', export: 'createA', runtimeApiVersion: 1 as const,
+        };
+        const host = createContributionRegistrationHost({
+            pluginId: 'happier.agent.fixture',
+            occurrenceId: 'generation-7',
+            rights: [{
+                family: 'agents', localId: 'assistant', target: { realm: 'daemon' },
+                requiredFields: ['factory', 'sessionRunnerFactory'],
+            }],
+            isOccurrenceCurrent: () => true,
+        });
+        const factory: AgentRuntimeFactory = async () => ({
+            sessions: { open: async () => ({
+                send: async () => ({ status: 'admitted' }),
+                watch: () => ({ dispose() {} }), dispose() {},
+            }) },
+        });
+        host.api.agents.register('assistant', factory, { sessionRunnerFactory: registeredLocator });
+        const [committed] = host.commit();
+        if (committed?.family !== 'agents') throw new Error('Expected Agent registration');
+        const validatedLocator = committed.value.sessionRunnerFactory;
+        if (!validatedLocator) throw new Error('Expected validated factory locator');
+        recordValidatedAgentSessionRunnerFactory(committed.value, {
+            locator: validatedLocator, normalizedModulePath: 'agent/b.mjs', loadMode: 'immutable-js',
+        });
+        const publishedTarget = {
+            ...target(),
+            provenance: 'first_party',
+            manifest: {
+                ...target().manifest,
+                entrypoints: { daemon: './daemon.mjs' },
+                runtime: { apiVersion: 1, agentFactories: [{
+                    localAgentId: 'assistant', locator: publishedLocator,
+                    normalizedModulePath: 'agent/a.mjs', loadMode: 'immutable-js',
+                }] },
+                contributes: { agents: [{ id: 'assistant' }] },
+            },
+        } as ActivationTarget;
+        const lease = createTargetAgentRuntimeRegistry({
+            agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
+            activationTargets: [publishedTarget],
+            targetRegistrations: [{
+                pluginId: 'happier.agent.fixture', occurrenceId: 'generation-7', registration: committed,
+            }],
+            isOccurrenceCurrent: () => true,
+            retirementSignal: TEST_RETIREMENT_SIGNAL,
+            onDuplicate: vi.fn(),
+        }).get('assistant');
+        if (!lease?.hasPrimaryRuntime) throw new Error('Expected primary Agent lease');
+        expect(lease.sessionRunnerFactoryBinding).toMatchObject({
+            locator: publishedLocator,
+            normalizedModulePath: 'agent/a.mjs',
+        });
     });
 
     it('leases an auxiliary-only External Sessions contribution without claiming primary runtime ownership', () => {
@@ -1700,7 +1776,7 @@ describe('target Agent runtime registry', () => {
             immutableGenerationIdsByPluginId: new Map([
                 ['happier.agent.fixture', 'immutable-generation-content-digest'],
             ]),
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -1708,7 +1784,7 @@ describe('target Agent runtime registry', () => {
         expect(registry.get('assistant')).toMatchObject({
             pluginId: 'happier.agent.fixture',
             agentId: 'assistant',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             immutableGenerationId: 'immutable-generation-content-digest',
             hasPrimaryRuntime: false,
         });
@@ -1726,7 +1802,7 @@ describe('target Agent runtime registry', () => {
             targetRegistrations: [terminalRegistration({
                 terminal: Object.freeze({ resolveLaunch }),
             })],
-            isGenerationActive: () => current,
+            isOccurrenceCurrent: () => current,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -1765,7 +1841,7 @@ describe('target Agent runtime registry', () => {
             activationTargets: [target()],
             targetRegistrations: [{
                 pluginId: 'happier.agent.fixture',
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 registration: {
                     family: 'agents',
                     localId: 'assistant',
@@ -1778,7 +1854,7 @@ describe('target Agent runtime registry', () => {
                 } as ContributionRuntimeRegistration,
             }],
             createAgentInvocationServices,
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -1812,7 +1888,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({ observation })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -1821,7 +1897,7 @@ describe('target Agent runtime registry', () => {
         expect(lease).toMatchObject({
             pluginId: 'happier.agent.fixture',
             agentId: 'assistant',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             hasPrimaryRuntime: false,
         });
         expect(lease?.externalSessions).toBeDefined();
@@ -1840,7 +1916,7 @@ describe('target Agent runtime registry', () => {
             }],
             activationTargets: [target()],
             targetRegistrations: [externalSessionHooksRegistration({ contribution })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -1896,7 +1972,7 @@ describe('target Agent runtime registry', () => {
                 }),
             })],
             createAgentInvocationServices,
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -1923,10 +1999,10 @@ describe('target Agent runtime registry', () => {
                 pluginId: 'happier.agent.fixture',
                 pluginVersion: '0.0.0',
                 agentId: 'assistant',
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 cwd: process.cwd(),
                 signal: receivedRequestSignal,
-                isGenerationCurrent: expect.any(Function),
+                isOccurrenceCurrent: expect.any(Function),
             }),
         );
 
@@ -1978,7 +2054,7 @@ describe('target Agent runtime registry', () => {
                 targetRegistrations: [externalSessionHooksRegistration({
                     contribution: createExternalSessionHooksContribution({ resolveInstallation }),
                 })],
-                isGenerationActive: () => current,
+                isOccurrenceCurrent: () => current,
                 retirementSignal: retirement.signal,
                 onDuplicate: vi.fn(),
             });
@@ -2026,7 +2102,7 @@ describe('target Agent runtime registry', () => {
             targetRegistrations: [externalSessionHooksRegistration({
                 contribution: createExternalSessionHooksContribution({ resolveInstallation }),
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -2061,7 +2137,7 @@ describe('target Agent runtime registry', () => {
             targetRegistrations: [externalSessionHooksRegistration({
                 contribution: createExternalSessionHooksContribution({ resolveInstallation }),
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -2092,14 +2168,14 @@ describe('target Agent runtime registry', () => {
             activationTargets: [target()],
             targetRegistrations: [{
                 pluginId: 'happier.agent.fixture',
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 registration: {
                     family: 'agents',
                     localId: 'assistant',
                     value: { factory, externalSessions: externalSessionsContribution },
                 } as ContributionRuntimeRegistration,
             }],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -2180,7 +2256,7 @@ describe('target Agent runtime registry', () => {
                 terminal,
                 terminalPromptSubmitVerification,
             })],
-            isGenerationActive: () => activationCurrent,
+            isOccurrenceCurrent: () => activationCurrent,
             retirementSignal: auxiliaryRetirement.signal,
             createAgentInvocationServices,
             onDuplicate: vi.fn(),
@@ -2189,8 +2265,8 @@ describe('target Agent runtime registry', () => {
         const registry = createDeclarativeAcpAgentRuntimeRegistry({
             agents: [agent],
             registered,
-            generation: 'generation-9',
-            isGenerationActive: () => registryCurrent,
+            occurrenceId: 'generation-9',
+            isOccurrenceCurrent: () => registryCurrent,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             createAgentInvocationServices,
         });
@@ -2246,7 +2322,7 @@ describe('target Agent runtime registry', () => {
             resource: {
                 pluginId,
                 agentLocalId: agentId,
-                pluginGeneration: lease.generation,
+                occurrenceId: lease.occurrenceId,
                 resourceKey: 'resource-1',
                 retirementSignal: lease.retirementSignal,
             },
@@ -2322,7 +2398,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({ observation })],
-            isGenerationActive: () => current,
+            isOccurrenceCurrent: () => current,
             retirementSignal: retirement.signal,
             onDuplicate: vi.fn(),
         });
@@ -2388,7 +2464,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({ observation })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: retirement.signal,
             onDuplicate: vi.fn(),
         }).get('assistant')?.externalSessionObservation;
@@ -2437,7 +2513,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({ observation })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: retirement.signal,
             onDuplicate: vi.fn(),
         }).get('assistant')?.externalSessionObservation;
@@ -2504,7 +2580,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({ observation })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant')?.externalSessionObservation;
@@ -2522,7 +2598,7 @@ describe('target Agent runtime registry', () => {
             resource: {
                 pluginId: 'happier.agent.fixture',
                 agentLocalId: 'assistant',
-                pluginGeneration: 'generation-7',
+                occurrenceId: 'generation-7',
                 resourceKey: 'resource-1',
             },
             link: {
@@ -2573,20 +2649,20 @@ describe('target Agent runtime registry', () => {
         const secondRetirement = new AbortController();
         let firstCurrent = true;
         const createRegistry = (
-            generation: string,
+            occurrenceId: string,
             retirement: AbortController,
-            isGenerationActive: () => boolean,
+            isOccurrenceCurrent: () => boolean,
             dispose: () => void,
         ) => createTargetAgentRuntimeRegistry({
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({
-                generation,
+                occurrenceId,
                 observation: createObservationContribution({
                     acquire: async () => ({ dispose }),
                 }),
             })],
-            isGenerationActive,
+            isOccurrenceCurrent,
             retirementSignal: retirement.signal,
             onDuplicate: vi.fn(),
         });
@@ -2641,7 +2717,7 @@ describe('target Agent runtime registry', () => {
                     acquire: async () => ({ dispose }),
                 }),
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant')?.externalSessionObservation;
@@ -2699,7 +2775,7 @@ describe('target Agent runtime registry', () => {
                     acquire: async () => ({ dispose }),
                 }),
             })],
-            isGenerationActive: () => !retirement.signal.aborted,
+            isOccurrenceCurrent: () => !retirement.signal.aborted,
             retirementSignal: retirement.signal,
             onDuplicate: vi.fn(),
         }).get('assistant')?.externalSessionObservation;
@@ -2717,7 +2793,7 @@ describe('target Agent runtime registry', () => {
             resource: {
                 pluginId: 'happier.agent.fixture',
                 agentLocalId: 'assistant',
-                pluginGeneration: 'generation-7',
+                occurrenceId: 'generation-7',
                 resourceKey: 'resource-1',
                 retirementSignal: retirement.signal,
             },
@@ -2771,7 +2847,7 @@ describe('target Agent runtime registry', () => {
                         acquire: async () => ({ dispose }),
                     }),
                 })],
-                isGenerationActive: () => true,
+                isOccurrenceCurrent: () => true,
                 retirementSignal: TEST_RETIREMENT_SIGNAL,
                 onDuplicate: vi.fn(),
             }).get('assistant')?.externalSessionObservation;
@@ -2801,7 +2877,7 @@ describe('target Agent runtime registry', () => {
         }
     });
 
-    it('admits a replacement generation after retirement while old physical cleanup is bounded', async () => {
+    it('admits a replacement occurrence after retirement while old physical cleanup is bounded', async () => {
         vi.useFakeTimers();
         try {
             const firstRetirement = new AbortController();
@@ -2813,12 +2889,12 @@ describe('target Agent runtime registry', () => {
                 agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
                 activationTargets: [target()],
                 targetRegistrations: [observationRegistration({
-                    generation: 'generation-7',
+                    occurrenceId: 'generation-7',
                     observation: createObservationContribution({
                         acquire: async () => ({ dispose: firstDispose }),
                     }),
                 })],
-                isGenerationActive: () => firstCurrent,
+                isOccurrenceCurrent: () => firstCurrent,
                 retirementSignal: firstRetirement.signal,
                 onDuplicate: vi.fn(),
             }).get('assistant')?.externalSessionObservation;
@@ -2826,12 +2902,12 @@ describe('target Agent runtime registry', () => {
                 agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
                 activationTargets: [target()],
                 targetRegistrations: [observationRegistration({
-                    generation: 'generation-8',
+                    occurrenceId: 'generation-8',
                     observation: createObservationContribution({
                         acquire: async () => ({ dispose: secondDispose }),
                     }),
                 })],
-                isGenerationActive: () => true,
+                isOccurrenceCurrent: () => true,
                 retirementSignal: secondRetirement.signal,
                 onDuplicate: vi.fn(),
             }).get('assistant')?.externalSessionObservation;
@@ -2839,7 +2915,7 @@ describe('target Agent runtime registry', () => {
 
             const reconciler = createExternalSessionObservationReconciler({
                 acquireObserver: async (input) => await (
-                    input.resource.pluginGeneration === 'generation-7'
+                    input.resource.occurrenceId === 'generation-7'
                         ? first
                         : second
                 ).observeResource({
@@ -2870,7 +2946,7 @@ describe('target Agent runtime registry', () => {
                 resource: {
                     pluginId: 'happier.agent.fixture',
                     agentLocalId: 'assistant',
-                    pluginGeneration: 'generation-7',
+                    occurrenceId: 'generation-7',
                     resourceKey: 'resource-1',
                     retirementSignal: firstRetirement.signal,
                 },
@@ -2887,7 +2963,7 @@ describe('target Agent runtime registry', () => {
                 resource: {
                     pluginId: 'happier.agent.fixture',
                     agentLocalId: 'assistant',
-                    pluginGeneration: 'generation-8',
+                    occurrenceId: 'generation-8',
                     resourceKey: 'resource-1',
                     retirementSignal: secondRetirement.signal,
                 },
@@ -2932,7 +3008,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({ observation })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant')?.externalSessionObservation;
@@ -2993,7 +3069,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({ observation: overBound })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant')?.externalSessionObservation;
@@ -3035,7 +3111,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({ observation })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant')?.externalSessionObservation;
@@ -3119,7 +3195,7 @@ describe('target Agent runtime registry', () => {
             targetRegistrations: [observationRegistration({
                 observation: createObservationContribution({ reconcile }),
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant')?.externalSessionObservation;
@@ -3212,7 +3288,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({ observation: malformed })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant')?.externalSessionObservation;
@@ -3243,7 +3319,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [observationRegistration({ observation: throwing })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: retirement.signal,
             onDuplicate: vi.fn(),
         }).get('assistant')?.externalSessionObservation;
@@ -3269,9 +3345,9 @@ describe('target Agent runtime registry', () => {
         const mutableProviderBinding = { ...providerBinding };
         const host = createContributionRegistrationHost({
             pluginId: 'happier.agent.fixture',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             rights: [{ family: 'agents', localId: 'assistant', target: { realm: 'daemon' } }],
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const factory: AgentRuntimeFactory = async () => ({
             sessions: {
@@ -3304,10 +3380,10 @@ describe('target Agent runtime registry', () => {
             activationTargets: [target()],
             targetRegistrations: committed.map((entry) => ({
                 pluginId: 'happier.agent.fixture',
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 registration: entry,
             })),
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant');
@@ -3391,7 +3467,7 @@ describe('target Agent runtime registry', () => {
                     },
                 }),
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -3410,7 +3486,7 @@ describe('target Agent runtime registry', () => {
             agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
             activationTargets: [target()],
             targetRegistrations: [registration({ factory })],
-            isGenerationActive: () => active,
+            isOccurrenceCurrent: () => active,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant')!;
@@ -3444,7 +3520,7 @@ describe('target Agent runtime registry', () => {
                 registration({ pluginId: 'happier.agent.zeta', factory: invalidFactory }),
                 registration({ pluginId: 'happier.agent.alpha', factory: invalidFactory }),
             ],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate,
         });
@@ -3482,7 +3558,7 @@ describe('target Agent runtime registry', () => {
             targetRegistrations: [registration({
                 factory: competingFactory,
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -3543,7 +3619,7 @@ describe('target Agent runtime registry', () => {
             targetRegistrations: [registration({
                 factory: async () => ({ sessions }),
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant');
@@ -3601,7 +3677,7 @@ describe('target Agent runtime registry', () => {
             }],
             activationTargets: [target()],
             targetRegistrations: [registration({ factory })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         }).get('assistant');
@@ -3640,7 +3716,7 @@ describe('target Agent runtime registry', () => {
                 localId: 'ohmypi',
                 factory,
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         });
@@ -3697,7 +3773,7 @@ describe('target Agent runtime registry', () => {
                     providerBinding: selectedProviderBinding,
                 }),
             ],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: TEST_RETIREMENT_SIGNAL,
             onDuplicate: vi.fn(),
         };

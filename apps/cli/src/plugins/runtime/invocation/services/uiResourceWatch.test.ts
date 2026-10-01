@@ -136,7 +136,7 @@ async function createLiveResource(input?: Readonly<{
                 },
             ]])
             : new Map(),
-        immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
+        dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
         dynamicProducers: [{
             pluginId: 'acme.alpha',
             localId: 'live',
@@ -164,9 +164,9 @@ function createWatchOwner(
     }>,
 ) {
     return createStablePluginUiResourceWatchOwner({
-        generation: GENERATION,
         resources,
         isPluginConsumerCurrent: options?.isPluginConsumerCurrent ?? (() => true),
+        readPluginOccurrenceId: () => GENERATION,
         ...(options?.record ? { recordRuntimeLimitMeasurement: options.record } : {}),
     });
 }
@@ -188,6 +188,74 @@ function deferred<T>(): Readonly<{
 const CALLER = 'acme.alpha';
 
 describe('daemon plugin UI resource invalidation transport (EU-4b)', () => {
+    it('retires only watches owned by changed plugin occurrences', async () => {
+        const listeners = new Map<string, () => void>();
+        const values = new Map([
+            ['acme.alpha', 'alpha-1'],
+            ['acme.beta', 'beta-1'],
+        ]);
+        const owner = await createStablePluginResourcesOwner({
+            registry: registry([
+                dynamicContribution('acme.alpha', 'live'),
+                dynamicContribution('acme.beta', 'live'),
+            ]),
+            generations: new Map(),
+            dynamicOccurrenceIdsByPluginId: new Map([
+                ['acme.alpha', 'alpha-1'],
+                ['acme.beta', 'beta-1'],
+            ]),
+            dynamicProducers: ['acme.alpha', 'acme.beta'].map((pluginId) => ({
+                pluginId,
+                localId: 'live',
+                runtime: {
+                    read: () => new Uint8Array(Buffer.from(values.get(pluginId)!)),
+                    observe: (notify: () => void) => {
+                        listeners.set(pluginId, notify);
+                        return { dispose: () => { listeners.delete(pluginId); } };
+                    },
+                },
+            })),
+        });
+        const watches = createStablePluginUiResourceWatchOwner({
+            resources: owner,
+            isPluginConsumerCurrent: () => true,
+            readPluginOccurrenceId: (pluginId) => `${pluginId}-occurrence`,
+        });
+
+        for (const pluginId of ['acme.alpha', 'acme.beta']) {
+            await watches.open({
+                subscriptionId: 'surface',
+                callerPluginId: pluginId,
+                resourceId: 'live',
+            });
+        }
+        const alphaPoll = watches.next({
+            subscriptionId: 'surface',
+            callerPluginId: 'acme.alpha',
+            waitMs: 60_000,
+        });
+        const betaPoll = watches.next({
+            subscriptionId: 'surface',
+            callerPluginId: 'acme.beta',
+            waitMs: 60_000,
+        });
+
+        watches.retirePlugins(['acme.alpha']);
+        values.set('acme.beta', 'beta-2');
+        listeners.get('acme.beta')?.();
+
+        await expect(alphaPoll).resolves.toMatchObject({
+            status: 'event',
+            event: { kind: 'error', code: 'stale_surface' },
+        });
+        await expect(betaPoll).resolves.toMatchObject({
+            status: 'event',
+            event: { kind: 'invalidated' },
+        });
+        expect(listeners.has('acme.beta')).toBe(true);
+        watches.retire();
+    });
+
     it('establishes a Session watch through one exact contextual Resource binding', async () => {
         const reads: string[] = [];
         const observes: string[] = [];
@@ -199,7 +267,7 @@ describe('daemon plugin UI resource invalidation transport (EU-4b)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -265,7 +333,7 @@ describe('daemon plugin UI resource invalidation transport (EU-4b)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -304,7 +372,7 @@ describe('daemon plugin UI resource invalidation transport (EU-4b)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -342,7 +410,7 @@ describe('daemon plugin UI resource invalidation transport (EU-4b)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -406,7 +474,7 @@ describe('daemon plugin UI resource invalidation transport (EU-4b)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-1']]),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -624,7 +692,7 @@ describe('daemon plugin UI resource invalidation transport (EU-4b)', () => {
         watches.retire();
     });
 
-    it('releases every parked poll when the generation retires', async () => {
+    it('releases every parked poll when the occurrenceId retires', async () => {
         const live = await createLiveResource();
         const watches = createWatchOwner(live.owner);
         await watches.open({ subscriptionId: 'sub-7', callerPluginId: CALLER, resourceId: 'live' });

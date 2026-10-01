@@ -5,8 +5,12 @@ import {
   defineUiSurface,
   Dropdown,
   Form,
+  ListDetailLayout,
   Menu,
   Popover,
+  SessionComposer,
+  SessionProvider,
+  SessionTranscript,
   Text,
   usePluginHostApi,
   useLivePluginResource,
@@ -143,6 +147,40 @@ function ExternalAuthoringOverlays() {
 }
 
 /**
+ * One live Session arranged by the author: the lead's own facts beside the transcript, the
+ * composer under it. Every part is a view of the one host controller `SessionProvider` mounts; the
+ * author gets no transcript, draft, callback or approval authority, and hosts that cannot present a
+ * Session render the fallback.
+ */
+function LeadSession() {
+  const leadSessionId = 'lead-session-42';
+  return (
+    <SessionProvider
+      sessionId={leadSessionId}
+      fallback={<Text tone="muted" value="Open this lead's chat in Happier" />}
+    >
+      <ListDetailLayout
+        minListWidth={240}
+        minDetailWidth={360}
+        preferredListRatio={0.35}
+        list={(
+          <Card>
+            <Text variant="title" value="Acme Corp" />
+            <Text tone="muted" value="Inbound · Qualified" />
+          </Card>
+        )}
+        detail={(
+          <>
+            <SessionTranscript />
+            <SessionComposer />
+          </>
+        )}
+      />
+    </SessionProvider>
+  );
+}
+
+/**
  * The artifact's bundle-contract export (§3.9).
  *
  * An external author writes NO host wiring: no provider mount, no `hostApi` or
@@ -151,3 +189,6 @@ function ExternalAuthoringOverlays() {
  * provider — the only copy whose React contexts the components above can read.
  */
 export const renderSurface = defineUiSurface(Summary);
+
+/** The custom-arrangement Session consumer (plan 05 §4.8). */
+export const renderLeadSessionSurface = defineUiSurface(LeadSession);

@@ -769,6 +769,24 @@ r#"Object.defineProperty(window, 'ipc', {
     Ok(unsafe { self.webview.goBack() }.is_some())
   }
 
+  #[cfg(target_os = "macos")]
+  pub fn can_go_back(&self) -> crate::Result<bool> {
+    Ok(unsafe { self.webview.canGoBack() })
+  }
+
+  #[cfg(target_os = "macos")]
+  pub fn can_go_forward(&self) -> crate::Result<bool> {
+    Ok(unsafe { self.webview.canGoForward() })
+  }
+
+  #[cfg(target_os = "macos")]
+  pub fn go_forward(&self) -> crate::Result<bool> {
+    if !self.can_go_forward()? {
+      return Ok(false);
+    }
+    Ok(unsafe { self.webview.goForward() }.is_some())
+  }
+
   pub fn id(&self) -> crate::WebViewId<'_> {
     &self.id
   }

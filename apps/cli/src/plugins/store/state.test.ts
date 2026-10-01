@@ -195,7 +195,7 @@ describe('pluginStateStore', () => {
           compatibility: { status: 'compatible', diagnostics: [] },
           install: {
             mode: 'managed_install', manifestVersion: '1.0.0', installedPath: '/plugins/acme-plugin',
-            trust, updatePolicy: 'reviewSensitiveChanges', optionalAccess: [access],
+            trust, updatePolicy: 'allowed', optionalAccess: [access],
           },
           state: { enabled: true },
         },
@@ -207,7 +207,7 @@ describe('pluginStateStore', () => {
         'acme.plugin': {
           install: {
             trust: { pluginId: 'acme.plugin', distribution },
-            updatePolicy: 'reviewSensitiveChanges',
+            updatePolicy: 'allowed',
             optionalAccess: [{
               pluginId: 'acme.plugin',
               accessId: 'account',
@@ -238,7 +238,7 @@ describe('pluginStateStore', () => {
           install: {
             mode: 'link', manifestVersion: '1.0.0',
             trust: { pluginId: 'acme.substitute', distribution: { kind: 'localPath', canonicalPath: '/plugins/acme' }, state: 'trusted', approvedAtMs: 1 },
-            updatePolicy: 'reviewEveryUpdate',
+            updatePolicy: 'allowed',
             optionalAccess: [{ pluginId: 'acme.plugin', accessId: 'future', capability: 'future.capability', normalizedScope: {}, scopeDigest: 'sha256-YWJj', selectedAtMs: 2 }],
           },
           state: { enabled: true },
@@ -405,7 +405,7 @@ describe('writeCommittedLocalPathPluginFixture', () => {
       const paths = resolvePluginStorePaths({ happyHomeDir });
       const commit = await readPluginRegistryCommitRecord(paths);
       if (!commit) throw new Error('Expected committed plugin fixture');
-      const generation = commit.pluginGenerations[pluginId];
+      const generation = commit.pluginOccurrenceIds[pluginId];
       if (!generation) throw new Error('Expected committed plugin generation');
       const state = await readInstallationStateRevision({
         paths,

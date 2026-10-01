@@ -60,7 +60,8 @@ function coreContext(
       kind: 'plugin',
       pluginId: 'happier.channels',
       contribution: { id: 'test', qualifiedId: 'happier.channels/actions/test' },
-      immutableGenerationId: 'telegram-channel-actions-fixture-generation',
+      occurrenceId: 'telegram-channel-actions-fixture-generation',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'telegram-channel-actions-fixture-generation', installSource: 'npm' },
       materialization: {
         machineId: 'telegram-channel-actions-fixture-machine',
         materializationId: 'telegram-channel-actions-fixture-materialization',

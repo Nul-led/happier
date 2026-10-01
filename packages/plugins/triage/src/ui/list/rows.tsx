@@ -1,40 +1,45 @@
 import * as React from 'react';
 import {
   Button,
-  List,
+  Icon,
+  Row,
+  Stack,
+  Text,
   useListMultiSelectionRow,
   usePluginTranslation,
   useSurfaceContext,
+  type CollectionAnatomy,
+  type CollectionRowActions,
+  type IconName,
   type ListItemProps,
+  type TextTone,
 } from '@happier-dev/plugin-ui';
+import { formatTriageTimestampV1 } from '@happier-dev/triage-protocol/v1';
 
 import type { TriageListDisplayRowV1 } from '../marks/pinnedRows.js';
-import type { TriageSourceDescriptorV1 } from '@happier-dev/triage-protocol/v1';
+import type { TriageSourceDescriptorV1, TriageSourceWorkflowSubjectV1 } from '@happier-dev/triage-protocol/v1';
 import { readTriageSourceDescriptorV1 } from '../detail/sourceSurface.js';
 import {
   readTriageEntryRowAnnouncementV1,
   readTriageEntryRowContextV1,
   type TriageEntryDisplayTextV1,
 } from '../window/entryDisplay.js';
-import type { TriageListContinuationCopyV1 } from './continuation.js';
-import type { TriageListSectionItemV1 } from './sections.js';
+import type { TriageListItemV1 } from './sections.js';
 
 /**
- * One list row.
+ * One PRs & Issues row.
  *
- * It is the shared `List.Item`, not a Triage row component: activation,
- * selection semantics, keyboard behavior, focus registration, target size and
- * divider are all owned there and reached through the sectioned `List` that
- * mounts this renderer (`core/SURFACE.md` §1.2). The only things this file
- * decides are which already-projected words go in which slot, and which single
- * Pin/Unpin affordance the row carries.
+ * The row is the shared Collection's (`@happier-dev/plugin-ui` `Collection`, presenting through the one `List`
+ * engine): activation, selection semantics, keyboard behavior, focus registration, target size, the table and list
+ * geometries and the peek are all owned there (`core/SURFACE.md` §1.2, COLLECTION.md §3). The only things this
+ * file decides are which already-projected words go in which anatomy slot, and which single Pin/Unpin affordance
+ * the row carries.
  *
- * There is exactly one such affordance per row, and it is never two states of
- * two controls. A materialized row offers it through the public secondary-action
- * owner, which keeps the overflow outside the row press target and owns the
- * menu's focus and keyboard behavior. A pinned row this mount never materialized
- * carries an inline **Unpin** instead, because it has no detail panel to host
- * the operation and dropping it would strand a pin the reader cannot remove.
+ * There is exactly one such affordance per row, and it is never two states of two controls. A materialized row
+ * offers it through the public secondary-action owner, which keeps the overflow outside the row press target and
+ * owns the menu's focus and keyboard behavior. A pinned row this mount never materialized carries an inline
+ * **Unpin** instead, because it has no detail panel to host the operation and dropping it would strand a pin the
+ * reader cannot remove.
  */
 
 export type TriageRowPinHandlersV1 = Readonly<{
@@ -142,6 +147,59 @@ export function triageListRowTestId(rowKey: string): string {
  * The title is never repeated: an entry that announced itself twice is the
  * failure the pinned name exists to prevent.
  */
+/**
+ * The row's leading mark: its lifecycle as a glyph, in the one tone that says
+ * whether it needs the reader. Decorative for assistive technology — the
+ * lifecycle is said in words in the context line and the description — so
+ * glyph and colour are never the only carriers of state.
+ */
+export function readTriageRowMarkV1(
+  row: Pick<TriageListDisplayRowV1, 'lifecyclePresentation' | 'detailKind' | 'tone'>,
+  workflowSubject: TriageSourceWorkflowSubjectV1 | null = null,
+): Readonly<{ name: IconName; tone: TextTone }> {
+  const name = readTriageEntryGlyphV1(row.lifecyclePresentation, workflowSubject);
+  const tone: TextTone = row.detailKind === 'presence' && row.tone !== 'neutral'
+    ? row.tone
+    : row.detailKind === 'attention' ? 'accent' : 'secondary';
+  return { name, tone };
+}
+
+/**
+ * The one glyph an entry wears, in its row and in its detail header: its kind
+ * while it is open (a pull request, an issue, an error group), then where its
+ * lifecycle ended. A kind nobody declared keeps the lifecycle glyph rather than
+ * a guess at what the entry is.
+ */
+export function readTriageEntryGlyphV1(
+  lifecycle: TriageListDisplayRowV1['lifecyclePresentation'],
+  workflowSubject: TriageSourceWorkflowSubjectV1 | null,
+): IconName {
+  if (lifecycle === 'closed' || lifecycle === 'suppressed') return 'close';
+  if (lifecycle === 'resolved') {
+    return workflowSubject === null || workflowSubject === 'pullRequest' ? 'change-complete' : 'check';
+  }
+  if (lifecycle !== 'active') return 'info';
+  if (workflowSubject === 'issue') return 'issue';
+  if (workflowSubject === 'errorIssue') return 'bug';
+  if (workflowSubject === 'other') return 'info';
+  return 'change-open';
+}
+
+/**
+ * The colour of the trailing detail. A required-attention reason is the row's
+ * one loud fact and a presence problem keeps its caution; a suggestion, a
+ * summary or a neutral note stays quiet. The title itself is never toned, so a
+ * stale or dropped row still reads as a row (`DESIGN-SPEC` §5.5).
+ */
+export function readTriageRowDetailToneV1(
+  row: Pick<TriageListDisplayRowV1, 'detail' | 'detailKind' | 'tone'>,
+): TextTone | undefined {
+  if (row.detail === null) return undefined;
+  if (row.detailKind === 'attention') return 'accent';
+  if (row.detailKind === 'presence' && row.tone !== 'neutral') return row.tone;
+  return undefined;
+}
+
 export function triageListRowItemProps(
   row: TriageListDisplayRowV1,
   busy: boolean,
@@ -167,17 +225,24 @@ export function triageListRowItemProps(
   | 'titleNumberOfLines'
   | 'subtitleNumberOfLines'
   | 'detailNumberOfLines'
-  | 'tone'
+  | 'detailTone'
   | 'busy'
   | 'accessibilityLabel'
   | 'accessibilityHint'
 > {
   const context = readTriageEntryRowContextV1(row, announcement.descriptor, announcement.source);
+  // The provider's own last-activity age, when it reports one: quiet, at the
+  // end of the context line, and said in the same place it is shown.
+  const activityLabel = row.activityAtMs === null
+    ? undefined
+    : formatTriageTimestampV1(announcement.locale, row.activityAtMs, 'relative', announcement.nowMs);
+  const detailTone = readTriageRowDetailToneV1(row);
   return {
     testID: triageListRowTestId(row.key),
     title: row.title,
-    subtitle: context.label,
+    subtitle: activityLabel === undefined ? context.label : `${context.label} · ${activityLabel}`,
     ...(row.detail === null ? {} : { detail: row.detail }),
+    ...(detailTone === undefined ? {} : { detailTone }),
     // The virtualizer this row is mounted in has no fixed height and reveals an
     // unmounted row by `averageItemLength * index`. A provider title is a
     // bounded 4 KiB string, not a bounded LINE COUNT: one entry titled with a
@@ -189,42 +254,76 @@ export function triageListRowItemProps(
     titleNumberOfLines: TRIAGE_ROW_TITLE_LINES_V1,
     subtitleNumberOfLines: TRIAGE_ROW_SUPPORTING_LINES_V1,
     detailNumberOfLines: TRIAGE_ROW_SUPPORTING_LINES_V1,
-    tone: row.tone,
     busy,
     accessibilityLabel: row.title,
-    accessibilityHint: readTriageEntryRowAnnouncementV1({ ...row, contextDescription: context.description }, announcement),
+    accessibilityHint: readTriageEntryRowAnnouncementV1({
+      ...row,
+      contextDescription: context.description,
+      ...(activityLabel === undefined ? {} : { activityLabel }),
+    }, announcement),
   };
 }
 
-export function TriageListRow(props: Readonly<{
-  row: TriageListDisplayRowV1;
+
+/**
+ * A compact, locale-owned age for the table's tabular Age column ("18m", "2h", "3d"). The row's accessible
+ * description keeps the full relative phrase; this is only what fits the column.
+ */
+export function formatTriageCompactAgeV1(locale: string, atMs: number, nowMs: number): string {
+  const seconds = Math.max(0, Math.round((nowMs - atMs) / 1000));
+  const [value, unit] = seconds < 3_600
+    ? [Math.max(1, Math.round(seconds / 60)), 'minute' as const]
+    : seconds < 86_400
+      ? [Math.round(seconds / 3_600), 'hour' as const]
+      : seconds < 30 * 86_400
+        ? [Math.round(seconds / 86_400), 'day' as const]
+        : [Math.round(seconds / (7 * 86_400)), 'week' as const];
+  return new Intl.NumberFormat(locale, { style: 'unit', unit, unitDisplay: 'narrow' }).format(value);
+}
+
+/**
+ * What every row of the mounted list shares: the Pin/Unpin handlers and the one activation path. The Collection
+ * renders rows itself, so a row reads these from here rather than through a closure per row.
+ */
+export type TriageListRowEnvironmentV1 = Readonly<{
   handlers: TriageRowPinHandlersV1;
-}>): React.ReactElement {
-  const { row, handlers } = props;
-  const busy = handlers.busyKey === row.key;
-  // The reader's own locale, from the one host fact that carries it. Read here
-  // rather than threaded through the section plan because a row's freshness is
-  // stated against the moment it renders, and re-planning every section on a
-  // clock would rebuild the whole collection (`core/SURFACE.md` §4.3).
-  const surfaceContext = useSurfaceContext();
-  const disabled = handlers.unavailableReason !== null;
-  // `{title}` interpolation is why these cannot go through `secondaryActions[].labelKey`
-  // or `accessibilityHintKey`: those resolve through `resolveAuthorText` WITHOUT a
-  // values argument, so a placeholder would reach the reader verbatim.
+  /** Opens the entry exactly as a row press does (the peek's Open). */
+  onOpen: (key: string) => void;
+}>;
+
+export const TriageListRowEnvironmentContext = React.createContext<TriageListRowEnvironmentV1 | null>(null);
+
+function useTriageListRowEnvironment(): TriageListRowEnvironmentV1 {
+  const environment = React.useContext(TriageListRowEnvironmentContext);
+  if (environment === null) throw new Error('A PRs & Issues row rendered outside its list.');
+  return environment;
+}
+
+/**
+ * The row's own controls beside its press target, which is the one Pin/Unpin affordance per row. A
+ * materialized row offers Select and Pin through the public secondary-action owner; a pinned row this mount never
+ * materialized carries an inline **Unpin**, because it has no detail to host the operation and dropping it would
+ * strand a pin the reader cannot remove.
+ *
+ * It is the Collection's row-actions hook: called inside each row, so the shared selection owner's per-row
+ * facts commit this row and the row that lost the anchor, not every mounted cell.
+ */
+export function useTriageListRowActions(item: TriageListItemV1): CollectionRowActions {
+  const { row } = item;
+  const { handlers } = useTriageListRowEnvironment();
+  // `{title}` interpolation is why these cannot go through `secondaryActions[].labelKey`: those resolve without
+  // a values argument, so a placeholder would reach the reader verbatim.
   const text = usePluginTranslation();
+  const busy = handlers.busyKey === row.key;
+  const disabled = handlers.unavailableReason !== null;
   const label = readTriagePinActionLabelV1(row, text);
-  const onSetPinned = React.useCallback(() => { handlers.onSetPinned(row); }, [handlers, row]);
-  // The shared selection owner's own per-row facts, subscribed per row: the
-  // three-character primitive commits this row and the row that lost the
-  // anchor, not every mounted cell.
   const selection = useListMultiSelectionRow(row.key);
   const selectLabel = selection.isSelected
     ? text('plugins.triage.surface.row.deselect', 'Deselect {title}', { title: row.title })
     : text('plugins.triage.surface.row.select', 'Select {title}', { title: row.title });
   const onSecondaryAction = React.useCallback((actionId: string) => {
-    // `enter` rather than `toggle` for the first row: turning selection mode on
-    // AND choosing the row the reader pressed is one gesture, and entering an
-    // empty selection mode would make the bar appear with nothing in it.
+    // `replace` rather than `toggle` for the first row: turning selection mode on AND choosing the row the reader
+    // pressed is one gesture, and entering an empty selection mode would make the bar appear with nothing in it.
     if (actionId === TRIAGE_ROW_SELECT_ACTION_ID_V1) {
       if (selection.isSelectionMode) selection.toggle();
       else selection.replace();
@@ -232,157 +331,130 @@ export function TriageListRow(props: Readonly<{
     }
     handlers.onSetPinned(row);
   }, [handlers, row, selection]);
-
-  const common = triageListRowItemProps(row, busy, {
-    nowMs: Date.now(),
-    locale: surfaceContext.locale,
-    descriptor: readTriageSourceDescriptorV1(surfaceContext, row.entryRef.source),
-    source: row.entryRef.source,
-    text,
-  });
-
   if (!row.materialized) {
-    return (
-      <List.Item
-        {...common}
-        accessoryOutsidePressable
-        accessory={(
+    return {
+      busy,
+      accessory: (
+        <Button
+          // A short visible verb; the full "Unpin {title}" stays the name a reader hears.
+          title={text('plugins.triage.surface.row.unpinShort', 'Unpin')}
+          accessibilityLabel={label}
+          variant="plain"
+          busy={busy}
+          disabled={disabled}
+          onPress={() => { handlers.onSetPinned(row); }}
+        />
+      ),
+    };
+  }
+  return {
+    busy,
+    secondaryActions: triageListRowSecondaryActionsV1({ selectLabel, pinLabel: label, pinDisabled: disabled }),
+    // Kept as an explicit override: plugin-ui's default resolves against the MOUNTED plugin's catalog, which
+    // Triage does not declare, so dropping this would degrade to English rather than inherit a translation.
+    secondaryActionAccessibilityLabel: text('plugins.triage.surface.row.moreActions', 'More actions for {title}', { title: row.title }),
+    onSecondaryAction,
+  };
+}
+
+/** The peek: the source's own summary, what the row already knows, and the two things a reader does next. */
+function TriageListPeek(props: Readonly<{ item: TriageListItemV1 }>): React.ReactElement {
+  const { row, summary } = props.item;
+  const { handlers, onOpen } = useTriageListRowEnvironment();
+  const text = usePluginTranslation();
+  const surfaceContext = useSurfaceContext();
+  const descriptor = readTriageSourceDescriptorV1(surfaceContext, row.entryRef.source);
+  const context = readTriageEntryRowContextV1(row, descriptor, row.entryRef.source);
+  return (
+    <Stack gap="small">
+      <Text variant="caption" tone="secondary" value={context.label} numberOfLines={1} />
+      {summary === null ? null : <Text variant="body" tone="secondary" value={summary} numberOfLines={3} />}
+      <Row gap="small" wrap>
+        {row.sourceInstanceId === null ? null : (
           <Button
-            title={label}
-            variant="plain"
-            busy={busy}
-            disabled={disabled}
-            onPress={onSetPinned}
+            title={text('plugins.triage.surface.peek.open', 'Open')}
+            variant="primary"
+            onPress={() => { onOpen(row.key); }}
           />
         )}
-      />
-    );
-  }
-
-  return (
-    <List.Item
-      {...common}
-      secondaryActions={triageListRowSecondaryActionsV1({
-        selectLabel,
-        pinLabel: label,
-        pinDisabled: disabled,
-      })}
-      // Kept as an explicit override rather than falling back to plugin-ui's
-      // default: that default resolves `happier.plugin-ui.list.moreActions`
-      // against the MOUNTED plugin's catalog, which Triage does not declare, so
-      // dropping this would degrade to English rather than inherit a translation.
-      secondaryActionAccessibilityLabel={text(
-        'plugins.triage.surface.row.moreActions',
-        'More actions for {title}',
-        { title: row.title },
-      )}
-      onSecondaryAction={onSecondaryAction}
-    />
+        <Button
+          title={row.pinned
+            ? text('plugins.triage.surface.row.unpinShort', 'Unpin')
+            : text('plugins.triage.surface.peek.pin', 'Pin')}
+          accessibilityLabel={readTriagePinActionLabelV1(row, text)}
+          variant="secondary"
+          busy={handlers.busyKey === row.key}
+          disabled={handlers.unavailableReason !== null}
+          onPress={() => { handlers.onSetPinned(row); }}
+        />
+      </Row>
+    </Stack>
   );
 }
 
-/** The row renderer the sectioned `List` calls; its signature is `List`'s own. */
-export function renderTriageListRow(
-  row: TriageListDisplayRowV1,
-  handlers: TriageRowPinHandlersV1,
-): React.ReactElement {
-  return <TriageListRow row={row} handlers={handlers} />;
-}
+const SIGNAL_TONES: Readonly<Record<NonNullable<TriageListItemV1['signal']>['tone'], TextTone>> = Object.freeze({
+  success: 'success',
+  warning: 'warning',
+  danger: 'danger',
+  info: 'info',
+  neutral: 'secondary',
+});
 
 /**
- * A section's last row when its walk is not finished (`core/SURFACE.md` §4.2).
- *
- * It is the same shared `List.Item` every other row is, so it occupies one
- * position in the flattened traversal order and is announced with the same
- * section-local position as its neighbours — which is the whole reason the
- * design chose a stated row over an invisible scroll trigger.
- *
- * It carries no Pin/Unpin affordance and it names no entry, so it takes part in
- * neither selection nor the reducer's visible order. What it does carry now is
- * the section's own continuation control, and it is an `accessory` rather than
- * a row press for exactly that reason: pressing the ROW is how an entry is
- * opened, and a row with no entry must not be the thing that gets selected. The
- * control is the same public `Button` the unmaterialized pinned row uses, so
- * focus, keyboard activation and the busy state are owned there.
- *
- * Whether there is a control at all is not decided here. The copy owner
- * (`ui/list/continuation.ts`) supplies a label exactly when pressing would read
- * more, so an exhausted, ceilinged or not-yet-mounted section renders the
- * statement alone rather than a control that would do nothing.
- *
- * Its statement is the description, not the heading, so it is what the row's
- * accessible description carries. A name pinned to the heading alone announced
- * "More entries may exist" and then withheld the sentence that says why — the
- * exact silence a stated row was chosen over a scroll trigger to avoid.
+ * The PRs & Issues row anatomy: which already-projected word goes in which Collection slot. The entry is the
+ * row's accessible NAME and only the entry; everything else a sighted reader takes from the row's surroundings is
+ * its description, composed by the one announcement owner (`triageListRowItemProps`).
  */
-export function TriageListContinuationRow(props: Readonly<{
-  copy: TriageListContinuationCopyV1;
-  onLoadMore: () => void;
-}>): React.ReactElement {
-  const { copy, onLoadMore } = props;
-  return (
-    <List.Item
-      title={copy.title}
-      subtitle={copy.description}
-      tone={copy.tone}
-      accessibilityLabel={copy.title}
-      accessibilityHint={copy.description}
-      {...(copy.actionLabel === undefined ? {} : {
-        accessory: (
-          <Button
-            title={copy.actionLabel}
-            variant="plain"
-            busy={copy.busy}
-            onPress={onLoadMore}
-          />
-        ),
-      })}
-    />
-  );
-}
-
-/**
- * The key the shared `List` addresses a section item by.
- *
- * A module constant, not an inline lambda, for the same reason `RETAIN_EVERY_ROW`
- * is: `List` memoizes its flattened traversal order, its key index and its
- * roving-entry array on this identity. A new function each render reprojects the
- * WHOLE dataset — every section, every row, every index — on every render the
- * shell does, including the ones a focus move causes. At two thousand rows that
- * is the difference between moving a cursor and rebuilding the collection.
- */
-export function readTriageListSectionItemKey(item: TriageListSectionItemV1): string {
-  return item.key;
-}
-
-/**
- * One stable row renderer for the shared `List`.
- *
- * `List` holds the renderer behind a `useCallback` whose dependency list
- * includes it, so an inline lambda invalidates the memoized row projection and
- * forces the virtualizer to rebuild every mounted cell on every shell render.
- * Binding it to the three things a row actually depends on — the translated
- * continuation copy, the continuation demand and the Pin/Unpin handlers — keeps
- * focus movement local.
- */
-export function useTriageListRowRenderer(input: Readonly<{
-  continuationCopy: (sectionKey: string | null) => TriageListContinuationCopyV1;
-  /** The section's own continuation demand; the lanes and the pins page differently. */
-  onLoadMore: (sectionKey: string | null) => void;
-  handlers: TriageRowPinHandlersV1;
-}>): (item: TriageListSectionItemV1, index: number, sectionKey: string | null) => React.ReactElement {
-  const { continuationCopy, onLoadMore, handlers } = input;
-  return React.useCallback(
-    (item: TriageListSectionItemV1, _index: number, sectionKey: string | null) => (
-      item.kind === 'continuation'
-        ? (
-          <TriageListContinuationRow
-            copy={continuationCopy(sectionKey)}
-            onLoadMore={() => { onLoadMore(sectionKey); }}
-          />
-        )
-        : <TriageListRow row={item.row} handlers={handlers} />
-    ),
-    [continuationCopy, handlers, onLoadMore],
-  );
+export function useTriageListAnatomyV1(input: Readonly<{ withSignal: boolean }>): CollectionAnatomy<TriageListItemV1> {
+  const text = usePluginTranslation();
+  const surfaceContext = useSurfaceContext();
+  const { withSignal } = input;
+  return React.useMemo<CollectionAnatomy<TriageListItemV1>>(() => {
+    const descriptorOf = (item: TriageListItemV1) => readTriageSourceDescriptorV1(surfaceContext, item.row.entryRef.source);
+    return {
+      glyph: (item) => {
+        const descriptor = descriptorOf(item);
+        const mark = readTriageRowMarkV1(
+          item.row,
+          descriptor?.kinds.find((kind) => kind.id === item.row.entryRef.kindId)?.workflowSubject ?? null,
+        );
+        return <Icon name={mark.name} size="small" tone={mark.tone} />;
+      },
+      title: (item) => item.row.title,
+      where: (item) => item.row.identifierLabel ?? item.row.scopeLabel,
+      reason: (item) => {
+        const { row } = item;
+        if (row.detail === null || row.detailKind === 'summary') return null;
+        const tone: TextTone = row.detailKind === 'attention'
+          ? 'accent'
+          : row.detailKind === 'presence' && row.tone !== 'neutral' ? row.tone : 'secondary';
+        return <Text variant="caption" tone={tone} value={row.detail} numberOfLines={1} />;
+      },
+      ...(withSignal ? {
+        signal: (item: TriageListItemV1) => (item.signal === null ? null : (
+          <Text variant="caption" tone={SIGNAL_TONES[item.signal.tone]} value={item.signal.label} numberOfLines={1} />
+        )),
+      } : {}),
+      age: (item) => (item.row.activityAtMs === null
+        ? null
+        : formatTriageCompactAgeV1(surfaceContext.locale, item.row.activityAtMs, Date.now())),
+      peek: (item) => <TriageListPeek item={item} />,
+      accessibilityLabel: (item) => item.row.title,
+      accessibilityHint: (item) => triageListRowItemProps(item.row, false, {
+        nowMs: Date.now(),
+        locale: surfaceContext.locale,
+        descriptor: descriptorOf(item),
+        source: item.row.entryRef.source,
+        text,
+      }).accessibilityHint,
+      testID: (item) => triageListRowTestId(item.row.key),
+      columnTitles: {
+        title: text('plugins.triage.surface.column.entry', 'Entry'),
+        where: text('plugins.triage.surface.column.where', 'Where'),
+        reason: text('plugins.triage.surface.column.reason', 'Why it’s here'),
+        signal: text('plugins.triage.surface.column.signal', 'Signal'),
+        age: text('plugins.triage.surface.column.age', 'Age'),
+      },
+    };
+  }, [surfaceContext, text, withSignal]);
 }

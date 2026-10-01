@@ -37,7 +37,7 @@ function withDefaultPreview(defaultPreview: unknown, pluginInstall: unknown): un
  * The Agent-facing `plugins.install` approval preview. It resolves the author
  * source through the same canonical resolver the install itself uses, so an
  * ordinary code-defined author root — the shape `plugins.scaffold` produces —
- * previews as a real source-root approval instead of failing on a legacy
+ * previews as a real project-source approval instead of failing on a legacy
  * descriptor it was never supposed to have.
  */
 export async function buildPluginInstallApprovalPreview(params: PluginInstallApprovalPreviewParams): Promise<unknown> {

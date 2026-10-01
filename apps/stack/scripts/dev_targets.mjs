@@ -473,7 +473,7 @@ async function main() {
         text: [
           `[dev-targets] ${desired.target.name} capacity mode: ${desired.target.managedRuntime.capacity.mode}`,
           applied.changed
-            ? '[dev-targets] managed Lima VM restarted and capacity applied'
+            ? '[dev-targets] managed Lima VM reconciled and capacity applied'
             : '[dev-targets] managed Lima VM already matched the selected capacity',
         ].join('\n'),
       });
@@ -585,8 +585,8 @@ async function main() {
     }
     let result;
     const target = requestedTarget === 'auto' ? null : requireTarget(loaded.config.targets, requestedTarget, command);
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
     if (!target || (process.platform !== 'win32' && target.platform !== 'windows')) {
-      const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
       if (!target && (flags.has('--flush') || flags.has('--tty') || wrapperArgs.some((arg) => arg === '--env' || arg.startsWith('--env=')))) {
         throw new Error('[dev-targets] auto execution does not accept --flush, --tty, or --env; choose an exact target for those controls');
       }
@@ -606,7 +606,7 @@ async function main() {
       });
       // Forward parent-only termination to the native owner and wait for its
       // remote cancellation/barrier cleanup before this CLI exits.
-      const signalListeners = new Map(['SIGINT', 'SIGTERM'].map((signal) => [signal, () => child.kill(signal)]));
+      const signalListeners = new Map(['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, () => child.kill(signal)]));
       for (const [signal, listener] of signalListeners) process.on(signal, listener);
       try {
         result = await new Promise((resolveResult) => {
@@ -622,6 +622,7 @@ async function main() {
       result = await runDevTargetCommand({
         target,
         stackBaseDir: dirname(loaded.path),
+        sourceDir: repoRoot,
         commandArgs: remoteCommandArgs,
         cwd: kv.get('--cwd') ?? '.',
         environment: parseRemoteEnvironment(wrapperArgs),

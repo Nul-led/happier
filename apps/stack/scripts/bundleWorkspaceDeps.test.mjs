@@ -400,67 +400,6 @@ test('bundleWorkspaceDeps admits resolved workspace bundles before copying sourc
   }
 });
 
-test('bundleWorkspaceDeps artifact mode rebuilds newer stale workspace output from current source', async () => {
-  const {
-    repoRoot,
-    stackDir,
-    releaseRuntimeDir,
-  } = createBundleFixture('happy-stack-bundle-workspace-deps-artifact-admission-');
-  try {
-    const sourcePath = resolve(releaseRuntimeDir, 'src', 'index.ts');
-    const distPath = resolve(releaseRuntimeDir, 'dist', 'index.js');
-    mkdirSync(dirname(sourcePath), { recursive: true });
-    writeFileSync(sourcePath, 'export const generation = "current";\n', 'utf8');
-    writeFileSync(distPath, 'export const generation = "stale";\n', 'utf8');
-    const now = Date.now();
-    utimesSync(sourcePath, new Date(now), new Date(now));
-    utimesSync(distPath, new Date(now + 10_000), new Date(now + 10_000));
-
-    const admissionCalls = [];
-    await bundleWorkspaceDeps({
-      repoRoot,
-      stackDir,
-      publicationMode: 'artifact',
-      ensureWorkspacePackagesBuiltByName: async (_root, packageNames, options) => {
-        admissionCalls.push({ packageNames, force: options?.force });
-        if (options?.force === true && packageNames.includes('@happier-dev/release-runtime')) {
-          writeFileSync(distPath, 'export const generation = "current";\n', 'utf8');
-        }
-        return { ok: true, built: options?.force === true ? packageNames : [], skipped: [] };
-      },
-    });
-
-    assert.equal(
-      readFileSync(
-        resolve(stackDir, 'node_modules', '@happier-dev', 'release-runtime', 'dist', 'index.js'),
-        'utf8',
-      ),
-      'export const generation = "current";\n',
-    );
-    assert.equal(
-      admissionCalls.some(
-        ({ packageNames, force }) => (
-          packageNames.length === 1
-          && packageNames[0] === '@happier-dev/cli-common'
-          && force === true
-        ),
-      ),
-      true,
-    );
-    assert.equal(
-      admissionCalls.some(
-        ({ packageNames, force }) => (
-          packageNames.includes('@happier-dev/release-runtime')
-          && force === true
-        ),
-      ),
-      true,
-    );
-  } finally {
-    rmSync(repoRoot, { recursive: true, force: true });
-  }
-});
-
 test('bundleWorkspaceDeps admits a stale-present cli-common helper before its first import', async () => {
   const {
     repoRoot,
@@ -742,9 +681,20 @@ test('bundleWorkspaceDeps rebuilds a fresh live bundle in exact artifact mode', 
     const retainedTargetPath = resolve(bundledProtocolDir, 'dist', 'retained.js');
     writeFileSync(retainedTargetPath, 'export const retained = true;\n', 'utf8');
 
-    await bundleWorkspaceDeps({ repoRoot, stackDir, publicationMode: 'artifact' });
+    const admissionOptions = [];
+    await bundleWorkspaceDeps({
+      repoRoot,
+      stackDir,
+      publicationMode: 'artifact',
+      ensureWorkspacePackagesBuiltByName: async (_root, _names, options) => {
+        admissionOptions.push(options);
+        return { ok: true, built: [], skipped: [] };
+      },
+    });
 
     assert.equal(existsSync(retainedTargetPath), false);
+    assert.ok(admissionOptions.length > 0);
+    assert.ok(admissionOptions.every((options) => options.force !== true));
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
@@ -759,19 +709,32 @@ test('bundleWorkspaceDeps refreshes the bundle when the source dist changes', as
     const bundledCliCommonDir = resolve(stackDir, 'node_modules', '@happier-dev', 'cli-common');
     const bundledCliCommonIndexPath = resolve(stackDir, 'node_modules', '@happier-dev', 'cli-common', 'dist', 'index.js');
     const firstMtimeMs = statSync(manifestPath).mtimeMs;
+    const firstSignature = JSON.parse(readFileSync(manifestPath, 'utf8'));
     const livePackageDirInode = statSync(bundledCliCommonDir).ino;
 
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
-    writeFileSync(resolve(cliCommonDir, 'dist', 'index.js'), 'export const z = 42;\n', 'utf8');
+    const sourcePath = resolve(cliCommonDir, 'dist', 'index.js');
+    const original = readFileSync(sourcePath, 'utf8');
+    const originalTime = statSync(sourcePath).mtime;
+    const changed = original.replace(/true|false|\d/u, (value) => value === 'true' ? 'fail' : value === 'false' ? 'false' : '4');
+    assert.equal(changed.length, original.length);
+    assert.notEqual(changed, original);
+    writeFileSync(sourcePath, changed, 'utf8');
+    utimesSync(sourcePath, originalTime, originalTime);
 
     await bundleWorkspaceDeps({ repoRoot, stackDir });
+
+    const nextSignature = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const oldDistFingerprint = firstSignature.bundles.find((bundle) => bundle.packageName === '@happier-dev/cli-common').dist;
+    const nextDistFingerprint = nextSignature.bundles.find((bundle) => bundle.packageName === '@happier-dev/cli-common').dist;
+    assert.notDeepEqual(nextDistFingerprint, oldDistFingerprint, 'the content signature must see this rewrite');
 
     assert.equal(
       statSync(bundledCliCommonDir).ino,
       livePackageDirInode,
       'workspace refreshes must keep the live package directory mounted for concurrent resolvers',
     );
-    assert.match(readFileSync(bundledCliCommonIndexPath, 'utf8'), /42/);
+    assert.equal(readFileSync(bundledCliCommonIndexPath, 'utf8'), changed);
     assert.ok(statSync(manifestPath).mtimeMs > firstMtimeMs);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });

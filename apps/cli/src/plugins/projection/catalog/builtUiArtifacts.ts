@@ -7,16 +7,16 @@ import { readGeneratedPluginUiArtifactsManifest } from '@/plugins/install/ui/gen
 // (that field only carries first-party/pre-declared artifacts), so
 // `plugins show` must read the built manifest to surface them.
 /**
- * Read the contribution ids of the UI artifacts a plugin actually built into
+ * Read the artifact ids of the UI artifacts a plugin actually built into
  * its `dist/happier-plugin-ui/ui-artifacts.json`. Returns an empty list when
  * the plugin shipped no built UI bundle or the manifest is unreadable/invalid
  * — surfacing a partial build must never crash the catalog projection.
  */
-export async function readBuiltUiArtifactContributionIds(
+export async function readBuiltUiArtifactIds(
   pluginRootPath: string,
 ): Promise<readonly string[]> {
   const manifest = await readGeneratedPluginUiArtifactsManifest(pluginRootPath);
   if (!manifest) return [];
-  const ids = manifest.entries.map((entry) => entry.contributionId);
+  const ids = manifest.entries.map((entry) => entry.artifactId);
   return Object.freeze([...new Set(ids)]);
 }

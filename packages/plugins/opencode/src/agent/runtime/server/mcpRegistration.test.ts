@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  buildOpenCodeSessionMcpProjection,
+  canonicalizeOpenCodeProjectedMcpToolName,
+  disconnectOpenCodeMcpServers,
   registerOpenCodeMcpServers,
 } from './mcpRegistration.js';
 import type { OpenCodeRuntimeContext } from './runtimeContext.js';
@@ -22,12 +25,84 @@ function createRegistrationHarness() {
   };
 }
 
+function projection(mcpServers: unknown) {
+  return buildOpenCodeSessionMcpProjection('happier-session-1', mcpServers);
+}
+
 describe('registerOpenCodeMcpServers', () => {
+  it('projects every injected server into distinct stable session namespaces', () => {
+    const first = buildOpenCodeSessionMcpProjection('session-a', {
+      happier: { command: '/bin/happier-mcp' },
+      custom: { command: '/bin/custom-mcp' },
+    });
+    const second = buildOpenCodeSessionMcpProjection('session-b', {
+      happier: { command: '/bin/happier-mcp' },
+      custom: { command: '/bin/custom-mcp' },
+    });
+
+    expect(first.registrations.map(({ originalName, projectedName }) => ({ originalName, projectedName }))).toEqual([
+      { originalName: 'happier', projectedName: 'happier-session-session-a--happier' },
+      { originalName: 'custom', projectedName: 'happier-session-session-a--custom' },
+    ]);
+    expect(second.registrations.map(({ projectedName }) => projectedName)).toEqual([
+      'happier-session-session-b--happier',
+      'happier-session-session-b--custom',
+    ]);
+    expect(first.requiredHappierServerName).toBe('happier-session-session-a--happier');
+  });
+
+  it('keeps long colliding prefixes distinct within the released V2 namespace limit', () => {
+    const sharedPrefix = `custom-${'same-prefix-'.repeat(8)}`;
+    const result = buildOpenCodeSessionMcpProjection('session-a', {
+      [`${sharedPrefix}first`]: { command: '/bin/first' },
+      [`${sharedPrefix}second`]: { command: '/bin/second' },
+    });
+    const names = result.registrations.map(({ projectedName }) => projectedName);
+
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+    expect(names).toEqual(names.map((name) => expect.stringMatching(/^[A-Za-z0-9_-]{64}$/)));
+    expect(canonicalizeOpenCodeProjectedMcpToolName(
+      `${names[0]}_lookup`,
+      result,
+    )).toBe(`mcp__${sharedPrefix}first__lookup`);
+  });
+
+  it('awaits in-flight registration and removes only successfully registered name-directory pairs', async () => {
+    const harness = createRegistrationHarness();
+    const mcpRemove = vi.fn(async () => undefined);
+    let resolveRegistration!: () => void;
+    const registration = new Promise<Readonly<{
+      requiredHappier: { status: 'ready' };
+      registeredServers: readonly Readonly<{ directory: string; name: string }>[];
+    }>>((resolve) => {
+      resolveRegistration = () => resolve({
+        requiredHappier: { status: 'ready' },
+        registeredServers: [{ directory: '/repo', name: 'happier-session-session-a--happier' }],
+      });
+    });
+
+    const cleanup = disconnectOpenCodeMcpServers({
+      ctx: harness.ctx,
+      client: { mcpRemove } as unknown as OpenCodeServerClient,
+      registration,
+    });
+    await Promise.resolve();
+    expect(mcpRemove).not.toHaveBeenCalled();
+
+    resolveRegistration();
+    await cleanup;
+    expect(mcpRemove).toHaveBeenCalledWith({
+      directory: '/repo',
+      name: 'happier-session-session-a--happier',
+    });
+  });
+
   it('settles required Happier readiness after an earlier optional registration finishes', async () => {
     const harness = createRegistrationHarness();
     let resolveOptional!: () => void;
     harness.mcpAdd.mockImplementation(async ({ name }) => {
-      if (name === 'slow_custom') {
+      if (name === 'happier-session-happier-session-1--slow_custom') {
         await new Promise<void>((resolve) => {
           resolveOptional = resolve;
         });
@@ -39,10 +114,10 @@ describe('registerOpenCodeMcpServers', () => {
       ctx: harness.ctx,
       client: harness.client,
       directory: '/repo',
-      mcpServers: {
+      mcpProjection: projection({
         slow_custom: { command: '/bin/custom' },
         happier: { command: '/bin/happier-mcp' },
-      },
+      }),
     });
 
     await Promise.resolve();
@@ -52,10 +127,14 @@ describe('registerOpenCodeMcpServers', () => {
 
     await expect(registration).resolves.toEqual({
       requiredHappier: { status: 'ready' },
+      registeredServers: [
+        { directory: '/repo', name: 'happier-session-happier-session-1--slow_custom' },
+        { directory: '/repo', name: 'happier-session-happier-session-1--happier' },
+      ],
     });
     expect(harness.mcpAdd).toHaveBeenNthCalledWith(2, {
       directory: '/repo',
-      name: 'happier',
+      name: 'happier-session-happier-session-1--happier',
       config: {
         type: 'local',
         enabled: true,
@@ -74,11 +153,14 @@ describe('registerOpenCodeMcpServers', () => {
       ctx: optionalFailureHarness.ctx,
       client: optionalFailureHarness.client,
       directory: '/repo',
-      mcpServers: {
+      mcpProjection: projection({
         optional: { command: '/bin/optional' },
         happier: { command: '/bin/happier-mcp' },
-      },
-    })).resolves.toEqual({ requiredHappier: { status: 'ready' } });
+      }),
+    })).resolves.toEqual({
+      requiredHappier: { status: 'ready' },
+      registeredServers: [{ directory: '/repo', name: 'happier-session-happier-session-1--happier' }],
+    });
 
     const requiredFailureHarness = createRegistrationHarness();
     const requiredError = new Error('required add failed');
@@ -88,11 +170,12 @@ describe('registerOpenCodeMcpServers', () => {
       ctx: requiredFailureHarness.ctx,
       client: requiredFailureHarness.client,
       directory: '/repo',
-      mcpServers: {
+      mcpProjection: projection({
         happier: { command: '/bin/happier-mcp' },
-      },
+      }),
     })).resolves.toEqual({
       requiredHappier: { status: 'failed', error: requiredError },
+      registeredServers: [],
     });
   });
 
@@ -107,9 +190,9 @@ describe('registerOpenCodeMcpServers', () => {
       ctx: harness.ctx,
       client: harness.client,
       directory: '/repo',
-      mcpServers: {
+      mcpProjection: projection({
         happier: { command: '/bin/happier-mcp' },
-      },
+      }),
     });
 
     expect(result.requiredHappier).toMatchObject({
@@ -135,10 +218,10 @@ describe('registerOpenCodeMcpServers', () => {
       ctx: harness.ctx,
       client: harness.client,
       directory: '/repo',
-      mcpServers: {
+      mcpProjection: projection({
         optional: { command: '/bin/optional' },
         happier: { command: '/bin/happier-mcp' },
-      },
+      }),
     })).resolves.toMatchObject({
       requiredHappier: {
         status: 'unsupported',
@@ -158,7 +241,7 @@ describe('registerOpenCodeMcpServers', () => {
       ctx: harness.ctx,
       client: harness.client,
       directory: '/repo',
-      mcpServers: undefined,
+      mcpProjection: projection(undefined),
     })).resolves.toMatchObject({
       requiredHappier: {
         status: 'failed',

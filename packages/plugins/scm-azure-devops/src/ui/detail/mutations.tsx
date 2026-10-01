@@ -473,10 +473,10 @@ export function AzureMutationControls({
   }, [completeMutation, input.instance, localRef, observedSourceCommitId, requestReview, reviewerIdsValue, routingToken]);
 
   if (overview.state.presentation !== 'active') {
-    // Azure's reopen, and the only transition a non-active pull request has. `closed` covers
-    // completed AND abandoned, and offering Reactivate on a completed one would be offering to
-    // undo a merge that already landed — so the native label decides, from the one exported
-    // constant the mapper writes it with.
+    // Azure's reopen, and the only transition a non-active pull request has. A completed pull
+    // request is `resolved`, and offering Reactivate on it would be offering to undo a merge that
+    // already landed — so only the abandoned label, the one exported constant the mapper writes,
+    // offers it.
     if (overview.state.nativeLabel !== AZURE_ABANDONED_NATIVE_STATE_LABEL) return null;
     return (
       <Stack gap="large">

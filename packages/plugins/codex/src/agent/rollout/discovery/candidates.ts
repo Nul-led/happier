@@ -18,8 +18,9 @@ import {
 } from './indexData.js';
 import {
   CODEX_ROLLOUT_TITLE_HEAD_BUDGET,
-  readCodexSessionTitleFromRollout,
+  readCodexRolloutHead,
 } from './rolloutTitle.js';
+import type { CodexSessionThread } from './sessionThread.js';
 
 export type CodexRolloutCandidateGroup = Readonly<{
   updatedAtMs: number;
@@ -41,6 +42,8 @@ export type CodexRolloutCandidateEntry = Readonly<{
    * an identifier-only row is correct, an invented one is not.
    */
   title?: string;
+  /** Present only for an internal Codex thread, classified by the same head read. */
+  thread?: CodexSessionThread;
 }>;
 
 export type CodexRolloutCandidateSelection = Readonly<
@@ -647,6 +650,7 @@ function rolloutCandidateFileNames(entries: readonly Dirent[]): string[] {
  * selected-candidate build reads. This is the only reason the identifier-only
  * IN-PROGRESS page is not permanent on a large corpus: the host index serves
  * partial rows without hydration, so a title has to arrive on the row itself.
+ * The same head read classifies internal threads from line 1's `session_meta`.
  */
 async function withRolloutCandidateTitles(params: Readonly<{
   entries: readonly CodexRolloutCandidateEntry[];
@@ -656,12 +660,16 @@ async function withRolloutCandidateTitles(params: Readonly<{
     params.entries,
     resolveCodexRolloutSearchBuildConcurrency(params.env),
     async (entry) => {
-      const title = await readCodexSessionTitleFromRollout(
+      const { title, thread } = await readCodexRolloutHead(
         entry.group.earliestFilePath,
         params,
         CODEX_ROLLOUT_TITLE_HEAD_BUDGET,
       );
-      return title ? { ...entry, title } : entry;
+      return {
+        ...entry,
+        ...(title ? { title } : {}),
+        ...(thread ? { thread } : {}),
+      };
     },
     params,
   );

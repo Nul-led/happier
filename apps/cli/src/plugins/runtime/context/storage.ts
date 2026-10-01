@@ -81,7 +81,7 @@ export type CreatePluginStorageOwnerParams = Readonly<{
 export type StablePluginAccountStorageHost = Readonly<{
     bind(input: Readonly<{
         pluginId: string;
-        generation: string;
+        occurrenceId: string;
         signal: AbortSignal;
         /**
          * Resource admission currentness comes from the committed registry and
@@ -89,7 +89,7 @@ export type StablePluginAccountStorageHost = Readonly<{
          * mutation authority, so it must re-check that live fact itself
          * before crossing its Account boundary.
          */
-        isGenerationCurrent(): boolean | Promise<boolean>;
+        isOccurrenceCurrent(): boolean | Promise<boolean>;
     }>): PluginAccountStorageScope | null;
 }>;
 
@@ -458,13 +458,13 @@ function createStableStorageScope(params: Readonly<{
     scope: PluginStorageOwnerScope;
     consistency: StorageConsistency;
     signal: AbortSignal;
-    isGenerationCurrent: () => boolean;
+    isOccurrenceCurrent: () => boolean;
 }>): StorageScopeService {
     const scopeIdentity = Object.freeze({});
     const assertUsable = (signal?: AbortSignal): void => {
         throwIfAborted(params.signal);
         throwIfAborted(signal);
-        if (!params.isGenerationCurrent()) {
+        if (!params.isOccurrenceCurrent()) {
             throw new PluginContextServiceError('plugin_generation_stale', 'Plugin storage invocation generation is stale');
         }
     };
@@ -578,9 +578,9 @@ function createStableStorageScope(params: Readonly<{
 }
 
 export function createStablePluginStorageService(params: CreatePluginStorageOwnerParams & Readonly<{
-    generation: string;
+    occurrenceId: string;
     signal: AbortSignal;
-    isGenerationCurrent: () => boolean;
+    isOccurrenceCurrent: () => boolean;
     accountStorageCurrentness?: () => boolean | Promise<boolean>;
     accountStorage?: StablePluginAccountStorageHost;
     daemonDatabase?: StablePluginDaemonDatabaseHost;
@@ -589,29 +589,29 @@ export function createStablePluginStorageService(params: CreatePluginStorageOwne
     const authoritative = Object.freeze({ kind: 'authoritativeSerializable' as const });
     const account = params.accountStorage?.bind({
         pluginId: params.pluginId,
-        generation: params.generation,
+        occurrenceId: params.occurrenceId,
         signal: params.signal,
-        isGenerationCurrent: params.accountStorageCurrentness ?? params.isGenerationCurrent,
+        isOccurrenceCurrent: params.accountStorageCurrentness ?? params.isOccurrenceCurrent,
     }) ?? null;
     const daemonKv = createStableStorageScope({
         scope: storage.daemon,
         consistency: authoritative,
         signal: params.signal,
-        isGenerationCurrent: params.isGenerationCurrent,
+        isOccurrenceCurrent: params.isOccurrenceCurrent,
     });
     const daemonDatabase = params.daemonDatabase?.bind({
         pluginId: params.pluginId,
-        generation: params.generation,
+        occurrenceId: params.occurrenceId,
         signal: params.signal,
-        isGenerationCurrent: params.isGenerationCurrent,
+        isOccurrenceCurrent: params.isOccurrenceCurrent,
     }) ?? createUnavailablePluginDaemonDatabaseService('daemon_database_unavailable');
     const daemon: DaemonDatabaseStorageScope = Object.freeze({
         ...daemonKv,
         database: daemonDatabase.database,
     });
     return Object.freeze({
-        ephemeral: createStableStorageScope({ scope: storage.ephemeral, consistency: authoritative, signal: params.signal, isGenerationCurrent: params.isGenerationCurrent }),
-        daemonSession: createStableStorageScope({ scope: storage.daemonSession, consistency: authoritative, signal: params.signal, isGenerationCurrent: params.isGenerationCurrent }),
+        ephemeral: createStableStorageScope({ scope: storage.ephemeral, consistency: authoritative, signal: params.signal, isOccurrenceCurrent: params.isOccurrenceCurrent }),
+        daemonSession: createStableStorageScope({ scope: storage.daemonSession, consistency: authoritative, signal: params.signal, isOccurrenceCurrent: params.isOccurrenceCurrent }),
         daemon,
         ...(account ? { account } : {}),
     });

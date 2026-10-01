@@ -7,7 +7,8 @@ import {
 import { verifySessionMarkerProcessLiveness } from '@/daemon/processLivenessVerifier';
 import { listSessionMarkers } from '@/daemon/sessionRegistry';
 import { readStoredCredentials, type StoredCredentials } from '@/persistence';
-import { retireSessionSubagentCustodyGeneration } from '@/session/transport/http/sessionSubagentCustodyHttp';
+import { retireSessionSubagentCustodySource } from '@/session/transport/http/sessionSubagentCustodyHttp';
+import type { ManagedPluginSourceCustodyV1 } from '@happier-dev/protocol';
 
 import type { PluginStorePaths } from '../paths';
 import {
@@ -36,6 +37,7 @@ export type PluginGenerationCustodyRetirementRemoteDependencies = Readonly<{
     token: string;
     pluginId: string;
     immutableGenerationId: string;
+    sourceCustody: ManagedPluginSourceCustodyV1;
   }>) => Promise<void>;
   readRunnerRetainedGenerationIds?: () => Promise<ReadonlySet<string>>;
 }>;
@@ -100,8 +102,7 @@ export async function readExactLiveRunnerRetainedPluginGenerationIds(
       ?? verifySessionMarkerProcessLiveness
     )(marker);
     if (
-      marker.processCommandHash
-      && marker.processStartTimeMs !== undefined
+      marker.processStartTimeMs !== undefined
       && liveness.status === 'verified_stopped'
       && liveness.pid === marker.pid
       && liveness.processStartTimeMs
@@ -109,21 +110,25 @@ export async function readExactLiveRunnerRetainedPluginGenerationIds(
     ) {
       continue;
     }
-    if (marker.runnerAgentImmutableGenerationId) {
-      retained.add(marker.runnerAgentImmutableGenerationId);
+    if (marker.runnerAgentSourceCustodyV1?.kind === 'managed') {
+      retained.add(
+        marker.runnerAgentSourceCustodyV1.immutableGenerationId,
+      );
     }
-    for (const generationId of (
+    for (const sourceCustody of (
       marker.runnerManagedDependencyRetentionV1
-        ?.sourceGenerationIds ?? []
+        ?.sourceCustodies ?? []
     )) {
-      retained.add(generationId);
+      if (sourceCustody.kind === 'managed') {
+        retained.add(sourceCustody.immutableGenerationId);
+      }
     }
     const adoptedProviderGenerationId =
       marker.runnerManagedDependencyRetentionV1
         ?.adoptedManagedProviderAuthority
-        ?.immutableGenerationId;
-    if (adoptedProviderGenerationId) {
-      retained.add(adoptedProviderGenerationId);
+        ?.sourceCustody;
+    if (adoptedProviderGenerationId?.kind === 'managed') {
+      retained.add(adoptedProviderGenerationId.immutableGenerationId);
     }
   }
   // The authority document is published under the same commit fence as its
@@ -186,18 +191,61 @@ export async function reconcilePluginGenerationCustodyRetirement(params: Readonl
       owner: generationCustodyFenceOwner,
       operation,
     })),
-    retireGeneration: async ({ pluginId, immutableGenerationId }) => {
+    retireGeneration: async ({
+      pluginId,
+      immutableGenerationId,
+      sourceCustody: persistedSourceCustody,
+      sourceProvenance,
+    }) => {
+      if (
+        !persistedSourceCustody
+        && sourceProvenance === 'localSource'
+        && immutableGenerationId.startsWith('bundled-')
+      ) {
+        // Obsolete generated first-party copies used this owned identity
+        // namespace and never had managed custody. Other legacy local-source
+        // records are ambiguous with managed localPath installs and fail closed.
+        return;
+      }
+      const retainedAuthority = state.rollbackRetention.find(
+        (retention) =>
+          retention.pluginId === pluginId
+          && retention.immutableGenerationId === immutableGenerationId,
+      );
+      const sourceCustody = persistedSourceCustody ?? (
+        retainedAuthority
+          ? Object.freeze({
+              kind: 'managed' as const,
+              immutableGenerationId,
+              installSource: retainedAuthority.distribution.kind,
+            })
+          : null
+      );
+      if (!sourceCustody) {
+        throw new Error(
+          `Managed generation '${immutableGenerationId}' has no exact source custody`,
+        );
+      }
       credentialsPromise ??= (params.readCredentials ?? readStoredCredentials)();
       const credentials = await credentialsPromise;
       if (!credentials) {
         authenticationUnavailable = true;
         throw new Error('Authenticated generation custody retirement is unavailable');
       }
-      await (params.retireGeneration ?? retireSessionSubagentCustodyGeneration)({
-        token: credentials.token,
-        pluginId,
-        immutableGenerationId,
-      });
+      if (params.retireGeneration) {
+        await params.retireGeneration({
+          token: credentials.token,
+          pluginId,
+          immutableGenerationId,
+          sourceCustody,
+        });
+      } else {
+        await retireSessionSubagentCustodySource({
+          token: credentials.token,
+          pluginId,
+          sourceCustody,
+        });
+      }
     },
   });
   if (authenticationUnavailable) return { status: 'authentication-unavailable' };

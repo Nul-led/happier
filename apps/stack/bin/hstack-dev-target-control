@@ -1,8 +1,11 @@
 #!/bin/sh
 
-# Canonical native owner for dev-target control placement and fresh-sync
-# coalescing. It stays native because every preferred-execution command crosses
-# this boundary, including commands used while the JavaScript runtime is busy.
+# Canonical native owner for dev-target control placement and causal sync admission.
+# Each queued sync-flush request executes its own Mutagen flush after flock
+# admission, followed by a fresh exact-session post-flush inspection of the
+# actual Mutagen status model. It stays native because every preferred-execution
+# command crosses this boundary, including commands used while the JavaScript
+# runtime is busy.
 
 case "$0" in
   /*) control_path=$0 ;;
@@ -14,7 +17,7 @@ control_dir=${control_path%/*}
 control_path=$(CDPATH= cd -- "$control_dir" && pwd -P)/${control_path##*/}
 
 usage() {
-  printf '%s\n' 'usage: hstack-dev-target-control [--sync-flush SESSION] -- COMMAND [ARG...]' >&2
+  printf '%s\n' 'usage: hstack-dev-target-control [--sync-flush SESSION] [--sync-check SESSION] -- COMMAND [ARG...]' >&2
   exit 64
 }
 
@@ -84,19 +87,97 @@ run_control_command() {
   exec "$@"
 }
 
+check_sync_session_clean() {
+  session_name=$1
+  case "$session_name" in ''|*[!A-Za-z0-9._-]*)
+    printf '%s\n' "hstack-dev-target-control: invalid sync session name: $session_name" >&2
+    return 1
+    ;;
+  esac
+  [ -n "${MUTAGEN_DATA_DIRECTORY-}" ] || {
+    printf '%s\n' 'hstack-dev-target-control: MUTAGEN_DATA_DIRECTORY is required for sync inspection' >&2
+    return 1
+  }
+  sync_template='{{range .}}{{.Name}}|{{.Status}}|{{.Paused}}|{{.Alpha.Connected}}|{{if .Alpha.Connected}}{{if .Alpha.Scanned}}1{{else}}0{{end}}{{else}}X{{end}}|{{if .Alpha.Connected}}{{len .Alpha.ScanProblems}}/{{.Alpha.ExcludedScanProblems}}{{else}}X{{end}}|{{if .Alpha.Connected}}{{len .Alpha.TransitionProblems}}/{{.Alpha.ExcludedTransitionProblems}}{{else}}X{{end}}|{{.Beta.Connected}}|{{if .Beta.Connected}}{{if .Beta.Scanned}}1{{else}}0{{end}}{{else}}X{{end}}|{{if .Beta.Connected}}{{len .Beta.ScanProblems}}/{{.Beta.ExcludedScanProblems}}{{else}}X{{end}}|{{if .Beta.Connected}}{{len .Beta.TransitionProblems}}/{{.Beta.ExcludedTransitionProblems}}{{else}}X{{end}}|{{if .Paused}}paused|0|ok|0|0{{else}}active|{{.SuccessfulCycles}}|{{if .LastError}}error{{else}}ok{{end}}|{{len .Conflicts}}|{{.ExcludedConflicts}}{{end}}{{end}}'
+  if ! status_output=$(mutagen sync list "$session_name" --template "$sync_template" 2>/dev/null); then
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization status inspection failed" >&2
+    return 1
+  fi
+  [ -n "$status_output" ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization is missing: no matching session" >&2
+    return 1
+  }
+  status_line=$(printf '%s\n' "$status_output" | sed -n '1p')
+  IFS='|' read -r s_name s_status s_paused s_alpha_connected s_alpha_scanned s_alpha_scan s_alpha_trans s_beta_connected s_beta_scanned s_beta_scan s_beta_trans s_active s_cycles s_error s_conflicts s_excluded <<EOF
+$status_line
+EOF
+  [ "$s_name" = "$session_name" ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization is missing: no matching session" >&2
+    return 1
+  }
+  [ "$s_paused" = false ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization is paused" >&2
+    return 1
+  }
+  [ "$s_active" = active ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization is paused" >&2
+    return 1
+  }
+  case "$s_status" in
+    Watching|Scanning|WaitingForRescan|Reconciling|StagingAlpha|StagingBeta|Transitioning|Saving) ;;
+    *)
+      printf '%s\n' "hstack-dev-target-control: $session_name synchronization status is not clean: $s_status" >&2
+      return 1
+      ;;
+  esac
+  [ "$s_alpha_connected" = true ] && [ "$s_beta_connected" = true ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization is missing connected endpoint evidence" >&2
+    return 1
+  }
+  [ "$s_alpha_scanned" = 1 ] && [ "$s_beta_scanned" = 1 ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization endpoints are not scanned" >&2
+    return 1
+  }
+  [ "$s_alpha_scan" = "0/0" ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization has alpha scan problems: $s_alpha_scan" >&2
+    return 1
+  }
+  [ "$s_alpha_trans" = "0/0" ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization has alpha transition problems: $s_alpha_trans" >&2
+    return 1
+  }
+  [ "$s_beta_scan" = "0/0" ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization has beta scan problems: $s_beta_scan" >&2
+    return 1
+  }
+  [ "$s_beta_trans" = "0/0" ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization has beta transition problems: $s_beta_trans" >&2
+    return 1
+  }
+  [ "$s_error" = ok ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization has a recorded error" >&2
+    return 1
+  }
+  [ "${s_conflicts-}" = 0 ] && [ "${s_excluded-}" = 0 ] || {
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization has unresolved conflicts: ${s_conflicts-?}/${s_excluded-?}" >&2
+    return 1
+  }
+  case "$s_cycles" in ''|*[!0-9]*|0)
+    printf '%s\n' "hstack-dev-target-control: $session_name synchronization has no completed cycle" >&2
+    return 1
+    ;;
+  esac
+  if [ "${HSTACK_SYNC_CHECK_VERBOSE-}" = 1 ]; then
+    printf '%s\n' "$status_line"
+  fi
+  return 0
+}
+
 locked_sync_flush() {
   session_name=$1
-  request_marker=$2
-  shift 2
+  shift
   [ "${1-}" = -- ] || usage
   shift
-  completion_marker="$(sync_control_state_dir)/$session_name.completed"
-
-  if [ -e "$completion_marker" ] && [ "$completion_marker" -nt "$request_marker" ]; then
-    rm -f -- "$request_marker"
-    exit 0
-  fi
-
   control_child=''
   cancel_locked_flush() {
     trap - HUP INT TERM
@@ -104,7 +185,6 @@ locked_sync_flush() {
       kill -TERM "$control_child" 2>/dev/null || true
       wait "$control_child" 2>/dev/null || true
     fi
-    rm -f -- "$request_marker"
     exit 130
   }
   trap 'cancel_locked_flush' HUP INT TERM
@@ -114,24 +194,28 @@ locked_sync_flush() {
   status=$?
   control_child=''
   trap - HUP INT TERM
-  if [ "$status" -eq 0 ]; then
-    completion_temporary="$completion_marker.$$.tmp"
-    : > "$completion_temporary" && mv -f -- "$completion_temporary" "$completion_marker"
-  fi
-  rm -f -- "$request_marker"
-  exit "$status"
+  [ "$status" -eq 0 ] || exit "$status"
+  check_sync_session_clean "$session_name"
+  check_status=$?
+  exit "$check_status"
 }
 
 case "${1-}" in
   --locked-sync-flush)
-    [ "$#" -ge 5 ] || usage
+    [ "$#" -ge 4 ] || usage
     session_name=$2
-    request_marker=$3
-    shift 3
-    locked_sync_flush "$session_name" "$request_marker" "$@"
+    shift 2
+    locked_sync_flush "$session_name" "$@"
+    ;;
+  --sync-check)
+    [ "$#" -eq 2 ] || usage
+    session_name=$2
+    case "$session_name" in ''|*[!A-Za-z0-9._-]*) usage ;; esac
+    check_sync_session_clean "$session_name"
+    exit "$?"
     ;;
   --sync-flush)
-    [ "$#" -ge 5 ] || usage
+    [ "$#" -ge 4 ] || usage
     session_name=$2
     case "$session_name" in ''|*[!A-Za-z0-9._-]*) usage ;; esac
     shift 2
@@ -143,8 +227,6 @@ case "${1-}" in
     lock_dir=$(sync_control_state_dir)
     mkdir -p -- "$lock_dir" || exit 1
     if command -v flock >/dev/null 2>&1; then
-      request_marker="$lock_dir/$session_name.request.$$"
-      : > "$request_marker" || exit 1
       lock_child=''
       cancel_lock_wait() {
         trap - HUP INT TERM
@@ -152,22 +234,38 @@ case "${1-}" in
           kill -TERM "$lock_child" 2>/dev/null || true
           wait "$lock_child" 2>/dev/null || true
         fi
-        rm -f -- "$request_marker"
         exit 130
       }
       trap 'cancel_lock_wait' HUP INT TERM
       flock --exclusive --no-fork "$lock_dir/$session_name.lock" \
-        "$control_path" --locked-sync-flush "$session_name" "$request_marker" "$@" &
+        "$control_path" --locked-sync-flush "$session_name" "$@" &
       lock_child=$!
       wait "$lock_child"
       status=$?
       lock_child=''
       trap - HUP INT TERM
-      rm -f -- "$request_marker"
       exit "$status"
     fi
     shift
-    run_control_command "$@"
+    direct_child=''
+    cancel_direct_flush() {
+      trap - HUP INT TERM
+      if [ -n "$direct_child" ]; then
+        kill -TERM "$direct_child" 2>/dev/null || true
+        wait "$direct_child" 2>/dev/null || true
+      fi
+      exit 130
+    }
+    trap 'cancel_direct_flush' HUP INT TERM
+    "$control_path" -- "$@" &
+    direct_child=$!
+    wait "$direct_child"
+    status=$?
+    direct_child=''
+    trap - HUP INT TERM
+    [ "$status" -eq 0 ] || exit "$status"
+    check_sync_session_clean "$session_name"
+    exit "$?"
     ;;
   --)
     shift

@@ -9,6 +9,7 @@ import type {
   AgentAcpToolNameResolver,
 } from './acpTypes.js';
 import type {
+  AgentPermissionIntent,
   AgentConfigurationScalar,
   AgentSessionInput,
   AgentSessionOpenRequest,
@@ -189,9 +190,13 @@ export type AgentAcpRuntimeDefinition = Readonly<{
   parameterizedModelPicker?: boolean;
   modelConfigOptionId?: string;
   permissionModeMapping?: Readonly<Partial<Record<
-    'default' | 'read-only' | 'safe-yolo' | 'yolo' | 'plan',
+    AgentPermissionIntent,
     string | null
   >>>;
+  permissionModeArgv?: Readonly<{
+    flag: string;
+    map: Readonly<Partial<Record<AgentPermissionIntent, string | null>>>;
+  }>;
   models?: AgentAcpModelControls;
   acceptsVerifiedImageInput?: true;
   timeouts?: AgentAcpTimeouts;

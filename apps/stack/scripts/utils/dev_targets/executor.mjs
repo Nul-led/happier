@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import { killProcessTree, runCaptureResult, spawnProc } from '../proc/proc.mjs';
 import {
@@ -6,8 +7,9 @@ import {
   buildRemoteExecCommand,
   buildSshWorkerArgs,
   classifyRemoteCommand,
-  requiresRemoteDependencyBootstrap,
   requiresRemoteWorkspacePreparation,
+  resolveRemoteValidationKind,
+  resolveRemoteValidationComponentRelativeDir,
 } from './remote_commands.mjs';
 import {
   MUTAGEN_SYNC_LIST_JSON_TEMPLATE,
@@ -49,23 +51,6 @@ function isMissingNamedMutagenSession(result) {
   const detail = `${String(result?.err ?? '')}\n${String(result?.error?.message ?? '')}`;
   return /unable to locate requested sessions/i.test(detail)
     && /did not match any sessions/i.test(detail);
-}
-
-function commandArgsWithTargetAdmission(target, classification, commandArgs) {
-  if (
-    target.platform === 'windows'
-    || !['full-validation', 'targeted-validation'].includes(classification.commandClass)
-  ) {
-    return commandArgs;
-  }
-  return [
-    `${String(target.repoDir).replace(/[\\/]+$/, '')}/apps/stack/bin/hstack-exec`,
-    '--heavyweight-admission',
-    `--class=${classification.commandClass}`,
-    `--machine=${target.name}`,
-    '--',
-    ...commandArgs,
-  ];
 }
 
 export async function inspectDevTargetSync(
@@ -135,6 +120,13 @@ async function flushDevTarget(
         + (detail ? `: ${detail}` : ''),
     );
   }
+  if (process.platform === 'win32') {
+    const postFlushStatus = await inspectDevTargetSync(
+      { target, stackBaseDir, env, timeoutMs },
+      { runCaptureResult: runCaptureResultImpl },
+    );
+    assertReadySyncStatus(postFlushStatus);
+  }
   return { state: 'ready', sessionName, flushed: true };
 }
 
@@ -151,6 +143,8 @@ export async function runDevTargetDependencyBootstrap(
   {
     target,
     stackBaseDir,
+    validationKind = 'runtime',
+    componentRelativeDir = '.',
     syncAlreadyVerified = false,
     flush = false,
     env = process.env,
@@ -163,6 +157,8 @@ export async function runDevTargetDependencyBootstrap(
     commandArgs: [
       'node',
       './apps/stack/scripts/utils/dev_targets/remote_dependency_bootstrap.mjs',
+      `--validation-kind=${validationKind}`,
+      `--component-relative-dir=${componentRelativeDir}`,
     ],
     environment: {
       HAPPIER_STACK_PM_CACHE_BASE_DIR: `${String(target.cliHomeDir).replace(/[\\/]+$/, '')}/cache`,
@@ -180,6 +176,7 @@ export async function runDevTargetWorkspacePreparation(
     target,
     stackBaseDir,
     cwd,
+    validationKind = 'runtime',
     syncAlreadyVerified = false,
     env = process.env,
   },
@@ -192,6 +189,7 @@ export async function runDevTargetWorkspacePreparation(
       'node',
       './apps/stack/scripts/utils/dev_targets/remote_validation_preparation.mjs',
       `--component-relative-dir=${cwd}`,
+      `--validation-kind=${validationKind}`,
     ],
     environment: {
       HAPPIER_STACK_PM_CACHE_BASE_DIR: `${String(target.cliHomeDir).replace(/[\\/]+$/, '')}/cache`,
@@ -217,6 +215,7 @@ export async function runDevTargetCommand(
     workspacePreparation = 'auto',
     provenance = 'auto',
     syncAlreadyVerified = false,
+    sourceDir = fileURLToPath(new URL('../../../../../', import.meta.url)),
     env = process.env,
   },
   {
@@ -250,10 +249,17 @@ export async function runDevTargetCommand(
     );
   }
 
-  if (dependencyAdmission !== 'skip' && requiresRemoteDependencyBootstrap(commandArgs)) {
+  const bootstrapRequired = dependencyAdmission !== 'skip' && classification.requiresDependencyBootstrap;
+  const preparationRequired = workspacePreparation !== 'skip' && requiresRemoteWorkspacePreparation(commandArgs, { cwd });
+  const validationKind = resolveRemoteValidationKind(commandArgs, { cwd });
+  // POSIX preparations are children of the same native admission and execution
+  // identity as the payload. Windows retains its separate local-only transport.
+  if (target.platform === 'windows' && bootstrapRequired) {
     const bootstrap = await runDependencyBootstrap({
       target,
       stackBaseDir,
+      validationKind,
+      componentRelativeDir: resolveRemoteValidationComponentRelativeDir(commandArgs, { cwd }),
       syncAlreadyVerified: true,
       env,
     });
@@ -261,13 +267,13 @@ export async function runDevTargetCommand(
   }
 
   if (
-    workspacePreparation !== 'skip'
-    && requiresRemoteWorkspacePreparation(commandArgs, { cwd })
+    target.platform === 'windows' && preparationRequired
   ) {
     const preparation = await runWorkspacePreparation({
       target,
       stackBaseDir,
-      cwd,
+      cwd: resolveRemoteValidationComponentRelativeDir(commandArgs, { cwd }),
+      validationKind,
       syncAlreadyVerified: true,
       env,
     });
@@ -278,7 +284,17 @@ export async function runDevTargetCommand(
   const remoteCommand = buildRemoteExecCommand(target, {
     executionId,
     cwd,
-    commandArgs: commandArgsWithTargetAdmission(target, classification, commandArgs),
+    commandArgs,
+    ...(target.platform === 'windows' ? {} : {
+      preparation: bootstrapRequired || preparationRequired ? {
+        bootstrap: bootstrapRequired,
+        bootstrapComponentRelativeDir: resolveRemoteValidationComponentRelativeDir(commandArgs, { cwd }),
+        ...(preparationRequired ? { componentRelativeDir: resolveRemoteValidationComponentRelativeDir(commandArgs, { cwd }) } : {}),
+        validationKind,
+      } : null,
+      admissionClass: ['full-validation', 'targeted-validation'].includes(classification.commandClass)
+        ? classification.commandClass : '',
+    }),
     environment,
   });
   const sshArgs = [
@@ -308,7 +324,7 @@ export async function runDevTargetCommand(
   };
   let stopPromise = null;
   const listeners = new Map(
-    ['SIGINT', 'SIGTERM'].map((signal) => [signal, () => {
+    ['SIGINT', 'SIGTERM', 'SIGHUP'].map((signal) => [signal, () => {
       stopPromise ??= Promise.resolve()
         .then(async () => {
           let cancellationError = null;

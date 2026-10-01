@@ -27,6 +27,24 @@ function createHarness() {
 }
 
 describe('Claude unified direct lifecycle mapping (ported R-11 / HF-3)', () => {
+  it('uses prompt identity across native hook and JSONL producers, with distinct row identity for queued consumption', async () => {
+    const { observations, publishHook, publishTranscript } = createHarness();
+    await publishHook({ providerPayload: { prompt_id: 'prompt-1', prompt: 'hello' } }, 'UserPromptSubmit');
+    await publishTranscript({ kind: 'text', text: 'hello', turnId: 'row-1',
+      providerPayload: { type: 'user', promptId: 'prompt-1', uuid: 'row-1' } });
+    await publishTranscript({ kind: 'text', text: 'hello', turnId: 'same-turn',
+      providerPayload: { type: 'user', uuid: 'row-fallback' } });
+    await publishTranscript({ kind: 'queued_command', text: 'hello', turnId: 'same-turn',
+      providerPayload: { type: 'attachment', uuid: 'queue-consumption', promptId: 'prompt-1',
+        attachment: { type: 'queued_command' } } });
+    expect(observations).toEqual([
+      expect.objectContaining({ type: 'prompt_submitted', acceptanceEvidenceId: 'prompt:prompt-1' }),
+      expect.objectContaining({ type: 'prompt_submitted', acceptanceEvidenceId: 'prompt:prompt-1' }),
+      expect.objectContaining({ type: 'prompt_submitted', acceptanceEvidenceId: 'uuid:row-fallback' }),
+      expect.objectContaining({ type: 'prompt_submitted', acceptanceEvidenceId: 'uuid:queue-consumption' }),
+    ]);
+  });
+
   it('maps main-chain hook events into lifecycle observations', async () => {
     const { observations, publishHook } = createHarness();
 

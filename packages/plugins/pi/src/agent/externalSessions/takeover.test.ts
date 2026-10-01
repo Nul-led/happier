@@ -25,6 +25,7 @@ function request(overrides: Record<string, unknown> = {}) {
       },
     },
     linkedSessionId: 'happier-session-1',
+    transcriptStorage: 'persisted',
     targetDirectory: '/workspace/current',
     linkedDirectory: '/workspace/original',
     signal: new AbortController().signal,

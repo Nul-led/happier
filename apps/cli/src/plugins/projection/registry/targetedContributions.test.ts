@@ -21,6 +21,10 @@ import {
 } from '@happier-dev/plugin-sdk/protocol';
 
 import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
+import {
+    createPluginRuntimeOccurrenceId,
+    type PluginRuntimeOccurrenceId,
+} from '@/plugins/runtime/runtimeSlots';
 import { createResolvedContributionRegistry } from './createResolvedContributionRegistry';
 import type {
     ResolvedActionContribution,
@@ -68,6 +72,8 @@ const targetPluginId = 'examples.target';
 const contributorPluginId = 'examples.contributor';
 const pointId = 'providers';
 const protocol = { id: 'provider', version: 1 } as const;
+const targetOccurrenceId = createPluginRuntimeOccurrenceId(targetPluginId);
+const contributorOccurrenceId = createPluginRuntimeOccurrenceId(contributorPluginId);
 
 function point(): PluginContributionPointV1 {
     return {
@@ -301,7 +307,7 @@ function registry(params: Readonly<{
     contributions?: readonly Readonly<{ pluginId: string; definition: PluginTargetedContributionV1 }>[];
     actions?: readonly ResolvedActionContribution[];
     uiRenderersV2?: readonly ResolvedUiRendererV2Contribution[];
-    immutableGenerationIdsByPluginId?: Readonly<Record<string, string>>;
+    occurrenceIdsByPluginId?: Readonly<Record<string, PluginRuntimeOccurrenceId>>;
 }> = {}) {
     const defaultPoint = canonicalTargetPoint();
     const points = params.points ?? [{
@@ -335,9 +341,9 @@ function registry(params: Readonly<{
         targetedPluginContributions: resolvedContributions,
         actions: params.actions ?? [action()],
         uiRenderersV2: params.uiRenderersV2 ?? [],
-        immutableGenerationIdsByPluginId: params.immutableGenerationIdsByPluginId ?? {
-            [targetPluginId]: 'target-generation-a',
-            [contributorPluginId]: 'contributor-generation-a',
+        occurrenceIdsByPluginId: params.occurrenceIdsByPluginId ?? {
+            [targetPluginId]: targetOccurrenceId,
+            [contributorPluginId]: contributorOccurrenceId,
         },
     } as Parameters<typeof createResolvedContributionRegistry>[0]);
 }
@@ -706,10 +712,10 @@ describe('targeted contribution cold admission', () => {
                 action({ pluginId: firstContributorPluginId }),
                 action({ pluginId: secondContributorPluginId }),
             ],
-            immutableGenerationIdsByPluginId: {
-                [targetPluginId]: 'target-generation-a',
-                [firstContributorPluginId]: 'first-generation-a',
-                [secondContributorPluginId]: 'second-generation-a',
+            occurrenceIdsByPluginId: {
+                [targetPluginId]: targetOccurrenceId,
+                [firstContributorPluginId]: createPluginRuntimeOccurrenceId(firstContributorPluginId),
+                [secondContributorPluginId]: createPluginRuntimeOccurrenceId(secondContributorPluginId),
             },
         });
 
@@ -749,10 +755,10 @@ describe('targeted contribution cold admission', () => {
                 action({ pluginId: firstContributorPluginId }),
                 action({ pluginId: secondContributorPluginId }),
             ],
-            immutableGenerationIdsByPluginId: {
-                [targetPluginId]: 'target-generation-a',
-                [firstContributorPluginId]: 'first-generation-a',
-                [secondContributorPluginId]: 'second-generation-a',
+            occurrenceIdsByPluginId: {
+                [targetPluginId]: targetOccurrenceId,
+                [firstContributorPluginId]: createPluginRuntimeOccurrenceId(firstContributorPluginId),
+                [secondContributorPluginId]: createPluginRuntimeOccurrenceId(secondContributorPluginId),
             },
         });
 
@@ -1043,13 +1049,13 @@ describe('targeted contribution cold admission', () => {
             target: {
                 pluginId: targetPluginId,
                 pointId,
-                immutableGenerationId: 'target-generation-a',
+                occurrenceId: targetOccurrenceId,
             },
             contributions: [{
                 contributor: {
                     pluginId: contributorPluginId,
                     contributionId: 'provider-a',
-                    immutableGenerationId: 'contributor-generation-a',
+                    occurrenceId: contributorOccurrenceId,
                 },
                 protocol,
                 operations: [{
@@ -1058,7 +1064,7 @@ describe('targeted contribution cold admission', () => {
                     contributor: {
                         pluginId: contributorPluginId,
                         contributionId: 'provider-a',
-                        immutableGenerationId: 'contributor-generation-a',
+                        occurrenceId: contributorOccurrenceId,
                     },
                     selectedActionInput: { kind: 'none' },
                     targetProtocol: expect.objectContaining({ role: 'setup' }),
@@ -1146,7 +1152,7 @@ describe('targeted contribution cold admission', () => {
                     contributor: {
                         pluginId: contributorPluginId,
                         contributionId: 'provider-a',
-                        immutableGenerationId: 'contributor-generation-a',
+                        occurrenceId: contributorOccurrenceId,
                     },
                     protocol,
                     operations: [],
@@ -1196,8 +1202,8 @@ describe('targeted contribution cold admission', () => {
 
     it('distinguishes a retired declared target from a never-declared target', () => {
         const retired = registry({
-            immutableGenerationIdsByPluginId: {
-                [contributorPluginId]: 'contributor-generation-a',
+            occurrenceIdsByPluginId: {
+                [contributorPluginId]: contributorOccurrenceId,
             },
         });
         const absentTargetPluginId = 'examples.absent-target';
@@ -1217,7 +1223,7 @@ describe('targeted contribution cold admission', () => {
             {
                 name: 'retired contributor',
                 input: {
-                    immutableGenerationIdsByPluginId: { [targetPluginId]: 'target-generation-a' },
+                    occurrenceIdsByPluginId: { [targetPluginId]: targetOccurrenceId },
                 },
                 code: 'contributor_retired',
             },
@@ -1307,7 +1313,7 @@ describe('targeted contribution cold admission', () => {
             target: {
                 pluginId: targetPluginId,
                 pointId,
-                immutableGenerationId: 'target-generation-a',
+                occurrenceId: targetOccurrenceId,
             },
             contributions: [],
         });
@@ -1325,9 +1331,12 @@ describe('targeted contribution cold admission', () => {
             pluginId: `examples.contributor-${index}`,
             definition: contribution({ id: `provider-${String(index).padStart(3, '0')}` }),
         }));
-        const immutableGenerationIdsByPluginId = Object.fromEntries([
-            [targetPluginId, 'target-generation-a'],
-            ...contributions.map((entry) => [entry.pluginId, `${entry.pluginId}-generation`] as const),
+        const occurrenceIdsByPluginId = Object.fromEntries([
+            [targetPluginId, targetOccurrenceId],
+            ...contributions.map((entry) => [
+                entry.pluginId,
+                createPluginRuntimeOccurrenceId(entry.pluginId),
+            ] as const),
         ]);
         const catalog = registry({
             points: [{
@@ -1336,7 +1345,7 @@ describe('targeted contribution cold admission', () => {
             }],
             contributions,
             actions: contributions.map((entry) => action({ pluginId: entry.pluginId })),
-            immutableGenerationIdsByPluginId,
+            occurrenceIdsByPluginId,
         });
 
         expect(catalog.readAdmittedTargetedContributions?.({ targetPluginId, pointId, protocol })?.contributions)

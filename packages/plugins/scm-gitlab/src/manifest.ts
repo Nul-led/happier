@@ -7,7 +7,7 @@ import {
 } from '@happier-dev/triage-protocol/v1';
 
 import { GITLAB_SCM_HOSTING_PROVIDER_LOCAL_ID, gitlabHostingProviderAdapter } from './adapter.js';
-import { gitlabCliPullRequestAdapter } from './pullRequests/index.js';
+import { gitlabRestPullRequestAdapter } from './pullRequests/index.js';
 import { GITLAB_RENDER_UI_TRANSLATIONS } from './ui/renderTranslations.js';
 import { GITLAB_ADDITIONAL_UI_TRANSLATIONS } from './ui/additionalTranslations.js';
 
@@ -49,6 +49,7 @@ import {
   readGitlabRawDiff,
   readGitlabApprovals,
   readGitlabOverview,
+  readGitlabPullRequestStatus,
 } from './triage/detailOperations.js';
 import {
   getGitlabSourceEntryAction,
@@ -122,11 +123,6 @@ export const GITLAB_PLUGIN = definePlugin({
         privateNetwork: true,
       },
     }, {
-      id: 'gitlab-cli-process',
-      capability: 'process',
-      reason: 'Run the declared GitLab CLI for pull-request operations.',
-      scope: { executables: [{ kind: 'systemTool', id: 'gitlab-cli' }] },
-    }, {
       id: GITLAB_CONNECTED_ACCOUNT_PURPOSE,
       capability: 'connectedAccounts',
       reason: 'Materialize only the exact configured GitLab Connected Account for GitLab API requests.',
@@ -153,16 +149,9 @@ export const GITLAB_PLUGIN = definePlugin({
       runtime: {
         adapter: {
           routing: gitlabHostingProviderAdapter,
-          pullRequests: gitlabCliPullRequestAdapter,
+          pullRequests: gitlabRestPullRequestAdapter,
         },
       },
-    },
-  },
-  systemTools: {
-    'gitlab-cli': {
-      title: 'GitLab CLI',
-      description: 'GitLab command line client used for authenticated merge-request operations.',
-      executableNames: ['glab'],
     },
   },
   connectedAccountDescriptors: {
@@ -245,6 +234,10 @@ export const GITLAB_PLUGIN = definePlugin({
     [GITLAB_TRIAGE_ACTION_IDS.get]: {
       ...readGitlabActionDeclaration(GITLAB_TRIAGE_ACTION_IDS.get),
       run: getGitlabSourceEntryAction,
+    },
+    [GITLAB_TRIAGE_ACTION_IDS.readPullRequestStatus]: {
+      ...readGitlabActionDeclaration(GITLAB_TRIAGE_ACTION_IDS.readPullRequestStatus),
+      run: readGitlabPullRequestStatus,
     },
     [GITLAB_TRIAGE_ACTION_IDS.prepareReviewWorkspace]: {
       ...readGitlabActionDeclaration(GITLAB_TRIAGE_ACTION_IDS.prepareReviewWorkspace),

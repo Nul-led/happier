@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 
 import { getComponentDir, getRootDir, resolveStackEnvPath } from './utils/paths/paths.mjs';
 import { printResult, wantsHelp, wantsJson } from './utils/cli/cli.mjs';
-import { ensureWorkspacePackagesBuiltForComponent, pmExecBin } from './utils/proc/pm.mjs';
+import { pmExecBin } from './utils/proc/pm.mjs';
 import { spawnProc } from './utils/proc/proc.mjs';
 import { getStackRuntimeStatePath, readStackRuntimeStateFile } from './utils/stack/runtime_state.mjs';
 import { sanitizeDnsLabel } from './utils/net/dns.mjs';
@@ -397,7 +397,6 @@ async function main() {
     }
   }
 
-  await ensureWorkspacePackagesBuiltForComponent(uiDir, { quiet: false, env: envWithStackDefaults });
   await pmExecBin({
     dir: uiDir,
     bin: 'tauri:prepare:sidecar',

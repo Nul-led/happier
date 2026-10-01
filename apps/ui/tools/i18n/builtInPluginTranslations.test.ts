@@ -89,6 +89,12 @@ const INTENTIONALLY_UNTRANSLATED_PLUGIN_VALUES = new Set([
     'Session',
     'Transport',
     'Automation',
+    'Bot',
+    'Issue',
+    'Issues',
+    'Pull request',
+    'Pull requests',
+    'Review',
     'minute',
     'minutes',
 ]);

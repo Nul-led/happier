@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { PluginManifestV2Schema } from '@happier-dev/protocol';
 
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 import { PluginStateFileV1Schema } from '../state';
@@ -41,7 +42,7 @@ type InstalledFixture = Readonly<{
 async function installFixture(input: Readonly<{
   pluginId: string;
   distribution: 'npm' | 'localPath';
-  updatePolicy: 'pinned' | 'reviewEveryUpdate' | 'reviewSensitiveChanges';
+  updatePolicy: 'pinned' | 'allowed';
   preparedCandidates?: PluginRegistryRuntimeCandidate[];
 }>): Promise<InstalledFixture> {
   const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-update-policy-home-'));
@@ -49,9 +50,13 @@ async function installFixture(input: Readonly<{
   const manifestPath = join(pluginRoot, '.happier-plugin', 'plugin.json');
   await mkdir(join(pluginRoot, '.happier-plugin'), { recursive: true });
   await writeFile(join(pluginRoot, 'daemon.mjs'), 'export function activate() {}\n', 'utf8');
+  const manifest = PluginManifestV2Schema.parse(createPluginManifestV2Fixture({
+    id: input.pluginId,
+    version: '1.0.0',
+  }));
   await writeFile(
     manifestPath,
-    JSON.stringify(createPluginManifestV2Fixture({ id: input.pluginId, version: '1.0.0' })),
+    JSON.stringify(manifest),
     'utf8',
   );
 
@@ -114,6 +119,7 @@ async function installFixture(input: Readonly<{
     trust,
     updatePolicy: input.updatePolicy,
     optionalAccess: [],
+    approvedAuthorityManifest: manifest,
     preparedGeneration,
   });
   await preparedGeneration.cleanup();
@@ -145,7 +151,7 @@ describe('createPluginRegistryStateStore.setUpdatePolicyWithResult', () => {
     const fixture = await installFixture({
       pluginId: 'acme.policy-npm',
       distribution: 'npm',
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'pinned',
       preparedCandidates,
     });
     const before = await readDurableInstallation(fixture);
@@ -153,11 +159,11 @@ describe('createPluginRegistryStateStore.setUpdatePolicyWithResult', () => {
 
     const result = await fixture.store.setUpdatePolicyWithResult(
       fixture.pluginId,
-      'reviewSensitiveChanges',
+      'allowed',
     );
     expect(result?.transaction.status).toBe('committed');
     expect(result?.catalog.plugins[fixture.pluginId]?.install.updatePolicy)
-      .toBe('reviewSensitiveChanges');
+      .toBe('allowed');
     expect(preparedCandidates.at(-1)).toMatchObject({
       mutationKind: 'state',
       changedPluginIds: [],
@@ -165,18 +171,18 @@ describe('createPluginRegistryStateStore.setUpdatePolicyWithResult', () => {
     });
 
     const after = await readDurableInstallation(fixture);
-    expect(after.updatePolicy).toBe('reviewSensitiveChanges');
+    expect(after.updatePolicy).toBe('allowed');
     // Every other durable installed fact is preserved verbatim.
     expect({ ...after, updatePolicy: before.updatePolicy }).toEqual(before);
 
     const catalogAfter = (await fixture.store.read()).plugins[fixture.pluginId]!;
     expect(catalogAfter).toEqual({
       ...catalogBefore,
-      install: { ...catalogBefore.install, updatePolicy: 'reviewSensitiveChanges' },
+      install: { ...catalogBefore.install, updatePolicy: 'allowed' },
     });
     // The generation reference this installation serves from is untouched.
     const commit = await readPluginRegistryCommitRecord(fixture.store.paths);
-    expect(commit?.pluginGenerations[fixture.pluginId]).toBeDefined();
+    expect(commit?.pluginOccurrenceIds[fixture.pluginId]).toBeDefined();
 
     await fixture.cleanup();
   });
@@ -185,7 +191,7 @@ describe('createPluginRegistryStateStore.setUpdatePolicyWithResult', () => {
     const fixture = await installFixture({
       pluginId: 'acme.policy-rejections',
       distribution: 'npm',
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
     });
     const installed = (await fixture.store.read()).plugins[fixture.pluginId]!;
 
@@ -204,21 +210,20 @@ describe('createPluginRegistryStateStore.setUpdatePolicyWithResult', () => {
     await fixture.cleanup();
   });
 
-  it('refuses a request that would store a policy the installed distribution cannot honour', async () => {
+  it('allows the real freeze policy on every trusted non-bundled distribution', async () => {
     const fixture = await installFixture({
       pluginId: 'acme.policy-path',
       distribution: 'localPath',
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
     });
 
-    await expect(fixture.store.setUpdatePolicyWithResult(fixture.pluginId, 'reviewSensitiveChanges'))
-      .rejects.toThrow(/npm/i);
-    // Pinning a non-npm installation stays available: every trusted
-    // non-bundled source can be pinned and unpinned.
+    await expect(fixture.store.setUpdatePolicyWithResult(fixture.pluginId, 'allowed'))
+      .resolves.toBeNull();
+    // Every trusted non-bundled source can be pinned and unpinned.
     await expect(fixture.store.setUpdatePolicyWithResult(fixture.pluginId, 'pinned'))
       .resolves.toMatchObject({ transaction: { status: 'committed' } });
     await expect(readDurableInstallation(fixture)).resolves.toMatchObject({ updatePolicy: 'pinned' });
-    await expect(fixture.store.setUpdatePolicyWithResult(fixture.pluginId, 'reviewEveryUpdate'))
+    await expect(fixture.store.setUpdatePolicyWithResult(fixture.pluginId, 'allowed'))
       .resolves.toMatchObject({ transaction: { status: 'committed' } });
 
     await fixture.cleanup();

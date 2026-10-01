@@ -14,7 +14,11 @@ function projectionInput() {
         contributionId: 'opencode/agent',
         serverId: 'opencode-server',
         instanceId: 'instance-one',
-        immutableGenerationId: 'generation-one',
+        sourceCustody: {
+            kind: 'managed' as const,
+            immutableGenerationId: 'occurrenceId-one',
+            installSource: 'npm' as const,
+        },
         custodyOwner: 'sessionRunner' as const,
         mode: 'managedSpawn' as const,
         endpoint: {
@@ -31,14 +35,14 @@ function projectionInput() {
 }
 
 describe('managed service endpoint projection', () => {
-    it('uses the retained immutable generation directly for custody', () => {
+    it('uses the retained immutable occurrenceId directly for custody', () => {
         const directCustody = projectionInput();
         const projection = createManagedServiceEndpointProjectionV1({
             ...directCustody,
-            immutableGenerationId: 'generation-one',
+            sourceCustody: directCustody.sourceCustody,
         });
 
-        expect(projection.immutableGenerationId).toBe('generation-one');
+        expect(projection.sourceCustody).toEqual(directCustody.sourceCustody);
         expect(JSON.stringify(projection)).not.toContain(
             'generationFingerprint',
         );

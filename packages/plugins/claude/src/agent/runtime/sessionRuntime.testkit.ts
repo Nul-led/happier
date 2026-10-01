@@ -71,7 +71,9 @@ export function adaptClaudeProviderOperationsForTest<
         subscribeRuntimeEvents: (handler) => operations.subscribeProviderEvents(handler),
         respondToPermission: async (requestId, approved) =>
             await operations.respondToProviderPermission(requestId, approved),
-        cancelTurn: async () => await operations.cancelProviderTurn(),
+        cancelTurn: async () => {
+            await operations.cancelProviderTurn();
+        },
         readSessionIdentity: () => operations.readProviderIdentity(),
         updateSessionRuntimeConfig: async (update) => await operations.updateProviderConfiguration(update),
         resetOrDisposeRuntime: async (reason) => await operations.disposeProviderSession(reason),

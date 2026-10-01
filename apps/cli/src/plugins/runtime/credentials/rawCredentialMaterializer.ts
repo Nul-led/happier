@@ -40,8 +40,15 @@ import {
   getActiveAccountSettingsSnapshotLifetimeToken,
   type ActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
-import { createSavedSecretMaterializerFromSnapshotV1 } from '@/settings/secrets/savedSecretCatalog';
-import { refreshSavedSecretCatalogForOperation } from '@/settings/secrets/hydrateSavedSecretCatalog';
+import {
+  createSavedSecretMaterializerFromSnapshotV1,
+  type SavedSecretResolutionFailureStatusV1,
+} from '@/settings/secrets/savedSecretCatalog';
+import {
+  refreshSavedSecretCatalogForOperation,
+  savedSecretOperationAdmissionStatus,
+  SavedSecretOperationAdmissionError,
+} from '@/settings/secrets/hydrateSavedSecretCatalog';
 import { evaluatePluginPermissionGrant } from '@/plugins/runtime/lifecycle/permissions/evaluatePluginPermissionGrant';
 import type { PluginPermissionGrantListReader } from '@/plugins/runtime/lifecycle/permissions/pluginPermissionGrantListReader';
 
@@ -184,11 +191,50 @@ type Authorization = Readonly<{
   }>>;
 }>;
 
-function unavailable(): PluginError {
+class SavedSecretMaterializationUnavailable extends Error {
+  readonly status: SavedSecretResolutionFailureStatusV1;
+  readonly admissionReason?: SavedSecretOperationAdmissionError['reason'];
+
+  constructor(
+    status: SavedSecretResolutionFailureStatusV1,
+    admissionReason?: SavedSecretOperationAdmissionError['reason'],
+  ) {
+    super(`Saved Secret material is ${status}`);
+    this.name = 'SavedSecretMaterializationUnavailable';
+    this.status = status;
+    this.admissionReason = admissionReason;
+  }
+}
+
+function savedSecretUnavailable(
+  status: SavedSecretResolutionFailureStatusV1,
+  admissionReason?: SavedSecretOperationAdmissionError['reason'],
+): never {
+  throw new SavedSecretMaterializationUnavailable(status, admissionReason);
+}
+
+function unavailable(
+  status?: SavedSecretResolutionFailureStatusV1,
+  admissionReason?: SavedSecretOperationAdmissionError['reason'],
+): PluginError {
   return new PluginError({
     code: 'plugin_voice_credential_access_unavailable',
     message: 'Voice credential access is unavailable',
+    ...(status
+      ? {
+          details: {
+            materialStatus: status,
+            ...(admissionReason ? { admissionReason } : {}),
+          },
+        }
+      : {}),
   });
+}
+
+function unavailableFrom(error: unknown): PluginError {
+  return error instanceof SavedSecretMaterializationUnavailable
+    ? unavailable(error.status, error.admissionReason)
+    : unavailable();
 }
 
 function invalidRequest(): PluginError {
@@ -498,7 +544,10 @@ async function selectedSourceFromSnapshot(
       savedSecret.status !== 'ready'
       || savedSecret.kind === null
       || !source.secretKinds.includes(savedSecret.kind)
-    ) throw unavailable();
+    ) {
+      if (savedSecret.status !== 'ready') savedSecretUnavailable(savedSecret.status);
+      throw unavailable();
+    }
     const selectedAuthority = selectedAuthorityDigest({
       source: 'savedSecret',
       bindingSource: resolved.savedSecret.source,
@@ -735,7 +784,7 @@ async function materializeCurrentSavedSecret(input: Readonly<{
     current.savedSecretCustody.secretRef,
     current.savedSecretCustody.fingerprint,
   );
-  if (resolved.status !== 'ready') throw unavailable();
+  if (resolved.status !== 'ready') savedSecretUnavailable(resolved.status);
   return materializeSavedSecret(input.request, resolved.value);
 }
 
@@ -885,9 +934,9 @@ function createAuthorizationInspector(
           true,
           canonicalRequest(request),
         )).inspection;
-      } catch {
+      } catch (error) {
         signal.throwIfAborted();
-        throw unavailable();
+        throw unavailableFrom(error);
       }
     },
   });
@@ -969,9 +1018,15 @@ export function createPluginRawCredentialMaterializer(input: Readonly<{
         references: [{ ref: custody.secretRef }],
         signal,
       });
-    } catch {
+    } catch (error) {
       signal.throwIfAborted();
-      throw unavailable();
+      if (error instanceof SavedSecretOperationAdmissionError) {
+        savedSecretUnavailable(
+          savedSecretOperationAdmissionStatus(error.reason),
+          error.reason,
+        );
+      }
+      throw unavailableFrom(error);
     }
   };
 
@@ -1055,32 +1110,37 @@ export function createPluginRawCredentialMaterializer(input: Readonly<{
       } catch (error) {
         signal.throwIfAborted();
         if (error instanceof UndeclaredRawCredentialTuple) throw invalidRequest();
-        throw unavailable();
+        throw unavailableFrom(error);
       }
       let result: VoiceRawCredentialMaterialization | null = null;
       let connectedAccountResultInvalid = false;
       let capturedCredentialRevision: ConnectedServiceCredentialRevisionV1 | null = null;
       let callbackCredentialRevision: ConnectedServiceCredentialRevisionV1 | null = null;
       if (before.selected.source.kind === 'savedSecret') {
-        const custody = before.selected.savedSecretCustody;
-        if (!custody) throw unavailable();
-        await admitSavedSecretOperation(custody, signal);
-        callbackCredentialRevision = custody.callbackCredentialRevision;
-        if (
-          options.credentialRevisionBasis?.expectedCredentialRevision !== null
-          && options.credentialRevisionBasis?.expectedCredentialRevision !== undefined
-          && callbackCredentialRevision !== options.credentialRevisionBasis.expectedCredentialRevision
-        ) throw unavailable();
-        result = await materializeCurrentSavedSecret({
-          binding: input.binding,
-          authority,
-          before,
-          request,
-          getSnapshot,
-          getAccountSettingsSnapshotLifetimeToken: getSnapshotLifetimeToken,
-          connectedAccounts: input.connectedAccounts,
-          signal,
-        });
+        try {
+          const custody = before.selected.savedSecretCustody;
+          if (!custody) throw unavailable();
+          await admitSavedSecretOperation(custody, signal);
+          callbackCredentialRevision = custody.callbackCredentialRevision;
+          if (
+            options.credentialRevisionBasis?.expectedCredentialRevision !== null
+            && options.credentialRevisionBasis?.expectedCredentialRevision !== undefined
+            && callbackCredentialRevision !== options.credentialRevisionBasis.expectedCredentialRevision
+          ) throw unavailable();
+          result = await materializeCurrentSavedSecret({
+            binding: input.binding,
+            authority,
+            before,
+            request,
+            getSnapshot,
+            getAccountSettingsSnapshotLifetimeToken: getSnapshotLifetimeToken,
+            connectedAccounts: input.connectedAccounts,
+            signal,
+          });
+        } catch (error) {
+          signal.throwIfAborted();
+          throw unavailableFrom(error);
+        }
       } else {
         const serviceRef = before.selected.qualifiedConnectedAccountService;
         const connectedAccounts = input.connectedAccounts;
@@ -1130,9 +1190,9 @@ export function createPluginRawCredentialMaterializer(input: Readonly<{
       let after: Authorization;
       try {
         after = await authorize(request, signal);
-      } catch {
+      } catch (error) {
         signal.throwIfAborted();
-        throw unavailable();
+        throw unavailableFrom(error);
       }
       if (!sameAuthorization(before, after)) throw unavailable();
       if (connectedAccountResultInvalid) throw invalidRequest();

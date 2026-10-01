@@ -132,10 +132,20 @@ import type {
     PluginUiTargetedContributionSelectorV1,
     PluginUiTargetedContributionTargetV1,
     PluginUiTargetedContributionsV1,
+    SessionPendingPermissionV1,
+    SessionPermissionAnswerV1,
+    SessionPermissionResponseRequestV1,
+    SessionPermissionResponseV1,
+    SessionStateV1,
 } from './publicContract.js';
 
 
 export type {
+    SessionPendingPermissionV1,
+    SessionPermissionAnswerV1,
+    SessionPermissionResponseRequestV1,
+    SessionPermissionResponseV1,
+    SessionStateV1,
     ComposerAttachmentAuthorPresentationV1,
     ComposerAttachmentAuthorValueV1,
     ComposerAttachmentPresentationV1,
@@ -171,6 +181,7 @@ export type {
     ComposerMentionRefV1,
     ComposerMediaContentCapabilityV1,
     PluginUiContainerV1,
+    PluginUiDestinationContainerV1,
     PluginUiContributionIdentityV1,
     CurrentUiCommandDeclarationV1,
     CurrentUiCommandDescriptorV1,
@@ -663,6 +674,43 @@ export interface PluginUiHostApi {
         handle: ComposerContentHandleV1,
         options?: PluginCancellationOptions,
     ): Promise<void>;
+    /**
+     * Read the live state of one Session this Account's client can open:
+     * lifecycle, runtime and operational state (the canonical Session
+     * awareness projection), where it runs, and its pending permission
+     * requests. Resolves `null` for a Session this Account cannot reach.
+     *
+     * A plugin typically reads the Sessions linked to its own entries; the
+     * scope is the Account's own Session visibility, not a plugin ACL.
+     */
+    readSession(sessionId: string, options?: PluginCancellationOptions): Promise<SessionStateV1 | null>;
+    /**
+     * Observe one Session's state. Same acknowledged-async establishment and
+     * bounded invalidation signal as {@link PluginUiHostApi.watchResource}:
+     * `readSession` stays the one snapshot authority, so an observer re-reads
+     * after an `invalidated` event. A Session that becomes unreachable ends
+     * the subscription with an `error` event.
+     */
+    watchSession(
+        sessionId: string,
+        listener: (event: ResourceSubscriptionEvent) => void,
+        options?: PluginCancellationOptions,
+    ): Promise<Disposable>;
+    /**
+     * Answer one pending permission request on the user's behalf, from a user
+     * action in this plugin UI. The host applies the answer through the same
+     * decision owner the Session's own permission prompt uses; it is not a
+     * second permission authority, and the answer is the viewer's.
+     *
+     * Only an answer listed in the request's `answers` is accepted. A request
+     * that is no longer pending, a Session this Account cannot reach, or an
+     * answer this viewer may not give resolves `refused`; a delivery failure
+     * rejects with a typed host error.
+     */
+    respondToSessionPermission(
+        request: SessionPermissionResponseRequestV1,
+        options?: PluginCancellationOptions,
+    ): Promise<SessionPermissionResponseV1>;
     diagnostic(data: PluginDiagnosticData): void;
     readClipboard(options?: PluginCancellationOptions): Promise<string>;
     writeClipboard(value: string, options?: PluginCancellationOptions): Promise<void>;

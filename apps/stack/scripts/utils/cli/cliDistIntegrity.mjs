@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import cliDistBuildManifest from './cliDistBuildManifestLoader.mjs';
@@ -46,84 +46,7 @@ export function readCliDistIntegrity(entrypoint) {
   return cliDistBuildManifest.readCliDistBuildManifest(entrypoint);
 }
 
-export function readCliDistBuildManifest(entrypoint) {
-  if (!entrypoint || !existsSync(entrypoint)) {
-    return {
-      ok: false,
-      reason: 'missing_entrypoint',
-      fingerprint: null,
-      maxMtimeMs: null,
-      fileCount: 0,
-      manifestPath: null,
-    };
-  }
-  try {
-    const entrypointStat = statSync(entrypoint);
-    if (!entrypointStat.isFile() || entrypointStat.size === 0) {
-      return {
-        ok: false,
-        reason: 'empty_entrypoint',
-        fingerprint: null,
-        maxMtimeMs: null,
-        fileCount: 0,
-        manifestPath: join(dirname(String(entrypoint)), CLI_DIST_BUILD_MANIFEST),
-      };
-    }
-  } catch {
-    return {
-      ok: false,
-      reason: 'unreadable_entrypoint',
-      fingerprint: null,
-      maxMtimeMs: null,
-      fileCount: 0,
-      manifestPath: join(dirname(String(entrypoint)), CLI_DIST_BUILD_MANIFEST),
-    };
-  }
-  const manifestPath = join(dirname(String(entrypoint)), CLI_DIST_BUILD_MANIFEST);
-  if (!existsSync(manifestPath)) {
-    return {
-      ok: false,
-      reason: 'missing_build_manifest',
-      fingerprint: null,
-      maxMtimeMs: null,
-      fileCount: 0,
-      manifestPath,
-    };
-  }
-  try {
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-    const fingerprint = String(manifest?.fingerprint ?? '').trim().toLowerCase();
-    if (!/^[a-f0-9]{16}$/.test(fingerprint)) {
-      return {
-        ok: false,
-        reason: 'invalid_build_manifest_fingerprint',
-        fingerprint: null,
-        maxMtimeMs: null,
-        fileCount: 0,
-        manifestPath,
-      };
-    }
-    const fileCount = Number(manifest?.fileCount);
-    return {
-      ok: true,
-      reason: 'manifest',
-      fingerprint,
-      maxMtimeMs: null,
-      fileCount: Number.isFinite(fileCount) && fileCount >= 0 ? Math.trunc(fileCount) : 0,
-      manifestPath,
-      manifest,
-    };
-  } catch {
-    return {
-      ok: false,
-      reason: 'invalid_build_manifest',
-      fingerprint: null,
-      maxMtimeMs: null,
-      fileCount: 0,
-      manifestPath,
-    };
-  }
-}
+export const readCliDistBuildManifest = cliDistBuildManifest.readCliDistBuildManifest;
 
 export const readCliDistClosureFingerprint = cliDistBuildManifest.readCliDistClosureFingerprint;
 export const writeCliDistBuildManifest = cliDistBuildManifest.writeCliDistBuildManifest;

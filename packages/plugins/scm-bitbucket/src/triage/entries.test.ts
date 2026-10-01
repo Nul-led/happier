@@ -10,6 +10,7 @@ import {
   decodeBitbucketRepositoryRow,
   decodeBitbucketWorkspaceAccessRow,
 } from './entries.js';
+import { toBitbucketPresentObservation } from './source/observations.js';
 
 const [openRow, declinedRow] = pageOne.values;
 
@@ -61,6 +62,25 @@ describe('Bitbucket pull-request row mapping', () => {
     const unknownState = decodeBitbucketPullRequestRow({ ...openRow, state: 'ARCHIVED' });
     expect(unknownState.ok && unknownState.entry.state.presentation).toBe('unknown');
     expect(unknownState.ok && unknownState.entry.state.nativeLabel).toBe('ARCHIVED');
+  });
+
+  it('projects a merged pull request as resolved and a declined one as closed', () => {
+    // Merged is the pull request's completed outcome; declined and superseded
+    // closed it without merging. The Triage fix-PR link reads exactly that
+    // distinction from the source-neutral presentation (`design/FIX-LINK.md`).
+    const presentationOf = (row: unknown) => {
+      const decoded = decodeBitbucketPullRequestRow(row);
+      if (!decoded.ok) throw new Error('expected a decodable row');
+      return toBitbucketPresentObservation(decoded.entry, {
+        laneInvolvement: 'author',
+        viewerAccountUuid: '{aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee}',
+      }).snapshot.state;
+    };
+
+    expect(presentationOf(pageTwo.values[0])).toEqual({ presentation: 'resolved', nativeLabel: 'Merged' });
+    expect(presentationOf(declinedRow)).toEqual({ presentation: 'closed', nativeLabel: 'Declined' });
+    expect(presentationOf({ ...openRow, state: 'SUPERSEDED' }))
+      .toEqual({ presentation: 'closed', nativeLabel: 'Superseded' });
   });
 
   it('distinguishes a reviewer list the endpoint omits from a reviewer list that is empty', () => {

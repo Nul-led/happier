@@ -7,8 +7,8 @@ const appliedRuntimeMock = vi.hoisted(() => ({
   tryAcquire: vi.fn(),
 }));
 
-vi.mock('@/plugins/projection/actions/execute', () => ({
-  executePluginActionIfAvailable: appliedRuntimeMock.execute,
+vi.mock('@/plugins/runtime/invocation/actions/executeContributedAction', () => ({
+  executeContributedAction: appliedRuntimeMock.execute,
 }));
 
 vi.mock('@/plugins/runtime/reload/singleton', () => ({
@@ -22,11 +22,57 @@ import {
   PLUGIN_CATALOG_READ_PATH,
   PLUGIN_CHANGE_LIST_PATH,
   PLUGIN_CHANGE_STATUS_PATH,
+  PLUGIN_DEVELOPMENT_CONTROL_PATH,
   registerDaemonPluginChangeRoutes,
 } from './controlRoutes';
 import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
 
 describe('registerDaemonPluginChangeRoutes', () => {
+  it('exposes one authenticated daemon development register/unregister/reload/status contract', async () => {
+    const app = fastify();
+    const controlPluginDevelopment = vi.fn(async () => ({
+      kind: 'status' as const,
+      status: { roots: [], plugins: [] },
+    }));
+    const requireAuth = vi.fn(async () => undefined);
+    registerDaemonPluginChangeRoutes(app, {
+      service: {
+        requestPluginChange: vi.fn(),
+        decidePluginChange: vi.fn(),
+        statusPluginChange: async () => ({ kind: 'expired' }),
+        listPendingPluginChanges: async () => ({ changes: [] }),
+        controlPluginDevelopment,
+        shutdown: async () => undefined,
+      },
+      requireAuth,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: PLUGIN_DEVELOPMENT_CONTROL_PATH,
+      payload: { kind: 'registerWorkspace', projectRoot: '/workspace/project', trust: 'accept' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(requireAuth).toHaveBeenCalledOnce();
+    expect(controlPluginDevelopment).toHaveBeenCalledWith({
+      kind: 'registerWorkspace',
+      projectRoot: '/workspace/project',
+      trust: 'accept',
+    });
+
+    const unregister = await app.inject({
+      method: 'POST',
+      url: PLUGIN_DEVELOPMENT_CONTROL_PATH,
+      payload: { kind: 'unregisterExplicit', rootPath: '/workspace/plugin' },
+    });
+    expect(unregister.statusCode).toBe(200);
+    expect(controlPluginDevelopment).toHaveBeenLastCalledWith({
+      kind: 'unregisterExplicit',
+      rootPath: '/workspace/plugin',
+    });
+  });
+
   it('admits destructive uninstall only through the authenticated daemon change route', async () => {
     const app = fastify();
     const requestPluginChange = vi.fn(async () => ({
@@ -91,13 +137,13 @@ describe('registerDaemonPluginChangeRoutes', () => {
     const accepted = await app.inject({
       method: 'POST',
       url: '/plugins/change/request',
-      payload: { kind: 'setUpdatePolicy', pluginId: 'acme.example', policy: 'reviewSensitiveChanges' },
+      payload: { kind: 'setUpdatePolicy', pluginId: 'acme.example', policy: 'allowed' },
     });
     expect(accepted.statusCode).toBe(200);
     expect(requestPluginChange).toHaveBeenCalledWith({
       kind: 'setUpdatePolicy',
       pluginId: 'acme.example',
-      policy: 'reviewSensitiveChanges',
+      policy: 'allowed',
     });
 
     const rejected = await app.inject({
@@ -113,7 +159,11 @@ describe('registerDaemonPluginChangeRoutes', () => {
     const app = fastify();
     const statusPluginChange = vi.fn(async () => ({
       kind: 'reviewRequired' as const,
+      reviewKind: 'installation' as const,
       pendingChangeId: 'pending-1',
+      reason: 'firstInstall' as const,
+      currentVersion: null,
+      authorityExpansion: [],
       review: createPluginInstallationReviewFixture(),
     }));
     registerDaemonPluginChangeRoutes(app, {
@@ -135,7 +185,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       pendingChangeId: 'pending-1',
     });
     expect(statusPluginChange).toHaveBeenCalledWith({ pendingChangeId: 'pending-1' });
@@ -147,11 +197,19 @@ describe('registerDaemonPluginChangeRoutes', () => {
     const listPendingPluginChanges = vi.fn(async () => ({
       changes: [
         {
-          kind: 'sourceRootReviewRequired' as const,
+          kind: 'reviewRequired' as const, reviewKind: 'projectTrust' as const,
           pendingChangeId: 'pending-1',
           review: { source: { kind: 'path' as const, locator: '/tmp/agent-authored' } },
         },
-        { kind: 'reviewRequired' as const, pendingChangeId: 'pending-2', review },
+        {
+          kind: 'reviewRequired' as const,
+          reviewKind: 'installation' as const,
+          pendingChangeId: 'pending-2',
+          reason: 'firstInstall' as const,
+          currentVersion: null,
+          authorityExpansion: [],
+          review,
+        },
         { kind: 'applying' as const, pendingChangeId: 'pending-3' },
       ],
     }));
@@ -173,11 +231,11 @@ describe('registerDaemonPluginChangeRoutes', () => {
     expect(response.json()).toEqual({
       changes: [
         {
-          kind: 'sourceRootReviewRequired',
+          kind: 'reviewRequired', reviewKind: 'projectTrust',
           pendingChangeId: 'pending-1',
           review: { source: { kind: 'path', locator: '/tmp/agent-authored' } },
         },
-        { kind: 'reviewRequired', pendingChangeId: 'pending-2', review: JSON.parse(JSON.stringify(review)) },
+        { kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [], pendingChangeId: 'pending-2', review: JSON.parse(JSON.stringify(review)) },
         { kind: 'applying', pendingChangeId: 'pending-3' },
       ],
     });
@@ -280,7 +338,11 @@ describe('registerDaemonPluginChangeRoutes', () => {
     const app = fastify();
     const requestPluginChange = vi.fn(async () => ({
       kind: 'reviewRequired' as const,
+      reviewKind: 'installation' as const,
       pendingChangeId: 'pending-1',
+      reason: 'firstInstall' as const,
+      currentVersion: null,
+      authorityExpansion: [],
       review: createPluginInstallationReviewFixture(),
     }));
     const decidePluginChange = vi.fn(async () => ({
@@ -308,7 +370,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
       payload: { kind: 'installPath', locator: '/tmp/example', development: false },
     });
     expect(requestResponse.statusCode).toBe(200);
-    expect(requestResponse.json()).toEqual(expect.objectContaining({ kind: 'reviewRequired', pendingChangeId: 'pending-1' }));
+    expect(requestResponse.json()).toEqual(expect.objectContaining({ kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [], pendingChangeId: 'pending-1' }));
 
     const decisionResponse = await app.inject({
       method: 'POST',
@@ -397,7 +459,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
       }],
       ['/plugins/change/decide', {
         pendingChangeId: 'pending-1',
-        decision: 'trustSourceRoot',
+        decision: 'installAndTrust', optionalSelections: [],
         actorEvidence,
       }],
       ['/plugins/change/request', {
@@ -432,6 +494,29 @@ describe('registerDaemonPluginChangeRoutes', () => {
       method: 'POST',
       url: '/plugins/change/request',
       payload: { kind: 'installPath', locator: '', development: false, unexpected: true },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(requestPluginChange).not.toHaveBeenCalled();
+  });
+
+  it('rejects legacy direct development install-path requests before the service owner sees them', async () => {
+    const app = fastify();
+    const requestPluginChange = vi.fn();
+    registerDaemonPluginChangeRoutes(app, {
+      service: {
+        requestPluginChange,
+        decidePluginChange: vi.fn(),
+        statusPluginChange: async () => ({ kind: 'expired' }),
+        listPendingPluginChanges: async () => ({ changes: [] }),
+        shutdown: async () => undefined,
+      },
+      requireAuth: async () => undefined,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/plugins/change/request',
+      payload: { kind: 'installPath', locator: '/tmp/example', development: true },
     });
     expect(response.statusCode).toBe(400);
     expect(requestPluginChange).not.toHaveBeenCalled();
@@ -551,7 +636,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
       integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
       manifestDigest: `sha256:${'a'.repeat(64)}`,
       review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-      updatePolicy: 'reviewSensitiveChanges',
+      updatePolicy: 'allowed',
     };
 
     const response = await app.inject({
@@ -605,7 +690,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
       integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
       manifestDigest: `sha256:${'a'.repeat(64)}`,
       review: { status: 'unreviewed', reviewedAt: null },
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
     };
 
     const response = await app.inject({
@@ -708,7 +793,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
           integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
           manifestDigest: `sha256:${'a'.repeat(64)}`,
           review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-          updatePolicy: 'reviewSensitiveChanges',
+          updatePolicy: 'allowed',
         },
       },
     });
@@ -753,7 +838,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
           integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
           manifestDigest: `sha256:${'a'.repeat(64)}`,
           review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-          updatePolicy: 'reviewSensitiveChanges',
+          updatePolicy: 'allowed',
           // The listing a caller claims to have reviewed is a closed schema.
           // An unrecognized field is rejected rather than carried past the
           // route into the daemon change owner.
@@ -855,7 +940,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
           integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
           manifestDigest: `sha256:${'a'.repeat(64)}`,
           review: { status: 'withdrawn', reviewedAt: '2026-07-21T00:00:00.000Z' },
-          updatePolicy: 'reviewSensitiveChanges',
+          updatePolicy: 'allowed',
         },
       },
     });
@@ -918,7 +1003,6 @@ describe('registerDaemonPluginChangeRoutes', () => {
         actionId: 'acme.example/echo',
         input: { value: 'hello' },
         surface: 'cli',
-        authority: 'present_user',
       },
     });
 
@@ -931,7 +1015,6 @@ describe('registerDaemonPluginChangeRoutes', () => {
       actionId: 'acme.example/echo',
       input: { value: 'hello' },
       surface: 'cli',
-      authority: 'present_user',
     });
     expect(requireAuth).toHaveBeenCalledOnce();
   });
@@ -967,8 +1050,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
         actionId: 'acme.example/echo',
         input: { value: 'hello' },
         surface: 'cli',
-        authority: 'account_automation',
-        expectedContributorImmutableGenerationId: 'generation-g',
+        expectedContributorOccurrenceId: 'occurrence-g',
       },
     });
 
@@ -977,7 +1059,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
       runtimeRegistry: appliedRegistry,
       actionId: 'acme.example/echo',
       input: { value: 'hello' },
-      expectedContributorImmutableGenerationId: 'generation-g',
+      expectedContributorOccurrenceId: 'occurrence-g',
       context: { surface: 'cli' },
     });
     expect(appliedRuntimeMock.release).toHaveBeenCalledOnce();

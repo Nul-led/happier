@@ -77,6 +77,8 @@ import { parseOptionalBooleanEnv } from '@happier-dev/protocol';
 import { isEmbeddedBunBundlePath } from '@/packagedRuntime/js/isEmbeddedBunBundlePath';
 import cliDistBuildManifest from '@happier-dev/cli-common/cliDistBuildManifest';
 import { CLI_RUNTIME_SIDECAR_ENTRIES } from '@happier-dev/cli-common/cliRuntimeSidecars';
+import { assertHostCanExcludeBundledPlugin, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH, parseBundledPluginPublicationFailures } from '@happier-dev/cli-common/bundledPluginPublicationPolicy';
+import { readAdmittedBundledPluginPublicationFailures } from '@/plugins/projection/registry/builtIn/locators';
 import {
   copyCliNodeWorkspaceRuntimePackages,
   copyCliNodeWorkspaceRuntimePackagesFromRuntimeRoot,
@@ -482,7 +484,10 @@ function copyRuntimeAsset(sourcePath: string, targetPath: string): void {
   copyFileSync(sourcePath, targetPath, constants.COPYFILE_FICLONE);
 }
 
-function copyCliRuntimeAssetsToPinnedSnapshot(runtimeRoot: string, snapshotRoot: string): void {
+function copyCliRuntimeAssetsToPinnedSnapshot(runtimeRoot: string, snapshotRoot: string, publicationFailuresBytes: string): void {
+  const failuresPath = join(snapshotRoot, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH);
+  mkdirSync(dirname(failuresPath), { recursive: true });
+  writeFileSync(failuresPath, publicationFailuresBytes, 'utf8');
   copyRuntimeAsset(
     join(runtimeRoot, 'package.json'),
     join(snapshotRoot, 'package.json'),
@@ -499,13 +504,17 @@ function copyCliRuntimeAssetsToPinnedSnapshot(runtimeRoot: string, snapshotRoot:
   );
 }
 
+type PreparedPinnedRunnerSnapshotLocation = PinnedRunnerSnapshotLocation & Readonly<{
+  publicationFailuresBytes: string;
+}>;
+
 function resolvePinnedSnapshotLocation(input: Readonly<{
   entrypoint: string;
   fingerprint: string;
   runtimeAssetSha256: string;
   workspaceRuntimeIdentity: string;
   env: NodeJS.ProcessEnv;
-}>): PinnedRunnerSnapshotLocation | null {
+}>): PreparedPinnedRunnerSnapshotLocation | null {
   if (
     !/^[a-f0-9]{16}$/u.test(input.fingerprint)
     || !/^[a-f0-9]{64}$/u.test(input.runtimeAssetSha256)
@@ -519,12 +528,22 @@ function resolvePinnedSnapshotLocation(input: Readonly<{
   if (!isRelativePathInsideRoot(entrypointRelativePath)) return null;
 
   const runtimeRoot = dirname(distRoot);
+  let publicationFailuresBytes: string;
+  try {
+    publicationFailuresBytes = readAdmittedBundledPluginPublicationFailures()
+      ?? readFileSync(join(runtimeRoot, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH), 'utf8');
+    for (const failure of parseBundledPluginPublicationFailures(publicationFailuresBytes)) {
+      assertHostCanExcludeBundledPlugin('', failure.packageName, new Error(failure.diagnostic.message));
+    }
+  } catch { return null; }
+  const publicationIdentity = createHash('sha256').update(publicationFailuresBytes).digest('hex');
   const snapshotsDir = resolvePinnedRunnerSnapshotsDir(input.entrypoint, input.env);
   if (!snapshotsDir) return null;
   const snapshotIdentity = [
     input.fingerprint,
     input.runtimeAssetSha256,
     input.workspaceRuntimeIdentity,
+    publicationIdentity,
     PINNED_RUNNER_LAYOUT_VERSION,
   ].join('-');
   const snapshotRoot = join(snapshotsDir, snapshotIdentity);
@@ -536,6 +555,7 @@ function resolvePinnedSnapshotLocation(input: Readonly<{
     fingerprint: input.fingerprint,
     runtimeAssetIdentity: input.runtimeAssetSha256,
     workspaceRuntimeIdentity: input.workspaceRuntimeIdentity,
+    publicationFailuresBytes,
   };
 }
 
@@ -574,7 +594,7 @@ function resolveCurrentPinnedSnapshotLocation(
   fingerprint: string,
   env: NodeJS.ProcessEnv = process.env,
   workspaceRuntimeIdentityOverride = '',
-): PinnedRunnerSnapshotLocation | null {
+): PreparedPinnedRunnerSnapshotLocation | null {
   const manifest = cliDistBuildManifest.readCliDistBuildManifest(entrypoint);
   if (!manifest.ok || manifest.fingerprint !== fingerprint) return null;
   const runtimeRoot = dirname(dirname(entrypoint));
@@ -750,7 +770,7 @@ function copyCliDistToPinnedSnapshot(
       join(tmpRoot, 'package-dist'),
       { skipNames: new Set([PINNED_RUNNER_DIST_DIR]) },
     );
-    copyCliRuntimeAssetsToPinnedSnapshot(runtimeRoot, tmpRoot);
+    copyCliRuntimeAssetsToPinnedSnapshot(runtimeRoot, tmpRoot, location.publicationFailuresBytes);
     const distManifest = cliDistBuildManifest.readCliDistBuildManifest(entrypoint);
     let expectedWorkspaceRuntimeIdentity = String(
       distManifest.manifest?.workspaceRuntimeIdentity ?? '',
@@ -1095,9 +1115,16 @@ export function buildHappyCliSubprocessInvocation(
   }
 
   const entrypoint = resolveSubprocessEntrypoint(environment);
+  const explicitTsxPreference = parseOptionalBooleanEnv(environment.HAPPIER_CLI_SUBPROCESS_PREFER_TSX);
+  const preferDevTsx = runtime === 'node' && shouldPreferDevTsxSubprocess(environment);
+  // Opting out of tsx disables only the mutable-source fallback. Stack launches its last-green
+  // runner with tsx off, and the Stack-admitted closure must still decide what that runner spawns.
+  const admittedStackClosureWithoutTsx = runtime === 'node'
+    && explicitTsxPreference === false
+    && !readNonEmptyEnv('HAPPIER_CLI_SUBPROCESS_ENTRYPOINT', environment)
+    && hasStackSubprocessContext(environment);
 
-  if (runtimeBacked || (runtime === 'node' && shouldPreferDevTsxSubprocess(environment))) {
-    const explicitTsxPreference = parseOptionalBooleanEnv(environment.HAPPIER_CLI_SUBPROCESS_PREFER_TSX);
+  if (runtimeBacked || preferDevTsx || admittedStackClosureWithoutTsx) {
     let stackDistRefusal: string | null = null;
     if (explicitTsxPreference !== true) {
       const currentStackDist = buildCurrentStackDistSubprocessInvocation(
@@ -1127,8 +1154,10 @@ export function buildHappyCliSubprocessInvocation(
         stackDistRefusal,
       ));
     }
-    const tsxInvocation = buildDevTsxSubprocessInvocation(args, entrypoint);
-    if (tsxInvocation) return tsxInvocation;
+    if (preferDevTsx) {
+      const tsxInvocation = buildDevTsxSubprocessInvocation(args, entrypoint);
+      if (tsxInvocation) return tsxInvocation;
+    }
   }
 
   if (runtimeBacked) {

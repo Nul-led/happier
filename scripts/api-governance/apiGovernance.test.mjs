@@ -186,10 +186,10 @@ async function createBundledDeclarationFixture() {
   });
 }
 
-test('the shared governance owner reserves plugin-sdk, plugin-ui, and sdk profiles', () => {
+test('the shared governance owner reserves embed, plugin-sdk, plugin-ui, and sdk profiles', () => {
   assert.deepEqual(
     Object.keys(API_GOVERNANCE_PROFILES).sort(),
-    ['plugin-sdk', 'plugin-ui', 'sdk'],
+    ['embed', 'plugin-sdk', 'plugin-ui', 'sdk'],
   );
 });
 

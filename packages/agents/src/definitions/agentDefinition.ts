@@ -45,4 +45,12 @@ export type AgentDefinition = Readonly<{
    * runtimeDescriptorV1; remove this seam when those releases leave support.
    */
   releasedFlatSessionMetadataRuntimeDescriptorReader?: ReleasedFlatSessionMetadataRuntimeDescriptorReaderDefinition;
+  /**
+   * Read-forward only for output transcript records written by released 0.2
+   * Claude CLI writers. The declaring Agent owns the native record types;
+   * remove this seam when those writers and their retained data leave support.
+   */
+  releasedOutputTranscriptRecordReader?: Readonly<{
+    nonTranscriptRecordTypes: readonly string[];
+  }>;
 }>;

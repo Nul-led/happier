@@ -28,13 +28,6 @@ const CONTRACT_DECLARATIONS: readonly ContractDeclaration[] = [
         ],
     },
     {
-        source: './ui/reactNativeWebBuild.ts',
-        names: [
-            'defineReactNativeWebViteBuildPreset',
-            'ReactNativeWebViteBuildPresetInput',
-        ],
-    },
-    {
         source: './voice/client.ts',
         names: [
             'VoiceConnectionMediaHost',

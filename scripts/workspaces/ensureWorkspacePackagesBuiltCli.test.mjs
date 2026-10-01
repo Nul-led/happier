@@ -15,6 +15,7 @@ test('the root package-build adapter delegates one package set to the canonical 
       calls.push({ repoRoot, packageNames, options });
       return { ok: true, built: ['beta'], skipped: [] };
     },
+    publishBundledPluginArtifactsAfterWorkspaceBuildImpl: async () => false,
   });
 
   assert.deepEqual(calls, [{
@@ -41,6 +42,7 @@ test('the root package-build adapter prepares component dependency closures thro
       calls.push({ componentDir, options });
       return { ok: true, built: [componentDir.split('/').at(-1)], skipped: [] };
     },
+    publishBundledPluginArtifactsAfterWorkspaceBuildImpl: async () => false,
   });
 
   assert.deepEqual(calls, [
@@ -48,6 +50,96 @@ test('the root package-build adapter prepares component dependency closures thro
     { componentDir: '/repo/apps/server', options: { publicationMode: 'live' } },
   ]);
   assert.deepEqual(result, { ok: true, built: ['cli', 'server'], skipped: [] });
+});
+
+test('the root package-build adapter publishes the deduplicated rebuilt union once after every build', async () => {
+  const events = [];
+  const env = { HAPPIER_DEV_TARGET_EXECUTION: '1' };
+  const result = await runWorkspacePackageBuild({
+    repoRoot: '/repo',
+    env,
+    componentDirs: ['apps/ui', 'apps/cli'],
+    ensureWorkspacePackagesBuiltForComponentImpl: async (componentDir) => {
+      events.push(`build:${componentDir}`);
+      return componentDir.endsWith('/ui')
+        ? {
+            ok: true,
+            built: ['@happier-dev/plugins-inspector', '@happier-dev/plugin-ui'],
+            skipped: [],
+          }
+        : {
+            ok: true,
+            built: ['@happier-dev/plugins-inspector', '@happier-dev/plugins-triage'],
+            skipped: [],
+          };
+    },
+    publishBundledPluginArtifactsAfterWorkspaceBuildImpl: async (options) => {
+      events.push(['publish', options]);
+      return true;
+    },
+    rebuildWorkspacesInvalidatedByBundledPluginPublicationImpl: async (options) => {
+      events.push(['rebuild-generated', options]);
+      return [];
+    },
+  });
+
+  assert.deepEqual(events, [
+    'build:/repo/apps/ui',
+    'build:/repo/apps/cli',
+    ['publish', {
+      repoRoot: '/repo',
+      workspaceNames: [
+        '@happier-dev/plugins-inspector',
+        '@happier-dev/plugin-ui',
+        '@happier-dev/plugins-triage',
+      ],
+      env,
+      bundledPluginArtifactPublication: { mode: 'write', targetOwnedOnly: true },
+    }],
+    ['rebuild-generated', {
+      repoRoot: '/repo',
+      workspaceNames: [
+        '@happier-dev/plugins-inspector',
+        '@happier-dev/plugin-ui',
+        '@happier-dev/plugins-triage',
+      ],
+      env,
+    }],
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    built: [
+      '@happier-dev/plugins-inspector',
+      '@happier-dev/plugin-ui',
+      '@happier-dev/plugins-triage',
+    ],
+    skipped: [],
+  });
+});
+
+test('the authoritative root package-build adapter retains full publication', async () => {
+  const publications = [];
+  await runWorkspacePackageBuild({
+    repoRoot: '/repo',
+    env: {},
+    packageNames: ['@happier-dev/plugins-inspector'],
+    ensureWorkspacePackagesBuiltByNameImpl: async () => ({
+      ok: true,
+      built: ['@happier-dev/plugins-inspector'],
+      skipped: [],
+    }),
+    publishBundledPluginArtifactsAfterWorkspaceBuildImpl: async (options) => {
+      publications.push(options);
+      return false;
+    },
+  });
+
+  assert.deepEqual(publications, [{
+    repoRoot: '/repo',
+    workspaceNames: ['@happier-dev/plugins-inspector'],
+    env: {},
+    bundledPluginArtifactPublication: { mode: 'write' },
+  }]);
 });
 
 test('the root package-build CLI separates package names from component preparation paths', () => {

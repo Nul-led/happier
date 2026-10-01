@@ -15,6 +15,13 @@ import {
     createReloadControllerTargetedContributionsService,
     type StableTargetedContributionsOwner,
 } from '../invocation/services/targetedContributions';
+import type {
+    PluginRuntimeOccurrenceId,
+    PluginRuntimeSlot,
+    PluginRuntimeSlotOccurrence,
+} from '../runtimeSlots';
+import type { PluginSourceCustody } from '../sourceAuthority';
+import type { PluginRuntimeActivationRegistryLease } from '../composition/activationAssembly';
 
 export type PluginRuntimeRegistryLease = Readonly<{
     registry: ResolvedExecutablePluginRuntimeRegistry;
@@ -126,7 +133,9 @@ export type PluginReloadController = Readonly<{
     adoptPreparedRuntimeRegistry: (params: Readonly<{
         registry: ResolvedExecutablePluginRuntimeRegistry;
         changedPluginIds: readonly string[];
-        durableRevision: number;
+        durableRevision?: number;
+        /** Process-local development candidates use source revision currentness, never a fake durable revision. */
+        isDevelopmentCandidateCurrent?: () => boolean;
         runningSessionDisposition: PluginRunningSessionDisposition;
         beforePublish?: PluginRuntimeRegistryBeforePublish;
     }>) => Promise<PluginReloadResult>;
@@ -136,6 +145,26 @@ export type PluginReloadController = Readonly<{
     }>) => Promise<PluginRuntimeRegistryLease>;
     tryAcquireRuntimeRegistry: () => PluginRuntimeRegistryLease | null;
     isRuntimeRegistryCurrent: (registry: ResolvedExecutablePluginRuntimeRegistry) => boolean;
+    /** The plugin's stable slot, or null when the plugin is not admitted. */
+    readPluginSlot?: (pluginId: string) => PluginRuntimeSlot | null;
+    readCurrentPluginOccurrenceId?: (pluginId: string) => PluginRuntimeOccurrenceId | null;
+    isPluginOccurrenceCurrent?: (
+        pluginId: string,
+        occurrenceId: PluginRuntimeOccurrenceId,
+    ) => boolean;
+    readCurrentPluginSourceCustody?: (pluginId: string) => PluginSourceCustody | null;
+    /**
+     * What a successor candidate keeps from every serving slot outside
+     * `excludedPluginIds`: its occurrence, and its activation component when it
+     * has one. Also names the active plugins whose component cannot serve a
+     * successor (fenced by a durable commit whose publication failed); a
+     * candidate prepares only those again.
+     */
+    retainServingSlots?: (excludedPluginIds: ReadonlySet<string>) => Readonly<{
+        occurrencesByPluginId: ReadonlyMap<string, PluginRuntimeSlotOccurrence>;
+        leases: readonly PluginRuntimeActivationRegistryLease[];
+        unretainedActivePluginIds: readonly string[];
+    }>;
     /** Refreshes projections derived from the current registry without replacing its generation. */
     invalidateRuntimeProjection: () => void;
     /** Applies the Account change carrier's current Session-access proof to every live Resource owner. */
@@ -168,6 +197,9 @@ function collectRegistryPluginIds(registry: ResolvedExecutablePluginRuntimeRegis
         if (contribution.pluginId) pluginIds.add(contribution.pluginId);
     }
     for (const contribution of registry.contributes.providers ?? []) {
+        pluginIds.add(contribution.pluginId);
+    }
+    for (const contribution of registry.contributes.roles ?? []) {
         pluginIds.add(contribution.pluginId);
     }
     for (const contribution of registry.contributes.actions) {
@@ -246,6 +278,14 @@ export function createPluginReloadController(params?: Readonly<{
     );
     let generation = 0;
     let activeRegistry: ResolvedExecutablePluginRuntimeRegistry | null = null;
+    /**
+     * The one per-plugin currentness owner: which occurrence serves new
+     * admissions. Written only at publication (changed occurrences swap, the
+     * rest keep their slot and occurrence objects) and when the serving
+     * registry fences an occurrence.
+     */
+    const slots = new Map<string, { readonly pluginId: string; current: PluginRuntimeSlotOccurrence | null }>();
+    let unsubscribeServingRegistryFences: (() => void) | null = null;
     let lastResult: PluginReloadResult | null = null;
     let coldInitializationPromise: Promise<PluginReloadResult> | null = null;
     let shutdownPromise: Promise<void> | null = null;
@@ -264,7 +304,7 @@ export function createPluginReloadController(params?: Readonly<{
      * retirement path. A distinct set is required because `pendingDisposal`
      * membership lets an ordinary last-lease release dispose immediately,
      * which must not happen to a published predecessor while the
-     * pre-publication owner is still releasing its writer fence.
+     * publication hook is still settling.
      */
     const shutdownCustodyPredecessors = new Set<ResolvedExecutablePluginRuntimeRegistry>();
     let currentResourceSessionAccessWitness: ResourceSessionAccessWitness | null = null;
@@ -289,6 +329,42 @@ export function createPluginReloadController(params?: Readonly<{
         // notified twice.
         for (const registry of shutdownCustodyPredecessors) registries.add(registry);
         return registries;
+    }
+
+    function publishSlots(registry: ResolvedExecutablePluginRuntimeRegistry): void {
+        unsubscribeServingRegistryFences?.();
+        unsubscribeServingRegistryFences = registry.subscribePluginOccurrenceFence?.(
+            (pluginId, occurrenceId) => {
+                const slot = slots.get(pluginId);
+                if (registry === activeRegistry && slot?.current?.occurrenceId === occurrenceId) {
+                    slot.current = null;
+                }
+            },
+        ) ?? null;
+        for (const pluginId of new Set([
+            ...collectRegistryPluginIds(registry),
+            ...Object.keys(registry.contributes.occurrenceIdsByPluginId ?? {}),
+            ...slots.keys(),
+        ])) {
+            const occurrenceId = registry.readPluginOccurrenceId?.(pluginId) ?? null;
+            const slot = slots.get(pluginId);
+            if (!occurrenceId) {
+                slots.delete(pluginId);
+                continue;
+            }
+            if (slot?.current?.occurrenceId === occurrenceId) continue;
+            const current = Object.freeze({
+                occurrenceId,
+                sourceCustody: registry.readPluginSourceCustody?.(pluginId) ?? null,
+            });
+            if (slot) slot.current = current;
+            else slots.set(pluginId, { pluginId, current });
+        }
+    }
+
+    function readServingSlotOccurrence(pluginId: string): PluginRuntimeSlotOccurrence | null {
+        if (shutdownStarted) return null;
+        return slots.get(pluginId)?.current ?? null;
     }
 
     function applyCurrentResourceSessionAccessWitness(
@@ -549,6 +625,7 @@ export function createPluginReloadController(params?: Readonly<{
             registry.publishDeclaredEventSubscriptions?.();
             activeRegistryDurableRevision = registry.durableRevision ?? -1;
             activeRegistry = registry;
+            publishSlots(registry);
         };
         try {
             if (beforePublish) await beforePublish(registry, publish);
@@ -627,7 +704,8 @@ export function createPluginReloadController(params?: Readonly<{
 
             const changedPluginIds = normalizePluginIds(adoption.changedPluginIds);
             if (
-                highestObservedDurableRevision !== null
+                adoption.durableRevision !== undefined
+                && highestObservedDurableRevision !== null
                 && adoption.durableRevision <= highestObservedDurableRevision
             ) {
                 await adoption.registry.dispose();
@@ -638,7 +716,9 @@ export function createPluginReloadController(params?: Readonly<{
             }
             // Durable currentness does not roll back while cold initialization or
             // later publication work is pending or fails.
-            highestObservedDurableRevision = adoption.durableRevision;
+            if (adoption.durableRevision !== undefined) {
+                highestObservedDurableRevision = adoption.durableRevision;
+            }
 
             const initialization = coldInitializationPromise;
             if (initialization) {
@@ -660,21 +740,29 @@ export function createPluginReloadController(params?: Readonly<{
                     throw new Error('Plugin runtime registry publication callback was invoked more than once');
                 }
                 if (shutdownStarted) throw createShutdownError();
+                if (adoption.isDevelopmentCandidateCurrent?.() === false) {
+                    throw new Error('Prepared plugin development candidate was superseded before publication');
+                }
                 if (
-                    adoption.durableRevision !== highestObservedDurableRevision
+                    adoption.durableRevision !== undefined
+                    && adoption.durableRevision !== highestObservedDurableRevision
                 ) {
                     throw new Error(
                         `Prepared plugin runtime registry durable revision ${adoption.durableRevision} `
                         + `was superseded by newer durable revision ${highestObservedDurableRevision}`,
                     );
                 }
+                previousRegistry?.fencePluginConsumers?.(changedPluginIds);
                 published = true;
                 generation += 1;
-                previousRegistry?.retireLiveSubscriptionConsumers?.();
+                previousRegistry?.retireLiveSubscriptionConsumers?.(changedPluginIds);
                 applyCurrentResourceSessionAccessWitness(adoption.registry);
                 adoption.registry.publishDeclaredEventSubscriptions?.();
-                activeRegistryDurableRevision = adoption.durableRevision;
+                if (adoption.durableRevision !== undefined) {
+                    activeRegistryDurableRevision = adoption.durableRevision;
+                }
                 activeRegistry = adoption.registry;
+                publishSlots(adoption.registry);
                 if (previousRegistry && previousRegistry !== adoption.registry) {
                     // Shutdown custody, taken synchronously with the atomic
                     // publication swap: the predecessor is retired as of now,
@@ -682,8 +770,8 @@ export function createPluginReloadController(params?: Readonly<{
                     // Claiming it here keeps shutdown exact-once while the
                     // awaited adoption hook or post-publication failure paths
                     // have not settled. Ordinary lease releases must not
-                    // dispose it from this state because the pre-publication
-                    // owner is still releasing its writer fence.
+                    // dispose it from this state while the publication hook
+                    // still owns adoption completion.
                     shutdownCustodyPredecessors.add(previousRegistry);
                 }
             };
@@ -697,31 +785,22 @@ export function createPluginReloadController(params?: Readonly<{
                         'Active plugin runtime registry cannot retire changed-plugin consumers',
                     );
                 }
-                // Once the durable revision has passed monotonic arbitration, its
-                // changed predecessor is stale. Fence only those consumers before
-                // any candidate validation or awaited publication work, so every
-                // post-commit failure remains fail-closed without disturbing peers.
-                await previousRegistry?.retirePluginConsumers?.(changedPluginIds);
-                await previousRegistry?.settleRetiredBackgroundServices?.(changedPluginIds);
                 if (hasBlockingPluginReloadDiagnostic(adoption.registry, changedPluginIds)) {
                     throw new Error(
                         'Prepared plugin runtime registry contains a blocking activation diagnostic',
                     );
                 }
-                if (previousRegistry) {
-                    // This is the artifact owner's one retirement transition:
-                    // the previous and candidate facts are both qualified
-                    // registry leases and the durable writer fence is still
-                    // held. Ordinary Settings reads never perform cleanup.
-                    const retirementOutcomes = await adoption.registry.pruneRetiredPluginSettings?.(
-                        previousRegistry.settingsRollbackDeclarations,
-                    );
-                    const unsettled = retirementOutcomes?.filter((outcome) => outcome.status === 'unsettled') ?? [];
-                    if (unsettled.length > 0) {
-                        logger.warn('[PLUGIN RUNTIME] Settings artifact-retirement cleanup did not settle', {
-                            settings: unsettled.map(({ pluginId, scope }) => ({ pluginId, scope })),
-                        });
-                    }
+                if (adoption.isDevelopmentCandidateCurrent?.() === false) {
+                    throw new Error('Prepared plugin development candidate was superseded before adoption');
+                }
+                // A durable candidate reaches this controller only after its
+                // committed authority can no longer roll back. Fence that
+                // predecessor immediately while reconciliation settles. A
+                // development candidate has no such committed authority and
+                // must retain its incumbent until the synchronous publish
+                // boundary below.
+                if (adoption.durableRevision !== undefined) {
+                    previousRegistry?.fencePluginConsumers?.(changedPluginIds);
                 }
                 if (adoption.beforePublish) {
                     await adoption.beforePublish(adoption.registry, publish);
@@ -731,12 +810,27 @@ export function createPluginReloadController(params?: Readonly<{
             } catch (error) {
                 if (!published) {
                     await adoption.registry.dispose();
+                    throw error;
                 }
-                throw error;
+                logger.warn('[PLUGIN RUNTIME] Plugin runtime post-publication reconciliation failed', {
+                    error: projectPluginFailureText(error),
+                });
             }
             if (!published) {
                 await adoption.registry.dispose();
                 throw new Error('Plugin runtime registry pre-publication owner returned without publishing');
+            }
+            // Publication is the synchronous ownership boundary. Only the
+            // registry that actually became current may retire its predecessor;
+            // a stale or otherwise rejected candidate therefore cannot disturb
+            // the incumbent while awaiting pre-publication reconciliation.
+            try {
+                await previousRegistry?.retirePluginConsumers?.(changedPluginIds);
+                await previousRegistry?.settleRetiredBackgroundServices?.(changedPluginIds);
+            } catch (error) {
+                logger.warn('[PLUGIN RUNTIME] Published plugin predecessor retirement failed', {
+                    error: projectPluginFailureText(error),
+                });
             }
             try {
                 if (shutdownStarted) throw createShutdownError();
@@ -797,6 +891,41 @@ export function createPluginReloadController(params?: Readonly<{
                 && activeRegistry === registry
             );
         },
+        readPluginSlot(pluginId) {
+            if (shutdownStarted) return null;
+            return slots.get(pluginId) ?? null;
+        },
+        readCurrentPluginOccurrenceId(pluginId) {
+            return readServingSlotOccurrence(pluginId)?.occurrenceId ?? null;
+        },
+        isPluginOccurrenceCurrent(pluginId, occurrenceId) {
+            return readServingSlotOccurrence(pluginId)?.occurrenceId === occurrenceId;
+        },
+        readCurrentPluginSourceCustody(pluginId) {
+            return readServingSlotOccurrence(pluginId)?.sourceCustody ?? null;
+        },
+        retainServingSlots(excludedPluginIds) {
+            const occurrencesByPluginId = new Map<string, PluginRuntimeSlotOccurrence>();
+            const leases: PluginRuntimeActivationRegistryLease[] = [];
+            const unretainedActivePluginIds: string[] = [];
+            if (!shutdownStarted && activeRegistry) {
+                const activatedPluginIds = activeRegistry.activatedPluginIds;
+                for (const slot of slots.values()) {
+                    if (excludedPluginIds.has(slot.pluginId)) continue;
+                    if (slot.current) occurrencesByPluginId.set(slot.pluginId, slot.current);
+                    const lease = slot.current
+                        ? activeRegistry.retainPluginActivationComponent?.(slot.pluginId) ?? null
+                        : null;
+                    if (lease) leases.push(lease);
+                    else if (activatedPluginIds.has(slot.pluginId)) unretainedActivePluginIds.push(slot.pluginId);
+                }
+            }
+            return Object.freeze({
+                occurrencesByPluginId,
+                leases: Object.freeze(leases),
+                unretainedActivePluginIds: Object.freeze(unretainedActivePluginIds),
+            });
+        },
         invalidateRuntimeProjection() {
             if (!shutdownStarted && activeRegistry) {
                 params?.invalidateCaches?.(generation);
@@ -837,6 +966,9 @@ export function createPluginReloadController(params?: Readonly<{
                 for (const registry of shutdownCustodyPredecessors) registriesToDispose.add(registry);
                 activeRegistry = null;
                 activeRegistryDurableRevision = null;
+                unsubscribeServingRegistryFences?.();
+                unsubscribeServingRegistryFences = null;
+                slots.clear();
                 pendingDisposal.clear();
                 shutdownCustodyPredecessors.clear();
                 await waitForRegistryLeasesToDrain(registriesToDispose, shutdownTimeoutMs);

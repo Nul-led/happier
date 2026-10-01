@@ -4,5 +4,8 @@ export type { PluginRuntimeRegistration } from './scope.js';
 export { createExecutionRunHostBackendFromSessionRuntime } from '../../agentRuntime/executionRun.js';
 export { createPluginActionHandlerNotStartedError } from './actionHandlerInvocation.js';
 export { createPluginRegistrationScope } from './scope.js';
+export { normalizePluginAccountCollectionMigrationRuntimeProjection } from '../../definePlugin.js';
+export { normalizePluginDaemonDatabaseRuntimeProjection } from '../../definePlugin.js';
+export { projectPluginAccountCollectionDeclaration } from '../../definePlugin.js';
 export { readPluginActionInputParser } from './actionInputParser.js';
 export { readPluginActionResultParser } from './actionInputParser.js';

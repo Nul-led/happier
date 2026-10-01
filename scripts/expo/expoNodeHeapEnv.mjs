@@ -3,11 +3,16 @@
 const DEFAULT_EXPO_MAX_OLD_SPACE_SIZE_MB = 8192;
 const MAX_OLD_SPACE_SIZE_REGEX = /(^|\s)--max-old-space-size(=|\s)\d+(\s|$)/g;
 
+/** @param {unknown} value */
 function coercePositiveInt(value) {
   const parsed = Number(String(value ?? '').trim());
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
 }
 
+/**
+ * @param {Record<string, string | undefined>} env
+ * @param {string} [envKey]
+ */
 export function parseExpoMaxOldSpaceSizeMb(env, envKey = 'HAPPIER_STACK_EXPO_MAX_OLD_SPACE_SIZE_MB') {
   const raw = String(env?.[envKey] ?? '').trim();
   if (!raw) return { explicit: false, value: null };
@@ -15,6 +20,10 @@ export function parseExpoMaxOldSpaceSizeMb(env, envKey = 'HAPPIER_STACK_EXPO_MAX
   return { explicit: true, value: coercePositiveInt(raw) };
 }
 
+/**
+ * @param {string | undefined} nodeOptions
+ * @param {number} sizeMb
+ */
 export function setOrReplaceMaxOldSpaceSizeFlag(nodeOptions, sizeMb) {
   const base = String(nodeOptions ?? '').trim();
   const desired = `--max-old-space-size=${sizeMb}`;
@@ -26,11 +35,18 @@ export function setOrReplaceMaxOldSpaceSizeFlag(nodeOptions, sizeMb) {
   return `${base} ${desired}`.trim();
 }
 
+/**
+ * @param {Record<string, string | undefined>} baseEnv
+ * @param {{ envKey?: string; defaultSizeMb?: number }} [options]
+ */
 export function applyExpoNodeHeapEnv(baseEnv, options = {}) {
   const env = /** @type {Record<string, string>} */ ({ ...(baseEnv ?? process.env) });
   const envKey = String(options.envKey ?? 'HAPPIER_STACK_EXPO_MAX_OLD_SPACE_SIZE_MB');
-  const defaultSizeMb = Number.isFinite(options.defaultSizeMb) && options.defaultSizeMb > 0
-    ? Math.floor(options.defaultSizeMb)
+  const configuredDefaultSizeMb = options.defaultSizeMb;
+  const defaultSizeMb = typeof configuredDefaultSizeMb === 'number'
+    && Number.isFinite(configuredDefaultSizeMb)
+    && configuredDefaultSizeMb > 0
+    ? Math.floor(configuredDefaultSizeMb)
     : DEFAULT_EXPO_MAX_OLD_SPACE_SIZE_MB;
 
   const { explicit, value } = parseExpoMaxOldSpaceSizeMb(env, envKey);

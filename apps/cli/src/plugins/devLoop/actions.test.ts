@@ -14,12 +14,14 @@ import { executePluginDevLoopAction } from './actions';
 const daemonControl = vi.hoisted(() => ({
   request: vi.fn(),
   decide: vi.fn(),
+  development: vi.fn(),
   ensure: vi.fn(async () => {}),
 }));
 
 vi.mock('@/daemon/controlClient', () => ({
   requestDaemonPluginChange: daemonControl.request,
   decideDaemonPluginChange: daemonControl.decide,
+  controlDaemonPluginDevelopment: daemonControl.development,
 }));
 
 vi.mock('@/daemon/ensureDaemon', () => ({
@@ -55,6 +57,7 @@ describe('executePluginDevLoopAction', () => {
     daemonControl.request.mockReset();
     daemonControl.decide.mockReset();
     daemonControl.ensure.mockClear();
+    daemonControl.development.mockReset();
   });
 
   it('rejects remote archive locators before the installer can fetch network content', async () => {
@@ -115,7 +118,6 @@ describe('executePluginDevLoopAction', () => {
           pluginId: 'acme.dev-loop',
           source: {
             kind: 'path',
-            devWatch: true,
           },
         },
       });
@@ -128,15 +130,14 @@ describe('executePluginDevLoopAction', () => {
     }
   });
 
-  it('returns a truthful pending source-root review without deciding it', async () => {
+  it('registers a development install with the daemon root owner', async () => {
     const home = await createTempDir('happier-plugin-dev-loop-action-');
     const workspaceRoot = await createTempDir('happier-plugin-dev-loop-workspace-');
     const pluginRoot = await createTempDir('happier-plugin-dev-loop-source-', workspaceRoot);
     await materializeDevPlugin(pluginRoot);
-    daemonControl.request.mockResolvedValue({
-      kind: 'sourceRootReviewRequired',
-      pendingChangeId: 'pending-source-root-1',
-      review: { source: { kind: 'path', locator: pluginRoot } },
+    daemonControl.development.mockResolvedValue({
+      kind: 'status',
+      status: { roots: [], plugins: [] },
     });
 
     try {
@@ -148,23 +149,14 @@ describe('executePluginDevLoopAction', () => {
       });
 
       expect(install).toMatchObject({
-        ok: false,
-        kind: 'plugins_install',
-        outcome: 'reviewRequired',
-        pendingReview: {
-          kind: 'sourceRootReviewRequired',
-          pendingChangeId: 'pending-source-root-1',
-          review: { source: { kind: 'path', locator: pluginRoot } },
-        },
+        ok: true,
+        kind: 'plugins_dev_submit',
+        status: { roots: [], plugins: [] },
       });
-      expect(install).not.toHaveProperty('pendingChangeId');
-      expect(install).not.toHaveProperty('review');
-      expect(daemonControl.request).toHaveBeenCalledTimes(1);
-      expect(daemonControl.request).toHaveBeenCalledWith({
-        kind: 'installPath',
-        locator: pluginRoot,
-        development: true,
-      });
+      expect(daemonControl.request).not.toHaveBeenCalled();
+      expect(daemonControl.development).toHaveBeenCalledWith({
+        kind: 'registerExplicit', rootPath: pluginRoot,
+      }, {});
       expect(daemonControl.decide).not.toHaveBeenCalled();
       expect((await createPluginStateStore({ happyHomeDir: home }).read()).plugins).toEqual({});
     } finally {
@@ -185,7 +177,7 @@ describe('executePluginDevLoopAction', () => {
       updateChannel: { kind: 'path', locator: pluginRoot, development: false },
     });
     daemonControl.request.mockResolvedValue({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       pendingChangeId: 'pending-package-review-1',
       review,
     });
@@ -203,7 +195,7 @@ describe('executePluginDevLoopAction', () => {
         kind: 'plugins_install',
         outcome: 'reviewRequired',
         pendingReview: {
-          kind: 'reviewRequired',
+          kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
           pendingChangeId: 'pending-package-review-1',
           review,
         },
@@ -214,7 +206,6 @@ describe('executePluginDevLoopAction', () => {
       expect(daemonControl.request).toHaveBeenCalledWith({
         kind: 'installPath',
         locator: pluginRoot,
-        development: false,
       });
       expect(daemonControl.decide).not.toHaveBeenCalled();
       expect((await createPluginStateStore({ happyHomeDir: home }).read()).plugins).toEqual({});
@@ -474,7 +465,7 @@ describe('executePluginDevLoopAction', () => {
         },
       },
     });
-    daemonControl.request.mockResolvedValue({
+    daemonControl.development.mockResolvedValue({
       kind: 'failed' as const,
       code: 'plugin_change_failed',
       message: "Development entrypoint './src/daemon.ts' failed to compile: Unexpected token",
@@ -493,11 +484,9 @@ describe('executePluginDevLoopAction', () => {
           message: "Development entrypoint './src/daemon.ts' failed to compile: Unexpected token",
         }],
       });
-      expect(daemonControl.request).toHaveBeenCalledWith({
-        kind: 'development',
-        pluginId: 'acme.broken',
-        sourceRootPath: await realpath(sourceRoot),
-      });
+      expect(daemonControl.development).toHaveBeenCalledWith({
+        kind: 'reload', rootPath: sourceRoot,
+      }, {});
     } finally {
       await removeTempDir(sourceRoot);
       await removeTempDir(home);
@@ -530,9 +519,10 @@ describe('executePluginDevLoopAction', () => {
         },
       },
     });
-    daemonControl.request.mockResolvedValue({
+    daemonControl.development.mockResolvedValue({
       kind: 'failed' as const,
       code: 'plugin_change_failed',
+      message: 'Plugin change failed',
     });
 
     try {
@@ -542,11 +532,9 @@ describe('executePluginDevLoopAction', () => {
         happyHomeDir: home,
       });
 
-      expect(daemonControl.request).toHaveBeenCalledWith(expect.objectContaining({
-        kind: 'development',
-        pluginId: 'acme.realpath',
-        sourceRootPath: await realpath(sourceRoot),
-      }));
+      expect(daemonControl.development).toHaveBeenCalledWith({
+        kind: 'reload', rootPath: linkedSourceRoot,
+      }, {});
     } finally {
       await removeTempDir(workspaceRoot);
       await removeTempDir(home);
@@ -557,10 +545,8 @@ describe('executePluginDevLoopAction', () => {
     const home = await createTempDir('happier-plugin-dev-loop-action-');
     const sourceRoot = await createTempDir('happier-plugin-dev-loop-source-');
     await materializeDevPlugin(sourceRoot, 'acme.one-shot');
-    daemonControl.request.mockResolvedValue({
-      kind: 'sourceRootReviewRequired',
-      pendingChangeId: 'pending-one-shot-1',
-      review: { source: { kind: 'path', locator: sourceRoot } },
+    daemonControl.development.mockResolvedValue({
+      kind: 'status', status: { roots: [], plugins: [] },
     });
 
     try {
@@ -571,22 +557,13 @@ describe('executePluginDevLoopAction', () => {
       });
 
       expect(result).toMatchObject({
-        ok: false,
+        ok: true,
         kind: 'plugins_dev_submit',
-        outcome: 'reviewRequired',
-        pendingReview: {
-          kind: 'sourceRootReviewRequired',
-          pendingChangeId: 'pending-one-shot-1',
-          review: { source: { kind: 'path', locator: sourceRoot } },
-        },
+        status: { roots: [], plugins: [] },
       });
-      expect(result).not.toHaveProperty('pendingChangeId');
-      expect(result).not.toHaveProperty('review');
-      expect(daemonControl.request).toHaveBeenCalledWith({
-        kind: 'development',
-        pluginId: 'acme.one-shot',
-        sourceRootPath: await realpath(sourceRoot),
-      });
+      expect(daemonControl.development).toHaveBeenCalledWith({
+        kind: 'registerExplicit', rootPath: sourceRoot,
+      }, {});
       expect(daemonControl.decide).not.toHaveBeenCalled();
     } finally {
       await removeTempDir(sourceRoot);
@@ -617,9 +594,10 @@ describe('executePluginDevLoopAction', () => {
         },
       },
     });
-    daemonControl.request.mockResolvedValue({
-      kind: 'unavailable' as const,
+    daemonControl.development.mockResolvedValue({
+      kind: 'failed' as const,
       code: 'plugin_change_service_unavailable',
+      message: 'Plugin development control is unavailable',
     });
 
     try {
@@ -632,7 +610,7 @@ describe('executePluginDevLoopAction', () => {
         kind: 'plugins_reload',
         diagnostics: [{
           code: 'plugin_change_service_unavailable',
-          message: 'The daemon rejected the development reload (unavailable).',
+          message: 'Plugin development control is unavailable',
         }],
       });
     } finally {

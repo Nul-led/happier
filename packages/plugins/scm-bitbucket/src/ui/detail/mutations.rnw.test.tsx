@@ -457,7 +457,7 @@ describe('the mounted Bitbucket Cloud pull-request writes', () => {
       ...FIXTURE.detailInput,
       observation: {
         ...FIXTURE.detailInput.observation,
-        snapshot: { ...snapshot, state: { presentation: 'closed', nativeLabel: 'Merged' } },
+        snapshot: { ...snapshot, state: { presentation: 'resolved', nativeLabel: 'Merged' } },
       },
     } as unknown as JsonValue);
 
@@ -554,7 +554,7 @@ describe('the mounted Bitbucket comment-resolution writes', () => {
       ...FIXTURE.detailInput,
       observation: {
         ...FIXTURE.detailInput.observation,
-        snapshot: { ...snapshot, state: { presentation: 'closed', nativeLabel: 'Merged' } },
+        snapshot: { ...snapshot, state: { presentation: 'resolved', nativeLabel: 'Merged' } },
       },
     } as unknown as JsonValue);
 

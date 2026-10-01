@@ -6,7 +6,7 @@ import type { VoiceSpeechEndpointPolicy } from '@happier-dev/protocol';
 
 type TargetRegistration = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }>;
 
@@ -20,7 +20,7 @@ export type RegisteredSpeechProviderRuntime = Extract<
 >;
 
 export type TargetVoiceSpeechRuntime = Readonly<{
-    generation: string;
+    occurrenceId: string;
     qualifiedId: string;
     runtime: RegisteredSpeechProviderRuntime;
     contribution: Extract<ResolvedVoiceProviderContribution['definition'], { kind: 'speech' }>;
@@ -33,7 +33,7 @@ export type TargetVoiceSpeechRuntime = Readonly<{
     ): Pick<HttpService, 'request'>;
 }>;
 
-type VoiceSpeechGenerationLifecycle = Readonly<{
+type VoiceSpeechOccurrenceLifecycle = Readonly<{
     isCurrent(): boolean;
     retirementSignal: AbortSignal;
 }>;
@@ -44,14 +44,14 @@ type VoiceSpeechGenerationLifecycle = Readonly<{
  * decision.
  */
 export function createTargetVoiceSpeechRegistry(params: Readonly<{
-    generation: number;
     voiceProviders: readonly ResolvedVoiceProviderContribution[];
     targetRegistrations: readonly TargetRegistration[];
-    resolveGenerationLifecycle(pluginId: string): VoiceSpeechGenerationLifecycle;
+    readPluginOccurrenceId(pluginId: string): string | null;
+    resolveOccurrenceLifecycle(pluginId: string): VoiceSpeechOccurrenceLifecycle;
     createHttp(input: Readonly<{
         pluginId: string;
         localId: string;
-        generation: string;
+        occurrenceId: string;
         signal: AbortSignal;
         endpointPolicy: VoiceSpeechEndpointPolicy | null;
         isCurrent(): boolean;
@@ -69,7 +69,6 @@ export function createTargetVoiceSpeechRegistry(params: Readonly<{
             if (!declaration || declaration.definition.kind !== 'speech') return null;
             const entry = [...params.targetRegistrations].reverse().find((candidate) => (
                 candidate.pluginId === ref.pluginId
-                && candidate.generation === String(params.generation)
                 && candidate.registration.family === 'voiceProviders'
                 && candidate.registration.localId === ref.localId
             ));
@@ -77,26 +76,29 @@ export function createTargetVoiceSpeechRegistry(params: Readonly<{
                 !entry
                 || entry.registration.family !== 'voiceProviders'
                 || entry.registration.value.kind !== 'speech'
+                || params.readPluginOccurrenceId(ref.pluginId) !== entry.occurrenceId
             ) return null;
-            const lifecycle = params.resolveGenerationLifecycle(ref.pluginId);
+            const lifecycle = params.resolveOccurrenceLifecycle(ref.pluginId);
             return Object.freeze({
-                generation: entry.generation,
+                occurrenceId: entry.occurrenceId,
                 qualifiedId: `${ref.pluginId}/${ref.localId}`,
                 runtime: entry.registration.value,
                 contribution: declaration.definition,
                 isCurrent: () => (
                     lifecycle.isCurrent()
+                    && params.readPluginOccurrenceId(ref.pluginId) === entry.occurrenceId
                     && params.targetRegistrations.includes(entry)
                 ),
                 retirementSignal: lifecycle.retirementSignal,
                 createHttp: (signal, isOperationCurrent = () => true, endpointPolicy = null) => params.createHttp({
                     pluginId: ref.pluginId,
                     localId: ref.localId,
-                    generation: entry.generation,
+                    occurrenceId: entry.occurrenceId,
                     signal,
                     endpointPolicy,
                     isCurrent: () => (
                         lifecycle.isCurrent()
+                        && params.readPluginOccurrenceId(ref.pluginId) === entry.occurrenceId
                         && params.targetRegistrations.includes(entry)
                         && isOperationCurrent()
                     ),

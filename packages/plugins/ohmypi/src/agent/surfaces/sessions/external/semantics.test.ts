@@ -31,6 +31,7 @@ describe('Oh My Pi external-session auxiliary semantics', () => {
       deadlineAtMs: Date.now() + 1_000,
       maxSerializedBytes: 262_144,
       linkedSessionId: 'linked-session',
+      transcriptStorage: 'persisted',
       // The resolved identity carries the session file on the source; link data
       // stays empty because the host projects it into strict owner metadata.
       source: {
@@ -59,6 +60,7 @@ describe('Oh My Pi external-session auxiliary semantics', () => {
       deadlineAtMs: Date.now() + 1_000,
       maxSerializedBytes: 262_144,
       linkedSessionId: 'linked-session',
+      transcriptStorage: 'persisted',
       source: { kind: 'ohMyPiAgentDir', agentDir },
       remoteSessionId: 'takeover-session',
       linkData: { sessionFilePath: '/does/not/need/to/exist.jsonl' },

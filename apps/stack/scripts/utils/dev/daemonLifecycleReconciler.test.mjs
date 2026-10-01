@@ -160,3 +160,30 @@ test('owner daemon reconciliation resets absence proof after malformed or failed
   assert.equal(recoveries, 1);
   reconciler.close();
 });
+
+test('owner daemon reconciliation waits for recovery readiness before counting daemon absence', async () => {
+  const recoveryReadiness = [false, false, true, true];
+  let recoveries = 0;
+  const reconciler = startOwnerDaemonLifecycleReconciler(
+    {
+      enabled: true,
+      observe: async () => ({ status: 'stopped', pid: null }),
+      isRecoveryReady: async () => recoveryReadiness.shift(),
+      recover: async () => {
+        recoveries += 1;
+        return { started: true };
+      },
+    },
+    {
+      setIntervalImpl: () => ({ unref() {} }),
+      clearIntervalImpl: () => {},
+    },
+  );
+
+  assert.equal((await reconciler.reconcileNow()).reason, 'daemon-recovery-not-ready');
+  assert.equal((await reconciler.reconcileNow()).reason, 'daemon-recovery-not-ready');
+  assert.equal((await reconciler.reconcileNow()).reason, 'daemon-absence-unconfirmed');
+  assert.deepEqual(await reconciler.reconcileNow(), { started: true });
+  assert.equal(recoveries, 1);
+  reconciler.close();
+});

@@ -85,11 +85,9 @@ export type {
     UiSurfaceDetailedDefinition,
     UiSurfaceDetailedDefinitionFor,
     UiSurfaceHostedHtmlRendererDefinition,
-    UiSurfaceHostedWebBuild,
     UiSurfaceHostedWebDefinition,
     UiSurfaceHostedWebRendererDefinition,
     UiSurfacePlacement,
-    UiSurfaceReactNativeBuild,
     UiSurfaceReactNativeDefinition,
     UiSurfaceReactNativeRendererDefinition,
     UiSurfaceRendererDefinition,
@@ -125,11 +123,6 @@ export type {
     PluginSearchQueryV1,
     PluginSearchResultV1,
 } from './searchProviders.js';
-export {
-    normalizePluginAccountCollectionMigrationRuntimeProjection,
-    projectPluginAccountCollectionDeclaration,
-} from './definePlugin.js';
-export { normalizePluginDaemonDatabaseRuntimeProjection } from './definePlugin.js';
 export { selectCurrentTargetedContribution } from './services/targetedContributions.js';
 export {
     isRecord,

@@ -94,6 +94,25 @@ async function* prompt() {
 }
 
 describe('Claude plugin SDK query', () => {
+    it('uses a private prompt file for a supported native plan, preserving text beyond Windows argv limits and cleaning it after disposal', async () => {
+        const { ctx, spawnClient } = createContextFixture();
+        const text = `ROLE\n${'雪 " $ \\'.repeat(8_000)}`;
+        const running = query(ctx, {
+            prompt: prompt(),
+            options: { appendSystemPrompt: text, appendSystemPromptFile: true },
+        });
+        await vi.waitFor(() => expect(spawnClient).toHaveBeenCalledOnce());
+        const args = spawnClient.mock.calls[0]?.[0].launch.args ?? [];
+        expect(args).not.toContain(text);
+        expect(args).not.toContain('--append-system-prompt');
+        const path = args[args.indexOf('--append-system-prompt-file') + 1];
+        expect(await readFile(path, 'utf8')).toBe(text);
+        if (process.platform !== 'win32') expect((await stat(path)).mode & 0o777).toBe(0o600);
+        await running.dispose();
+        await running.dispose();
+        await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
     it('spawns Claude through ctx.agentRuntime.exec json-stream instead of opening a process locally', async () => {
         const { ctx, spawnClient } = createContextFixture();
 

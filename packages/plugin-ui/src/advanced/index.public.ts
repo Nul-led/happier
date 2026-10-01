@@ -7,9 +7,17 @@
  * host/context boundary.
  */
 export {
+  PluginUiHostPresentationScope,
   PluginUiProvider,
   type PluginUiProviderProps,
 } from '../components/PluginUiProvider.js';
+/** What a same-realm host supplies to public components it mounts (a surface, or its own page). */
+export type {
+  PluginUiDetailsPaneHost,
+  PluginUiDetailsPanePresentation,
+  PluginUiPresentationHost,
+  PluginUiSessionPartPresentation,
+} from '../presentationHost/context.js';
 export {
   PluginHostApiProvider,
   type PluginHostApiProviderProps,

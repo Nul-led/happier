@@ -66,10 +66,38 @@ export type CorpusSessionLinkRowV1 = Readonly<{
 
 export type CorpusUserMarkDisplayV1 = Readonly<{ title: string; scopeLabel: string }>;
 
+/**
+ * One pull request the user named as the fix for the marked entry.
+ *
+ * The display pair is the PR's own title and scope as the reader saw them when
+ * linking, so the link stays nameable and unlinkable while no current pass
+ * materializes the PR — the same rule as `displayAtMark`.
+ */
+export type CorpusFixPullRequestLinkV1 = Readonly<{
+    entryRef: TriageEntryRefV1;
+    displayAtLink: CorpusUserMarkDisplayV1;
+    linkedAtMs: number;
+}>;
+
+/**
+ * The user's fix-PR choice for the marked entry (`design/FIX-LINK.md`).
+ *
+ * `linked` is "this PR fixes it"; `dismissed` is "not this one", which is what
+ * lets an unlink win over a candidate derived from a shared Session link.
+ */
+export type CorpusFixPullRequestsV1 = Readonly<{
+    linked: readonly CorpusFixPullRequestLinkV1[];
+    dismissed: readonly TriageEntryRefV1[];
+}>;
+
 export type CorpusUserMarkRowV1 = Readonly<{
     /** [row id] Collection-bound tag over the canonical entry-ref tuple. */
     markTag: string;
-    /** [projected] leading index field. A live mark is always true: Unpin tombstones the row instead of writing a second false state. */
+    /**
+     * [projected] leading index field. A mark holding only a fix-PR choice is
+     * live with `false`; a mark with neither a pin nor a fix-PR choice does not
+     * exist, because Unpin tombstones such a row instead of writing `false`.
+     */
     pinned: boolean;
     /** [projected] index range field. */
     markedAtMs: number;
@@ -82,4 +110,6 @@ export type CorpusUserMarkRowV1 = Readonly<{
      * cache.
      */
     displayAtMark: CorpusUserMarkDisplayV1;
+    /** Present once the user linked or dismissed a fix pull request for this entry. */
+    fixPullRequests?: CorpusFixPullRequestsV1;
 }>;

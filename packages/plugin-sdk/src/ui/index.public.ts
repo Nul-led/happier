@@ -65,6 +65,7 @@ export { PluginHostedWebAccountDataBridgeResponseV1Schema } from './hostedWeb.js
 export type { PluginSurfaceTarget } from './hostApi.js';
 export type { PluginUiTargetedContributionsV1 } from './hostApi.js';
 export type { PluginUiChannel } from '../ui.js';
+export type { PluginUiAppPageColumnV1, PluginUiDestinationPlacementV1 } from '../ui.js';
 export type {
     PluginUiDeclarativeNodeV2,
     PluginUiDeclarativeToneV2,
@@ -104,6 +105,7 @@ export type {
     ComposerTextRangeV1,
     ComposerUnavailableReasonV1,
     PluginUiContainerV1,
+    PluginUiDestinationContainerV1,
     PluginUiContributionIdentityV1,
     CurrentUiCommandDeclarationV1,
     CurrentUiCommandDescriptorV1,
@@ -154,6 +156,13 @@ export type { RenderContext } from './hostApi.js';
 export type { RenderSurface } from './hostApi.js';
 export type { ResourceContent } from './hostApi.js';
 export type { ResourceSubscriptionEvent } from './hostApi.js';
+export type {
+    SessionPendingPermissionV1,
+    SessionPermissionAnswerV1,
+    SessionPermissionResponseRequestV1,
+    SessionPermissionResponseV1,
+    SessionStateV1,
+} from './hostApi.js';
 export type { UiResource } from '../ui.js';
 export type { SessionHeaderActionContribution } from '../ui.js';
 export type { SurfaceContext } from './hostApi.js';

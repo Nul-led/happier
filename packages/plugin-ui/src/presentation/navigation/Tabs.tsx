@@ -23,6 +23,7 @@ import type { HappierUiTheme } from '../../environment/types.js';
 import { HappierScrollArea } from '../layout/Layout.js';
 import { HappierPressable } from '../interaction/Pressable.js';
 import { HappierText } from '../text/Text.js';
+import { HAPPIER_PRESS_FEEDBACK_V1 } from '../interaction/pressFeedback.js';
 
 /**
  * Whether leaving a panel keeps its subtree, declared per tab.
@@ -86,6 +87,15 @@ export function useOptionalHappierTabPanelActivityInternal(): HappierTabPanelAct
 }
 
 const hiddenPanelStyle: ViewStyle = { display: 'none' };
+const fillStyle: ViewStyle = { flex: 1, minHeight: 0 };
+
+/**
+ * How the tabbed region takes space. `content` (the default) sizes to the
+ * selected panel, which is right inside a scroll area. `fill` gives the tab
+ * root and the active panel the parent's remaining height, for a panel that
+ * hosts a bounded view (a live Session, a self-scrolling source panel).
+ */
+export type HappierTabsLayout = 'content' | 'fill';
 
 /**
  * One panel's mounted subtree and the single owner of its active interval.
@@ -97,8 +107,9 @@ const hiddenPanelStyle: ViewStyle = { display: 'none' };
  */
 function HappierTabPanel(props: Readonly<{
   active: boolean;
-  nativeID: string;
-  labelledBy: string;
+  /** Absent when the strip naming this panel lives in another surface. */
+  nativeID?: string;
+  labelledBy?: string;
   /**
    * Whether focus is inside this panel's own subtree.
    *
@@ -109,11 +120,14 @@ function HappierTabPanel(props: Readonly<{
    * where focus goes next, and the panel is the thing disappearing.
    */
   onFocusWithinChange?: (focused: boolean) => void;
+  fill?: boolean;
   children?: ReactNode;
 }>): ReactElement {
+  const ancestorActivity = useOptionalHappierTabPanelActivityInternal();
+  const active = props.active && ancestorActivity?.active !== false;
   const [openInterval, setOpenInterval] = useState(() => new AbortController());
   let controller = openInterval;
-  if (props.active && controller.signal.aborted) {
+  if (active && controller.signal.aborted) {
     // Returning to a retained panel opens its next interval. Deriving it during
     // render keeps the panel from ever observing the previous, aborted signal
     // as its current one.
@@ -122,7 +136,7 @@ function HappierTabPanel(props: Readonly<{
   }
 
   useEffect(() => {
-    if (!props.active) {
+    if (!active) {
       controller.abort();
       return;
     }
@@ -134,17 +148,17 @@ function HappierTabPanel(props: Readonly<{
       return;
     }
     return () => { controller.abort(); };
-  }, [controller, props.active]);
+  }, [active, controller]);
 
   const activity = useMemo<HappierTabPanelActivity>(
-    () => ({ active: props.active, activeSignal: controller.signal }),
-    [controller, props.active],
+    () => ({ active, activeSignal: controller.signal }),
+    [active, controller],
   );
 
   return (
     <HappierTabPanelActivityContext.Provider value={activity}>
       <View
-        role="tabpanel"
+        role={props.labelledBy === undefined ? undefined : 'tabpanel'}
         nativeID={props.nativeID}
         aria-labelledby={props.labelledBy}
         // A retained panel keeps its subtree but must not occupy layout or be
@@ -153,7 +167,7 @@ function HappierTabPanel(props: Readonly<{
         aria-hidden={props.active ? undefined : true}
         accessibilityElementsHidden={!props.active}
         importantForAccessibility={props.active ? 'auto' : 'no-hide-descendants'}
-        style={props.active ? undefined : hiddenPanelStyle}
+        style={props.active ? (props.fill ? fillStyle : undefined) : hiddenPanelStyle}
         onFocus={() => { props.onFocusWithinChange?.(true); }}
         onBlur={() => { props.onFocusWithinChange?.(false); }}
       >
@@ -209,7 +223,16 @@ export function HappierTabs(props: Readonly<{
   children?: ReactNode;
   theme: HappierUiTheme;
   testID?: string;
+  /**
+   * Who draws the tab strip. `host`: an enclosing frame (an aggregate that
+   * mounted this surface for one of its tabs) already shows the strip, so this
+   * renders only the selected panel, with the same active interval, and no
+   * tablist of its own.
+   */
+  tabList?: 'shown' | 'host';
+  layout?: HappierTabsLayout;
 }>) {
+  const fill = props.layout === 'fill';
   const nativeMinimumTouchTarget = useHappierNativeMinimumInteractiveTargetSize();
   const localization = useOptionalHappierUiLocalization();
   const rtl = localization ? localization.direction === 'rtl' : I18nManager.isRTL;
@@ -311,8 +334,20 @@ export function HappierTabs(props: Readonly<{
     tabRefs.current.get(fallbackTabValue)?.focus?.();
   }, [fallbackTabValue, tabs]);
 
+  if (props.tabList === 'host') {
+    return (
+      <View testID={props.testID} style={{ flex: 1, minHeight: 0 }}>
+        {selected === undefined ? null : (
+          <HappierTabPanel key={selected.value} active fill={fill}>
+            {selected.children}
+          </HappierTabPanel>
+        )}
+      </View>
+    );
+  }
+
   return (
-    <View testID={props.testID} style={{ gap: props.theme.spacing.medium }}>
+    <View testID={props.testID} style={fill ? { ...fillStyle, gap: props.theme.spacing.medium } : { gap: props.theme.spacing.medium }}>
       <HappierScrollArea horizontal>
         <View
           role="tablist"
@@ -373,7 +408,7 @@ export function HappierTabs(props: Readonly<{
                   paddingHorizontal: props.theme.spacing.medium,
                   borderBottomWidth: state.focused ? 3 : 2,
                   borderBottomColor: state.focused ? props.theme.colors.focus : (isSelected ? props.theme.colors.accent : 'transparent'),
-                  opacity: state.disabled ? 0.4 : state.pressed ? 0.75 : 1,
+                  opacity: state.disabled ? 0.4 : state.pressed ? HAPPIER_PRESS_FEEDBACK_V1.opacity : 1,
                 })}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: props.theme.spacing.xsmall }}>
@@ -393,6 +428,7 @@ export function HappierTabs(props: Readonly<{
           nativeID={`${instanceId}-panel-${tabIndex}`}
           labelledBy={`${instanceId}-tab-${tabIndex}`}
           onFocusWithinChange={(focused) => { recordFocusWithin(tab.value, focused); }}
+          fill={fill}
         >
           {tab.children}
         </HappierTabPanel>

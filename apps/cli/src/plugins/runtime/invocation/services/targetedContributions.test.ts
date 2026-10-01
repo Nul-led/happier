@@ -34,6 +34,7 @@ import type {
 import { projectLoadedPluginContributes } from '@/plugins/projection/registry/resolvePluginContributions';
 import { createPluginReloadController } from '../../reload/controller';
 import type { PluginCompatibilityDiagnostic } from '@/plugins/validation/diagnostics/types';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import {
     createReloadControllerTargetedContributionsService,
@@ -46,6 +47,17 @@ import {
 import { createPluginActionCallerMaterializationFixture } from './actionCaller.testkit';
 
 type Contribution = Readonly<{ id: string }>;
+
+function occurrenceId(value: string): PluginRuntimeOccurrenceId {
+    return value as PluginRuntimeOccurrenceId;
+}
+
+function sourceCustody(pluginId: string) {
+    return Object.freeze({
+        kind: 'development' as const,
+        registeredRootId: `test:${pluginId}`,
+    });
+}
 
 function permissiveTargetProtocol(role: string) {
     return Object.freeze({
@@ -66,8 +78,10 @@ function expectBundledGitHubMissingTriageDiagnostic(
                 localId: 'github-forge',
             },
             details: expect.objectContaining({
-                targetPluginId: 'happier.triage',
-                pointId: 'sources',
+                target: {
+                    pluginId: 'happier.triage',
+                    pointId: 'sources',
+                },
             }),
         })],
     });
@@ -129,23 +143,23 @@ const admittedOperationTarget = definePlugin({
 type BundledChannelsPluginFixture = Readonly<{
     manifest: unknown;
     packageName: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
 }>;
 
 const BUNDLED_CHANNELS_TARGET = Object.freeze({
     manifest: CHANNELS_PLUGIN_MANIFEST,
     packageName: '@happier-dev/plugins-channels',
-    immutableGenerationId: 'channels-generation-a',
+    occurrenceId: 'channels-occurrenceId-a',
 } satisfies BundledChannelsPluginFixture);
 const BUNDLED_TELEGRAM_PROVIDER = Object.freeze({
     manifest: TELEGRAM_PLUGIN_MANIFEST,
     packageName: '@happier-dev/plugins-channel-telegram',
-    immutableGenerationId: 'telegram-generation-a',
+    occurrenceId: 'telegram-occurrenceId-a',
 } satisfies BundledChannelsPluginFixture);
 const BUNDLED_GITHUB_PROVIDER = Object.freeze({
     manifest: GITHUB_PLUGIN_MANIFEST,
     packageName: '@happier-dev/plugins-scm-github',
-    immutableGenerationId: 'github-generation-a',
+    occurrenceId: 'github-occurrenceId-a',
 } satisfies BundledChannelsPluginFixture);
 
 function readBundledChannelsProviderPlugin(
@@ -195,10 +209,10 @@ function resolveRealChannelsProviderRegistry(params: Readonly<{
     });
     return createResolvedContributionRegistry({
         ...projected,
-        immutableGenerationIdsByPluginId: Object.fromEntries(
+        occurrenceIdsByPluginId: Object.fromEntries(
             loadedPlugins.map((plugin, index) => [
                 plugin.pluginId,
-                declarations[index]!.immutableGenerationId,
+                occurrenceId(declarations[index]!.occurrenceId),
             ]),
         ),
     });
@@ -229,7 +243,8 @@ function createSubject(options?: Readonly<{
         async readAdmittedSnapshot({ signal }) {
             signal?.throwIfAborted();
             return Object.freeze({
-                generation: '17',
+                occurrenceId: '17',
+                sourceCustody: sourceCustody('acme.target'),
                 contributions: Object.freeze([...(await read())]),
             });
         },
@@ -255,12 +270,12 @@ function runtimeRegistry(
     retireLiveSubscriptionConsumers: NonNullable<
         ResolvedExecutablePluginRuntimeRegistry['retireLiveSubscriptionConsumers']
     > = vi.fn(),
-    admittedTargetedSnapshot: AdmittedTargetedContributionSnapshot | null = null,
+    admittedTargetedSnapshot: unknown = null,
 ): ResolvedExecutablePluginRuntimeRegistry {
     const readAdmittedTargetedContributions = vi.fn(
         (_request: Parameters<NonNullable<
             ResolvedExecutablePluginRuntimeRegistry['readAdmittedTargetedContributions']
-        >>[0]) => admittedTargetedSnapshot,
+        >>[0]) => admittedTargetedSnapshot as AdmittedTargetedContributionSnapshot | null,
     );
     const pluginDiagnosticsByPluginId: Record<
         string,
@@ -287,6 +302,7 @@ function runtimeRegistry(
         scmHostingProvidersById: new Map(),
         pluginDiagnosticsByPluginId,
         readAdmittedTargetedContributions,
+        readPluginSourceCustody: (pluginId: string) => sourceCustody(pluginId),
         activatedPluginIds: new Set(),
         activateContributionsOnDemand: vi.fn(async () => []),
         resolvePromptAssetBlocks: async () => [],
@@ -298,7 +314,7 @@ function runtimeRegistry(
         createAgentInvocationServices: async () => {
             throw new Error('Not used by targeted contribution observation');
         },
-        retainActivationRegistryComponentsExcluding: () => Object.freeze([]),
+        retainPluginActivationComponent: () => null,
         retainPreparedActivationRegistryComponents: () => Object.freeze([]),
         dispose: async () => {},
     } satisfies ResolvedExecutablePluginRuntimeRegistry;
@@ -323,6 +339,7 @@ function runtimeRegistryForResolvedContributions(
         pluginDiagnosticsByPluginId,
         readAdmittedTargetedContributions:
             contributes.readAdmittedTargetedContributions,
+        readPluginSourceCustody: (pluginId: string) => sourceCustody(pluginId),
         activatedPluginIds: new Set(),
         activateContributionsOnDemand: vi.fn(async () => []),
         resolvePromptAssetBlocks: async () => [],
@@ -336,7 +353,7 @@ function runtimeRegistryForResolvedContributions(
         createAgentInvocationServices: async () => {
             throw new Error('Not used by targeted contribution observation');
         },
-        retainActivationRegistryComponentsExcluding: () => Object.freeze([]),
+        retainPluginActivationComponent: () => null,
         retainPreparedActivationRegistryComponents: () => Object.freeze([]),
         dispose: async () => {},
     } satisfies ResolvedExecutablePluginRuntimeRegistry;
@@ -366,17 +383,19 @@ describe('targeted contribution observation service', () => {
 
         const snapshot = await observation.readCurrent();
 
-        expect(snapshot.generation).toBe('channels-generation-a');
+        expect(snapshot.occurrenceId).toBe('channels-occurrenceId-a');
         expect(snapshot.contributions.map((contribution) => contribution.contributor)).toEqual([
             {
                 pluginId: 'happier.channel.telegram',
                 contributionId: 'telegram-provider',
-                immutableGenerationId: 'telegram-generation-a',
+                occurrenceId: 'telegram-occurrenceId-a',
+                sourceCustody: sourceCustody('happier.channel.telegram'),
             },
             {
                 pluginId: 'happier.scm.forge.github',
                 contributionId: 'github-repository',
-                immutableGenerationId: 'github-generation-a',
+                occurrenceId: 'github-occurrenceId-a',
+                sourceCustody: sourceCustody('happier.scm.forge.github'),
             },
         ]);
         const telegram = snapshot.contributions[0]!;
@@ -387,13 +406,21 @@ describe('targeted contribution observation service', () => {
                 pointId: 'providers',
                 protocol: { id: 'happier.channels/providers', version: 1 },
             },
-            contributor: telegram.contributor,
+            contributor: {
+                pluginId: telegram.contributor.pluginId,
+                contributionId: telegram.contributor.contributionId,
+                occurrenceId: telegram.contributor.occurrenceId,
+            },
             role: 'setup',
         });
         const githubPrincipalResolve = github.operations.principalResolve;
         if (!githubPrincipalResolve) throw new Error('Expected GitHub principal-resolve operation');
         expect(githubPrincipalResolve.identity).toMatchObject({
-            contributor: github.contributor,
+            contributor: {
+                pluginId: github.contributor.pluginId,
+                contributionId: github.contributor.contributionId,
+                occurrenceId: github.contributor.occurrenceId,
+            },
             role: 'principalResolve',
         });
         expectBundledGitHubMissingTriageDiagnostic(registry);
@@ -428,7 +455,7 @@ describe('targeted contribution observation service', () => {
         );
 
         const snapshot = await observation.readCurrent();
-        expect(snapshot.generation).toBe('channels-generation-a');
+        expect(snapshot.occurrenceId).toBe('channels-occurrenceId-a');
         expect(snapshot.contributions.map((contribution) => contribution.contributor.pluginId))
             .toEqual(['happier.channel.telegram', 'happier.scm.forge.github']);
         expectBundledGitHubMissingTriageDiagnostic(registry);
@@ -439,16 +466,16 @@ describe('targeted contribution observation service', () => {
 
     it('does not reinterpret an admitted snapshot from a caller-visible structural target ref', async () => {
         const target = new AbortController();
-        const visiblePoint = Object.freeze({ ...admittedSurfaceTarget.contributionPoints.providers });
+        const visiblePoint = admittedSurfaceTarget.contributionPoints.providers;
         const firstContributor = Object.freeze({
             pluginId: 'acme.v2.first',
             contributionId: 'first',
-            immutableGenerationId: 'immutable-first-a',
+            occurrenceId: 'immutable-first-a',
         });
         const secondContributor = Object.freeze({
             pluginId: 'acme.v2.second',
             contributionId: 'second',
-            immutableGenerationId: 'immutable-second-a',
+            occurrenceId: 'immutable-second-a',
         });
         const v2Protocol = Object.freeze({
             id: 'example-admitted-surface',
@@ -458,7 +485,7 @@ describe('targeted contribution observation service', () => {
             target: Object.freeze({
                 pluginId: 'acme.target',
                 pointId: 'providers',
-                immutableGenerationId: 'immutable-target-a',
+                occurrenceId: 'immutable-target-a',
             }),
             contributions: Object.freeze([
                 Object.freeze({
@@ -511,7 +538,7 @@ describe('targeted contribution observation service', () => {
         );
 
         const snapshot = await observation.readCurrent();
-        expect(snapshot.generation).toBe('immutable-target-a');
+        expect(snapshot.occurrenceId).toBe('immutable-target-a');
         expect(snapshot.contributions).toHaveLength(2);
         expect(snapshot.contributions[0]).toMatchObject({
             contributor: { pluginId: 'acme.v2.first' },
@@ -530,17 +557,17 @@ describe('targeted contribution observation service', () => {
         const descriptorContributor = Object.freeze({
             pluginId: 'acme.descriptor',
             contributionId: 'descriptor',
-            immutableGenerationId: 'immutable-descriptor-a',
+            occurrenceId: 'immutable-descriptor-a',
         });
         const surfaceContributor = Object.freeze({
             pluginId: 'acme.surface',
             contributionId: 'surface',
-            immutableGenerationId: 'immutable-surface-a',
+            occurrenceId: 'immutable-surface-a',
         });
         const pointContributor = Object.freeze({
             pluginId: 'acme.point',
             contributionId: 'point',
-            immutableGenerationId: 'immutable-point-a',
+            occurrenceId: 'immutable-point-a',
         });
         const expectedProtocol = Object.freeze({
             id: 'example-admitted-surface',
@@ -550,7 +577,7 @@ describe('targeted contribution observation service', () => {
             target: Object.freeze({
                 pluginId: 'acme.target',
                 pointId: 'providers',
-                immutableGenerationId: 'immutable-target-a',
+                occurrenceId: 'immutable-target-a',
             }),
             contributions: Object.freeze([
                 Object.freeze({
@@ -613,7 +640,7 @@ describe('targeted contribution observation service', () => {
         );
 
         const snapshot = await observation.readCurrent();
-        expect(snapshot.generation).toBe('immutable-target-a');
+        expect(snapshot.occurrenceId).toBe('immutable-target-a');
         expect(snapshot.contributions).toHaveLength(3);
         expect(snapshot.contributions[0]).toMatchObject({
             contributor: { pluginId: 'acme.descriptor' },
@@ -686,13 +713,13 @@ describe('targeted contribution observation service', () => {
                     id: 'connections',
                     qualifiedId: 'happier.channels/actions/connections',
                 },
-                generation: 'channels-runtime-generation-a',
-                immutableGenerationId: 'channels-generation-a',
+                occurrenceId: 'channels-occurrenceId-a',
+                sourceCustody: sourceCustody('happier.channels'),
                 surface: 'plugin',
                 resolveCurrentPluginMaterializationRef:
                     callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal: target.signal,
-                isGenerationCurrent: () => !target.signal.aborted,
+                isOccurrenceCurrent: () => !target.signal.aborted,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
@@ -767,7 +794,7 @@ describe('targeted contribution observation service', () => {
             },
             input: telegramSetupInput,
             admittedTargetedOperation: expect.objectContaining({
-                contributorImmutableGenerationId: 'telegram-generation-a',
+                contributorOccurrenceId: 'telegram-occurrenceId-a',
             }),
         }));
         expect(invokeContributedAction).toHaveBeenNthCalledWith(2, expect.objectContaining({
@@ -777,7 +804,7 @@ describe('targeted contribution observation service', () => {
             },
             input: githubSetupInput,
             admittedTargetedOperation: expect.objectContaining({
-                contributorImmutableGenerationId: 'github-generation-a',
+                contributorOccurrenceId: 'github-occurrenceId-a',
             }),
         }));
         expect(invokeContributedAction).toHaveBeenNthCalledWith(3, expect.objectContaining({
@@ -787,7 +814,7 @@ describe('targeted contribution observation service', () => {
             },
             input: githubPrincipalResolveInput,
             admittedTargetedOperation: expect.objectContaining({
-                contributorImmutableGenerationId: 'github-generation-a',
+                contributorOccurrenceId: 'github-occurrenceId-a',
             }),
         }));
 
@@ -821,7 +848,8 @@ describe('targeted contribution observation service', () => {
         expect(subject.read).not.toHaveBeenCalled();
 
         await expect(observation.readCurrent()).resolves.toEqual({
-            generation: '17',
+            occurrenceId: '17',
+            sourceCustody: sourceCustody('acme.target'),
             contributions: [{ id: 'first' }],
         });
         expect(subject.read).toHaveBeenCalledOnce();
@@ -843,7 +871,8 @@ describe('targeted contribution observation service', () => {
         pending.resolve(Object.freeze([{ id: 'before-replacement' }]));
 
         await expect(firstRead).resolves.toEqual({
-            generation: '17',
+            occurrenceId: '17',
+            sourceCustody: sourceCustody('acme.target'),
             contributions: [{ id: 'before-replacement' }],
         });
         await vi.waitFor(() => expect(invalidated).toHaveBeenCalledOnce());
@@ -879,13 +908,13 @@ describe('targeted contribution observation service', () => {
         const contributor = Object.freeze({
             pluginId: 'acme.contributor',
             contributionId: 'github',
-            immutableGenerationId: 'immutable-contributor-a',
+            occurrenceId: 'immutable-contributor-a',
         });
         const registry = runtimeRegistry(target, vi.fn(), Object.freeze({
             target: Object.freeze({
                 pluginId: 'acme.target',
                 pointId: 'providers',
-                immutableGenerationId: 'immutable-target-a',
+                occurrenceId: 'immutable-target-a',
             }),
             contributions: Object.freeze([Object.freeze({
                 contributor,
@@ -924,12 +953,14 @@ describe('targeted contribution observation service', () => {
         );
 
         await expect(observation.readCurrent()).resolves.toEqual({
-            generation: 'immutable-target-a',
+            occurrenceId: 'immutable-target-a',
+            sourceCustody: sourceCustody('acme.target'),
             contributions: [{
                 contributor: {
                     pluginId: 'acme.contributor',
                     contributionId: 'github',
-                    immutableGenerationId: 'immutable-contributor-a',
+                    occurrenceId: 'immutable-contributor-a',
+                    sourceCustody: sourceCustody('acme.contributor'),
                 },
                 protocol: {
                     id: 'example-admitted-surface',
@@ -949,7 +980,8 @@ describe('targeted contribution observation service', () => {
                         contributor: {
                             pluginId: 'acme.contributor',
                             contributionId: 'github',
-                            immutableGenerationId: 'immutable-contributor-a',
+                            occurrenceId: 'immutable-contributor-a',
+                            sourceCustody: sourceCustody('acme.contributor'),
                         },
                         role: 'detail',
                         presentation: 'content',
@@ -968,13 +1000,13 @@ describe('targeted contribution observation service', () => {
         const contributor = Object.freeze({
             pluginId: 'acme.contributor',
             contributionId: 'github',
-            immutableGenerationId: 'immutable-contributor-a',
+            occurrenceId: 'immutable-contributor-a',
         });
         const registry = runtimeRegistry(target, vi.fn(), Object.freeze({
             target: Object.freeze({
                 pluginId: 'acme.target',
                 pointId: 'providers',
-                immutableGenerationId: 'immutable-target-a',
+                occurrenceId: 'immutable-target-a',
             }),
             contributions: Object.freeze([Object.freeze({
                 contributor,
@@ -1017,22 +1049,20 @@ describe('targeted contribution observation service', () => {
 
         const firstSnapshot = await observation.readCurrent();
         expect(firstSnapshot).toMatchObject({
-            generation: 'immutable-target-a',
+            occurrenceId: 'immutable-target-a',
+            sourceCustody: sourceCustody('acme.target'),
             contributions: [{ descriptor: { label: 42 } }],
         });
         expect(registry.pluginDiagnosticsByPluginId).toEqual({});
 
-        const cleanSnapshot = Object.freeze({
-            ...registry,
-            readAdmittedTargetedContributions: () => Object.freeze({
-                target: Object.freeze({
-                    pluginId: 'acme.target',
-                    pointId: 'providers',
-                    immutableGenerationId: 'immutable-target-a',
-                }),
-                contributions: Object.freeze([]),
+        const cleanSnapshot = runtimeRegistry(new AbortController(), vi.fn(), Object.freeze({
+            target: Object.freeze({
+                pluginId: 'acme.target',
+                pointId: 'providers',
+                occurrenceId: 'immutable-target-a',
             }),
-        });
+            contributions: Object.freeze([]),
+        }));
         await controller.adoptPreparedRuntimeRegistry({
             registry: cleanSnapshot,
             changedPluginIds: ['acme.contributor'],
@@ -1040,7 +1070,8 @@ describe('targeted contribution observation service', () => {
             runningSessionDisposition: 'retainRunningSessions',
         });
         await expect(observation.readCurrent()).resolves.toEqual({
-            generation: 'immutable-target-a',
+            occurrenceId: 'immutable-target-a',
+            sourceCustody: sourceCustody('acme.target'),
             contributions: [],
         });
         expect(cleanSnapshot.pluginDiagnosticsByPluginId).toEqual({});
@@ -1056,23 +1087,23 @@ describe('targeted contribution observation service', () => {
         const contributorA = Object.freeze({
             pluginId: 'acme.contributor',
             contributionId: 'provider',
-            immutableGenerationId: 'immutable-contributor-a',
+            occurrenceId: 'immutable-contributor-a',
         });
         const registryInitiallyEmpty = runtimeRegistry(target, retireLiveA, Object.freeze({
             target: Object.freeze({
                 pluginId: 'acme.target',
                 pointId: 'providers',
-                immutableGenerationId: 'immutable-target-a',
+                occurrenceId: 'immutable-target-a',
             }),
             contributions: Object.freeze([]),
         }));
         const registryAfterContributorInstall = runtimeRegistry(new AbortController(), vi.fn(), Object.freeze({
-            // A contributor install keeps the target generation stable and
+            // A contributor install keeps the target occurrenceId stable and
             // arrives through the observation that was reserved while empty.
             target: Object.freeze({
                 pluginId: 'acme.target',
                 pointId: 'providers',
-                immutableGenerationId: 'immutable-target-a',
+                occurrenceId: 'immutable-target-a',
             }),
             contributions: Object.freeze([Object.freeze({
                 contributor: contributorA,
@@ -1090,14 +1121,14 @@ describe('targeted contribution observation service', () => {
         const contributorB = Object.freeze({
             pluginId: 'acme.contributor',
             contributionId: 'provider',
-            immutableGenerationId: 'immutable-contributor-b',
+            occurrenceId: 'immutable-contributor-b',
         });
         const registryAfterContributorUpdate = runtimeRegistry(new AbortController(), vi.fn(), Object.freeze({
-            // A contributor replacement keeps the target generation stable.
+            // A contributor replacement keeps the target occurrenceId stable.
             target: Object.freeze({
                 pluginId: 'acme.target',
                 pointId: 'providers',
-                immutableGenerationId: 'immutable-target-a',
+                occurrenceId: 'immutable-target-a',
             }),
             contributions: Object.freeze([Object.freeze({
                 contributor: contributorB,
@@ -1116,12 +1147,12 @@ describe('targeted contribution observation service', () => {
             new AbortController(),
             vi.fn(),
             Object.freeze({
-                // A contributor uninstall also keeps the target generation
+                // A contributor uninstall also keeps the target occurrenceId
                 // stable, but its next complete snapshot has no contribution.
                 target: Object.freeze({
                     pluginId: 'acme.target',
                     pointId: 'providers',
-                    immutableGenerationId: 'immutable-target-a',
+                    occurrenceId: 'immutable-target-a',
                 }),
                 contributions: Object.freeze([]),
             }),
@@ -1149,7 +1180,8 @@ describe('targeted contribution observation service', () => {
         expect(subscribe).toHaveBeenCalledOnce();
         expect(registryInitiallyEmpty.readAdmittedTargetedContributions).not.toHaveBeenCalled();
         await expect(observation.readCurrent()).resolves.toEqual({
-            generation: 'immutable-target-a',
+            occurrenceId: 'immutable-target-a',
+            sourceCustody: sourceCustody('acme.target'),
             contributions: [],
         });
         expect(registryInitiallyEmpty.readAdmittedTargetedContributions).toHaveBeenCalledWith({
@@ -1170,12 +1202,14 @@ describe('targeted contribution observation service', () => {
         expect(retireLiveA).toHaveBeenCalledOnce();
         expect(target.signal.aborted).toBe(false);
         await expect(observation.readCurrent()).resolves.toEqual({
-            generation: 'immutable-target-a',
+            occurrenceId: 'immutable-target-a',
+            sourceCustody: sourceCustody('acme.target'),
             contributions: [{
                 contributor: {
                     pluginId: 'acme.contributor',
                     contributionId: 'provider',
-                    immutableGenerationId: 'immutable-contributor-a',
+                    occurrenceId: 'immutable-contributor-a',
+                    sourceCustody: sourceCustody('acme.contributor'),
                 },
                 protocol: { id: 'example-providers', version: 1 },
                 operations: {
@@ -1189,10 +1223,12 @@ describe('targeted contribution observation service', () => {
                             contributor: {
                                 pluginId: 'acme.contributor',
                                 contributionId: 'provider',
-                                immutableGenerationId: 'immutable-contributor-a',
+                                occurrenceId: 'immutable-contributor-a',
+                                sourceCustody: sourceCustody('acme.contributor'),
                             },
                             role: 'connect',
                         },
+                        typeProjection: undefined,
                     },
                 },
                 surfaces: {},
@@ -1210,12 +1246,14 @@ describe('targeted contribution observation service', () => {
         await vi.waitFor(() => expect(invalidated).toHaveBeenCalledTimes(2));
         expect(target.signal.aborted).toBe(false);
         await expect(observation.readCurrent()).resolves.toEqual({
-            generation: 'immutable-target-a',
+            occurrenceId: 'immutable-target-a',
+            sourceCustody: sourceCustody('acme.target'),
             contributions: [{
                 contributor: {
                     pluginId: 'acme.contributor',
                     contributionId: 'provider',
-                    immutableGenerationId: 'immutable-contributor-b',
+                    occurrenceId: 'immutable-contributor-b',
+                    sourceCustody: sourceCustody('acme.contributor'),
                 },
                 protocol: { id: 'example-providers', version: 1 },
                 operations: {
@@ -1229,10 +1267,12 @@ describe('targeted contribution observation service', () => {
                             contributor: {
                                 pluginId: 'acme.contributor',
                                 contributionId: 'provider',
-                                immutableGenerationId: 'immutable-contributor-b',
+                                occurrenceId: 'immutable-contributor-b',
+                                sourceCustody: sourceCustody('acme.contributor'),
                             },
                             role: 'connect',
                         },
+                        typeProjection: undefined,
                     },
                 },
                 surfaces: {},
@@ -1250,7 +1290,8 @@ describe('targeted contribution observation service', () => {
         await vi.waitFor(() => expect(invalidated).toHaveBeenCalledTimes(3));
         expect(target.signal.aborted).toBe(false);
         await expect(observation.readCurrent()).resolves.toEqual({
-            generation: 'immutable-target-a',
+            occurrenceId: 'immutable-target-a',
+            sourceCustody: sourceCustody('acme.target'),
             contributions: [],
         });
         expect(registryAfterContributorUninstall.activateContributionsOnDemand).not.toHaveBeenCalled();
@@ -1275,11 +1316,11 @@ describe('targeted contribution observation service', () => {
                 providerPlugins: [
                     Object.freeze({
                         ...BUNDLED_TELEGRAM_PROVIDER,
-                        immutableGenerationId: 'telegram-generation-b',
+                        occurrenceId: 'telegram-occurrenceId-b',
                     }),
                     Object.freeze({
                         ...BUNDLED_GITHUB_PROVIDER,
-                        immutableGenerationId: 'github-generation-b',
+                        occurrenceId: 'github-occurrenceId-b',
                     }),
                 ],
             }),
@@ -1294,11 +1335,11 @@ describe('targeted contribution observation service', () => {
                 providerPlugins: [
                     Object.freeze({
                         ...BUNDLED_TELEGRAM_PROVIDER,
-                        immutableGenerationId: 'telegram-generation-c',
+                        occurrenceId: 'telegram-occurrenceId-c',
                     }),
                     Object.freeze({
                         ...BUNDLED_GITHUB_PROVIDER,
-                        immutableGenerationId: 'github-generation-c',
+                        occurrenceId: 'github-occurrenceId-c',
                     }),
                 ],
             }),
@@ -1338,12 +1379,14 @@ describe('targeted contribution observation service', () => {
             {
                 pluginId: 'happier.channel.telegram',
                 contributionId: 'telegram-provider',
-                immutableGenerationId: 'telegram-generation-a',
+                occurrenceId: 'telegram-occurrenceId-a',
+                sourceCustody: sourceCustody('happier.channel.telegram'),
             },
             {
                 pluginId: 'happier.scm.forge.github',
                 contributionId: 'github-repository',
-                immutableGenerationId: 'github-generation-a',
+                occurrenceId: 'github-occurrenceId-a',
+                sourceCustody: sourceCustody('happier.scm.forge.github'),
             },
         ]);
 
@@ -1362,12 +1405,14 @@ describe('targeted contribution observation service', () => {
             {
                 pluginId: 'happier.channel.telegram',
                 contributionId: 'telegram-provider',
-                immutableGenerationId: 'telegram-generation-b',
+                occurrenceId: 'telegram-occurrenceId-b',
+                sourceCustody: sourceCustody('happier.channel.telegram'),
             },
             {
                 pluginId: 'happier.scm.forge.github',
                 contributionId: 'github-repository',
-                immutableGenerationId: 'github-generation-b',
+                occurrenceId: 'github-occurrenceId-b',
+                sourceCustody: sourceCustody('happier.scm.forge.github'),
             },
         ]);
 
@@ -1399,12 +1444,14 @@ describe('targeted contribution observation service', () => {
             {
                 pluginId: 'happier.channel.telegram',
                 contributionId: 'telegram-provider',
-                immutableGenerationId: 'telegram-generation-c',
+                occurrenceId: 'telegram-occurrenceId-c',
+                sourceCustody: sourceCustody('happier.channel.telegram'),
             },
             {
                 pluginId: 'happier.scm.forge.github',
                 contributionId: 'github-repository',
-                immutableGenerationId: 'github-generation-c',
+                occurrenceId: 'github-occurrenceId-c',
+                sourceCustody: sourceCustody('happier.scm.forge.github'),
             },
         ]);
         expect(registryInitiallyEmpty.activateContributionsOnDemand).not.toHaveBeenCalled();
@@ -1417,7 +1464,7 @@ describe('targeted contribution observation service', () => {
         await controller.shutdown();
     });
 
-    it('retires the observation when the real reload controller replaces its target generation', async () => {
+    it('retires the observation when the real reload controller replaces its target occurrenceId', async () => {
         const target = new AbortController();
         const registryA = runtimeRegistry(target);
         const registryB = runtimeRegistry(new AbortController());

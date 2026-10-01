@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFailed, vi } from 'vitest';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -9,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -16,8 +16,14 @@ import {
 import { createSpawnHappyCliEnvScope } from '@/testkit/process/spawnHappyCliHarness';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import cliDistBuildManifest from '@happier-dev/cli-common/cliDistBuildManifest';
+import { BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH } from '@happier-dev/cli-common/bundledPluginPublicationPolicy';
+import { PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH } from '@happier-dev/cli-common/pinnedRunnerSnapshot';
 import { CLI_RUNTIME_SIDECAR_ENTRIES } from '@happier-dev/cli-common/componentArtifacts/cliRuntimeSidecars';
 import { readCliNodeWorkspaceRuntimeIdentity } from '@happier-dev/cli-common/componentArtifacts/copyCliNodeRuntimePayload';
+import * as realSpawnHappyCli from '@/utils/spawnHappyCLI';
+
+// Keep cold transformation outside the operation budget; cases import fresh env-bound owners.
+vi.resetModules();
 
 const envScope = createSpawnHappyCliEnvScope();
 
@@ -85,12 +91,7 @@ function writeDistBuildManifest(
   const runtimeRoot = dirname(dirname(entrypoint));
   if (
     options.recordRuntimeAsset !== false
-    && existsSync(join(
-      runtimeRoot,
-      'tools',
-      'unpacked',
-      'happier-cliproxyapi-managed',
-    ))
+    && existsSync(join(runtimeRoot, ...PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH))
   ) {
     recordManagedRuntimeAsset(entrypoint, runtimeRoot);
   }
@@ -115,6 +116,9 @@ function writeTinyRuntimeAssets(
   const toolsDir = join(root, 'tools', 'unpacked');
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(toolsDir, { recursive: true });
+  const failuresPath = join(root, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH);
+  mkdirSync(dirname(failuresPath), { recursive: true });
+  writeFileSync(failuresPath, '[]\n');
   for (const relativePath of CLI_RUNTIME_SIDECAR_ENTRIES) {
     const targetPath = join(scriptsDir, ...relativePath);
     if (relativePath[0] === 'runtime' || relativePath[0] === 'shims') {
@@ -133,7 +137,7 @@ function writeTinyRuntimeAssets(
   writeFileSync(join(toolsDir, 'rg'), '#!/bin/sh\nexit 0\n', 'utf8');
   if (includeManagedProviderRuntime) {
     writeFileSync(
-      join(toolsDir, 'happier-cliproxyapi-managed'),
+      join(root, ...PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH),
       'managed-runtime-A',
       'utf8',
     );
@@ -142,6 +146,9 @@ function writeTinyRuntimeAssets(
 
 function writeCanonicalRunnerClosureFixture(root: string): string {
   mkdirSync(root, { recursive: true });
+  const failurePath = join(root, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH);
+  mkdirSync(dirname(failurePath), { recursive: true });
+  writeFileSync(failurePath, '[]\n');
   writeFileSync(join(root, 'package.json'), JSON.stringify({
     name: '@happier-dev/cli',
     happier: { managedRuntimePublication: { v: 1, mode: 'complete', unavailableProviderRefs: [] } },
@@ -168,11 +175,6 @@ function writeCanonicalRunnerClosureFixture(root: string): string {
       'utf8',
     );
   }
-  writeFileSync(
-    join(scriptsDir, 'runtime', 'loadVoiceInferenceRuntime.mjs'),
-    'export * from "../../package-dist/daemon/voiceInference/runtime/packagedVoiceInferenceRuntime.mjs";\n',
-    'utf8',
-  );
   writeFileSync(join(scriptsDir, 'shims', 'rg'), '#!/bin/sh\nexit 0\n', 'utf8');
 
   // These development-only scripts must not become part of an immutable runner payload.
@@ -183,27 +185,19 @@ function writeCanonicalRunnerClosureFixture(root: string): string {
   mkdirSync(toolsDir, { recursive: true });
   writeFileSync(join(toolsDir, 'rg'), '#!/bin/sh\nexit 0\n', 'utf8');
   writeFileSync(
-    join(toolsDir, 'happier-cliproxyapi-managed'),
+    join(root, ...PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH),
     'managed-runtime-A',
     'utf8',
   );
   return entrypoint;
 }
 
-function recordManagedRuntimeAsset(entrypoint: string, root: string): void {
-  const manifestPath = join(dirname(entrypoint), '.build-manifest.json');
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<
-    string,
-    unknown
-  >;
-  const relativePath = 'tools/unpacked/happier-cliproxyapi-managed';
-  const bytes = readFileSync(join(root, ...relativePath.split('/')));
-  manifest.runtimeAsset = {
-    relativePath,
-    byteLength: bytes.byteLength,
-    sha256: createHash('sha256').update(bytes).digest('hex'),
-  };
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+function recordManagedRuntimeAsset(entrypoint: string, root: string) {
+  return cliDistBuildManifest.writeCliRuntimeAssetBuildManifest({
+    runtimeRoot: root,
+    entrypoint,
+    relativePath: PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH.join('/'),
+  }).runtimeAsset;
 }
 
 describe('spawnHappyCLI fallback invocation', () => {
@@ -326,7 +320,7 @@ describe('spawnHappyCLI fallback invocation', () => {
     await withTempDir('happier-canonical-runner-closure-', async (root) => {
       const entrypoint = writeCanonicalRunnerClosureFixture(root);
       const fingerprint = writeDistBuildManifest(entrypoint);
-      recordManagedRuntimeAsset(entrypoint, root);
+      const runtimeAsset = recordManagedRuntimeAsset(entrypoint, root);
       const runtimeStatePath = join(root, 'stack.runtime.json');
       writeStackRuntimeFingerprint(runtimeStatePath, fingerprint);
       patchFreshDistEnv(entrypoint, runtimeStatePath, fingerprint);
@@ -336,7 +330,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       const pinnedEntrypoint = inv.argv.find((arg) => arg.endsWith('index.mjs'));
 
       expect(pinnedEntrypoint).toMatch(
-        /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
+        /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v7[\\/]package-dist[\\/]index\.mjs$/,
       );
       const snapshotRoot = dirname(dirname(pinnedEntrypoint!));
       expect(JSON.parse(readFileSync(join(snapshotRoot, 'package.json'), 'utf8'))).toMatchObject({
@@ -350,12 +344,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(existsSync(join(snapshotRoot, 'scripts', 'env-wrapper.cjs'))).toBe(false);
       expect(existsSync(join(snapshotRoot, 'tools', 'unpacked', 'rg'))).toBe(true);
       expect(readFileSync(
-        join(
-          snapshotRoot,
-          'tools',
-          'unpacked',
-          'happier-cliproxyapi-managed',
-        ),
+        join(snapshotRoot, ...PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH),
         'utf8',
       )).toBe('managed-runtime-A');
       expect(existsSync(join(
@@ -371,13 +360,7 @@ describe('spawnHappyCLI fallback invocation', () => {
         ok: true,
         fingerprint,
         manifest: {
-          runtimeAsset: {
-            relativePath: 'tools/unpacked/happier-cliproxyapi-managed',
-            byteLength: Buffer.byteLength('managed-runtime-A'),
-            sha256: createHash('sha256')
-              .update('managed-runtime-A')
-              .digest('hex'),
-          },
+          runtimeAsset,
         },
       });
       expect(cliDistBuildManifest.readCliDistClosure(pinnedEntrypoint!, {
@@ -517,7 +500,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(pinnedEntrypoint).not.toBe(preIntegrityEntrypoint);
       expect(cliDistBuildManifest.readCliRuntimeAssetIntegrity({
         runtimeRoot: dirname(dirname(pinnedEntrypoint!)),
-        relativePath: 'tools/unpacked/happier-cliproxyapi-managed',
+        relativePath: PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH.join('/'),
       })).toMatchObject({ ok: true });
     });
   });
@@ -540,7 +523,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(wrapperAEntrypoint).toBeDefined();
 
       writeFileSync(
-        join(root, 'tools', 'unpacked', 'happier-cliproxyapi-managed'),
+        join(root, ...PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH),
         'managed-runtime-B',
         'utf8',
       );
@@ -555,22 +538,20 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(wrapperBEntrypoint).toBeDefined();
       expect(wrapperBEntrypoint).not.toBe(wrapperAEntrypoint);
       const wrapperBSnapshotRoot = dirname(dirname(wrapperBEntrypoint!));
-      expect(readFileSync(join(
-        wrapperBSnapshotRoot,
-        'tools',
-        'unpacked',
-        'happier-cliproxyapi-managed',
-      ), 'utf8')).toBe('managed-runtime-B');
+      expect(readFileSync(join(wrapperBSnapshotRoot, ...PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH), 'utf8')).toBe('managed-runtime-B');
       expect(cliDistBuildManifest.readCliRuntimeAssetIntegrity({
         runtimeRoot: wrapperBSnapshotRoot,
-        relativePath: 'tools/unpacked/happier-cliproxyapi-managed',
+        relativePath: PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH.join('/'),
       })).toMatchObject({ ok: true });
       expect(existsSync(dirname(dirname(wrapperAEntrypoint!)))).toBe(true);
     });
   });
 
   it('uses a pinned dist closure for stack source-daemon runner spawns when the runtime fingerprint is current', async () => {
+    let phase = 'temporary directory creation';
+    onTestFailed(() => console.error(`Required-sidecar fixture failed during ${phase}`));
     await withTempDir('happier-current-dist-runner-', async (root) => {
+      phase = 'current dist fixture creation';
       const entrypoint = writeTinyDist(root);
       writeTinyRuntimeAssets(root);
       const fingerprint = writeDistBuildManifest(entrypoint);
@@ -578,7 +559,10 @@ describe('spawnHappyCLI fallback invocation', () => {
       writeStackRuntimeFingerprint(runtimeStatePath, fingerprint);
       patchFreshDistEnv(entrypoint, runtimeStatePath, fingerprint);
 
-      const mod = (await import('@/utils/spawnHappyCLI')) as typeof import('@/utils/spawnHappyCLI');
+      // Real filesystem boundaries and invocation-time environment do not require
+      // re-executing the collection-loaded owner graph inside this operation budget.
+      const mod = realSpawnHappyCli;
+      phase = 'initial immutable closure preparation';
       const inv = mod.buildHappyCliSubprocessInvocation(['claude', '--started-by', 'daemon']);
 
       expect(inv.runtime).toBe('node');
@@ -587,7 +571,7 @@ describe('spawnHappyCLI fallback invocation', () => {
           '--no-warnings',
           '--no-deprecation',
           expect.stringMatching(
-            /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
+            /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v7[\\/]package-dist[\\/]index\.mjs$/,
           ),
           'claude',
           '--started-by',
@@ -602,6 +586,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       const snapshotRoot = dirname(dirname(pinnedEntrypoint!));
       for (const relativeAssetPath of [
         ['scripts', 'terminal_launch_spec_runner.cjs'],
+        ['scripts', 'process_tree.cjs'],
         ['scripts', 'claude_local_launcher.cjs'],
         ['scripts', 'ripgrep_launcher.cjs'],
         ['scripts', 'ripgrep_runtime_paths.cjs'],
@@ -611,8 +596,18 @@ describe('spawnHappyCLI fallback invocation', () => {
       }
       expect(existsSync(join(snapshotRoot, 'scripts', 'env-wrapper.cjs'))).toBe(false);
 
+      phase = 'complete immutable closure reuse';
       const reused = mod.buildHappyCliSubprocessInvocation(['claude', '--started-by', 'daemon']);
       expect(reused.argv).toContain(pinnedEntrypoint);
+      rmSync(join(snapshotRoot, 'scripts', 'process_tree.cjs'));
+      phase = 'missing sidecar refusal';
+      const refused = mod.buildHappyCliSubprocessInvocation(['claude', '--started-by', 'daemon']);
+      // Destination snapshots are immutable: an incomplete old closure cannot be
+      // reused or repaired in place. Source-development keeps its existing fallback.
+      expect(refused.argv).not.toContain(pinnedEntrypoint);
+      expect(refused.argv).toContain('--import');
+      expect(existsSync(join(snapshotRoot, 'scripts', 'process_tree.cjs'))).toBe(false);
+      phase = 'temporary directory cleanup';
     });
   });
 
@@ -634,7 +629,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(startup.runtime).toBe('node');
       expect(startup.argv).toEqual(expect.arrayContaining([
         expect.stringMatching(
-          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
+          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v7[\\/]package-dist[\\/]index\.mjs$/,
         ),
         'daemon',
         'start-sync',
@@ -673,19 +668,14 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(startup.runtime).toBe('node');
       expect(startup.argv).toEqual(expect.arrayContaining([
         expect.stringMatching(
-          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
+          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v7[\\/]package-dist[\\/]index\.mjs$/,
         ),
         'daemon',
         'start-sync',
       ]));
       const pinnedEntrypoint = startup.argv.find((arg) => arg.endsWith('index.mjs'));
       expect(pinnedEntrypoint).toBeDefined();
-      expect(existsSync(join(
-        dirname(dirname(pinnedEntrypoint!)),
-        'tools',
-        'unpacked',
-        'happier-cliproxyapi-managed',
-      ))).toBe(false);
+      expect(existsSync(join(dirname(dirname(pinnedEntrypoint!)), ...PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH))).toBe(false);
     });
   });
 
@@ -979,7 +969,10 @@ describe('spawnHappyCLI fallback invocation', () => {
   });
 
   it('uses the admitted pinned closure after mutable dist advances to a newer publication', async () => {
+    let phase = 'temporary directory creation';
+    onTestFailed(() => console.error(`Mutable-dist fixture failed during ${phase}`));
     await withTempDir('happier-admitted-daemon-startup-after-dist-advance-', async (root) => {
+      phase = 'current dist fixture creation';
       const entrypoint = writeTinyDist(root);
       writeTinyRuntimeAssets(root);
       const admittedFingerprint = writeDistBuildManifest(entrypoint);
@@ -987,7 +980,8 @@ describe('spawnHappyCLI fallback invocation', () => {
       writeStackRuntimeFingerprint(runtimeStatePath, null);
       patchFreshDistEnv(entrypoint, runtimeStatePath, admittedFingerprint);
 
-      const mod = (await import('@/utils/spawnHappyCLI')) as typeof import('@/utils/spawnHappyCLI');
+      const mod = realSpawnHappyCli;
+      phase = 'admitted closure preparation';
       const admitted = mod.buildHappyCliSubprocessInvocation(
         ['daemon', 'start-sync'],
         { allowAdmittedDaemonStartupClosure: true },
@@ -995,10 +989,12 @@ describe('spawnHappyCLI fallback invocation', () => {
       const admittedEntrypoint = admitted.argv.find((arg) => arg.endsWith('index.mjs'));
       expect(admittedEntrypoint).toContain(admittedFingerprint);
 
+      phase = 'mutable dist publication advance';
       writeFileSync(join(dirname(entrypoint), 'chunk.mjs'), 'export const marker = "new";\n', 'utf8');
       const successorFingerprint = writeDistBuildManifest(entrypoint);
       expect(successorFingerprint).not.toBe(admittedFingerprint);
 
+      phase = 'existing admitted closure selection';
       const startup = mod.buildHappyCliSubprocessInvocation(
         ['daemon', 'start-sync'],
         { allowAdmittedDaemonStartupClosure: true },
@@ -1007,6 +1003,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(startup.runtime).toBe('node');
       expect(startup.argv).toContain(admittedEntrypoint);
       expect(startup.argv).not.toContain(entrypoint);
+      phase = 'temporary directory cleanup';
     });
   });
 
@@ -1105,13 +1102,66 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(inv.runtime).toBe('node');
       expect(inv.argv).toEqual(expect.arrayContaining([
         expect.stringMatching(
-          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
+          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v7[\\/]package-dist[\\/]index\.mjs$/,
         ),
         'claude',
         '--started-by',
         'daemon',
       ]));
       expect(inv.argv).not.toContain('--import');
+    });
+  });
+
+  it('pins the daemon admitted publication failures despite later changes to the live file', async () => {
+    await withTempDir('happier-runner-plugin-failures-', async (root) => {
+      const entrypoint = writeTinyDist(root);
+      writeTinyRuntimeAssets(root);
+      const fingerprint = writeDistBuildManifest(entrypoint);
+      const runtimeStatePath = join(root, 'stack.runtime.json');
+      writeStackRuntimeFingerprint(runtimeStatePath, fingerprint);
+      patchFreshDistEnv(entrypoint, runtimeStatePath, fingerprint);
+      envScope.patch({ HAPPIER_CLI_SUBPROCESS_RUNTIME_BACKED: '1' });
+      const failuresPath = join(root, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH);
+      const failures = [{
+        packageName: '@happier-dev/plugins-inspector', pluginId: 'happier.inspector',
+        diagnostic: { code: 'plugin_package_build_failed', message: 'broken optional package' },
+      }];
+      writeFileSync(failuresPath, JSON.stringify(failures));
+      const execPathDescriptor = Object.getOwnPropertyDescriptor(process, 'execPath')!;
+      try {
+        Object.defineProperty(process, 'execPath', { ...execPathDescriptor, value: join(root, 'happier') });
+        const { readCurrentBundledPluginPublicationFailures } = await import('@/plugins/projection/registry/builtIn/locators');
+        expect(readCurrentBundledPluginPublicationFailures()).toEqual(failures);
+      } finally {
+        Object.defineProperty(process, 'execPath', execPathDescriptor);
+      }
+      const mod = await import('@/utils/spawnHappyCLI');
+      const first = mod.buildHappyCliSubprocessInvocation(['claude', '--started-by', 'daemon']);
+      const firstEntrypoint = first.argv.find((arg) => arg.endsWith('index.mjs'))!;
+      const snapshotFailuresPath = join(dirname(dirname(firstEntrypoint)), BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH);
+      expect(JSON.parse(readFileSync(snapshotFailuresPath, 'utf8'))).toEqual(failures);
+      writeFileSync(failuresPath, '[]\n');
+      const second = mod.buildHappyCliSubprocessInvocation(['claude', '--started-by', 'daemon']);
+      const secondEntrypoint = second.argv.find((arg) => arg.endsWith('index.mjs'))!;
+      expect(secondEntrypoint).toBe(firstEntrypoint);
+      expect(JSON.parse(readFileSync(snapshotFailuresPath, 'utf8'))).toEqual(failures);
+    });
+  });
+
+  it('refuses a runner when publication failures are missing rather than admitting unknown health', async () => {
+    await withTempDir('happier-runner-plugin-health-unknown-', async (root) => {
+      const entrypoint = writeTinyDist(root);
+      writeTinyRuntimeAssets(root);
+      const fingerprint = writeDistBuildManifest(entrypoint);
+      const runtimeStatePath = join(root, 'stack.runtime.json');
+      writeStackRuntimeFingerprint(runtimeStatePath, fingerprint);
+      patchFreshDistEnv(entrypoint, runtimeStatePath, fingerprint);
+      envScope.patch({ HAPPIER_CLI_SUBPROCESS_RUNTIME_BACKED: '1' });
+      const { rmSync } = await import('node:fs');
+      rmSync(join(root, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH));
+      const mod = await import('@/utils/spawnHappyCLI');
+      expect(() => mod.buildHappyCliSubprocessInvocation(['claude', '--started-by', 'daemon']))
+        .toThrow(expect.objectContaining({ code: 'EIMMUTABLERUNNERCLOSURE' }));
     });
   });
 
@@ -1135,7 +1185,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(runtimeDecision?.runtime).toBe('node');
       const pinnedEntrypoint = runtimeDecision?.argvPrefix.find((arg) => arg.endsWith('index.mjs'));
       expect(pinnedEntrypoint).toMatch(
-        /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
+        /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v7[\\/]package-dist[\\/]index\.mjs$/,
       );
       expect(runtimeDecision?.env).toEqual({
         HAPPIER_CLI_SUBPROCESS_DIST_ENTRYPOINT: pinnedEntrypoint,
@@ -1162,7 +1212,8 @@ describe('spawnHappyCLI fallback invocation', () => {
           name: 'HappyCliImmutableRuntimeClosureError',
           code: 'EIMMUTABLERUNNERCLOSURE',
         }));
-      expect(readdirSync(join(root, 'cli', '.runner-snapshots'))
+      const snapshotsDir = join(root, 'cli', '.runner-snapshots');
+      expect((existsSync(snapshotsDir) ? readdirSync(snapshotsDir) : [])
         .filter((name) => !name.startsWith('.'))).toEqual([]);
     });
   });
@@ -1261,7 +1312,7 @@ describe('spawnHappyCLI fallback invocation', () => {
 
         const pinnedEntrypoint = inv.argv.find((arg) => arg.endsWith('index.mjs'));
         expect(pinnedEntrypoint).toMatch(
-          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
+          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v7[\\/]package-dist[\\/]index\.mjs$/,
         );
         expect(pinnedEntrypoint).not.toContain(`${join('dist', '.runner-snapshots')}`);
         expect(inv.argv).toEqual([
@@ -1302,7 +1353,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       const pinnedEntrypoint = invocation.argv.find((arg) => arg.endsWith('index.mjs'));
       expect(pinnedEntrypoint).toBeDefined();
       const snapshotIdentity = basename(dirname(dirname(pinnedEntrypoint!)));
-      const liveIdentity = `1111111111111111-${'1'.repeat(64)}-${'2'.repeat(64)}-package-dist-v6`;
+      const liveIdentity = `1111111111111111-${'1'.repeat(64)}-${'2'.repeat(64)}-${'3'.repeat(64)}-package-dist-v7`;
       const snapshotsDir = join(root, '.runner-snapshots');
       for (const [index, name] of [
         snapshotIdentity,

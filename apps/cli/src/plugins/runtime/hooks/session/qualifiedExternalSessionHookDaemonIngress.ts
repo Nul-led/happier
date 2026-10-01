@@ -234,7 +234,7 @@ export function createQualifiedExternalSessionHookDaemonIngress(input: Readonly<
         qualifiedContributionId:
             ExternalAgentObservationTargetV1['qualifiedLinkIdentity']['agent'];
         agentId: string;
-        pluginGeneration: string;
+        pluginOccurrenceId: string;
         variantId: string;
     }>) => Promise<QualifiedExternalSessionHookRuntimeLease | null>;
 }>) {
@@ -265,7 +265,7 @@ export function createQualifiedExternalSessionHookDaemonIngress(input: Readonly<
                 || runtime?.pluginId
                     !== request.qualifiedContributionId.pluginId
                 || runtime.agentId !== request.agentId
-                || runtime.generation !== request.pluginGeneration
+                || runtime.occurrenceId !== request.pluginOccurrenceId
                 || !runtime.externalSessions
                 || !runtime.externalSessionHooks
                 || !runtime.retirementSignal
@@ -281,7 +281,7 @@ export function createQualifiedExternalSessionHookDaemonIngress(input: Readonly<
             return {
                 hooks: runtime.externalSessionHooks,
                 externalSessions: runtime.externalSessions,
-                generation: runtime.generation,
+                occurrenceId: runtime.occurrenceId,
                 retirementSignal: runtime.retirementSignal,
                 isCurrent: () => (
                     runtime.isCurrent()

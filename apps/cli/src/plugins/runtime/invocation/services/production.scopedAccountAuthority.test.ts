@@ -41,12 +41,12 @@ describe('production invocation services for a scoped principal', () => {
         const services = owners.createServices({
             plugin: { id: 'acme.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'acme.plugin/actions/run' },
-            generation: 'generation-1',
+            occurrenceId: 'occurrenceId-1',
             correlationId: 'correlation-1',
             surface: 'cli',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
-        }, owners.createOrdinaryServiceBinding('generation-1', 'binding-1'));
+            isOccurrenceCurrent: () => true,
+        }, owners.createOrdinaryServiceBinding('occurrenceId-1', 'binding-1'));
 
         expect(services.availability('settings')).toEqual({
             status: 'unavailable',

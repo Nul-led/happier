@@ -66,7 +66,7 @@ test('external-server startup sanitizes parent preflight authority before descen
   const orchestrationEnvBoundary = source.indexOf('const baseEnv = { ...process.env };');
   const runtimeStartBoundary = source.indexOf('await recordStackRuntimeStart');
   const watchdogBoundary = source.indexOf('spawnStackOwnerDeathWatchdog({');
-  const optionalServerBoundary = source.indexOf('const { serverEnv, serverScript, serverProc }');
+  const optionalServerBoundary = source.indexOf('let serverEnv = baseEnv;');
   const descendantBoundary = source.indexOf('const accountProbe');
   const sanitationBoundary = source.indexOf('delete baseEnv.HAPPIER_STACK_SERVER_RESTART_PREFLIGHT_ALREADY_DONE');
 

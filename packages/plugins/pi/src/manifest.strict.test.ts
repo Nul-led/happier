@@ -24,6 +24,7 @@ describe('Pi strict plugin manifest', () => {
     expect(processAccess?.scope.envKeys).toEqual(PI_LAUNCH_ENV_KEYS);
     expect(processAccess?.scope.envKeys).toEqual([
       'HAPPIER_PI_THINKING_LEVEL',
+      'PI_OFFLINE',
       'HAPPIER_CONNECTED_ACCOUNT_REQUEST_AUTH_CAPABILITY_PATH',
       'HAPPIER_PI_REQUEST_AUTH_PRODUCER_VERSION',
       'NODE_ENV',

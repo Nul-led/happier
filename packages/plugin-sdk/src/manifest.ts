@@ -555,6 +555,21 @@ export interface PluginManifest {
       resultSchema?: PluginJsonSchema | null;
       surfaces: readonly string[];
     }>)[];
+    /** Read-only role sources, overridable through the host's Roles settings. */
+    roles?: readonly Readonly<{
+      id: string;
+      name: string;
+      instructions: string;
+      engine?: Readonly<{ agentTargetKey: string; modelId?: string; effort?: string }>;
+      runsAs: Readonly<{ kind: 'session' }> | Readonly<{
+        kind: 'background_run';
+        intent: 'review' | 'plan' | 'delegate' | 'agent' | 'task' | 'voice_agent' | 'memory_hints' | 'scm_commit_message' | 'scm_diff_summary';
+      }>;
+      profileId?: string;
+      workspaceWrites: 'allow' | 'deny';
+      secondOpinion: 'off' | 'encouraged';
+      enabled: boolean;
+    }>[];
     promptAssets?: readonly (Readonly<{
       id: string;
       readonly [key: string]: unknown;
@@ -677,6 +692,7 @@ export type PluginContributes = Readonly<{
   settings: NonNullable<NonNullable<PluginManifest['contributes']>['settings']>;
   events: NonNullable<NonNullable<PluginManifest['contributes']>['events']>;
   executionRunProfiles: NonNullable<NonNullable<PluginManifest['contributes']>['executionRunProfiles']>;
+  roles: NonNullable<NonNullable<PluginManifest['contributes']>['roles']>;
   notifications: NonNullable<NonNullable<PluginManifest['contributes']>['notifications']>;
   notificationChannels: NonNullable<NonNullable<PluginManifest['contributes']>['notificationChannels']>;
   scmHostingProviders: NonNullable<NonNullable<PluginManifest['contributes']>['scmHostingProviders']>;

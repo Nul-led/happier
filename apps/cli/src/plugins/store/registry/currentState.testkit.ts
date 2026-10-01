@@ -40,7 +40,7 @@ export const PREDECESSOR_PLUGIN_REGISTRY_COMMIT_RECORD_BYTES = `{
     "revisionId": "state-a0c537ed-8285-4531-b28f-514350d3f256",
     "digest": "sha256:60b3b4cec4e73f7e579037e3c459ac4b2e161bd7312d699752ea531be627c973"
   },
-  "pluginGenerations": {},
+  "pluginOccurrenceIds": {},
   "createdAtMs": 1787564705855,
   "creator": {
     "pid": 5151,
@@ -70,7 +70,7 @@ export async function seedCurrentLocalPathPluginFixture(input: Readonly<{
     paths,
     reference: currentCommit.installationState,
   });
-  if (currentRevision.plugins[input.pluginId] || currentCommit.pluginGenerations[input.pluginId]) {
+  if (currentRevision.plugins[input.pluginId] || currentCommit.pluginOccurrenceIds[input.pluginId]) {
     throw new Error(`Current plugin registry fixture '${input.pluginId}' is already installed`);
   }
 
@@ -86,7 +86,7 @@ export async function seedCurrentLocalPathPluginFixture(input: Readonly<{
     sourceRootPath: input.pluginRoot,
     manifestRelativePath: PLUGIN_MANIFEST_RELATIVE_PATH.split('\\').join('/'),
     distribution,
-    updatePolicy: 'reviewEveryUpdate',
+    updatePolicy: 'allowed',
     createdAtMs,
   });
   const prepared = await prepareImmutablePluginGeneration({
@@ -114,7 +114,7 @@ export async function seedCurrentLocalPathPluginFixture(input: Readonly<{
       manifestVersion: input.manifestVersion,
       installedPath: prepared.rootPath,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
     },
     state: {
@@ -145,7 +145,7 @@ export async function seedCurrentLocalPathPluginFixture(input: Readonly<{
         source: {
           distribution,
         },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         optionalAccess: [],
       },
     },
@@ -159,8 +159,8 @@ export async function seedCurrentLocalPathPluginFixture(input: Readonly<{
     transactionId,
     baseRevision: currentCommit.revision,
     installationState,
-    pluginGenerations: {
-      ...currentCommit.pluginGenerations,
+    pluginOccurrenceIds: {
+      ...currentCommit.pluginOccurrenceIds,
       [input.pluginId]: prepared.reference,
     },
     createdAtMs,

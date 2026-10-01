@@ -1,6 +1,8 @@
-import { spawn } from 'node:child_process';
+import { fork, spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { constants } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 import { terminateProcessGroup } from './terminate.mjs';
 import { resolveCommandInvocation } from '../process/resolveCommandInvocation.mjs';
@@ -385,6 +387,113 @@ export async function killProcessTree(child, signal, { graceMs = 800, boundary }
   return await terminateProcessGroup(child.pid, { graceMs, signal, boundary });
 }
 
+const FOREGROUND_CUSTODY_ARG = '--happier-foreground-custody';
+
+// A detached compiler cannot observe its wrapper's SIGKILL. The IPC-connected
+// group leader stays alive until command close; parent loss kills its own group,
+// including native workers. This is the same owner, with no polling/deadline.
+function runForegroundCustody(invocation) {
+  const cancelOnParentLoss = () => process.kill(-process.pid, 'SIGKILL');
+  process.once('disconnect', cancelOnParentLoss);
+  if (!process.connected) return cancelOnParentLoss();
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  const forwarded = new Set();
+  const handlers = new Map(signals.map((signal) => [signal, () => {
+    // Consume our own group broadcast, then allow a later user cancellation.
+    if (forwarded.delete(signal)) return;
+    forwarded.add(signal);
+    process.kill(-process.pid, signal);
+  }]));
+  for (const [signal, handler] of handlers) process.on(signal, handler);
+  const child = spawn(invocation.command, invocation.args, {
+    ...invocation.spawnOptions,
+    stdio: 'inherit',
+    detached: false,
+  });
+  child.once('error', (error) => {
+    process.send({ error: { message: error.message, code: error.code, errno: error.errno, syscall: error.syscall, path: error.path, spawnargs: error.spawnargs } });
+  });
+  child.once('close', (status, signal) => {
+    for (const [name, handler] of handlers) process.off(name, handler);
+    process.off('disconnect', cancelOnParentLoss);
+    process.disconnect();
+    exitWithCommandResult({ status, signal });
+  });
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === FOREGROUND_CUSTODY_ARG) {
+  runForegroundCustody(JSON.parse(process.argv[3]));
+}
+
+// Generic foreground calls retain their terminal session. Noninteractive
+// callers explicitly opt into owned groups; Windows retains taskkill custody.
+export function spawnForegroundCommand(cmd, args, options = {}) {
+  const { shell: shellOverride, ownedProcessGroup = false, ...spawnOptions } = options;
+  const invocation = resolveProcSpawnInvocation(cmd, args, spawnOptions.env ?? process.env, shellOverride);
+  const detached = process.platform !== 'win32' && (ownedProcessGroup || spawnOptions.detached === true);
+  const stdio = spawnOptions.stdio ?? 'pipe';
+  const child = detached
+    ? fork(fileURLToPath(import.meta.url), [FOREGROUND_CUSTODY_ARG, JSON.stringify(invocation)], {
+        ...spawnOptions,
+        shell: false,
+        detached: true,
+        execArgv: [],
+        stdio: [...(Array.isArray(stdio) ? stdio : [stdio, stdio, stdio]), 'ipc'],
+      })
+    : spawn(invocation.command, invocation.args, {
+        ...invocation.spawnOptions,
+        ...spawnOptions,
+        detached: spawnOptions.detached ?? false,
+      });
+  if (detached) child.on('message', (message) => {
+    if (message.error) child.emit('error', Object.assign(new Error(message.error.message), message.error));
+  });
+  const handlers = new Map();
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    const handler = () => {
+      if (!child.pid || child.exitCode != null || child.signalCode != null) return;
+      if (process.platform === 'win32') {
+        void killProcessTree(child, signal).then((result) => {
+          if (!result.ok) process.stderr.write(`Child cancellation failed: ${result.reason}\n`);
+        }, (error) => process.stderr.write(`Child cancellation failed: ${error}\n`));
+        return;
+      }
+      try {
+        child.kill(signal);
+      } catch (error) {
+        if (error?.code !== 'ESRCH') throw error;
+      }
+    };
+    handlers.set(signal, handler);
+    process.on(signal, handler);
+  }
+  const dispose = () => {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+    handlers.clear();
+  };
+  child.once('error', dispose);
+  child.once('close', dispose);
+  return child;
+}
+
+export async function runCommand(cmd, args, options = {}) {
+  const child = spawnForegroundCommand(cmd, args, options);
+  return await new Promise((resolveResult) => {
+    child.once('error', (error) => resolveResult({ status: null, signal: null, error }));
+    child.once('close', (status, signal) => resolveResult({ status, signal }));
+  });
+}
+
+export function exitWithCommandResult(result) {
+  if (result.error) throw result.error;
+  if (result.signal) {
+    process.exitCode = 128 + (constants.signals[result.signal] ?? 0);
+    if (process.platform !== 'win32') process.kill(process.pid, result.signal);
+    return;
+  }
+  process.exitCode = result.status ?? 1;
+}
+
 export async function run(cmd, args, options = {}) {
   const {
     timeoutMs,
@@ -394,7 +503,6 @@ export async function run(cmd, args, options = {}) {
     captureFailureDiagnostic = false,
     ...spawnOptions
   } = options ?? {};
-  const invocation = resolveProcSpawnInvocation(cmd, args, spawnOptions.env ?? process.env, shellOverride);
   await new Promise((resolvePromise, rejectPromise) => {
     const timeoutEnabled = Number.isFinite(timeoutMs) && timeoutMs > 0;
     const baseStdio = stdioOverride ?? 'inherit';
@@ -415,11 +523,11 @@ export async function run(cmd, args, options = {}) {
           : ['pipe', baseStdio, baseStdio]
         : baseStdio;
 
-    const proc = spawn(invocation.command, invocation.args, {
-      ...invocation.spawnOptions,
+    const proc = spawnForegroundCommand(cmd, args, {
       ...spawnOptions,
+      shell: shellOverride,
       stdio,
-      ...(timeoutEnabled && process.platform !== 'win32' ? { detached: true } : {}),
+      ...(timeoutEnabled ? { ownedProcessGroup: true } : {}),
     });
     let timedOut = false;
     let settled = false;
@@ -503,14 +611,13 @@ export async function run(cmd, args, options = {}) {
 
 export async function runCapture(cmd, args, options = {}) {
   const { timeoutMs, shell: shellOverride, stdio: _stdioOverride, ...spawnOptions } = options ?? {};
-  const invocation = resolveProcSpawnInvocation(cmd, args, spawnOptions.env ?? process.env, shellOverride);
   return await new Promise((resolvePromise, rejectPromise) => {
     const timeoutEnabled = Number.isFinite(timeoutMs) && timeoutMs > 0;
-    const proc = spawn(invocation.command, invocation.args, {
-      ...invocation.spawnOptions,
+    const proc = spawnForegroundCommand(cmd, args, {
       ...spawnOptions,
+      shell: shellOverride,
       stdio: ['ignore', 'pipe', 'pipe'],
-      ...(timeoutEnabled && process.platform !== 'win32' ? { detached: true } : {}),
+      ...(timeoutEnabled ? { ownedProcessGroup: true } : {}),
     });
     let out = '';
     let err = '';
@@ -586,12 +693,11 @@ export async function runCaptureResult(cmd, args, options = {}) {
   return await new Promise((resolvePromise) => {
     const timeoutEnabled = Number.isFinite(timeoutMs) && timeoutMs > 0;
     const stdio = input != null ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'];
-    const invocation = resolveProcSpawnInvocation(cmd, args, spawnOptions.env ?? process.env, shellOverride);
-    const proc = spawn(invocation.command, invocation.args, {
+    const proc = spawnForegroundCommand(cmd, args, {
       stdio,
-      ...invocation.spawnOptions,
       ...spawnOptions,
-      ...(timeoutEnabled && process.platform !== 'win32' ? { detached: true } : {}),
+      shell: shellOverride,
+      ...(timeoutEnabled ? { ownedProcessGroup: true } : {}),
     });
     let out = '';
     let err = '';

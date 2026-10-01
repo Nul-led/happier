@@ -140,6 +140,12 @@ function containsOauthTokenInvalidatedMessage(text: string): boolean {
   return /\binvalidated\s+oauth\s+token\b/iu.test(text);
 }
 
+export function isCodexWorkspaceRoutingUnauthorizedFailure(value: unknown): boolean {
+  return /(?:^|\s)workspace routing discovery unauthorized \(401\)(?:$|\s|[.,;])/iu.test(
+    readErrorText(value),
+  );
+}
+
 function containsRefreshTokenFailureMessage(text: string): boolean {
   return /\brefresh\s+token\s+has\s+already\s+been\s+used\b/iu.test(text)
     || /\brefresh\s+token\s+(?:(?:has\s+been|was)\s+)?(?:invalidated|revoked)\b/iu.test(text);
@@ -306,7 +312,13 @@ export function classifyCodexConnectedServiceAuthFailure(
     });
   }
 
-  if (input.providerErrorPath && classifyProviderLimitEvidence(input.error).category === 'capacity') {
+  if (
+    input.providerErrorPath
+    && (
+      classifyProviderLimitEvidence(input.error).category === 'capacity'
+      || /\bapplication\s+network\s+permission\s+was\s+revoked\b/iu.test(text)
+    )
+  ) {
     return buildClassification(input, {
       kind: 'capacity',
       limitCategory: 'capacity',
@@ -342,7 +354,7 @@ export function classifyCodexConnectedServiceAuthFailure(
     });
   }
 
-  if (isStructuredAuthExpiredCode(codexErrorInfo) || isStructuredAuthExpiredCode(structuredCode) || containsOauthTokenInvalidatedMessage(text)) {
+  if (isStructuredAuthExpiredCode(codexErrorInfo) || isStructuredAuthExpiredCode(structuredCode) || containsOauthTokenInvalidatedMessage(text) || isCodexWorkspaceRoutingUnauthorizedFailure(input.error)) {
     return buildClassification(input, {
       kind: 'auth_expired',
       limitCategory: 'auth_invalid',

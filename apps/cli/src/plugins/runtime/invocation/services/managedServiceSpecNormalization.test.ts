@@ -81,4 +81,55 @@ describe('managed-service specification normalization', () => {
                 : undefined,
         ).toEqual({ accept: 'application/json', 'x-probe': 'ready' });
     });
+
+    it('normalizes ordered shaped HTTP health alternatives without changing the shared timeout', () => {
+        const normalized = normalizeManagedServiceSpec({
+            ...attachedSpec('gateway'),
+            healthCheck: {
+                kind: 'http',
+                alternatives: [{
+                    target: { kind: 'servicePath', path: '/api/info' },
+                    response: {
+                        kind: 'jsonObject',
+                        required: { version: 'nonEmptyString' },
+                    },
+                }, {
+                    target: { kind: 'servicePath', path: '/global/health' },
+                    response: {
+                        kind: 'jsonObject',
+                        required: { healthy: 'true' },
+                    },
+                }],
+                timeoutMs: 4_321,
+            },
+        });
+
+        expect(normalized.healthCheck).toMatchObject({
+            kind: 'http',
+            timeoutMs: 4_321,
+            alternatives: [
+                { target: { path: '/api/info' } },
+                { target: { path: '/global/health' } },
+            ],
+        });
+    });
+
+    it('rejects competing single-target and ordered HTTP health declarations', () => {
+        expect(() => normalizeManagedServiceSpec({
+            ...attachedSpec('gateway'),
+            healthCheck: {
+                kind: 'http',
+                target: { kind: 'servicePath', path: '/health' },
+                alternatives: [{
+                    target: { kind: 'servicePath', path: '/api/info' },
+                    response: {
+                        kind: 'jsonObject',
+                        required: { version: 'nonEmptyString' },
+                    },
+                }],
+            },
+        })).toThrow(expect.objectContaining({
+            code: 'plugin_managed_service_spec_invalid',
+        }));
+    });
 });

@@ -288,6 +288,7 @@
 | `./agents/runtime` | `AgentAccountUsageSnapshot` | type | daemon |
 | `./agents/runtime` | `AgentAccountUsageSourceContext` | type | daemon |
 | `./agents/runtime` | `AgentAccountUsageSourceContextInput` | type | daemon |
+| `./agents/runtime` | `AgentAccountUsageSubscription` | type | daemon |
 | `./agents/runtime` | `AgentAcpAuthenticationContext` | type | daemon |
 | `./agents/runtime` | `AgentAcpAuthenticationDefinition` | type | daemon |
 | `./agents/runtime` | `AgentAcpAuthenticationSelection` | type | daemon |
@@ -418,6 +419,7 @@
 | `./agents/runtime` | `AgentProviderBindingResolvedFacts` | type | daemon |
 | `./agents/runtime` | `AgentProviderBindingSourceKey` | type | daemon |
 | `./agents/runtime` | `AgentProviderCliAttachDeclarationV1` | type | daemon |
+| `./agents/runtime` | `AgentProviderCliAttachHostFactsV1` | type | daemon |
 | `./agents/runtime` | `AgentProviderCliAttachReachabilityV1` | type | daemon |
 | `./agents/runtime` | `AgentProviderCliAttachTargetResolutionV1` | type | daemon |
 | `./agents/runtime` | `AgentProviderCliAttachTargetV1` | type | daemon |
@@ -479,6 +481,7 @@
 | `./agents/runtime` | `AgentSessionHostServices` | type | daemon |
 | `./agents/runtime` | `AgentSessionInFlightConfigurationOutcome` | type | daemon |
 | `./agents/runtime` | `AgentSessionInput` | type | daemon |
+| `./agents/runtime` | `AgentSessionInputFilesService` | type | daemon |
 | `./agents/runtime` | `AgentSessionLaunchHintsV1` | type | daemon |
 | `./agents/runtime` | `AgentSessionMcpLaunchConfig` | type | daemon |
 | `./agents/runtime` | `AgentSessionMcpServer` | type | daemon |
@@ -536,7 +539,10 @@
 | `./agents/runtime` | `AgentSessionUsageLimitRecoveryRequest` | type | daemon |
 | `./agents/runtime` | `AgentSessionUsageLimitRecoveryResult` | type | daemon |
 | `./agents/runtime` | `AgentSessionVendorPluginCatalogItem` | type | daemon |
+| `./agents/runtime` | `AgentSessionVerifiedImageInput` | type | daemon |
 | `./agents/runtime` | `AgentSessionWorkflowActivityService` | type | daemon |
+| `./agents/runtime` | `AgentSettingsSelectedSystemToolInputV1` | type | daemon |
+| `./agents/runtime` | `AgentSettingsSelectedSystemToolV1` | type | daemon |
 | `./agents/runtime` | `AgentSurfaceAvailabilityV1` | type | daemon |
 | `./agents/runtime` | `AgentSurfaceBaseFailureCodeV1` | type | daemon |
 | `./agents/runtime` | `AgentSurfaceDiagnosticV1` | type | daemon |
@@ -1072,6 +1078,9 @@
 | `./managed-services` | `ManagedServiceErrorCode` | type | daemon |
 | `./managed-services` | `ManagedServiceHandle` | type | daemon |
 | `./managed-services` | `ManagedServiceHealthCheck` | type | daemon |
+| `./managed-services` | `ManagedServiceHttpHealthAlternative` | type | daemon |
+| `./managed-services` | `ManagedServiceHttpHealthJsonPropertyRequirement` | type | daemon |
+| `./managed-services` | `ManagedServiceHttpHealthResponse` | type | daemon |
 | `./managed-services` | `ManagedServiceLocalId` | type | daemon |
 | `./managed-services` | `ManagedServiceLocalIdSchema` | value | daemon |
 | `./managed-services` | `ManagedServiceMaterializationInjection` | type | daemon |
@@ -1471,11 +1480,17 @@
 | `./scm` | `ScmCommitBackoutResponse` | type | any |
 | `./scm` | `ScmCommitCreateRequest` | type | any |
 | `./scm` | `ScmCommitCreateResponse` | type | any |
+| `./scm` | `ScmConflictAcceptSideRequest` | type | any |
+| `./scm` | `ScmConflictAcceptSideResponse` | type | any |
+| `./scm` | `ScmConflictEntry` | type | any |
+| `./scm` | `ScmConflictMarkResolvedRequest` | type | any |
+| `./scm` | `ScmConflictMarkResolvedResponse` | type | any |
 | `./scm` | `ScmDefaultBranchPushPolicy` | type | any |
 | `./scm` | `ScmDiffCommitRequest` | type | any |
 | `./scm` | `ScmDiffCommitResponse` | type | any |
 | `./scm` | `ScmDiffFileRequest` | type | any |
 | `./scm` | `ScmDiffFileResponse` | type | any |
+| `./scm` | `ScmDirtyPolicy` | type | any |
 | `./scm` | `ScmFollowupAction` | type | any |
 | `./scm` | `ScmHostingRepositoryAuthSummary` | type | any |
 | `./scm` | `ScmHostingRepositoryDescribePublishTargetsRequest` | type | any |
@@ -1490,7 +1505,13 @@
 | `./scm` | `ScmLogEntry` | type | any |
 | `./scm` | `ScmLogListRequest` | type | any |
 | `./scm` | `ScmLogListResponse` | type | any |
+| `./scm` | `ScmOperationEffect` | type | any |
 | `./scm` | `ScmOperationErrorCode` | type | any |
+| `./scm` | `ScmOperationNextAction` | type | any |
+| `./scm` | `ScmOperationOutcome` | type | any |
+| `./scm` | `ScmOperationOutcomeSchema` | value | any |
+| `./scm` | `ScmOperationReconciliation` | type | any |
+| `./scm` | `ScmOperationRepositoryState` | type | any |
 | `./scm` | `ScmOperationState` | type | any |
 | `./scm` | `ScmPullRequestAuthState` | type | any |
 | `./scm` | `ScmPullRequestCheckoutRequest` | type | any |
@@ -1514,6 +1535,8 @@
 | `./scm` | `ScmPullRequestState` | type | any |
 | `./scm` | `ScmPullRequestStatusProjection` | type | any |
 | `./scm` | `ScmPullRequestSummary` | type | any |
+| `./scm` | `ScmPushMode` | type | any |
+| `./scm` | `ScmReconcilePolicy` | type | any |
 | `./scm` | `ScmRefreshPolicy` | type | any |
 | `./scm` | `ScmRefreshPolicySchema` | value | any |
 | `./scm` | `ScmRemoteAddRequest` | type | any |
@@ -1543,6 +1566,7 @@
 | `./scm` | `ScmRepositoryCloneTargetDescription` | type | any |
 | `./scm` | `ScmRepositoryInitRequest` | type | any |
 | `./scm` | `ScmRepositoryInitResponse` | type | any |
+| `./scm` | `ScmRepositoryOperationKind` | type | any |
 | `./scm` | `ScmRepositoryRemoveIndexLockRequest` | type | any |
 | `./scm` | `ScmRepositoryRemoveIndexLockResponse` | type | any |
 | `./scm` | `ScmReviewWorkspaceCurrentness` | type | any |
@@ -1551,6 +1575,8 @@
 | `./scm` | `ScmSelectedMutationPathSchema` | value | any |
 | `./scm` | `ScmStashApplyRequest` | type | any |
 | `./scm` | `ScmStashApplyResponse` | type | any |
+| `./scm` | `ScmStashCreateRequest` | type | any |
+| `./scm` | `ScmStashCreateResponse` | type | any |
 | `./scm` | `ScmStashDropRequest` | type | any |
 | `./scm` | `ScmStashDropResponse` | type | any |
 | `./scm` | `ScmStashEntry` | type | any |
@@ -1585,6 +1611,7 @@
 | `./scm` | `isScmPatchBoundToPath` | value | any |
 | `./scm` | `normalizeScmBranchSourceRef` | value | any |
 | `./scm` | `normalizeScmHostingRepositoryIdentity` | value | any |
+| `./scm` | `normalizeScmOperationOutcome` | value | any |
 | `./scm` | `normalizeScmRemoteName` | value | any |
 | `./scm` | `normalizeScmRemoteRequest` | value | any |
 | `./scm` | `normalizeScmRemoteUrl` | value | any |
@@ -1792,6 +1819,7 @@
 | `./sessions/external` | `AgentExternalSessionCandidate` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionCandidateIndexLookup` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionCandidateIndexState` | type | daemon |
+| `./sessions/external` | `AgentExternalSessionCandidateThread` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionHookCustodiedEntryProjection` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionHookInstallationVariant` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionHookMapEventRequest` | type | daemon |
@@ -1824,6 +1852,7 @@
 | `./sessions/external` | `AgentExternalSessionTakeoverResolveLaunchCallback` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionTakeoverResolveLaunchRequest` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionTakeoverResolveLaunchResult` | type | daemon |
+| `./sessions/external` | `AgentExternalSessionTerminalObservation` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionTranscriptItem` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionTranscriptRawRecord` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionTranscriptRawRecordSchema` | value | daemon |
@@ -2116,7 +2145,9 @@
 | `./testing` | `PluginUiTestkitReadResourceInput` | type | daemon |
 | `./testing` | `PluginUiTestkitReleaseComposerContentInput` | type | daemon |
 | `./testing` | `PluginUiTestkitReplacePageLocationInput` | type | daemon |
+| `./testing` | `PluginUiTestkitRespondToSessionPermissionInput` | type | daemon |
 | `./testing` | `PluginUiTestkitSelectActionInputInput` | type | daemon |
+| `./testing` | `PluginUiTestkitSessionInput` | type | daemon |
 | `./testing` | `PluginUiTestkitSetComposerDecorationsInput` | type | daemon |
 | `./testing` | `PluginUiTestkitSettleEphemeralInputInput` | type | daemon |
 | `./testing` | `PluginUiTestkitStatOpenableContentInput` | type | daemon |
@@ -2210,6 +2241,7 @@
 | `./ui` | `PluginUiActionReference` | type | any |
 | `./ui` | `PluginUiActionResultFor` | type | any |
 | `./ui` | `PluginUiActionTransportResult` | type | any |
+| `./ui` | `PluginUiAppPageColumnV1` | type | any |
 | `./ui` | `PluginUiAttachmentToneV1` | type | any |
 | `./ui` | `PluginUiChannel` | type | any |
 | `./ui` | `PluginUiContainerV1` | type | any |
@@ -2217,6 +2249,8 @@
 | `./ui` | `PluginUiContributionIdentityV1` | type | any |
 | `./ui` | `PluginUiDeclarativeNodeV2` | type | any |
 | `./ui` | `PluginUiDeclarativeToneV2` | type | any |
+| `./ui` | `PluginUiDestinationContainerV1` | type | any |
+| `./ui` | `PluginUiDestinationPlacementV1` | type | any |
 | `./ui` | `PluginUiHostApi` | type | any |
 | `./ui` | `PluginUiHostMethodV1` | type | any |
 | `./ui` | `PluginUiIconTokenV1` | type | any |
@@ -2262,6 +2296,11 @@
 | `./ui` | `SelectActionInputRequest` | type | any |
 | `./ui` | `SelectActionInputResult` | type | any |
 | `./ui` | `SessionHeaderActionContribution` | type | any |
+| `./ui` | `SessionPendingPermissionV1` | type | any |
+| `./ui` | `SessionPermissionAnswerV1` | type | any |
+| `./ui` | `SessionPermissionResponseRequestV1` | type | any |
+| `./ui` | `SessionPermissionResponseV1` | type | any |
+| `./ui` | `SessionStateV1` | type | any |
 | `./ui` | `SurfaceContext` | type | any |
 | `./ui` | `SurfaceHostMethod` | type | any |
 | `./ui` | `UiHost` | type | any |

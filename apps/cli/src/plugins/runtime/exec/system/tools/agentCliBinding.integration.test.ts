@@ -256,15 +256,17 @@ describe('Agent CLI system-tool binding (integration)', () => {
                     family: 'agents',
                     localId: fixture.agentId,
                 }]);
+                const occurrenceId = runtimeRegistry.readPluginOccurrenceId?.(fixture.pluginId);
+                if (!occurrenceId) throw new Error('Expected admitted Agent plugin occurrence');
                 const services = await runtimeRegistry.createAgentInvocationServices({
                     pluginId: fixture.pluginId,
                     pluginVersion: '0.0.0',
                     agentId: fixture.agentId,
-                    generation: String(runtimeRegistry.generation),
+                    occurrenceId,
                     correlationId: `${fixture.agentId}-binding`,
                     cwd: toolRoot,
                     signal: new AbortController().signal,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                 });
 
                 const resolved = await services.exec.systemTools.resolve({

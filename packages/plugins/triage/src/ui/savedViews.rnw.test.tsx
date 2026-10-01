@@ -44,6 +44,7 @@ import { createTestkitAccountKv } from '../settings/testkit/accountKv.test-suppo
 import { refreshTriageListWindow } from './window/mountedWindow.js';
 import { createTriageEphemeralSharedScopeFixture } from './window/ephemeralSharedScope.test-support.js';
 import { renderSurface as renderShellSurface } from './surface.js';
+import { toolbarMenuItem } from './shell/toolbarMenus.test-support.js';
 
 /**
  * The saved-view lens a reader can actually reach.
@@ -234,7 +235,7 @@ async function mountShell(options: Readonly<{
             authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: renderShellSurface,
             surfaceContext: createSurfaceContextFixture(),
-            adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope }),
+            adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope, overlays: true }),
             ...(options.subPath === undefined ? {} : { subPath: options.subPath }),
             handlers: {
                 publishCurrentUiContext: () => undefined,
@@ -292,7 +293,7 @@ describe('the PRs & Issues saved-view lens', () => {
     it.each(['create', 'rename'] as const)('retains the exact %s name after a conflict and retries it', async (kind) => {
         const { shell, accountKv } = await mountShell({ selectedViewId: VIEW_ID });
         await act(async () => {
-            await shell.press(await shell.getByRole('button', {
+            await shell.press(await toolbarMenuItem(shell, 'Views', 'menuitem', {
                 name: kind === 'create' ? 'Save as new view' : 'Rename',
             }));
         });
@@ -312,7 +313,7 @@ describe('the PRs & Issues saved-view lens', () => {
 
     it('preserves a create draft through a failed write and Account recovery', async () => {
         const { shell, accountKv, failNextWrite } = await mountShell();
-        await act(async () => { await shell.press(await shell.getByRole('button', { name: 'Save as new view' })); });
+        await act(async () => { await shell.press(await toolbarMenuItem(shell, 'Views', 'menuitem', { name: 'Save as new view' })); });
         await editViewName('Retry this name');
         failNextWrite();
         await act(async () => { await shell.press(await shell.getByRole('button', { name: 'Save view' })); });
@@ -337,7 +338,7 @@ describe('the PRs & Issues saved-view lens', () => {
             await act(async () => { await Promise.resolve(); });
         }
 
-        await expect(shell.getByRole('radio', { name: VIEW_LABEL })).resolves.toBeTruthy();
+        await expect(toolbarMenuItem(shell, 'Views', 'menuitemradio', { name: VIEW_LABEL })).resolves.toBeTruthy();
         await expect(shell.queryByText(
             'Happier cannot reach your account right now, so saved views cannot be changed.',
         )).resolves.toBeUndefined();
@@ -346,7 +347,7 @@ describe('the PRs & Issues saved-view lens', () => {
     it('applies a selected view’s query, facets, order and Smart policy together', async () => {
         const { shell, locations } = await mountShell();
 
-        const option = await shell.getByRole('radio', { name: VIEW_LABEL });
+        const option = await toolbarMenuItem(shell, 'Views', 'menuitemradio', { name: VIEW_LABEL });
         await act(async () => { await shell.press(option); });
 
         // All four halves of the stored lens reach the one reducer, so the
@@ -360,7 +361,7 @@ describe('the PRs & Issues saved-view lens', () => {
         expect(written).toContain('fst,done');
         expect(written).toContain(`q,${VIEW_QUERY}`);
         expect((await shell.getByRole('textbox')).value).toBe(VIEW_QUERY);
-        await expect(shell.getByRole('checkbox', {
+        await expect(toolbarMenuItem(shell, 'State', 'menuitemcheckbox', {
             name: 'Done',
             state: { checked: true },
         })).resolves.toBeTruthy();
@@ -370,7 +371,7 @@ describe('the PRs & Issues saved-view lens', () => {
         const { shell, accountKv, locations } = await mountShell({ rejectRoute: true });
 
         await act(async () => {
-            await shell.press(await shell.getByRole('radio', { name: VIEW_LABEL }));
+            await shell.press(await toolbarMenuItem(shell, 'Views', 'menuitemradio', { name: VIEW_LABEL }));
         });
         for (let settle = 0; settle < 3; settle += 1) {
             await act(async () => { await Promise.resolve(); });
@@ -380,7 +381,7 @@ describe('the PRs & Issues saved-view lens', () => {
         expect(accountKv.setCallCount()).toBe(0);
         expect(storedValue(accountKv).selectedViewId).toBeNull();
         expect((await shell.getByRole('textbox')).value).toBe('');
-        await expect(shell.getByRole('checkbox', {
+        await expect(toolbarMenuItem(shell, 'State', 'menuitemcheckbox', {
             name: 'Done',
             state: { checked: false },
         })).resolves.toBeTruthy();
@@ -389,11 +390,11 @@ describe('the PRs & Issues saved-view lens', () => {
     it('marks the lens modified after an edit without writing the saved view', async () => {
         const { shell, accountKv } = await mountShell();
 
-        const option = await shell.getByRole('radio', { name: VIEW_LABEL });
+        const option = await toolbarMenuItem(shell, 'Views', 'menuitemradio', { name: VIEW_LABEL });
         await act(async () => { await shell.press(option); });
         const writesAfterSelect = accountKv.setCallCount();
 
-        const openFacet = await shell.getByRole('checkbox', { name: 'Open' });
+        const openFacet = await toolbarMenuItem(shell, 'State', 'menuitemcheckbox', { name: 'Open' });
         await act(async () => { await shell.press(openFacet); });
 
         // The reader is looking at something the saved view does not describe,
@@ -408,12 +409,12 @@ describe('the PRs & Issues saved-view lens', () => {
     it('writes the edited lens into the saved view only on an explicit Update', async () => {
         const { shell, accountKv } = await mountShell();
 
-        const option = await shell.getByRole('radio', { name: VIEW_LABEL });
+        const option = await toolbarMenuItem(shell, 'Views', 'menuitemradio', { name: VIEW_LABEL });
         await act(async () => { await shell.press(option); });
-        const openFacet = await shell.getByRole('checkbox', { name: 'Open' });
+        const openFacet = await toolbarMenuItem(shell, 'State', 'menuitemcheckbox', { name: 'Open' });
         await act(async () => { await shell.press(openFacet); });
 
-        const update = await shell.getByRole('button', { name: 'Update this view' });
+        const update = await toolbarMenuItem(shell, 'Views', 'menuitem', { name: 'Update this view' });
         await act(async () => { await shell.press(update); });
         await act(async () => { await Promise.resolve(); });
 
@@ -426,7 +427,7 @@ describe('the PRs & Issues saved-view lens', () => {
 
     it('refuses a stale full-view update, re-reads, and shows the conflict', async () => {
         const { shell, accountKv } = await mountShell({ selectedViewId: VIEW_ID });
-        const openFacet = await shell.getByRole('checkbox', { name: 'Open' });
+        const openFacet = await toolbarMenuItem(shell, 'State', 'menuitemcheckbox', { name: 'Open' });
         await act(async () => { await shell.press(openFacet); });
 
         // Another device renames the view after this mount read it. The local
@@ -437,7 +438,7 @@ describe('the PRs & Issues saved-view lens', () => {
         });
 
         await act(async () => {
-            await shell.press(await shell.getByRole('button', { name: 'Update this view' }));
+            await shell.press(await toolbarMenuItem(shell, 'Views', 'menuitem', { name: 'Update this view' }));
         });
         for (let settle = 0; settle < 3; settle += 1) {
             await act(async () => { await Promise.resolve(); });
@@ -450,13 +451,13 @@ describe('the PRs & Issues saved-view lens', () => {
             label: 'Renamed elsewhere',
             filters: { states: ['done'] },
         });
-        await expect(shell.getByRole('radio', { name: 'Renamed elsewhere' })).resolves.toBeTruthy();
+        await expect(toolbarMenuItem(shell, 'Views', 'menuitemradio', { name: 'Renamed elsewhere' })).resolves.toBeTruthy();
     });
 
     it('clears the selected view id when the view is deleted', async () => {
         const { shell, accountKv, locations } = await mountShell({ selectedViewId: VIEW_ID });
 
-        const remove = await shell.getByRole('button', { name: 'Delete' });
+        const remove = await toolbarMenuItem(shell, 'Views', 'menuitem', { name: 'Delete' });
         await act(async () => { await shell.press(remove); });
         await act(async () => { await Promise.resolve(); });
 
@@ -469,11 +470,11 @@ describe('the PRs & Issues saved-view lens', () => {
         const { shell, accountKv } = await mountShell({ selectedViewId: VIEW_ID });
 
         // Durable account preference, applied on restart without a write.
-        await expect(shell.getByRole('checkbox', {
+        await expect(toolbarMenuItem(shell, 'State', 'menuitemcheckbox', {
             name: 'Done',
             state: { checked: true },
         })).resolves.toBeTruthy();
-        await expect(shell.getByRole('radio', {
+        await expect(toolbarMenuItem(shell, 'Views', 'menuitemradio', {
             name: VIEW_LABEL,
             state: { checked: true },
         })).resolves.toBeTruthy();
@@ -489,7 +490,7 @@ describe('the PRs & Issues saved-view lens', () => {
             subPath: 'sv,0000000c-0000-4000-8000-00000000000c/fst,open',
         });
 
-        await expect(shell.getByRole('checkbox', {
+        await expect(toolbarMenuItem(shell, 'State', 'menuitemcheckbox', {
             name: 'Open',
             state: { checked: true },
         })).resolves.toBeTruthy();
@@ -508,7 +509,7 @@ describe('the PRs & Issues saved-view lens', () => {
             gateViewsRead,
         });
 
-        const openFacet = await shell.getByRole('checkbox', { name: 'Open' });
+        const openFacet = await toolbarMenuItem(shell, 'State', 'menuitemcheckbox', { name: 'Open' });
         await act(async () => { await shell.press(openFacet); });
 
         await act(async () => {
@@ -520,11 +521,11 @@ describe('the PRs & Issues saved-view lens', () => {
         // The reader said something more current than the durable preference
         // behind it. Restoring over it would take their narrowing away seconds
         // after they made it, with nothing on screen saying why.
-        await expect(shell.getByRole('checkbox', {
+        await expect(toolbarMenuItem(shell, 'State', 'menuitemcheckbox', {
             name: 'Open',
             state: { checked: true },
         })).resolves.toBeTruthy();
-        await expect(shell.getByRole('checkbox', {
+        await expect(toolbarMenuItem(shell, 'State', 'menuitemcheckbox', {
             name: 'Done',
             state: { checked: false },
         })).resolves.toBeTruthy();
@@ -540,11 +541,11 @@ describe('the PRs & Issues saved-view lens', () => {
         // The location the reader arrived at is the lens they see; the durable
         // selection is not applied over it and, above all, is not rewritten to
         // match it.
-        await expect(shell.getByRole('checkbox', {
+        await expect(toolbarMenuItem(shell, 'State', 'menuitemcheckbox', {
             name: 'Open',
             state: { checked: true },
         })).resolves.toBeTruthy();
-        await expect(shell.getByRole('checkbox', {
+        await expect(toolbarMenuItem(shell, 'State', 'menuitemcheckbox', {
             name: 'Done',
             state: { checked: false },
         })).resolves.toBeTruthy();

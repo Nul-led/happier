@@ -282,7 +282,7 @@ describe('V2 managed dependency source model', () => {
             .toThrowError(expect.objectContaining({ code: 'plugin_managed_dependency_generation_retired' }));
     });
 
-    it('does not expose a synthetic generation-specific retirement method', () => {
+    it('does not expose a synthetic occurrenceId-specific retirement method', () => {
         const model = createV2ManagedDependencySourceModel({
             platform: 'linux', architecture: 'arm64',
             contributions: [contribution('acme.one', 'tool')],

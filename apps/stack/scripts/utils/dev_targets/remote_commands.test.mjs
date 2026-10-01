@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { createTempFixture } from '../../testkit/core/temp_fixture.mjs';
 
 import { buildStackStableScopeId } from '../auth/stable_scope_id.mjs';
 import {
@@ -21,7 +23,9 @@ import {
   buildSshTunnelArgs,
   buildSshWorkerArgs,
   classifyRemoteCommand,
+  resolveRemoteValidationKind,
   resolveRemoteStackStatePaths,
+  requiresRemoteDependencyBootstrap,
   requiresRemoteWorkspacePreparation,
 } from './remote_commands.mjs';
 
@@ -46,6 +50,37 @@ const windows = {
 };
 
 const execFileAsync = promisify(execFile);
+
+test('whole-operation admission covers preparation children, preserves cwd/env and stops on preparation failure', async (t) => {
+  const { root } = await createTempFixture(t, { prefix: 'hstack-whole-operation-' });
+  const bin = join(root, 'bin');
+  const native = join(root, 'apps/stack/bin/hstack-exec');
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(join(root, 'apps/stack/bin'), { recursive: true });
+  mkdirSync(join(root, 'apps/cli'), { recursive: true });
+  copyFileSync(fileURLToPath(new URL('../../../bin/hstack-exec', import.meta.url)), native);
+  chmodSync(native, 0o755);
+  const executable = (name, body) => { writeFileSync(join(bin, name), '#!/bin/sh\n' + body + '\n'); chmodSync(join(bin, name), 0o755); };
+  // Mock only OS tool/resource boundaries. The native admission logic is real.
+  executable('uname', 'printf "Linux\\n"');
+  executable('getconf', 'printf "8\\n"');
+  executable('systemctl', 'exit 1');
+  executable('awk', 'case "$*" in */proc/meminfo*) printf "25480397 28311552\\n" ;; */proc/loadavg*|*/proc/pressure/*) printf "0\\n" ;; *) exec /usr/bin/awk "$@" ;; esac');
+  executable('node', '[ -n "$HAPPIER_HEAVYWEIGHT_ADMISSION_TOKEN" ] || exit 99\ncase "$*" in *remote_dependency_bootstrap*) stage=bootstrap ;; *) stage=prepare ;; esac\nprintf "%s\\n" "$stage" >> "$TRACE"\n[ "$FAIL_STAGE" != "$stage" ] || exit 42');
+  executable('probe-command', '[ -n "$HAPPIER_HEAVYWEIGHT_ADMISSION_TOKEN" ] || exit 99\nprintf "payload:%s:%s\\n" "$PWD" "$VALUE" >> "$TRACE"');
+  const localTarget = { ...posix, repoDir: root, cliHomeDir: join(root, 'cli-home'), remotePath: [bin, '/usr/bin', '/bin'] };
+  const trace = join(root, 'trace');
+  const request = failStage => buildRemoteExecCommand(localTarget, {
+    executionId, cwd: 'apps/cli', commandArgs: ['probe-command'], admissionClass: 'targeted-validation',
+    preparation: { bootstrap: true, componentRelativeDir: 'apps/cli', validationKind: 'runtime' },
+    environment: { HOME: root, HAPPIER_STACK_CLI_HOME_DIR: join(root, 'admission-home'), TRACE: trace, VALUE: "literal '$value'", FAIL_STAGE: failStage },
+  });
+  await execFileAsync('/bin/bash', ['-c', request('')]);
+  assert.equal(readFileSync(trace, 'utf8'), `bootstrap\nprepare\npayload:${root}/apps/cli:literal '$value'\n`);
+  writeFileSync(trace, '');
+  await assert.rejects(execFileAsync('/bin/bash', ['-c', request('bootstrap')]), error => error.code === 42);
+  assert.equal(readFileSync(trace, 'utf8'), 'bootstrap\n');
+});
 
 test('remote Stack state paths use one canonical target CLI-home derivation', () => {
   const posixState = resolveRemoteStackStatePaths(
@@ -117,20 +152,77 @@ test('remote command classification keeps Git/index/worktree operations on the a
     assert.deepEqual(classifyRemoteCommand(args), {
       placement: 'primary-only',
       commandClass: 'vcs-authority',
+      requiresDependencyBootstrap: false,
     });
   }
   assert.deepEqual(classifyRemoteCommand(['rg', '-n', 'needle']), {
     placement: 'worker-eligible',
     commandClass: 'source-search',
+    requiresDependencyBootstrap: false,
   });
+});
+
+test('remote command classification owns dependency bootstrap scope', () => {
+  for (const args of [
+    [],
+    ['node', '-e', 'console.log("ok")'],
+    ['nodejs', 'source-script.mjs'],
+    ['rg', 'needle'],
+    ['find', '.', '-name', '*.mjs'],
+    ['git', 'status'],
+    ['yarn', '--version'],
+  ]) {
+    assert.equal(classifyRemoteCommand(args).requiresDependencyBootstrap, false, args.join(' '));
+    assert.equal(requiresRemoteDependencyBootstrap(args), false, args.join(' '));
+  }
+  for (const args of [
+    ['corepack', 'yarn', '--cwd', 'apps/ui', '-s', 'typecheck'],
+    ['yarn', 'custom:script'],
+    ['npm', 'run', 'custom:script'],
+    ['pnpm', '-C', 'apps/ui', 'run', 'build'],
+    ['npx', 'vitest', 'run'],
+    ['vitest', 'run'],
+    ['tsc', '--noEmit'],
+    ['node', 'scripts/workspaces/runTypeScriptCli.mjs', '-p', 'tsconfig.json'],
+    ['nodejs', 'scripts/workspaces/runTypeScriptCli.mjs', '-p', 'tsconfig.json'],
+    ['node', 'node_modules/vitest/vitest.mjs', 'run'],
+    ['nodejs', 'node_modules/vitest/vitest.mjs', 'run'],
+    ['/usr/bin/node', '--test', 'owner.test.mjs'],
+    ['node', '--test', 'apps/stack/scripts/utils/auth/auth.test.mjs'],
+    ['nodejs', '--test', '--test-name-pattern=owner', 'apps/stack/scripts/utils/auth/auth.test.mjs'],
+  ]) {
+    assert.equal(classifyRemoteCommand(args).requiresDependencyBootstrap, true, args.join(' '));
+    assert.equal(requiresRemoteDependencyBootstrap(args), true, args.join(' '));
+  }
+  assert.equal(classifyRemoteCommand(['node', '--test', 'scripts/owner.test.mjs'], { cwd: 'apps/stack' }).requiresDependencyBootstrap, true);
+  assert.equal(classifyRemoteCommand(['node', '--test', 'scripts/owner.test.mjs'], { cwd: 'apps/stack2' }).requiresDependencyBootstrap, true);
+});
+
+test('native source tests and generator checks use their real preparation contract', () => {
+  const sdk = ['node', '--test', 'packages/plugin-sdk/scripts/generateActionTypeMap.test.mjs'];
+  assert.equal(classifyRemoteCommand(sdk).requiresDependencyBootstrap, true);
+  assert.equal(resolveRemoteValidationKind(sdk), 'source-test');
+  assert.equal(resolveRemoteValidationKind(['node', '--test', 'apps/ui/scripts/generateBundledPluginUiArtifacts.test.mjs']), 'runtime');
+  assert.equal(requiresRemoteWorkspacePreparation(['node', '--test', 'apps/ui/scripts/generateBundledPluginUiArtifacts.test.mjs']), true);
+  assert.equal(resolveRemoteValidationKind(['node', '--test', 'unknown.test.mjs']), 'runtime');
+  assert.equal(resolveRemoteValidationKind(['node', '--test', 'apps/stack/scripts/config.test.mjs']), 'runtime');
+  const generator = ['node', '--experimental-strip-types', 'apps/cli/scripts/build-owned/generateBundledPluginEntries.ts', '--mode', 'check'];
+  assert.equal(classifyRemoteCommand(generator).commandClass, 'targeted-validation');
+  assert.equal(requiresRemoteWorkspacePreparation(generator), true);
+  assert.equal(classifyRemoteCommand(['node', '--experimental-strip-types', 'other/generateBundledPluginEntries.ts', '--mode', 'check']).commandClass, 'unclassified');
+  assert.equal(classifyRemoteCommand(['tsc', '-p', 'apps/cli/tsconfig.json']).commandClass, 'targeted-validation');
 });
 
 test('remote command classification admits generated workspace preparation only for validation commands', () => {
   for (const args of [
-    ['tsc', '--noEmit'],
     ['vitest', 'run'],
-    ['yarn', '-s', 'typecheck:local'],
     ['corepack', 'yarn', '-s', 'test:unit:local'],
+    ['tsc', '--noEmit'],
+    ['node', '../../scripts/workspaces/runTypeScriptCli.mjs', '-p', 'tsconfig.json'],
+    ['yarn', '-s', 'typecheck:local'],
+    ['yarn', '-s', 'tsc'],
+    ['nodejs', '../../scripts/workspaces/runTypeScriptCli.mjs', '-p', 'tsconfig.json'],
+    ['corepack', 'yarn', '--cwd', 'apps/ui', 'typecheck'],
   ]) {
     assert.equal(requiresRemoteWorkspacePreparation(args, { cwd: 'apps/cli' }), true);
   }
@@ -142,6 +234,34 @@ test('remote command classification admits generated workspace preparation only 
   );
   assert.equal(requiresRemoteWorkspacePreparation(['rg', '-n', 'needle'], { cwd: 'apps/cli' }), false);
   assert.equal(requiresRemoteWorkspacePreparation(['node', 'script.mjs'], { cwd: 'apps/cli' }), false);
+});
+
+test('source-test classification follows the configured resolver contract rather than test filenames', () => {
+  for (const args of [
+    ['corepack', 'yarn', '-s', 'vitest', 'run', 'arbitrary.test.ts'],
+    ['vitest', 'run', '--config=vitest.config.ts', 'artifact-named.test.ts'],
+  ]) {
+    assert.equal(resolveRemoteValidationKind(args, { cwd: 'apps/cli' }), 'source-test');
+  }
+  for (const args of [
+    ['vitest', 'run', '--config', 'vitest.integration.config.ts'],
+    ['vitest', 'run', '--config=unknown.config.ts'],
+    ['vitest', 'run', '--root=../ui'],
+    ['vitest', 'run', '--workspace', 'custom.workspace.ts'],
+    ['vitest', 'run', '--project=artifact'],
+    ['vitest', 'run', '-r../ui'],
+    ['corepack', 'yarn', '-s', 'vitest:artifact'],
+  ]) assert.equal(resolveRemoteValidationKind(args, { cwd: 'apps/cli' }), 'runtime');
+  assert.equal(resolveRemoteValidationKind(['vitest', 'run'], { cwd: 'apps/ui' }), 'source-test');
+});
+
+test('remote command classification admits declaration preparation for package-manager component cwd', () => {
+  assert.equal(requiresRemoteWorkspacePreparation(
+    ['corepack', 'yarn', '--cwd', 'apps/ui', '-s', 'typecheck'], { cwd: '.' },
+  ), true);
+  assert.equal(requiresRemoteWorkspacePreparation(
+    ['yarn', '--cwd=packages/plugin-sdk', '-s', 'typecheck'], { cwd: '.' },
+  ), true);
 });
 
 test('Windows directory bootstrap retires only Mutagen agents whose SSH owner is gone', () => {
@@ -232,11 +352,11 @@ test('remote exec validates repo-relative cwd and preserves POSIX argument and e
 test('remote classification recognizes direct native TypeScript and nested launcher validation', () => {
   assert.deepEqual(
     classifyRemoteCommand(['node', '../../scripts/workspaces/runTypeScriptCli.mjs', '--noEmit'], { cwd: 'apps/ui' }),
-    { placement: 'worker-eligible', commandClass: 'targeted-validation' },
+    { placement: 'worker-eligible', commandClass: 'targeted-validation', requiresDependencyBootstrap: true },
   );
   assert.deepEqual(
     classifyRemoteCommand(['apps/stack/bin/hstack-exec', '--local', '--', 'sh', '-lc', 'typecheck']),
-    { placement: 'worker-eligible', commandClass: 'full-validation' },
+    { placement: 'worker-eligible', commandClass: 'full-validation', requiresDependencyBootstrap: false },
   );
 });
 

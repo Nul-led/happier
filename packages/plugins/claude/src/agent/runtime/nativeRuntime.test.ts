@@ -1630,6 +1630,7 @@ describe('createClaudeNativeRuntime', () => {
       sessionId: 'session-goals',
       cwd: '/repo',
     }, context as unknown as AgentSessionRuntimeContext);
+    expect(session.nativeGoalControlsSupported).toBe(true);
     const goalSource = {
       publish: vi.fn(async () => ({
         status: 'applied' as const,
@@ -1665,6 +1666,19 @@ describe('createClaudeNativeRuntime', () => {
       status: 'unavailable',
       diagnostic: { code: 'claude_goal_live_session_unavailable' },
     });
+  });
+
+  it('does not advertise active native goals for an opener without goal operations', async () => {
+    const runtime = createTestClaudeNativeRuntime({
+      openSession: ({ request }) => createNativeOperations(request.sessionId).runtime,
+    });
+    const session = await runtime.sessions.open({
+      kind: 'create',
+      sessionId: 'session-sdk-goals-unavailable',
+      cwd: '/repo',
+    }, context as unknown as AgentSessionRuntimeContext);
+    expect(session.nativeGoalControlsSupported).toBe(false);
+    await session.dispose();
   });
 
   it('publishes declared inactive goal mutations through the canonical goal work-state source', async () => {
@@ -1711,6 +1725,18 @@ describe('createClaudeNativeRuntime', () => {
       items: [],
       primaryLocalId: null,
     }), expect.anything());
+  });
+
+  it('enforces the host hands-off restriction in the native terminal launch', async () => {
+    const runtime = createTestClaudeNativeRuntime({ openSession: ({ request }) => createNativeOperations(request.sessionId).runtime });
+    const plan = await runtime.surfaces?.terminal?.resolveLaunch({
+      sessionId: 'hands-off', cwd: '/repo', metadata: {}, modelSelection: null,
+      configuration: { mode: { value: null, updatedAtMs: 0 }, model: { value: null, updatedAtMs: 0 },
+        permissionIntent: { value: 'yolo', updatedAtMs: 0 }, options: {}, workspaceWrites: 'deny' },
+    });
+    const args = plan?.argv ?? [];
+    const settings = JSON.parse(args[args.indexOf('--settings') + 1] ?? '{}');
+    expect(settings.permissions?.deny).toEqual(expect.arrayContaining(['Edit', 'Write', 'Bash']));
   });
 
   it('declares a host-owned terminal launch plan from the current configuration snapshot', async () => {

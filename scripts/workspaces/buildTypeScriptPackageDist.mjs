@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import {
   chmod,
   cp,
   lstat,
+  mkdtemp,
   mkdir,
   readFile,
   readdir,
@@ -16,8 +16,10 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { exitWithCommandResult, runCommand } from '../../apps/stack/scripts/utils/proc/proc.mjs';
 
 import { assertNoMissingLocalImports } from './distLocalImports.mjs';
 import {
@@ -154,7 +156,7 @@ function validateStagedOutputScripts({ packageJson, stagedOutputScripts }) {
   }
 }
 
-function runStagedOutputScripts({
+async function runStagedOutputScripts({
   packageDir,
   stagedOutputScripts,
   env,
@@ -166,7 +168,8 @@ function runStagedOutputScripts({
     const invocation = resolveYarnCommandInvocationImpl(['-s', scriptName], {
       npmExecPath: env.npm_execpath,
     });
-    const result = runCommandImpl(invocation.command, invocation.args, {
+    const result = await runCommandImpl(invocation.command, invocation.args, {
+      ownedProcessGroup: true,
       cwd: packageDir,
       env,
       stdio,
@@ -175,19 +178,25 @@ function runStagedOutputScripts({
         : {}),
     });
     if (result?.error) throw result.error;
-    if ((result?.status ?? 0) !== 0) {
-      throw new Error(
+    if (result?.signal || (result?.status ?? 0) !== 0) {
+      const error = new Error(
         `Staged package output script "${scriptName}" failed with code ${result?.status ?? 'unknown'}`,
       );
+      error.exitCode = result?.status;
+      error.signal = result?.signal;
+      throw error;
     }
   }
 }
 
-function runChecked(command, args, options, runCommandImpl) {
-  const result = runCommandImpl(command, args, options);
+async function runChecked(command, args, options, runCommandImpl) {
+  const result = await runCommandImpl(command, args, { ...options, ownedProcessGroup: true });
   if (result?.error) throw result.error;
-  if ((result?.status ?? 0) !== 0) {
-    throw new Error(`TypeScript package build failed with code ${result?.status ?? 'unknown'}`);
+  if (result?.signal || (result?.status ?? 0) !== 0) {
+    const error = new Error(`TypeScript package build failed with code ${result?.status ?? 'unknown'}`);
+    error.exitCode = result?.status;
+    error.signal = result?.signal;
+    throw error;
   }
 }
 
@@ -279,8 +288,12 @@ function workspaceLockLeaseTargetsPath(lockPath, leaseValue) {
   return lease.path === normalizedLockPath;
 }
 
-function isolateCompilerWorkTree(compilerWorkTree, buildId) {
-  const workDir = `${compilerWorkTree.workDir}.isolated.${buildId}`;
+async function createIsolatedCompilerWorkTree(compilerWorkTree) {
+  // A staged build that does not hold this package's lock owns an ephemeral
+  // compiler cache. Keep it outside the package tree: Metro watches workspace
+  // package roots in stack runs and can otherwise retain a watcher while this
+  // build's mandatory cleanup removes the isolated directory.
+  const workDir = await mkdtemp(join(tmpdir(), 'happier-typescript-package-build-'));
   return {
     ...compilerWorkTree,
     workDir,
@@ -543,7 +556,7 @@ export async function buildTypeScriptPackageDist({
   outputDir = process.env.HAPPIER_WORKSPACE_DIST_OUTPUT_DIR,
   env = process.env,
   stdio = 'inherit',
-  runCommandImpl = spawnSync,
+  runCommandImpl = runCommand,
   resolveTypeScriptCliInvocationImpl = resolveTypeScriptCliInvocation,
   resolveYarnCommandInvocationImpl = resolveYarnCommandInvocation,
   withWorkspaceBundleLockImpl = withWorkspaceBundleLock,
@@ -577,7 +590,7 @@ export async function buildTypeScriptPackageDist({
   // private to the build instead of racing another staged publisher.
   const isolateCompilerState = explicitOutputDir && !stagedBuildTargetsPackageLock;
   const compilerWorkTree = isolateCompilerState
-    ? isolateCompilerWorkTree(persistentCompilerWorkTree, buildId)
+    ? await createIsolatedCompilerWorkTree(persistentCompilerWorkTree)
     : persistentCompilerWorkTree;
 
   const runBuild = async (buildEnv) => {
@@ -604,7 +617,7 @@ export async function buildTypeScriptPackageDist({
         processExecPath: process.execPath,
       });
       try {
-        runChecked(
+        await runChecked(
           invocation.command,
           [...(invocation.argsPrefix ?? []), ...compilerArgs],
           {
@@ -638,7 +651,7 @@ export async function buildTypeScriptPackageDist({
         packageDir: resolvedPackageDir,
       });
 
-      runStagedOutputScripts({
+      await runStagedOutputScripts({
         packageDir: resolvedPackageDir,
         stagedOutputScripts: parsedArgs.stagedOutputScripts,
         env: stagedBuildEnv,
@@ -707,6 +720,6 @@ export async function main() {
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   main().catch((error) => {
     console.error(error?.stack || error);
-    process.exit(1);
+    exitWithCommandResult({ status: error?.exitCode ?? 1, signal: error?.signal });
   });
 }

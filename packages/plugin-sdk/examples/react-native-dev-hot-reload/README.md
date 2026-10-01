@@ -6,7 +6,7 @@ start a new plugin with `hdev plugins create` and declare ordinary contributions
 
 The cold `.happier-plugin/plugin.json` uses `entrypoints.development` and a React Native renderer with a
 diagnostic fallback. The host development loop builds and serves the public
-`pluginUiBuild.ts` input; source metadata does not own a dev URL or generated
+package export; source metadata does not own a dev URL or generated
 artifact row.
 
 Run the generated development flow in a real host to validate live source

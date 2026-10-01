@@ -409,11 +409,15 @@ describe('List multi-selection capability', () => {
     });
     expect(actions).toEqual([{ id: 'attach', keys: ['b', 'd'] }]);
 
+    // The shared bar's dismiss is the ✕ glyph, named for assistive technology.
     const clear = Array.from(mounted.container.querySelectorAll<HTMLElement>('[role="button"]'))
-      .find((button) => button.textContent?.includes('Clear selection'));
+      .find((button) => button.getAttribute('aria-label') === 'Clear selection');
+    expect(clear?.textContent).not.toContain('Clear selection');
     await act(async () => {
       clear?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
+    // The bar leaves on the shared motion clock, keeping its content until it is gone.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
     expect(mounted.container.textContent).not.toContain('Attach all');
     mounted.unmount();
   });
@@ -432,7 +436,7 @@ describe('List multi-selection capability', () => {
 
     const buttons = Array.from(mounted.container.querySelectorAll<HTMLElement>('[role="button"]'));
     expect(buttons.filter((button) => button.textContent?.includes('Stop'))).toHaveLength(1);
-    expect(buttons.some((button) => button.textContent?.includes('Clear selection'))).toBe(false);
+    expect(buttons.some((button) => button.getAttribute('aria-label') === 'Clear selection')).toBe(false);
 
     const stop = buttons.find((button) => button.textContent?.includes('Stop'));
     await act(async () => {

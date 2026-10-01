@@ -31,9 +31,12 @@ export const GIT_SCM_BACKEND_CAPABILITIES = {
         include: supportedCapability(),
         exclude: supportedCapability(),
         discard: supportedCapability(),
+        stashCreate: supportedCapability(),
     },
     commit: {
         create: supportedCapability(),
+        amend: supportedCapability(),
+        signOff: supportedCapability(),
         pathSelection: supportedCapability(),
         lineSelection: supportedCapability(),
         backout: supportedCapability(),
@@ -47,6 +50,8 @@ export const GIT_SCM_BACKEND_CAPABILITIES = {
         pull: supportedCapability(),
         push: supportedCapability(),
         publish: supportedCapability(),
+        policies: supportedCapability(),
+        forceWithLease: supportedCapability(),
     },
     branch: {
         list: supportedCapability(),
@@ -55,6 +60,8 @@ export const GIT_SCM_BACKEND_CAPABILITIES = {
         merge: supportedCapability(),
         rebase: supportedCapability(),
         operationControl: supportedCapability(),
+        operationSkip: supportedCapability(),
+        conflictResolution: supportedCapability(),
     },
     worktree: {
         create: supportedCapability(),
@@ -76,6 +83,7 @@ export const GIT_SCM_BACKEND_CAPABILITIES = {
         pullRequestRead: supportedCapability(),
         pullRequestStatus: supportedCapability(),
         pullRequestCreate: supportedCapability(),
+        pullRequestDraftCreate: supportedCapability(),
         pullRequestReuse: supportedCapability(),
         pullRequestCheckout: supportedCapability(),
         pullRequestPrepareWorktree: supportedCapability(),

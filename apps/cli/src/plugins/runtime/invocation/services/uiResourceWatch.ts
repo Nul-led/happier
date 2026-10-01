@@ -56,7 +56,7 @@ export type PluginUiResourceWatchPollResult =
 export type PluginUiResourceWatchOwner = Readonly<{
     /**
      * Establish one daemon-side subscription and answer with the digest this
-     * generation currently observes. The digest is the resynchronization
+     * occurrenceId currently observes. The digest is the resynchronization
      * baseline: a late mount, a reconnect or a replaced subscription compares it
      * against its last known good and re-reads when they differ, so no observer
      * converges on a silent stale view.
@@ -75,7 +75,9 @@ export type PluginUiResourceWatchOwner = Readonly<{
         signal?: AbortSignal;
     }>): Promise<PluginUiResourceWatchPollResult>;
     close(params: Readonly<{ callerPluginId: string; subscriptionId: string }>): boolean;
-    /** Retire every subscription when the plugin generation is replaced. */
+    /** Retire subscriptions owned by the named plugin occurrences. */
+    retirePlugins(pluginIds: readonly string[]): void;
+    /** Retire every subscription when the registry shuts down. */
     retire(): void;
 }>;
 
@@ -154,9 +156,9 @@ type UiResourceWatch = {
 };
 
 export function createStablePluginUiResourceWatchOwner(params: Readonly<{
-    generation: string;
     resources: StablePluginResourcesOwner;
     isPluginConsumerCurrent: (pluginId: string) => boolean;
+    readPluginOccurrenceId: (pluginId: string) => string | null;
     /** Injectable only so a composed host can share one broker factory; defaults to its own instance. */
     broker?: StablePluginEventsBroker;
     recordRuntimeLimitMeasurement?: HostRuntimeLimitMeasurementRecorder;
@@ -244,7 +246,7 @@ export function createStablePluginUiResourceWatchOwner(params: Readonly<{
 
     return Object.freeze({
         async open(openParams) {
-            if (retired) fail('plugin_generation_stale', 'Plugin generation is stale');
+            if (retired) fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
             sweepIdle();
             const pluginId = boundedId(openParams.callerPluginId, 'Resource watch caller is invalid');
             const subscriptionId = boundedId(openParams.subscriptionId, 'Resource watch subscription id is invalid');
@@ -266,7 +268,7 @@ export function createStablePluginUiResourceWatchOwner(params: Readonly<{
                     fail('plugin_resource_aborted', 'Resource watch binding was aborted');
                 }
                 if (!isBindingCurrent()) {
-                    fail('plugin_generation_stale', 'Plugin generation is stale');
+                    fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
                 }
             };
             assertBindingCurrent();
@@ -289,7 +291,7 @@ export function createStablePluginUiResourceWatchOwner(params: Readonly<{
                     pluginId,
                     resourceId,
                     signal: bindingController.signal,
-                    isGenerationCurrent: isBindingCurrent,
+                    isOccurrenceCurrent: isBindingCurrent,
                     ...(openParams.context === undefined ? {} : { context: openParams.context }),
                     ...(openParams.context?.kind === 'session'
                         ? { onSessionResourceUnavailable: endUnavailableSessionResourceWatch }
@@ -317,13 +319,18 @@ export function createStablePluginUiResourceWatchOwner(params: Readonly<{
             };
             boundWatch = watch;
             watches.set(key, watch);
+            const occurrenceId = params.readPluginOccurrenceId(pluginId);
+            if (!occurrenceId) {
+                releaseWatch(watch, null);
+                fail('plugin_generation_stale', 'Plugin occurrence is stale');
+            }
 
             const identity = Object.freeze({
                 pluginId,
                 pluginVersion: '0.0.0',
                 contributionId: resourceId,
                 contributionQualifiedId: `${pluginId}/resources/${encodeURIComponent(resourceId)}`,
-                generation: params.generation,
+                occurrenceId,
                 correlationId: `${pluginId}/resources/${resourceId}#${subscriptionId}`,
                 surface: 'ui' as const,
             });
@@ -376,7 +383,7 @@ export function createStablePluginUiResourceWatchOwner(params: Readonly<{
                         );
                     }
                     releaseWatch(watch, null);
-                    return fail('plugin_generation_stale', 'Plugin generation is stale');
+                    return fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
                 }
                 return Object.freeze({ subscriptionId, digest: baseline.digest });
             } catch (error) {
@@ -450,6 +457,17 @@ export function createStablePluginUiResourceWatchOwner(params: Readonly<{
             if (!watch) return false;
             releaseWatch(watch, { status: 'idle' });
             return true;
+        },
+        retirePlugins(pluginIds) {
+            const retiredPluginIds = new Set(pluginIds);
+            if (retiredPluginIds.size === 0) return;
+            for (const watch of [...watches.values()]) {
+                if (!retiredPluginIds.has(watch.pluginId)) continue;
+                releaseWatch(watch, {
+                    status: 'event',
+                    event: terminalErrorEvent(watch.subscriptionId, 'stale_surface', ['plugin_generation_stale']),
+                });
+            }
         },
         retire() {
             if (retired) return;

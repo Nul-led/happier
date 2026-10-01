@@ -34,6 +34,7 @@ import {
 import {
     arePluginMachineMaterializationRefsEqual,
     readExecutionRunStartRunCreation,
+    pluginSourceCustodyV1Equal,
     pluginJsonValuesEqual,
     readPluginActionFailureAuthorPayload,
     PluginMachineExecutionOriginV1Schema,
@@ -65,9 +66,10 @@ export type PluginActionsServiceSeed = Readonly<{
     plugin: Readonly<{ id: string; version: string }>;
     /** The host-stamped immediate contribution that owns this invocation. */
     contribution?: PluginInvocationContributionIdentity;
-    generation: string;
-    /** Exact admitted plugin bytes, projected only from host runtime ownership. */
-    immutableGenerationId?: string;
+    /** Exact process-local occurrence, projected only from host runtime ownership. */
+    occurrenceId: string;
+    /** Durable source custody, projected only from host runtime ownership. */
+    sourceCustody?: import('@happier-dev/protocol').PluginSourceCustodyV1;
     correlationId?: string;
     surface: PluginInvocationSurface;
     /** Host-stamped provenance from the invocation that created this service. */
@@ -84,7 +86,7 @@ export type PluginActionsServiceSeed = Readonly<{
     /** Host-private active-turn authority for Agent-placed Action execution. */
     readActiveTurnAdmissionWitness?(): import('./types').AgentInvocationTurnAdmissionWitness | null;
     signal: AbortSignal;
-    isGenerationCurrent(): boolean;
+    isOccurrenceCurrent(): boolean;
     /** Host-private recursion fence; only hook invocation owners may set this. */
     bypassActionInterception?: true;
 }>;
@@ -154,13 +156,13 @@ type AdmittedTargetedOperationSelectedActionInput = Readonly<
 
 type AdmittedTargetedOperationExecutionBinding = Readonly<{
     action: PluginContributionRef;
-    contributorImmutableGenerationId: string;
+    contributorOccurrenceId: string;
     /** Full exact operation identity; the public handle exposes only a copy. */
     operation: PluginUiTargetedContributionOperationV1;
     /** The target that admitted this operation, absent from the public operation shape. */
     targetPluginId: string;
-    /** Exact target generation that admitted this operation, also host-private. */
-    targetImmutableGenerationId: string;
+    /** Exact process-local target occurrence that admitted this operation. */
+    targetOccurrenceId: string;
     /** Exact Action-definition selection fact, never carrier supplied. */
     selectedActionInput: AdmittedTargetedOperationSelectedActionInput;
     /** Exact target parser pair, retained only through this original handle. */
@@ -191,8 +193,8 @@ export function createAdmittedTargetedOperationExecutionHandle<
 >(params: Readonly<{
     action: PluginContributionRef;
     identity: AdmittedTargetedOperationIdentity<TRole>;
-    /** Exact target generation from the admitted snapshot, never public handle data. */
-    targetImmutableGenerationId: string;
+    /** Exact target occurrence from the admitted snapshot, never public handle data. */
+    targetOccurrenceId: string;
     /** Host-private fact derived from the exact admitted Action definition. */
     selectedActionInput?: AdmittedTargetedOperationSelectedActionInput;
     /** Exact target parser pair selected by cold targeted-contribution admission. */
@@ -210,7 +212,8 @@ export function createAdmittedTargetedOperationExecutionHandle<
         contributor: Object.freeze({
             pluginId: params.identity.contributor.pluginId,
             contributionId: params.identity.contributor.contributionId,
-            immutableGenerationId: params.identity.contributor.immutableGenerationId,
+            occurrenceId: params.identity.contributor.occurrenceId,
+            sourceCustody: params.identity.contributor.sourceCustody,
         }),
         role: params.identity.role,
     });
@@ -225,7 +228,8 @@ export function createAdmittedTargetedOperationExecutionHandle<
         contributor: Object.freeze({
             pluginId: identity.contributor.pluginId,
             contributionId: identity.contributor.contributionId,
-            immutableGenerationId: identity.contributor.immutableGenerationId,
+            occurrenceId: identity.contributor.occurrenceId,
+            sourceCustody: identity.contributor.sourceCustody,
         }),
         role: identity.role,
         action: Object.freeze({
@@ -233,7 +237,10 @@ export function createAdmittedTargetedOperationExecutionHandle<
             localId: params.action.localId,
         }),
     }) satisfies PluginUiTargetedContributionOperationV1;
-    const handle = Object.freeze({ identity }) as AdmittedTargetedOperationExecutionHandle<
+    const handle = Object.freeze({
+        identity,
+        typeProjection: undefined,
+    }) as AdmittedTargetedOperationExecutionHandle<
         TInput,
         TResult,
         TRole
@@ -245,10 +252,10 @@ export function createAdmittedTargetedOperationExecutionHandle<
                 pluginId: params.action.pluginId,
                 localId: params.action.localId,
             }),
-            contributorImmutableGenerationId: identity.contributor.immutableGenerationId,
+            contributorOccurrenceId: identity.contributor.occurrenceId,
             operation,
             targetPluginId: identity.target.pluginId,
-            targetImmutableGenerationId: params.targetImmutableGenerationId,
+            targetOccurrenceId: params.targetOccurrenceId,
             selectedActionInput: freezeSelectedActionInput(params.selectedActionInput),
             targetProtocol: params.targetProtocol,
         }),
@@ -264,7 +271,7 @@ function readAdmittedTargetedOperationExecutionBinding(
 }
 
 /**
- * An opaque operation belongs to the exact target generation that admitted it.
+ * An opaque operation belongs to the exact target occurrenceId that admitted it.
  * The public identity deliberately omits that private fact, so a replacement
  * target cannot recover an old capability from the original object.
  */
@@ -276,10 +283,10 @@ function requireAdmittedTargetedOperationExecutionBinding(
     if (binding === null || binding.targetPluginId !== seed.plugin.id) {
         throw invalidAdmittedTargetedOperationHandle();
     }
-    if (binding.targetImmutableGenerationId !== seed.immutableGenerationId) {
+    if (!seed.occurrenceId || binding.targetOccurrenceId !== seed.occurrenceId) {
         throw createPluginActionHandlerNotStartedError({
             code: 'plugin_action_generation_retired',
-            message: 'Admitted targeted operation target generation is no longer current',
+            message: 'Admitted targeted operation target occurrenceId is no longer current',
         });
     }
     return binding;
@@ -318,10 +325,10 @@ function throwIfInactive(
     details?: JsonValue,
     beforeActionHandler = false,
 ): void {
-    if (!seed.isGenerationCurrent() || seed.signal.aborted) {
+    if (!seed.isOccurrenceCurrent() || seed.signal.aborted) {
         const error = {
             code: 'plugin_action_generation_retired',
-            message: 'Plugin generation retired before the action result could be admitted',
+            message: 'Plugin occurrenceId retired before the action result could be admitted',
             ...(details === undefined ? {} : { details }),
         };
         throw beforeActionHandler ? createPluginActionHandlerNotStartedError(error) : new PluginError(error);
@@ -405,14 +412,17 @@ async function resolveAdmittedTargetedOperationInput(params: Readonly<{
     if (params.binding.selectedActionInput.kind === 'unavailable') {
         throw selectedActionInputUnavailable();
     }
-    if (!params.seed.immutableGenerationId || !params.seed.isMountedCallerCurrent) {
+    if (!params.seed.sourceCustody || !params.seed.isMountedCallerCurrent) {
         throw selectedActionInputUnavailable();
     }
     if (
         !pluginUiSelectedActionInputMatchesOperation(carrier.result, carrier.operation)
         || carrier.result.selection.target.pluginId !== params.binding.targetPluginId
         || carrier.result.selection.target.pluginId !== params.seed.plugin.id
-        || carrier.result.selection.target.immutableGenerationId !== params.seed.immutableGenerationId
+        || !pluginSourceCustodyV1Equal(
+            carrier.result.selection.target.sourceCustody,
+            params.seed.sourceCustody,
+        )
     ) {
         throw selectedActionInputInvalid();
     }
@@ -460,10 +470,11 @@ function hasCurrentContributedActionCaller(
     const currentMaterialization = currentCaller?.materialization;
     const callerMaterialization = caller.materialization;
     return currentCaller !== null
-        && currentMaterialization !== undefined
-        && callerMaterialization !== undefined
-        && arePluginMachineMaterializationRefsEqual(currentMaterialization, callerMaterialization)
-        && currentCaller.immutableGenerationId === caller.immutableGenerationId;
+        && currentCaller.occurrenceId === caller.occurrenceId
+        && (currentMaterialization === undefined
+            ? callerMaterialization === undefined
+            : callerMaterialization !== undefined
+                && arePluginMachineMaterializationRefsEqual(currentMaterialization, callerMaterialization));
 }
 
 function throwIfContributedActionCallerInactive(
@@ -501,7 +512,11 @@ function resolveContributedActionCaller(
     seed: PluginActionsServiceSeed,
     caller: ActionPluginCaller,
 ): Extract<PluginInvocationCaller, Readonly<{ kind: 'plugin' }>> | null {
-    if (!seed.contribution || !caller.materialization || !caller.immutableGenerationId) return null;
+    if (
+        !seed.contribution
+        || !caller.occurrenceId
+        || !caller.sourceCustody
+    ) return null;
     const originSurface = seed.surface === 'plugin'
         && seed.caller?.kind === 'plugin'
         ? seed.caller.originSurface
@@ -512,8 +527,11 @@ function resolveContributedActionCaller(
         kind: 'plugin' as const,
         pluginId: seed.plugin.id,
         contribution: seed.contribution,
-        immutableGenerationId: caller.immutableGenerationId,
-        materialization: caller.materialization,
+        occurrenceId: caller.occurrenceId,
+        sourceCustody: caller.sourceCustody,
+        ...(caller.materialization === undefined
+            ? {}
+            : { materialization: caller.materialization }),
         ...(originSurface ? { originSurface } : {}),
     });
 }
@@ -618,9 +636,9 @@ export function createPluginInvocationActionsService(params: Readonly<{
                         action: Object.freeze({ ...admittedTargetedOperation.action }),
                         target: Object.freeze({
                             pluginId: admittedTargetedOperation.targetPluginId,
-                            immutableGenerationId: admittedTargetedOperation.targetImmutableGenerationId,
+                            occurrenceId: admittedTargetedOperation.targetOccurrenceId,
                         }),
-                        contributorImmutableGenerationId: admittedTargetedOperation.contributorImmutableGenerationId,
+                        contributorOccurrenceId: admittedTargetedOperation.contributorOccurrenceId,
                         targetProtocol: admittedTargetedOperation.targetProtocol,
                     }),
                 }),

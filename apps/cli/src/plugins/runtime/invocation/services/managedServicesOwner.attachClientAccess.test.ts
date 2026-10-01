@@ -33,6 +33,8 @@ function createAttachHarness(input: Readonly<{
         scope: Readonly<{ pluginId: string }>,
         value: string,
     ) => void;
+    custodyOwner?: 'daemon' | 'sessionRunner';
+    sessionId?: string;
 } > = {}) {
     const attachedSnapshot = Object.freeze({
         id: 'opencode-server',
@@ -62,7 +64,7 @@ function createAttachHarness(input: Readonly<{
     );
     const owner = createManagedServicesOwner({
         processSupervisorHost: Object.freeze({
-            custodyOwner: 'daemon',
+            custodyOwner: input.custodyOwner ?? 'daemon',
             bind: vi.fn(() => Object.freeze({ supervise })),
         }) satisfies ManagedServiceProcessSupervisorHost,
         dependencies: Object.freeze({}) as never,
@@ -74,12 +76,14 @@ function createAttachHarness(input: Readonly<{
             : {}),
     });
     const scope = {
-        generation: 'generation-one',
+        occurrenceId: 'occurrenceId-one',
         pluginId: 'happier.agent.opencode',
         contributionQualifiedId: 'happier.agent.opencode/agents/opencode',
-        operationId: 'external-sessions:browse',
+        ...(input.sessionId
+            ? { sessionId: input.sessionId }
+            : { operationId: 'external-sessions:browse' }),
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
     };
     return { owner, scope, supervise, registerRawForRedaction, legacyHandle };
 }
@@ -134,6 +138,52 @@ const ATTACH_SPEC = Object.freeze({
 });
 
 describe('managed-service attach client access', () => {
+    it('materializes the current declared secret only for the exact Session handle', async () => {
+        const resolveDeclaredSecret = vi.fn(async () =>
+            declaredSecretLease('exact-external-password'));
+        const harness = createAttachHarness({
+            resolveDeclaredSecret,
+            custodyOwner: 'sessionRunner',
+            sessionId: 'session-one',
+        });
+        await harness.owner.bindScope(harness.scope, exec).supervise({
+            ...ATTACH_SPEC,
+            clientAccess: {
+                kind: 'declaredSecretBasic',
+                username: 'opencode',
+                passwordSecretId: 'opencodeServerPassword',
+            },
+        });
+
+        await expect(harness.owner
+            .materializeSessionManagedServiceClientEnvironment({
+                sessionId: 'session-one',
+                occurrenceId: harness.scope.occurrenceId,
+                pluginId: harness.scope.pluginId,
+                contributionQualifiedId:
+                    harness.scope.contributionQualifiedId,
+                serviceId: ATTACH_SPEC.id,
+                environmentKey: 'OPENCODE_SERVER_PASSWORD',
+            })).resolves.toEqual({
+                OPENCODE_SERVER_PASSWORD: 'exact-external-password',
+            });
+        const readsAfterExactMaterialization =
+            resolveDeclaredSecret.mock.calls.length;
+        await expect(harness.owner
+            .materializeSessionManagedServiceClientEnvironment({
+                sessionId: 'session-one',
+                occurrenceId: 'wrong-occurrence',
+                pluginId: harness.scope.pluginId,
+                contributionQualifiedId:
+                    harness.scope.contributionQualifiedId,
+                serviceId: ATTACH_SPEC.id,
+                environmentKey: 'OPENCODE_SERVER_PASSWORD',
+            })).resolves.toBeNull();
+        expect(resolveDeclaredSecret).toHaveBeenCalledTimes(
+            readsAfterExactMaterialization,
+        );
+    });
+
     it('authenticates an attached service and its health probe from the declared user secret', async () => {
         const hostFetch = vi.fn<typeof globalThis.fetch>(async () =>
             new Response('[]', { status: 200 }));
@@ -202,6 +252,63 @@ describe('managed-service attach client access', () => {
         const serialized = JSON.stringify(handle.snapshot());
         expect(serialized).not.toContain('hunter2');
         expect(serialized).not.toContain(expectedAuthorization);
+    });
+
+    it('projects ordered shaped health alternatives through the same declared-secret lease', async () => {
+        const resolveDeclaredSecret = vi.fn(async () => declaredSecretLease('hunter2'));
+        const harness = createAttachHarness({ resolveDeclaredSecret });
+
+        await harness.owner.bindScope(harness.scope, exec).supervise({
+            ...ATTACH_SPEC,
+            healthCheck: {
+                kind: 'http',
+                alternatives: [{
+                    target: { kind: 'servicePath', path: '/api/info' },
+                    response: {
+                        kind: 'jsonObject',
+                        required: { version: 'nonEmptyString' },
+                    },
+                }, {
+                    target: { kind: 'servicePath', path: '/global/health' },
+                    response: {
+                        kind: 'jsonObject',
+                        required: { healthy: 'true' },
+                    },
+                }],
+                timeoutMs: 5_000,
+            },
+            clientAccess: {
+                kind: 'declaredSecretBasic',
+                username: 'opencode',
+                passwordSecretId: 'opencodeServerPassword',
+            },
+        });
+
+        const processHealth = harness.supervise.mock.calls[0]?.[0]?.healthCheck;
+        expect(processHealth?.kind === 'http'
+            ? processHealth.alternatives
+            : undefined).toEqual([
+            {
+                target: { kind: 'serverPath', path: '/api/info' },
+                response: {
+                    kind: 'jsonObject',
+                    required: { version: 'nonEmptyString' },
+                },
+            },
+            {
+                target: { kind: 'serverPath', path: '/global/health' },
+                response: {
+                    kind: 'jsonObject',
+                    required: { healthy: 'true' },
+                },
+            },
+        ]);
+        const lease = processHealth?.kind === 'http'
+            ? await processHealth.resolveHeaders?.()
+            : undefined;
+        expect(lease?.headers.authorization).toBe(
+            `Basic ${Buffer.from('opencode:hunter2', 'utf8').toString('base64')}`,
+        );
     });
 
     it('refuses a static credential-bearing health header before any supervisor effect', async () => {
@@ -644,12 +751,12 @@ describe('managed-service attach client access', () => {
             resolveDeclaredSecret,
         });
         const services = owner.bindScope({
-            generation: 'generation-one',
+            occurrenceId: 'occurrenceId-one',
             pluginId: 'happier.agent.opencode',
             contributionQualifiedId: 'happier.agent.opencode/agents/opencode',
             operationId: 'external-sessions:browse',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, exec);
 
         await expect(services.supervise({

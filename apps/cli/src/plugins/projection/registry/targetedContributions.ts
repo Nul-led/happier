@@ -25,6 +25,7 @@ import type {
     ResolvedUiRendererV2Contribution,
 } from './types';
 import type { PluginCompatibilityDiagnostic } from '@/plugins/validation/diagnostics/types';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import {
     buildPluginUiRendererContributionKey,
     resolvePluginUiRendererChain,
@@ -32,7 +33,7 @@ import {
 
 type TargetPoint = Readonly<{
     declaration: ResolvedPluginContributionPointDeclaration;
-    immutableGenerationId: string;
+    occurrenceId: PluginRuntimeOccurrenceId;
 }>;
 
 type TargetPointProtocol = ResolvedPluginContributionPointDeclaration['definition']['protocols'][number];
@@ -54,7 +55,7 @@ type PendingAdmittedTargetedContributionSurface = Omit<
 type Candidate = Readonly<{
     declaration: ResolvedTargetedPluginContributionDeclaration;
     target: TargetPoint;
-    contributorImmutableGenerationId: string;
+    contributorOccurrenceId: PluginRuntimeOccurrenceId;
 }>;
 
 type AdmissionResult = Readonly<{
@@ -290,8 +291,8 @@ function surfaceValidationKey(
     role: string,
 ): string {
     return [
-        candidate.target.immutableGenerationId,
-        candidate.contributorImmutableGenerationId,
+        candidate.target.occurrenceId,
+        candidate.contributorOccurrenceId,
         candidate.target.declaration.pluginId,
         candidate.target.declaration.definition.id,
         protocol.id,
@@ -371,7 +372,7 @@ export function dropTargetedContributionAdmissionDiagnostics(
 
 /**
  * Cold deterministic targeted-contribution admission. This reads only
- * normalized declarations and committed immutable generations: it neither
+ * normalized declarations and candidate-local runtime occurrences: it neither
  * starts an activation target nor touches a runtime implementation.
  */
 export function resolveAdmittedTargetedContributions(params: Readonly<{
@@ -379,18 +380,18 @@ export function resolveAdmittedTargetedContributions(params: Readonly<{
     targetedPluginContributions: readonly ResolvedTargetedPluginContributionDeclaration[];
     actions: readonly ResolvedActionContribution[];
     uiRenderersV2: readonly ResolvedUiRendererV2Contribution[];
-    immutableGenerationIdsByPluginId: Readonly<Record<string, string>>;
+    occurrenceIdsByPluginId: Readonly<Record<string, PluginRuntimeOccurrenceId>>;
 }>): AdmissionResult {
     const diagnostics: TargetedContributionAdmissionDiagnostic[] = [];
     const pointsByKey = new Map<string, TargetPoint>();
     for (const declaration of [...params.pluginContributionPoints].sort((left, right) => (
         snapshotKey(left.pluginId, left.definition.id).localeCompare(snapshotKey(right.pluginId, right.definition.id))
     ))) {
-        const immutableGenerationId = params.immutableGenerationIdsByPluginId[declaration.pluginId];
-        if (!immutableGenerationId) continue;
+        const occurrenceId = params.occurrenceIdsByPluginId[declaration.pluginId];
+        if (!occurrenceId) continue;
         const key = snapshotKey(declaration.pluginId, declaration.definition.id);
         if (!pointsByKey.has(key)) {
-            pointsByKey.set(key, Object.freeze({ declaration, immutableGenerationId }));
+            pointsByKey.set(key, Object.freeze({ declaration, occurrenceId }));
         }
     }
 
@@ -425,11 +426,11 @@ export function resolveAdmittedTargetedContributions(params: Readonly<{
         const pointId = declaration.definition.target.pointId;
         const point = pointsByKey.get(snapshotKey(targetPluginId, pointId));
         if (!point) {
-            const targetGeneration = params.immutableGenerationIdsByPluginId[targetPluginId];
+            const targetOccurrence = params.occurrenceIdsByPluginId[targetPluginId];
             oneDiagnostic(
                 diagnostics,
                 declaration,
-                targetGeneration
+                targetOccurrence
                     ? 'point_absent'
                     : declaredTargetPluginIds.has(targetPluginId)
                         ? 'target_retired'
@@ -437,12 +438,12 @@ export function resolveAdmittedTargetedContributions(params: Readonly<{
             );
             continue;
         }
-        const contributorImmutableGenerationId = params.immutableGenerationIdsByPluginId[declaration.pluginId];
-        if (!contributorImmutableGenerationId) {
+        const contributorOccurrenceId = params.occurrenceIdsByPluginId[declaration.pluginId];
+        if (!contributorOccurrenceId) {
             oneDiagnostic(diagnostics, declaration, 'contributor_retired');
             continue;
         }
-        candidates.push(Object.freeze({ declaration, target: point, contributorImmutableGenerationId }));
+        candidates.push(Object.freeze({ declaration, target: point, contributorOccurrenceId }));
     }
 
     const conflictingCandidateKeys = new Set<string>();
@@ -593,7 +594,7 @@ export function resolveAdmittedTargetedContributions(params: Readonly<{
         const contributor = Object.freeze({
             pluginId: candidate.declaration.pluginId,
             contributionId: definition.id,
-            immutableGenerationId: candidate.contributorImmutableGenerationId,
+            occurrenceId: candidate.contributorOccurrenceId,
         });
         let failure: TargetedContributionAdmissionDiagnosticCode | undefined;
         const operations: PendingAdmittedTargetedContributionOperation[] = [];
@@ -770,7 +771,7 @@ export function resolveAdmittedTargetedContributions(params: Readonly<{
                 target: Object.freeze({
                     pluginId: point.declaration.pluginId,
                     pointId: point.declaration.definition.id,
-                    immutableGenerationId: point.immutableGenerationId,
+                    occurrenceId: point.occurrenceId,
                 }),
                 contributions: Object.freeze(retained.filter((contribution) => (
                     contribution.protocol.id === protocol.id

@@ -1,5 +1,5 @@
 import { dirname, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawnForegroundCommand } from '../../../apps/stack/scripts/utils/proc/proc.mjs';
 import { fileURLToPath } from 'node:url';
 
 import { findRepoRoot } from './vendoredWorkspaceDeclarations.mjs';
@@ -82,15 +82,16 @@ export async function runPluginSdkPreparedScript(scriptName, opts = {}) {
   const args = npmExecPath
     ? [npmExecPath, 'run', '-s', scriptName]
     : ['run', '-s', scriptName];
-  const spawnImpl = opts.spawnImpl ?? spawn;
+  const spawnImpl = opts.spawnImpl ?? spawnForegroundCommand;
   await new Promise((resolveRun, rejectRun) => {
     const child = spawnImpl(command, args, {
       cwd: pluginSdkDir,
       env,
       stdio: 'inherit',
+      ownedProcessGroup: true,
     });
     child.once('error', rejectRun);
-    child.once('exit', (code, signal) => {
+    child.once('close', (code, signal) => {
       if (code === 0) {
         resolveRun();
         return;

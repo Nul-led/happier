@@ -1,5 +1,6 @@
 import {
   createContext,
+  type Context,
   useContext,
   useEffect,
   useMemo,
@@ -15,12 +16,15 @@ import type {
 
 import {
   HappierUiEnvironmentProvider,
+  HappierUiPaletteProvider,
+  HappierUiTypographyProvider,
   useHappierUiAccessibility,
   useHappierUiLocalization,
   useHappierUiTheme,
 } from '../environment/context.js';
 import { projectHappierUiEnvironment } from '../environment/projectEnvironment.js';
-import type { HappierUiAccessibility } from '../environment/types.js';
+import { HappierPageChromeProvider } from '../presentation/layout/pageChrome.js';
+import type { HappierUiAccessibility, HappierUiEnvironment } from '../environment/types.js';
 import { PluginUiDataProviderInternal } from '../data/context.js';
 import type { PluginUiDataClient } from '../data/types.js';
 import { PluginHostApiProviderInternal } from '../hostApi/context.js';
@@ -45,6 +49,9 @@ import { PLUGIN_UI_PRIVATE_SURFACE_ENTRY_PROVIDER_KEY } from '../privateCarrierK
  * decide accessibility policy or maintain state the host already owns.
  */
 const PluginSurfaceContextContext = createContext<SurfaceContext | null>(null);
+
+/** @internal The surface bridge re-provides this across the host's details pane (`components/surfaceBridge.tsx`). */
+export const PLUGIN_SURFACE_CONTEXT_INTERNAL: Context<SurfaceContext | null> = PluginSurfaceContextContext;
 
 export type PluginUiProviderProps = Readonly<{
   hostApi: PluginUiHostApi;
@@ -98,6 +105,39 @@ type ObservedSurfaceState = Readonly<{
 
 export function PluginUiProvider(props: PluginUiProviderProps) {
   return <PluginUiProviderInternal {...props} />;
+}
+
+/** The same-realm host's typography, page-anatomy colour and page-chrome facts, when it supplies them. */
+function installHostPresentationFacts(host: PluginUiPresentationHost, children: ReactNode): ReactNode {
+  const withChrome = host.pageChrome
+    ? <HappierPageChromeProvider chrome={host.pageChrome}>{children}</HappierPageChromeProvider>
+    : children;
+  const withPalette = host.palette
+    ? <HappierUiPaletteProvider palette={host.palette}>{withChrome}</HappierUiPaletteProvider>
+    : withChrome;
+  return host.typography
+    ? <HappierUiTypographyProvider typography={host.typography}>{withPalette}</HappierUiTypographyProvider>
+    : withPalette;
+}
+
+/**
+ * The same-realm host's presentation for public components Happier core renders on its own pages, with no plugin
+ * mounted: the presentation environment plus the host's renderers and facts (type roles, page colours, page
+ * scroller, details pane). There is no Host API, surface context or data client in it, so only components that
+ * need none of them belong inside (the Collection and what its presentations draw).
+ */
+export function PluginUiHostPresentationScope(props: Readonly<{
+  environment: HappierUiEnvironment;
+  presentationHost: PluginUiPresentationHost;
+  children?: ReactNode;
+}>) {
+  return (
+    <HappierUiEnvironmentProvider environment={props.environment}>
+      <PluginUiPresentationHostProviderInternal host={props.presentationHost}>
+        {installHostPresentationFacts(props.presentationHost, props.children)}
+      </PluginUiPresentationHostProviderInternal>
+    </HappierUiEnvironmentProvider>
+  );
 }
 
 /** Not exported through a package entry point; see `surfaceEntry.tsx`. */
@@ -214,7 +254,11 @@ export function PluginUiProviderInternal({
         <HappierUiEnvironmentProvider environment={environment}>
           <PluginUiDataProviderInternal {...(dataClient ? { client: dataClient } : {})}>
             {presentationHost
-              ? <PluginUiPresentationHostProviderInternal host={presentationHost}>{children}</PluginUiPresentationHostProviderInternal>
+              ? (
+                <PluginUiPresentationHostProviderInternal host={presentationHost}>
+                  {installHostPresentationFacts(presentationHost, children)}
+                </PluginUiPresentationHostProviderInternal>
+              )
               : children}
           </PluginUiDataProviderInternal>
         </HappierUiEnvironmentProvider>

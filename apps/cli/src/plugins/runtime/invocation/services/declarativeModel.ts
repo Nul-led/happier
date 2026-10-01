@@ -71,7 +71,7 @@ export type StablePluginDeclarativeMetadataEntry = PluginDeclarativeMetadataEntr
 export type StablePluginQualifiedReference = Readonly<{
     identity: PluginContributionIdentityV1;
     qualifiedId: string;
-    generation: string;
+    occurrenceId: string;
 }>;
 
 type StablePluginDeclarativeNodeBase = Readonly<{
@@ -259,7 +259,7 @@ export type StablePluginDeclarativeModel = Readonly<{
         pluginId: string;
         localId: string;
         qualifiedId: string;
-        generation: string;
+        occurrenceId: string;
     }>;
     visible: boolean;
     requiredHostMethods: readonly PluginUiHostMethodV1[];
@@ -278,7 +278,7 @@ export type StablePluginStructuredMessageModel = Readonly<{
         pluginId: string;
         localId: string;
         qualifiedId: string;
-        generation: string;
+        occurrenceId: string;
     }>;
     kind: string;
     title: PluginLocalizedStringV2;
@@ -313,23 +313,23 @@ function normalizePluginId(pluginId: string): string {
     return parsed.data;
 }
 
-function normalizeGeneration(generation: string): string {
-    if (typeof generation !== 'string'
-        || generation.trim().length === 0
-        || generation.length > MAX_GENERATION_LENGTH) {
-        throw modelError('plugin_declarative_generation_invalid', 'Plugin generation is invalid');
+function normalizeOccurrenceId(occurrenceId: string): string {
+    if (typeof occurrenceId !== 'string'
+        || occurrenceId.trim().length === 0
+        || occurrenceId.length > MAX_GENERATION_LENGTH) {
+        throw modelError('plugin_declarative_generation_invalid', 'Plugin occurrenceId is invalid');
     }
-    return generation;
+    return occurrenceId;
 }
 
 function qualifiedReference(
     identity: PluginContributionIdentityV1,
-    generation: string,
+    occurrenceId: string,
 ): StablePluginQualifiedReference {
     return Object.freeze({
         identity: Object.freeze({ ...identity }),
         qualifiedId: buildQualifiedPluginContributionKey(identity),
-        generation,
+        occurrenceId,
     });
 }
 
@@ -430,7 +430,7 @@ function createStablePluginDeclarativeSettingsInventory(input: Readonly<{
 
 function createStablePluginDeclarativeActionInventory(input: Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     actions: readonly PluginContributionIdentityV1[];
     presentations: ReadonlyMap<string, Readonly<{ title: string; icon?: string }>>;
     availability?: StablePluginAvailabilityInput;
@@ -438,7 +438,7 @@ function createStablePluginDeclarativeActionInventory(input: Readonly<{
     return Object.freeze(input.actions
         .filter((identity) => identity.pluginId === input.pluginId)
         .map((identity) => {
-            const action = qualifiedReference(identity, input.generation);
+            const action = qualifiedReference(identity, input.occurrenceId);
             const presentation = input.presentations.get(action.qualifiedId);
             return Object.freeze({
                 ...action,
@@ -481,17 +481,17 @@ function createStablePluginDeclarativeActionPresentations(input: Readonly<{
 
 function createStablePluginDeclarativeDestinationInventory(input: Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     destinations: readonly PluginContributionIdentityV1[];
 }>): readonly StablePluginDeclarativeDestinationBinding[] {
     return Object.freeze(input.destinations
         .filter((identity) => identity.pluginId === input.pluginId)
-        .map((identity) => qualifiedReference(identity, input.generation)));
+        .map((identity) => qualifiedReference(identity, input.occurrenceId)));
 }
 
 export function createStablePluginDeclarativeModel(params: Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     renderer: unknown;
     settings: readonly StablePluginSettingsModel[];
     actions: readonly PluginContributionIdentityV1[];
@@ -506,7 +506,7 @@ export function createStablePluginDeclarativeModel(params: Readonly<{
     availability?: StablePluginAvailabilityInput;
 }>): StablePluginDeclarativeModel {
     const pluginId = normalizePluginId(params.pluginId);
-    const generation = normalizeGeneration(params.generation);
+    const occurrenceId = normalizeOccurrenceId(params.occurrenceId);
     const plainRenderer = cloneDomainPlainData(
         params.renderer,
         'plugin_declarative_invalid_plain_data',
@@ -562,14 +562,14 @@ export function createStablePluginDeclarativeModel(params: Readonly<{
     })));
     const actionsInventory = createStablePluginDeclarativeActionInventory({
         pluginId,
-        generation,
+        occurrenceId,
         actions: params.actions,
         presentations: actionPresentations,
         availability,
     });
     const destinationsInventory = createStablePluginDeclarativeDestinationInventory({
         pluginId,
-        generation,
+        occurrenceId,
         destinations: params.destinations ?? [],
     });
     const uiQueriesInventory = Object.freeze([...(params.uiQueries ?? [])]);
@@ -581,7 +581,7 @@ export function createStablePluginDeclarativeModel(params: Readonly<{
     try {
         document = normalizePluginDeclarativeDocumentV1({
             pluginId,
-            generation,
+            occurrenceId,
             actions: params.actions,
             destinations: params.destinations ?? [],
             settings: protocolSettingsInventory,
@@ -841,7 +841,7 @@ export function createStablePluginDeclarativeModel(params: Readonly<{
         identity: Object.freeze({
             ...identity,
             qualifiedId: buildQualifiedPluginContributionKey(identity),
-            generation,
+            occurrenceId,
         }),
         visible: availability?.visible ?? true,
         requiredHostMethods: Object.freeze([]),
@@ -876,7 +876,7 @@ function compilePayloadValidator(schema: HostStructuredMessageDescriptorV1['payl
 
 function normalizeReferencedValues(params: Readonly<{
     ownerPluginId: string;
-    generation: string;
+    occurrenceId: string;
     references: readonly PluginContributionReference[];
     inventory: ReadonlySet<string>;
     kind: 'action' | 'resource';
@@ -910,7 +910,7 @@ function normalizeReferencedValues(params: Readonly<{
             );
         }
         seen.add(qualifiedId);
-        const normalized = qualifiedReference(identity, params.generation);
+        const normalized = qualifiedReference(identity, params.occurrenceId);
         return params.kind === 'action'
             ? Object.freeze({ ...normalized, enabled: params.enabledActions?.[qualifiedId] === true })
             : normalized;
@@ -919,7 +919,7 @@ function normalizeReferencedValues(params: Readonly<{
 
 export function createStablePluginStructuredMessageModel(params: Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     descriptor: HostStructuredMessageDescriptorV1;
     value: Readonly<{
         kind: string;
@@ -932,7 +932,7 @@ export function createStablePluginStructuredMessageModel(params: Readonly<{
     availability?: StablePluginAvailabilityInput;
 }>): StablePluginStructuredMessageModel {
     const pluginId = normalizePluginId(params.pluginId);
-    const generation = normalizeGeneration(params.generation);
+    const occurrenceId = normalizeOccurrenceId(params.occurrenceId);
     const descriptor = cloneDomainPlainData(
         params.descriptor,
         'plugin_structured_message_invalid_plain_data',
@@ -998,7 +998,7 @@ export function createStablePluginStructuredMessageModel(params: Readonly<{
     }
     const actions = normalizeReferencedValues({
         ownerPluginId: pluginId,
-        generation,
+        occurrenceId,
         references: descriptor.actions ?? [],
         inventory: actionKeys,
         kind: 'action',
@@ -1006,7 +1006,7 @@ export function createStablePluginStructuredMessageModel(params: Readonly<{
     }) as readonly (StablePluginQualifiedReference & Readonly<{ enabled: boolean }>)[];
     const resources = normalizeReferencedValues({
         ownerPluginId: pluginId,
-        generation,
+        occurrenceId,
         references: value.resources ?? [],
         inventory: resourceKeys,
         kind: 'resource',
@@ -1016,13 +1016,13 @@ export function createStablePluginStructuredMessageModel(params: Readonly<{
         identity: Object.freeze({
             ...identity,
             qualifiedId: buildQualifiedPluginContributionKey(identity),
-            generation,
+            occurrenceId,
         }),
         kind: descriptor.kind,
         title: descriptor.title,
         ...(descriptor.description ? { description: descriptor.description } : {}),
         payload: value.payload,
-        renderer: qualifiedReference(rendererIdentity, generation),
+        renderer: qualifiedReference(rendererIdentity, occurrenceId),
         actions,
         resources,
         fallback: descriptor.fallback,

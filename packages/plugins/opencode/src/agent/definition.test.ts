@@ -25,7 +25,7 @@ describe('OpenCode AGENT_DEFINITION', () => {
         sessionStorage: { direct: true, persisted: true },
         sessionCapabilities: {
           sessionListing: 'supported',
-          sessionFork: { conversation: 'supported', fromMessage: 'supported' },
+          sessionFork: { conversation: 'supported', fromMessage: 'unsupported' },
           usageLimitRecovery: { checkNow: 'unsupported' },
         },
         tools: { delivery: 'native_mcp', support: 'supported' },

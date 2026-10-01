@@ -25,6 +25,8 @@ import {
 } from '@/plugins/manifest/daemonEntry';
 import type { CanonicalPluginManifest } from '@/plugins/manifest/types';
 import type { LoadedPlugin } from '@/plugins/discovery/load/installed';
+import type { BundledPluginPublicationFailure } from '@/plugins/validation/diagnostics/types';
+import { resolveCliRuntimeAssetPath } from '@/packagedRuntime/assets/resolveCliRuntimeAssetPath';
 import { projectPluginCatalogEntryIntrospection } from '@/plugins/projection/introspection/catalogEntry';
 import type { PluginContributionIntrospectionProjectionV1 } from '@happier-dev/protocol';
 
@@ -117,8 +119,10 @@ function mapRemovePluginErrorCodeToDiagnosticCode(errorCode: RemoveInstalledPlug
 function pluginChangeDiagnostic(change: UserPluginChangeResult): PluginCompatibilityDiagnostic {
   return {
     code: change.kind === 'reviewRequired' ? 'plugin_trust_approval_required' : 'plugin_manifest_invalid',
-    message: change.kind === 'reviewRequired'
+    message: change.kind === 'reviewRequired' && change.reviewKind === 'installation'
       ? `Plugin '${change.review.pluginId}' requires an authenticated present-user Install and trust decision.`
+      : change.kind === 'reviewRequired'
+        ? `Plugin source '${change.review.source.locator}' requires an authenticated present-user trust decision.`
       : `The daemon did not commit the plugin change (${change.kind}).`,
   };
 }
@@ -205,6 +209,7 @@ function buildCatalogEntry(params: Readonly<{
 
 export function projectBundledPluginCatalogEntries(params: Readonly<{
   loadedPlugins: readonly LoadedPlugin[];
+  pluginFailures?: readonly BundledPluginPublicationFailure[];
   desiredGenerationByPluginId?: Readonly<Record<string, string>>;
   excludedPluginIds?: ReadonlySet<string>;
 }>): readonly PluginCatalogEntry[] {
@@ -234,6 +239,34 @@ export function projectBundledPluginCatalogEntries(params: Readonly<{
       diagnostics: [],
     })];
   });
+  for (const failure of params.pluginFailures ?? []) {
+    if (params.excludedPluginIds?.has(failure.pluginId)) continue;
+    const manifestPath = `bundled:${failure.pluginId}`;
+    const record = {
+      source: {
+        kind: 'bundled',
+        locator: failure.packageName,
+        trustPolicy: 'local_trusted',
+        installPolicy: 'link',
+        resolvedVersion: 'unknown',
+        resolvedPath: resolveCliRuntimeAssetPath('node_modules', ...failure.packageName.split('/')),
+        manifestPath,
+      },
+      compatibility: { status: 'load_error', diagnostics: [failure.diagnostic] },
+      install: { mode: 'link', manifestVersion: 'unknown' },
+      state: { enabled: false },
+    } satisfies PluginStateRecord;
+    entries.push(buildCatalogEntry({
+      pluginId: failure.pluginId,
+      desiredGeneration: null,
+      admittedIntegrity: null,
+      rollbackAvailability: 'unavailable',
+      record,
+      manifest: null,
+      manifestPath,
+      diagnostics: [failure.diagnostic],
+    }));
+  }
   return Object.freeze(entries.sort((a, b) => a.pluginId.localeCompare(b.pluginId)));
 }
 
@@ -328,7 +361,7 @@ async function resolvePluginCatalogEntryFromRecord(
 
 async function projectInstalledPluginCatalog(
   state: PluginStateFileV1,
-  pluginGenerations: Readonly<Record<string, Readonly<{ immutableGenerationId: string }>>>,
+  pluginOccurrenceIds: Readonly<Record<string, Readonly<{ immutableGenerationId: string }>>>,
   rollbackAvailabilityByPluginId: Readonly<Record<string, 'available' | 'unavailable'>>,
   admittedIntegrityByPluginId: Readonly<Record<string, string>>,
 ): Promise<readonly PluginCatalogEntry[]> {
@@ -338,7 +371,7 @@ async function projectInstalledPluginCatalog(
     entries.push(await resolvePluginCatalogEntryFromRecord(
       pluginId,
       record,
-      pluginGenerations[pluginId]?.immutableGenerationId ?? null,
+      pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null,
       rollbackAvailabilityByPluginId[pluginId] ?? 'unavailable',
       admittedIntegrityByPluginId[pluginId] ?? null,
     ));
@@ -356,7 +389,7 @@ export async function readInstalledPluginCatalogSnapshot(params?: Readonly<{
     revision: snapshot.revision,
     entries: await projectInstalledPluginCatalog(
       snapshot.state,
-      snapshot.pluginGenerations,
+      snapshot.pluginOccurrenceIds,
       snapshot.rollbackAvailabilityByPluginId,
       snapshot.admittedIntegrityByPluginId,
     ),
@@ -425,6 +458,15 @@ export async function installPluginFromLocator(params: Readonly<{
   dev?: boolean;
   workspaceRoot?: string;
 }>): Promise<InstallPluginFromLocatorResult> {
+  if (params.dev === true && params.dryRun !== true) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: 'plugin_source_kind_unsupported',
+        message: 'Development sources must be registered with the daemon development-root owner',
+      }],
+    };
+  }
   const stateStore = createPluginRegistryStateStore({ happyHomeDir: params.happyHomeDir });
   const happyHomeDir = stateStore.paths.happyHomeDir;
   if (!happyHomeDir) {
@@ -451,7 +493,6 @@ export async function installPluginFromLocator(params: Readonly<{
         request: {
           kind: 'installPath',
           locator: params.locator,
-          development: params.dev === true,
         },
         ...(params.happyHomeDir ? { happyHomeDir: params.happyHomeDir } : {}),
       });
@@ -518,7 +559,7 @@ export async function installPluginFromLocator(params: Readonly<{
     return await submitPluginInstallChange({
       request: installResult.sourceKind === 'archive'
         ? { kind: 'installArchive', locator: params.locator }
-        : { kind: 'installPath', locator: params.locator, development: params.dev === true },
+        : { kind: 'installPath', locator: params.locator },
       ...(params.happyHomeDir ? { happyHomeDir: params.happyHomeDir } : {}),
     });
   }

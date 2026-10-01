@@ -3,64 +3,33 @@ import type {
   AgentPreflightSessionControlsContributionV1,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
+import { isOpenCodeModelSelectable } from '../models/eligibility.js';
 import { buildOpenCodeThinkingModelOptionsFromVariants } from '../config/thinking.js';
 import { asRecord, normalizeString } from '../runtime/server/openCodeParsing.js';
-import { OPEN_CODE_SYSTEM_TOOL_ID } from '../systemTool.js';
+import {
+  OPEN_CODE_STABLE_SYSTEM_TOOL_ID,
+  OPEN_CODE_SYSTEM_TOOL_ID,
+  OPEN_CODE_V2_SYSTEM_TOOL_ID,
+  resolveOpenCodeSystemToolId,
+} from '../systemTool.js';
 
 export type OpenCodePreflightModel = Readonly<{
   id: string;
   name: string;
   description?: string;
-  modelOptions?: ReturnType<typeof buildOpenCodeThinkingModelOptionsFromVariants>;
+  contextWindowTokens?: number;
+  modelOptions?: NonNullable<ReturnType<typeof buildOpenCodeThinkingModelOptionsFromVariants>>;
 }>;
 
-type KnownUnavailableOpenCodeModel = Readonly<{
-  retiredAtMs: number;
-  replacementModelId: string;
-}>;
-
-const OPENCODE_CLI_MODELS_COMMAND_ARGS = ['models'] as const;
+const OPENCODE_V2_MODELS_COMMAND_ARGS = [
+  'api',
+  'get',
+  '/api/model',
+  '--standalone',
+  '--param',
+  'location[directory]=.',
+] as const;
 const OPENCODE_VERBOSE_MODELS_COMMAND_ARGS = ['models', '--verbose'] as const;
-/**
- * OpenCode's own replacement pin for Anthropic's retired flagship models.
- *
- * Every other replacement in the table below is pinned the same way: the table
- * is OpenCode's product data about a third party's lineup, not a Happier-wide
- * model policy. Reading it from a host workspace package instead made this
- * plugin unbuildable for an external author writing the same plugin: the
- * plugin scaffold binds an author to the public toolchain packages
- * (`@happier-dev/plugin-sdk`, plus `@happier-dev/plugin-ui` for a UI plugin)
- * and to no host workspace package.
- */
-const ANTHROPIC_FLAGSHIP_REPLACEMENT_MODEL_ID = 'claude-opus-5';
-
-const ANTHROPIC_KNOWN_UNAVAILABLE_MODELS: Readonly<Record<string, KnownUnavailableOpenCodeModel>> = Object.freeze({
-  'claude-2.0': { retiredAtMs: Date.UTC(2025, 6, 21), replacementModelId: ANTHROPIC_FLAGSHIP_REPLACEMENT_MODEL_ID },
-  'claude-2.1': { retiredAtMs: Date.UTC(2025, 6, 21), replacementModelId: ANTHROPIC_FLAGSHIP_REPLACEMENT_MODEL_ID },
-  'claude-instant-1.0': { retiredAtMs: Date.UTC(2024, 10, 6), replacementModelId: 'claude-haiku-4-5-20251001' },
-  'claude-instant-1.1': { retiredAtMs: Date.UTC(2024, 10, 6), replacementModelId: 'claude-haiku-4-5-20251001' },
-  'claude-instant-1.2': { retiredAtMs: Date.UTC(2024, 10, 6), replacementModelId: 'claude-haiku-4-5-20251001' },
-  'claude-3-opus-20240229': { retiredAtMs: Date.UTC(2026, 0, 5), replacementModelId: ANTHROPIC_FLAGSHIP_REPLACEMENT_MODEL_ID },
-  'claude-3-opus-latest': { retiredAtMs: Date.UTC(2026, 0, 5), replacementModelId: ANTHROPIC_FLAGSHIP_REPLACEMENT_MODEL_ID },
-  'claude-3-sonnet-20240229': { retiredAtMs: Date.UTC(2025, 6, 21), replacementModelId: 'claude-sonnet-4-6' },
-  'claude-3-sonnet-latest': { retiredAtMs: Date.UTC(2025, 6, 21), replacementModelId: 'claude-sonnet-4-6' },
-  'claude-3-haiku-20240307': { retiredAtMs: Date.UTC(2026, 3, 20), replacementModelId: 'claude-haiku-4-5-20251001' },
-  'claude-3-haiku-latest': { retiredAtMs: Date.UTC(2026, 3, 20), replacementModelId: 'claude-haiku-4-5-20251001' },
-  'claude-3-5-sonnet-20240620': { retiredAtMs: Date.UTC(2025, 9, 28), replacementModelId: 'claude-sonnet-4-6' },
-  'claude-3-5-sonnet-20241022': { retiredAtMs: Date.UTC(2025, 9, 28), replacementModelId: 'claude-sonnet-4-6' },
-  'claude-3-5-sonnet-latest': { retiredAtMs: Date.UTC(2025, 9, 28), replacementModelId: 'claude-sonnet-4-6' },
-  'claude-3-5-haiku-20241022': { retiredAtMs: Date.UTC(2026, 1, 19), replacementModelId: 'claude-haiku-4-5-20251001' },
-  'claude-3-5-haiku-latest': { retiredAtMs: Date.UTC(2026, 1, 19), replacementModelId: 'claude-haiku-4-5-20251001' },
-  'claude-3-7-sonnet-20250219': { retiredAtMs: Date.UTC(2026, 1, 19), replacementModelId: 'claude-sonnet-4-6' },
-  'claude-3-7-sonnet-latest': { retiredAtMs: Date.UTC(2026, 1, 19), replacementModelId: 'claude-sonnet-4-6' },
-  'claude-sonnet-4-20250514': { retiredAtMs: Date.UTC(2026, 5, 15), replacementModelId: 'claude-sonnet-4-6' },
-  'claude-opus-4-20250514': { retiredAtMs: Date.UTC(2026, 5, 15), replacementModelId: ANTHROPIC_FLAGSHIP_REPLACEMENT_MODEL_ID },
-});
-
-const KNOWN_UNAVAILABLE_MODELS_BY_PROVIDER = Object.freeze({
-  anthropic: ANTHROPIC_KNOWN_UNAVAILABLE_MODELS,
-} as const);
-
 function parseOpenCodeModelId(line: string): Readonly<{ providerId: string; modelId: string }> | null {
   const trimmed = line.trim();
   const separatorIndex = trimmed.indexOf('/');
@@ -140,39 +109,68 @@ function parseVerboseBlocks(outputRaw: string): readonly Readonly<{
     index = block.endIndexInclusive;
   }
 
-  return parsed;
+  return parsed.length > 0 || !outputRaw.trim() ? parsed : null;
 }
 
-function isKnownUnavailableOpenCodeModel(params: Readonly<{
-  providerId: string;
-  modelId: string;
-  nowMs: number;
-}>): boolean {
-  const providerModels = KNOWN_UNAVAILABLE_MODELS_BY_PROVIDER[
-    normalizeString(params.providerId).toLowerCase() as keyof typeof KNOWN_UNAVAILABLE_MODELS_BY_PROVIDER
-  ];
-  const entry = providerModels?.[normalizeString(params.modelId).toLowerCase()];
-  return Boolean(entry && params.nowMs >= entry.retiredAtMs);
+function modelSupportsReasoningVariants(record: Readonly<Record<string, unknown>>): boolean {
+  const variants = record.variants;
+  if (Array.isArray(variants)) return variants.length > 0;
+  return asRecord(record.capabilities)?.reasoning === true;
 }
 
-function modelSupportsToolCalls(
-  raw: unknown,
-  providerIdHint: string,
+function readContextWindowTokens(record: Readonly<Record<string, unknown>>): number | undefined {
+  const value = asRecord(record.limit)?.context;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+export function buildOpenCodePreflightModels(
+  blocks: readonly Readonly<{ fullId: string; record: Readonly<Record<string, unknown>> }>[],
   nowMs: number,
-): boolean {
-  const record = asRecord(raw);
-  if (!record) return false;
-  const providerId = normalizeString(providerIdHint) || normalizeString(record.providerID);
-  const modelId = normalizeString(record.id);
-  if (providerId && modelId && isKnownUnavailableOpenCodeModel({ providerId, modelId, nowMs })) {
-    return false;
-  }
-  const status = normalizeString(record.status);
-  if (status && status !== 'active') return false;
-  const capabilities = asRecord(record.capabilities);
-  if (!capabilities || capabilities.toolcall !== true) return false;
-  const input = asRecord(capabilities.input);
-  return input?.text !== false;
+): readonly OpenCodePreflightModel[] | null {
+  const models = blocks
+    .map((block): OpenCodePreflightModel | null => {
+      const providerId = block.fullId.slice(0, block.fullId.indexOf('/'));
+      if (!isOpenCodeModelSelectable({ providerID: providerId, modelID: block.fullId.slice(providerId.length + 1), modelRecord: block.record, nowMs })) return null;
+      const name = normalizeString(block.record.name) || block.fullId;
+      const description = normalizeString(block.record.family) || normalizeString(block.record.providerID);
+      const contextWindowTokens = readContextWindowTokens(block.record);
+      const modelOptions = modelSupportsReasoningVariants(block.record)
+        ? buildOpenCodeThinkingModelOptionsFromVariants(block.record.variants, null)
+        : null;
+      return {
+        id: block.fullId,
+        name,
+        ...(description ? { description } : {}),
+        ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+        ...(modelOptions ? { modelOptions } : {}),
+      };
+    })
+    .filter((model): model is OpenCodePreflightModel => model !== null);
+
+  return models;
+}
+
+export function buildOpenCodePreflightModelsFromV2ApiOutput(
+  outputRaw: string,
+  options: Readonly<{ nowMs?: number }> = {},
+): readonly OpenCodePreflightModel[] | null {
+  const envelope = parseJsonObject(outputRaw);
+  if (!Array.isArray(envelope?.data)) return null;
+  const blocks = envelope.data.flatMap((rawModel) => {
+    const record = asRecord(rawModel);
+    const providerId = normalizeString(record?.providerID);
+    const modelId = normalizeString(record?.id);
+    return record && providerId && modelId
+      ? [{ fullId: `${providerId}/${modelId}`, record }]
+      : [];
+  });
+  if (envelope.data.length > 0 && blocks.length === 0) return null;
+  const nowMs = typeof options.nowMs === 'number' && Number.isFinite(options.nowMs)
+    ? options.nowMs
+    : Date.now();
+  return buildOpenCodePreflightModels(blocks, nowMs);
 }
 
 export function buildOpenCodePreflightModelsFromVerboseOutput(
@@ -184,66 +182,34 @@ export function buildOpenCodePreflightModelsFromVerboseOutput(
     : Date.now();
   const blocks = parseVerboseBlocks(outputRaw);
   if (!blocks) return null;
-  const models = blocks
-    .map((block): OpenCodePreflightModel | null => {
-      const providerId = block.fullId.slice(0, block.fullId.indexOf('/'));
-      if (!modelSupportsToolCalls(block.record, providerId, nowMs)) return null;
-      const name = normalizeString(block.record.name) || block.fullId;
-      const description = normalizeString(block.record.family) || normalizeString(block.record.providerID);
-      const capabilities = asRecord(block.record.capabilities);
-      const modelOptions = capabilities?.reasoning === true
-        ? buildOpenCodeThinkingModelOptionsFromVariants(block.record.variants, null)
-        : null;
-      return {
-        id: block.fullId,
-        name,
-        ...(description ? { description } : {}),
-        ...(modelOptions ? { modelOptions } : {}),
-      };
-    })
-    .filter((model): model is OpenCodePreflightModel => model !== null);
-
-  return models.length > 0 ? models : null;
-}
-
-function buildOpenCodePreflightModelsFromPlainOutput(outputRaw: string): readonly OpenCodePreflightModel[] | null {
-  const nowMs = Date.now();
-  const seen = new Set<string>();
-  const models: OpenCodePreflightModel[] = [];
-
-  for (const rawLine of outputRaw.split('\n')) {
-    const id = rawLine.trim();
-    const parsedId = parseOpenCodeModelId(id);
-    if (!parsedId || seen.has(id)) continue;
-    if (isKnownUnavailableOpenCodeModel({
-      providerId: parsedId.providerId,
-      modelId: parsedId.modelId,
-      nowMs,
-    })) {
-      continue;
-    }
-    seen.add(id);
-    models.push({ id, name: id });
-  }
-
-  return models.length > 0 ? models : null;
+  return buildOpenCodePreflightModels(blocks, nowMs);
 }
 
 export const OPENCODE_PREFLIGHT_SESSION_CONTROLS = Object.freeze({
   models: Object.freeze({
+    commandToolIds: Object.freeze([
+      OPEN_CODE_SYSTEM_TOOL_ID,
+      OPEN_CODE_STABLE_SYSTEM_TOOL_ID,
+      OPEN_CODE_V2_SYSTEM_TOOL_ID,
+    ]),
+    resolveCommandToolId: ({ accountSettings }: Readonly<{
+      accountSettings: Readonly<Record<string, unknown>> | null;
+    }>) => resolveOpenCodeSystemToolId(
+      accountSettings?.opencodeCliGeneration,
+    ),
     command: Object.freeze({
       toolId: OPEN_CODE_SYSTEM_TOOL_ID,
-      args: OPENCODE_VERBOSE_MODELS_COMMAND_ARGS,
+      args: OPENCODE_V2_MODELS_COMMAND_ARGS,
     }),
     parseOutput: ({ stdout }: AgentPreflightSessionControlsCommandResultV1) =>
-      buildOpenCodePreflightModelsFromVerboseOutput(stdout),
+      buildOpenCodePreflightModelsFromV2ApiOutput(stdout),
     fallback: Object.freeze({
       command: Object.freeze({
         toolId: OPEN_CODE_SYSTEM_TOOL_ID,
-        args: OPENCODE_CLI_MODELS_COMMAND_ARGS,
+        args: OPENCODE_VERBOSE_MODELS_COMMAND_ARGS,
       }),
       parseOutput: ({ stdout }: AgentPreflightSessionControlsCommandResultV1) =>
-        buildOpenCodePreflightModelsFromPlainOutput(stdout),
+        buildOpenCodePreflightModelsFromVerboseOutput(stdout),
     }),
   }),
 } satisfies AgentPreflightSessionControlsContributionV1);

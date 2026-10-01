@@ -121,7 +121,7 @@ const APPLIED_OBSERVATION: TriageSourceObservationV1 = {
     v: 1,
     title: 'Consolidate the duplicated normalizer',
     scopeLabel: 'octo-org/example-app',
-    state: { presentation: 'closed', nativeLabel: 'Merged' },
+    state: { presentation: 'resolved', nativeLabel: 'Merged' },
     facts: [],
   },
   viewer: { involvement: ['reviewRequested'] },
@@ -147,7 +147,7 @@ describe('githubOfferedMutationsV1', () => {
   it('does not offer an impossible reopen after GitHub reports the pull request merged', () => {
     expect(githubOfferedMutationsV1({
       kindId: 'pull-request',
-      state: detailInput({ presentation: 'closed', nativeLabel: 'Merged' })
+      state: detailInput({ presentation: 'resolved', nativeLabel: 'Merged' })
         .observation.snapshot.state,
     })).toEqual([]);
   });
@@ -337,7 +337,7 @@ describe('projectGithubMutationOutcomeV1', () => {
     )).toEqual({
       kind: 'applied',
       effect: 'changed',
-      confirmedState: { presentation: 'closed', nativeLabel: 'Merged' },
+      confirmedState: { presentation: 'resolved', nativeLabel: 'Merged' },
       confirmedEntryRef: {
         kindId: 'pull-request', collisionScope: 'github:1296269', entryId: '1284',
       },
@@ -349,7 +349,7 @@ describe('projectGithubMutationOutcomeV1', () => {
     )).toEqual({
       kind: 'applied',
       effect: 'alreadySatisfied',
-      confirmedState: { presentation: 'closed', nativeLabel: 'Merged' },
+      confirmedState: { presentation: 'resolved', nativeLabel: 'Merged' },
       confirmedEntryRef: {
         kindId: 'pull-request', collisionScope: 'github:1296269', entryId: '1284',
       },
@@ -448,7 +448,7 @@ describe('GitHub post-mutation provider semantics', () => {
     expect(githubMutationMayHaveChangedProviderStateV1({
       kind: 'applied',
       effect: 'alreadySatisfied',
-      confirmedState: { presentation: 'closed', nativeLabel: 'Merged' },
+      confirmedState: { presentation: 'resolved', nativeLabel: 'Merged' },
       confirmedEntryRef: {
         kindId: 'pull-request', collisionScope: 'github:1296269', entryId: '1284',
       },

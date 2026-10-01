@@ -2,6 +2,7 @@ import type { CommandHandler } from '@/cli/commandRegistry';
 import type { DaemonSpawnHooks } from '@/daemon/spawnHooks';
 import type {
   BackendTargetRefV1,
+  RuntimeDescriptorV1,
   ConnectedServiceBindingsV2,
   ConnectedAccountServiceKey,
   ConnectedAccountRequestAuthUseV1,
@@ -412,6 +413,8 @@ export type AgentCatalogEntry = Readonly<{
    */
   resolveModelsProbeVariant?: (params: Readonly<{
     backendTarget?: BackendTargetRefV1;
+    runtimeDescriptorV1?: RuntimeDescriptorV1;
+    runtimeKindOverride?: string;
     probeKind?: PreflightSessionControlsProbeKind;
     accountSettings?: Readonly<Record<string, unknown>> | null;
     env?: NodeJS.ProcessEnv;
@@ -425,6 +428,8 @@ export type AgentCatalogEntry = Readonly<{
    */
   resolveSessionControlsProbeVariant?: (params: Readonly<{
     backendTarget?: BackendTargetRefV1;
+    runtimeDescriptorV1?: RuntimeDescriptorV1;
+    runtimeKindOverride?: string;
     probeKind: PreflightSessionControlsProbeKind;
     accountSettings?: Readonly<Record<string, unknown>> | null;
     env?: NodeJS.ProcessEnv;

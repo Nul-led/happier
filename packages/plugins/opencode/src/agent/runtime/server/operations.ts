@@ -1,4 +1,16 @@
 import type { OpenCodeRuntimeEvent } from './runtimeEvents.js';
+import type { OpenCodePreflightModel } from '../../preflight/models.js';
+
+export type OpenCodeModelCatalogSnapshot = Readonly<{
+  observedAt: number;
+  models: readonly OpenCodePreflightModel[] | null;
+}>;
+
+export type OpenCodeModeCatalogSnapshot = Readonly<{
+  observedAt: number;
+  modes: readonly Readonly<{ id: string; name: string; description?: string }>[] | null;
+  currentModeId: string | null;
+}>;
 
 export type OpenCodePromptSendMeta = Readonly<{
   localInputId?: string | null;
@@ -46,8 +58,10 @@ export type OpenCodeRuntimeTurnOperations = Readonly<{
   }>): Promise<void>;
   listSkills(input?: Readonly<{ directory?: string | null }>): Promise<unknown>;
   readSessionIdentity(): Readonly<{ sessionId: string | null }>;
+  readModelCatalog(): OpenCodeModelCatalogSnapshot;
+  readModeCatalog(): OpenCodeModeCatalogSnapshot;
   isHappierAuthoredProviderUserMessageId(messageId: string): boolean;
-  updateSessionRuntimeConfig(update: Readonly<Record<string, unknown>>): Promise<void>;
+  updateSessionRuntimeConfig(update: Readonly<Record<string, unknown>>): Promise<'applied' | 'deferred' | void>;
   handleProviderEvent(event: unknown): Promise<void>;
   resetOrDisposeRuntime(): Promise<void>;
 }>;

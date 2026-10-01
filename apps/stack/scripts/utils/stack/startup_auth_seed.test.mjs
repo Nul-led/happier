@@ -7,6 +7,29 @@ import { fileURLToPath } from 'node:url';
 
 import { prepareDaemonAuthSeedIfNeeded } from './startup.mjs';
 import { findAnyCredentialPathInCliHome, resolveStackCredentialPaths } from '../auth/credentials_paths.mjs';
+import { runNodeCapture } from '../../testkit/core/run_node_capture.mjs';
+
+async function createReadableSourceSqliteAccountDb({ stackRootDir, dataDir }) {
+    const serverDir = join(dirname(stackRootDir), 'server');
+    const databaseUrl = `file:${join(dataDir, 'happier-server-light.sqlite')}`;
+    const result = await runNodeCapture([
+        '--input-type=module',
+        '-e',
+        `
+const { PrismaClient } = await import(${JSON.stringify(join(serverDir, 'generated', 'sqlite-client', 'index.js'))});
+const db = new PrismaClient();
+try {
+  await db.$executeRawUnsafe('CREATE TABLE IF NOT EXISTS "Account" ("id" TEXT NOT NULL PRIMARY KEY, "publicKey" TEXT)');
+} finally {
+  await db.$disconnect();
+}
+        `.trim(),
+    ], {
+        cwd: serverDir,
+        env: { ...process.env, DATABASE_URL: databaseUrl },
+    });
+    assert.equal(result.code, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+}
 
 test('prepareDaemonAuthSeedIfNeeded copies credentials from a non-running source stack via offline auth seeding', async (t) => {
     const utilsStackDir = dirname(fileURLToPath(import.meta.url));
@@ -64,6 +87,10 @@ test('prepareDaemonAuthSeedIfNeeded copies credentials from a non-running source
 
     await writeStackEnv({ stackName: sourceStack, cliHomeDir: sourceCliHome, serverPort: 4201 });
     await writeStackEnv({ stackName: targetStack, cliHomeDir: targetCliHome, serverPort: 4202 });
+    await createReadableSourceSqliteAccountDb({
+        stackRootDir,
+        dataDir: join(storageDir, sourceStack, 'server-light'),
+    });
 
     const sourceCredentialPaths = resolveStackCredentialPaths({
         cliHomeDir: sourceCliHome,

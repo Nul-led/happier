@@ -11,6 +11,7 @@ import {
   type OpenCodeGlobalEvent,
   type OpenCodeGlobalEventDelivery,
   subscribeOpenCodeGlobalEvents,
+  subscribeOpenCodeV2InstanceEvents,
 } from '../../../runtime/server/openCodeServerClient.js';
 import {
   asRecord,
@@ -26,6 +27,7 @@ import {
   createManagedEndpointFetch,
   MANAGED_ENDPOINT_TRANSPORT_BASE_URL,
 } from './managedEndpointFetch.js';
+import { resolveOpenCodeExternalSessionsDialect } from './managedServer.js';
 
 const OBSERVATION_FACT_TTL_MS = 30_000;
 const RESOURCE_KEY_PREFIX = 'opencode-resource-v2:';
@@ -265,10 +267,15 @@ export function createOpenCodeExternalSessionObservationContribution(params: Rea
   env?: Readonly<Record<string, string | undefined>>;
   now?: () => number;
   subscribeGlobalEvents?: SubscribeOpenCodeGlobalEvents;
+  resolveDialect?: typeof resolveOpenCodeExternalSessionsDialect;
 }> = {}): AgentExternalSessionObservationContribution {
   const env = params.env ?? process.env;
   const now = params.now ?? Date.now;
   const subscribeGlobalEvents = params.subscribeGlobalEvents ?? subscribeOpenCodeGlobalEvents;
+  const resolveDialect = params.resolveDialect
+    ?? (params.subscribeGlobalEvents
+      ? async () => 'v1' as const
+      : resolveOpenCodeExternalSessionsDialect);
 
   return Object.freeze({
     describeResource(request) {
@@ -285,12 +292,17 @@ export function createOpenCodeExternalSessionObservationContribution(params: Rea
         request.signal.addEventListener('abort', abort, { once: true });
       }
       let disposed = false;
-      void subscribeGlobalEvents({
+      void resolveDialect({
+        source: { kind: 'opencodeServer', managedEndpoint: true },
+        managedEndpointRead: request.managedEndpointRead,
+        signal: controller.signal,
+      }).then((dialect) => (dialect === 'v2' ? subscribeOpenCodeV2InstanceEvents : subscribeGlobalEvents)({
         // Owned or attached, the endpoint lives with the managed service and
         // the host issues the request; observation holds no address and no
         // transport of its own.
         baseUrl: MANAGED_ENDPOINT_TRANSPORT_BASE_URL,
         fetch: createManagedEndpointFetch(request.managedEndpointRead),
+        ...(dialect === 'v2' ? { directory: null } : {}),
         signal: controller.signal,
         onUnavailable() {
           if (!controller.signal.aborted) request.requestReconcile();
@@ -315,7 +327,7 @@ export function createOpenCodeExternalSessionObservationContribution(params: Rea
           }
           request.requestReconcile();
         },
-      }).then(() => {
+      })).then(() => {
         if (!controller.signal.aborted) request.requestReconcile();
       }).catch(() => {
         if (!controller.signal.aborted) request.requestReconcile();
@@ -447,16 +459,11 @@ export function createOpenCodeExternalSessionObservationContribution(params: Rea
           try {
             const client = await createOpenCodeExternalSessionClient({
               source: directoryGroup.source,
-              // Observation reconciliation is the one External Sessions read the
-              // host does not hand an `ExecService`
-              // (`AgentExternalSessionObservationReconcileResourceRequest`), so
-              // no resolved-executable fact reaches here and the proven legacy
-              // route is the only safe choice. Against a V2 server the status
-              // read fails and every link in the group becomes a retrieval
-              // failure — degraded, never a wrong turn phase. Making this
-              // generation-aware means the host stamping execution authority on
-              // the observation request too.
-              dialect: 'v1',
+              dialect: await resolveDialect({
+                source: directoryGroup.source,
+                managedEndpointRead: request.managedEndpointRead,
+                signal: request.signal,
+              }),
               env,
               baseUrlAuthority: 'canonical',
               managedEndpointRead: request.managedEndpointRead,

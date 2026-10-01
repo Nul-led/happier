@@ -10,6 +10,7 @@ import {
     normalizeScmRemoteName as canonicalNormalizeScmRemoteName,
     normalizeScmRemoteRequest as canonicalNormalizeScmRemoteRequest,
     normalizeScmRemoteUrl as canonicalNormalizeScmRemoteUrl,
+    normalizeScmOperationOutcome as canonicalNormalizeScmOperationOutcome,
     sameScmHostingRepositoryIdentity as canonicalSameScmHostingRepositoryIdentity,
     resolveScmScopedChangedPaths as canonicalResolveScmScopedChangedPaths,
     SCM_COMMIT_MESSAGE_MAX_LENGTH as canonicalScmCommitMessageMaxLength,
@@ -21,6 +22,7 @@ import {
     ScmCapabilitiesSchema as canonicalScmCapabilitiesSchema,
     ScmSelectedMutationPathSchema as canonicalScmSelectedMutationPathSchema,
     ScmWorkingSnapshotSchema as canonicalScmWorkingSnapshotSchema,
+    ScmOperationOutcomeSchema as canonicalScmOperationOutcomeSchema,
     SourceControlCloneProtocolSchema as canonicalScmCloneProtocolSchema,
 } from '@happier-dev/protocol/scm';
 
@@ -48,6 +50,7 @@ export type ScmRemoteMutationResult =
 
 export type ScmRemoteMutationSnapshot = {
     hasConflicts: boolean;
+    operationState?: ScmOperationState | null;
     branch: Pick<ScmWorkingSnapshot['branch'], 'head' | 'upstream' | 'behind' | 'detached'>;
     totals: Pick<ScmWorkingSnapshot['totals'], 'includedFiles' | 'pendingFiles' | 'untrackedFiles'>;
 };
@@ -57,7 +60,12 @@ export type ScmRemoteNameNormalizationResult =
     | { ok: false; error: string };
 
 export type ScmRemoteRequestNormalizationResult =
-    | { ok: true; request: { remote: string | undefined; branch: string | undefined } }
+    | { ok: true; request: {
+        dirtyPolicy?: ScmDirtyPolicy;
+        reconcile?: ScmReconcilePolicy;
+        pushMode?: ScmPushMode;
+        expectedRemoteOid?: string;
+    } & { remote: string | undefined; branch: string | undefined } }
     | { ok: false; error: string };
 
 export type ScmRemoteUrlNormalizationResult =
@@ -95,6 +103,10 @@ export const sameScmHostingRepositoryIdentity = canonicalSameScmHostingRepositor
     right: ScmHostingRepositoryIdentityV1 | null | undefined,
 ) => boolean;
 export type ScmBranchIntegrationOperation = 'merge' | 'rebase';
+export type ScmRepositoryOperationKind = 'merge' | 'rebase' | 'revert' | 'cherry_pick';
+export type ScmDirtyPolicy = 'refuse' | 'autostash' | 'allow_git';
+export type ScmReconcilePolicy = 'ff_only' | 'rebase' | 'merge';
+export type ScmPushMode = 'ordinary' | 'force_with_lease';
 export type ScmDefaultBranchPushPolicy = 'allow' | 'requires-feature-branch' | 'deny';
 export type ScmSelectedMutationPath = string;
 export type ScmCloneProtocol = 'auto' | 'ssh' | 'https';
@@ -105,6 +117,22 @@ export type ScmOperationErrorCode =
     | 'COMMAND_FAILED'
     | 'CHANGE_APPLY_FAILED'
     | 'COMMIT_REQUIRED'
+    | 'COMMIT_HOOK_FAILED'
+    | 'COMMIT_SIGNING_FAILED'
+    | 'COMMIT_IDENTITY_REQUIRED'
+    | 'COMMIT_EMPTY'
+    | 'COMMIT_AMEND_PUBLISHED'
+    | 'INDEX_LOCKED'
+    | 'INDEX_RECONCILIATION_FAILED'
+    | 'REMOTE_NETWORK_FAILED'
+    | 'COMMAND_CANCELLED'
+    | 'COMMAND_TIMEOUT'
+    | 'COMMAND_OUTPUT_LIMIT_EXCEEDED'
+    | 'COMMAND_OUTCOME_UNKNOWN'
+    | 'REPOSITORY_REFRESH_FAILED'
+    | 'STASH_CREATE_FAILED'
+    | 'STASH_APPLY_FAILED'
+    | 'STASH_DROP_FAILED'
     | 'CONFLICTING_WORKTREE'
     | 'REMOTE_AUTH_REQUIRED'
     | 'REMOTE_UPSTREAM_REQUIRED'
@@ -126,10 +154,13 @@ export type ScmCapabilities = {
     readLog: boolean;
     readBranches?: boolean;
     readStash?: boolean;
+    writeStashCreate?: boolean;
     writeInclude: boolean;
     writeExclude: boolean;
     writeDiscard?: boolean;
     writeCommit: boolean;
+    writeCommitAmend?: boolean;
+    writeCommitSignOff?: boolean;
     writeCommitPathSelection: boolean;
     writeCommitLineSelection: boolean;
     writeBackout: boolean;
@@ -138,6 +169,8 @@ export type ScmCapabilities = {
     writeBranchMerge?: boolean;
     writeBranchRebase?: boolean;
     writeBranchOperationControl?: boolean;
+    writeBranchOperationSkip?: boolean;
+    writeConflictResolution?: boolean;
     writeRemoteAdd?: boolean;
     writeRemoteSetUrl?: boolean;
     writeRemoteRemove?: boolean;
@@ -145,9 +178,12 @@ export type ScmCapabilities = {
     writeRemotePull: boolean;
     writeRemotePush: boolean;
     writeRemotePublish?: boolean;
+    writeRemotePolicies?: boolean;
+    writeRemoteForceWithLease?: boolean;
     readHostingProvider?: boolean;
     readPullRequestStatus?: boolean;
     writePullRequestCreate?: boolean;
+    writePullRequestDraftCreate?: boolean;
     writePullRequestCheckout?: boolean;
     writePullRequestPrepareWorktree?: boolean;
     writePullRequestRunStacked?: boolean;
@@ -206,12 +242,63 @@ export type ScmRemoteInfo = {
     pushUrl?: string;
 };
 
+export type ScmConflictEntry = {
+    path: string;
+    kind: string;
+    indexStages?: { base?: string; ours?: string; theirs?: string };
+};
+
 export type ScmOperationState = {
-    kind: ScmBranchIntegrationOperation;
+    kind: ScmRepositoryOperationKind;
     sourceRef?: string | null;
+    replayCommit?: string;
+    baseOid?: string;
+    headOid?: string;
+    unresolvedCount?: number;
+    conflicts?: ScmConflictEntry[];
     canContinue: boolean;
     canAbort: boolean;
+    canSkip?: boolean;
 };
+
+export type ScmOperationRepositoryState = {
+    headOid?: string;
+    hasConflicts: boolean;
+    operation: ScmOperationState | null;
+};
+
+export type ScmOperationEffect =
+    | { kind: 'commit'; commitSha: string }
+    | { kind: 'stash'; stashOid: string; stashRef?: string }
+    | { kind: 'pull_request'; url: string; number?: number }
+    | { kind: 'branch'; name: string; headOid?: string }
+    | { kind: 'remote'; remote: string; branch?: string; remoteOid?: string };
+
+export type ScmOperationReconciliation =
+    | { kind: 'repository_status'; cwd?: string }
+    | { kind: 'commit'; commitSha: string }
+    | { kind: 'stash'; stashOid?: string; message?: string }
+    | { kind: 'remote_ref'; remote: string; branch?: string; expectedOid?: string }
+    | { kind: 'pull_request'; head: string; base?: string; providerId?: string; repository?: string; url?: string };
+
+export type ScmOperationNextAction =
+    | { kind: 'refresh' | 'retry' | 'resolve_conflicts' | 'continue' | 'skip' | 'abort' | 'reconcile_index' | 'choose_dirty_policy' | 'choose_reconcile' | 'configure_upstream' | 'authenticate' }
+    | { kind: 'open_url'; url: string };
+
+export type ScmOperationOutcome = {
+    v: 1;
+    nextActions: ScmOperationNextAction[];
+    message?: string;
+    recoveryStash?: { stashOid: string; stashRef?: string };
+} & (
+    | { kind: 'succeeded'; effect?: ScmOperationEffect; repositoryState?: ScmOperationRepositoryState }
+    | { kind: 'needs_input'; errorCode: ScmOperationErrorCode; repositoryState?: ScmOperationRepositoryState }
+    | { kind: 'conflicted'; errorCode: ScmOperationErrorCode; repositoryState: ScmOperationRepositoryState }
+    | { kind: 'effect_applied_with_warning'; errorCode: ScmOperationErrorCode; effect: ScmOperationEffect; repositoryState?: ScmOperationRepositoryState }
+    | { kind: 'failed'; errorCode: ScmOperationErrorCode; repositoryState?: ScmOperationRepositoryState }
+    | { kind: 'cancelled'; errorCode?: ScmOperationErrorCode; repositoryState: ScmOperationRepositoryState }
+    | { kind: 'outcome_unknown'; errorCode: ScmOperationErrorCode; reconciliation: ScmOperationReconciliation; repositoryState?: ScmOperationRepositoryState }
+);
 
 export type ScmPullRequestState = 'open' | 'closed' | 'merged' | 'draft' | 'unknown';
 export type ScmPullRequestChecksState = 'pending' | 'success' | 'failure' | 'unknown';
@@ -300,6 +387,7 @@ export type ScmWorkingSnapshot = {
     };
     stashCount?: number;
     operationState?: ScmOperationState | null;
+    operationStateVersion?: 1;
     hostingProvider?: ScmHostingProviderRef | null;
     pullRequestStatus?: ScmPullRequestStatusProjection | null;
     hasConflicts: boolean;
@@ -316,7 +404,7 @@ export type ScmWorkingSnapshot = {
     };
 };
 
-export type ScmBranchListRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmBranchListRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     includeRemotes?: boolean;
 };
 
@@ -334,7 +422,7 @@ export type ScmBranchListResponse = {
     errorCode?: ScmOperationErrorCode;
 };
 
-export type ScmBranchCreateRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmBranchCreateRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     name: string;
     checkout?: boolean;
     startPoint?: string;
@@ -342,12 +430,13 @@ export type ScmBranchCreateRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'bac
 
 export type ScmBranchCreateResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
-export type ScmBranchCheckoutRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmBranchCheckoutRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     name: string;
     strategy: 'stash_on_current_branch' | 'bring_changes';
     overwriteCurrentBranchStash?: boolean;
@@ -355,21 +444,24 @@ export type ScmBranchCheckoutRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'b
 
 export type ScmBranchCheckoutResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     didCreateStash?: boolean;
     didPopStash?: boolean;
     stashRef?: string | null;
+    stashOid?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
 
-export type ScmRemotePublishRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmRemotePublishRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     remote?: string;
 };
 
 export type ScmRemotePublishResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     error?: string;
@@ -382,8 +474,10 @@ export type ScmStatusSnapshotRequest = {
         backendId: string;
     };
     includeWorktreeStatus?: boolean;
+    operationStateVersion?: 1;
+    outcomeVersion?: 1;
 };
-export type ScmWorktreesEnrichmentRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { worktreePaths: string[] };
+export type ScmWorktreesEnrichmentRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { worktreePaths: string[] };
 export type ScmWorktreeEnrichmentEntry = { path: string; changeCount?: number; lastActivityAt?: number };
 export type ScmWorktreesEnrichmentResponse = {
     success: boolean;
@@ -405,7 +499,7 @@ export type ScmStatusSnapshotResponse = {
     errorCode?: ScmOperationErrorCode;
 };
 
-export type ScmDiffFileRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmDiffFileRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     path: string;
     area?: 'included' | 'pending' | 'both';
 };
@@ -417,33 +511,38 @@ export type ScmDiffFileResponse = {
     errorCode?: ScmOperationErrorCode;
 };
 
-export type ScmDiffCommitRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { commit: string };
+export type ScmDiffCommitRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { commit: string };
 export type ScmDiffCommitResponse = ScmDiffFileResponse;
-export type ScmChangeApplyRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmChangeApplyRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     paths?: ScmSelectedMutationPath[];
     patch?: string;
 };
 
 export type ScmChangeApplyResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
-export type ScmChangeDiscardRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmChangeDiscardRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     entries: { path: ScmSelectedMutationPath; kind: ScmWorkingEntry['kind'] }[];
 };
 
 export type ScmChangeDiscardResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
-export type ScmCommitCreateRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmCommitCreateRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     message: string;
+    mode?: 'commit' | 'amend';
+    signOff?: boolean;
+    allowPublishedAmend?: boolean;
     scope?:
         | { kind: 'all-pending' }
         | {
@@ -456,6 +555,7 @@ export type ScmCommitCreateRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'bac
 
 export type ScmCommitCreateResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     commitSha?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
@@ -471,7 +571,7 @@ export type ScmLogEntry = {
     body: string;
 };
 
-export type ScmLogListRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { limit?: number; skip?: number; query?: string };
+export type ScmLogListRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { limit?: number; skip?: number; query?: string; range?: 'incoming' };
 export type ScmLogListResponse = {
     success: boolean;
     entries?: ScmLogEntry[];
@@ -480,21 +580,31 @@ export type ScmLogListResponse = {
      * producer ignored the query and returned a recent page.
      */
     queryApplied?: boolean;
+    rangeApplied?: boolean;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
 
-export type ScmCommitBackoutRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { commit: string };
+export type ScmCommitBackoutRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { commit: string };
 export type ScmCommitBackoutResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
-export type ScmRemoteRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { remote?: string; branch?: string };
+export type ScmRemoteRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
+    remote?: string;
+    branch?: string;
+    dirtyPolicy?: ScmDirtyPolicy;
+    reconcile?: ScmReconcilePolicy;
+    pushMode?: ScmPushMode;
+    expectedRemoteOid?: string;
+};
 export type ScmRemoteMutationKind = 'push' | 'pull';
 export type ScmRemoteMutationReason =
+    | 'operation_in_progress'
     | 'conflicts_present'
     | 'upstream_required'
     | 'detached_head'
@@ -507,23 +617,26 @@ export type ScmRemoteMutationPolicy = {
     blockPushOnConflicts: boolean;
     blockPushWhenBehind: boolean;
     requireCleanPull: boolean;
+    blockActiveOperation?: boolean;
+    allowDetachedPushWithExplicitSource?: boolean;
 };
 
-export type ScmRemoteAddRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmRemoteAddRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     name: string;
     fetchUrl: string;
     pushUrl?: string;
 };
 
-export type ScmRemoteSetUrlRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmRemoteSetUrlRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     name: string;
     fetchUrl?: string;
     pushUrl?: string | null;
 };
 
-export type ScmRemoteRemoveRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { name: string };
+export type ScmRemoteRemoveRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { name: string };
 export type ScmRemoteManagementResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     remotes?: ScmRemoteInfo[];
     stdout?: string;
     stderr?: string;
@@ -533,18 +646,30 @@ export type ScmRemoteManagementResponse = {
 
 export type ScmRemoteResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
-export type ScmBranchIntegrationRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { sourceRef: string };
-export type ScmBranchOperationControlRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
-    operation: ScmBranchIntegrationOperation;
+export type ScmBranchIntegrationRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { sourceRef: string };
+export type ScmBranchOperationControlRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
+    operation: ScmRepositoryOperationKind;
 };
+
+export type ScmConflictAcceptSideRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
+    path: ScmSelectedMutationPath;
+    side: 'ours' | 'theirs';
+};
+export type ScmConflictMarkResolvedRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
+    paths: ScmSelectedMutationPath[];
+};
+export type ScmConflictAcceptSideResponse = ScmBranchIntegrationResponse;
+export type ScmConflictMarkResolvedResponse = ScmBranchIntegrationResponse;
 
 export type ScmBranchIntegrationResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     operationState?: ScmOperationState | null;
     stdout?: string;
     stderr?: string;
@@ -554,13 +679,14 @@ export type ScmBranchIntegrationResponse = {
 
 export type ScmStashEntry = {
     stashRef: string;
+    stashOid?: string;
     kind: 'branch' | 'transient' | 'unmanaged';
     branch?: string;
     createdAt?: number;
     message?: string;
 };
 
-export type ScmStashListRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { includeAll?: boolean };
+export type ScmStashListRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { includeAll?: boolean };
 export type ScmStashListResponse = {
     success: boolean;
     stashes?: ScmStashEntry[];
@@ -571,31 +697,47 @@ export type ScmStashListResponse = {
     errorCode?: ScmOperationErrorCode;
 };
 
-export type ScmStashDropRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { stashRef: string };
+export type ScmStashCreateRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { message?: string };
+export type ScmStashCreateResponse = {
+    success: boolean;
+    outcome?: ScmOperationOutcome;
+    stashCreated?: boolean;
+    stashRef?: string | null;
+    stashOid?: string;
+    stdout?: string;
+    stderr?: string;
+    error?: string;
+    errorCode?: ScmOperationErrorCode;
+};
+
+export type ScmStashDropRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { stashRef: string };
 export type ScmStashDropResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
-export type ScmStashPopRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { stashRef: string };
+export type ScmStashPopRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { stashRef: string };
 export type ScmStashPopResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
-export type ScmStashApplyRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { stashRef: string };
+export type ScmStashApplyRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { stashRef: string };
 export type ScmStashApplyResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
-export type ScmStashShowRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { stashRef: string; maxBytes?: number };
+export type ScmStashShowRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { stashRef: string; maxBytes?: number };
 export type ScmStashShowResponse = {
     success: boolean;
     diff?: string;
@@ -604,23 +746,29 @@ export type ScmStashShowResponse = {
     errorCode?: ScmOperationErrorCode;
 };
 
-export type ScmWorktreeCreateRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmWorktreeCreateRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     displayName?: string;
     baseRef?: string;
     branchMode?: 'new' | 'existing';
 };
 
 export type ScmWorktreeCreateResponse = {
-    success: boolean;
+    success: true;
+    outcome?: ScmOperationOutcome;
     worktreePath: string;
     branchName: string;
     sourceRootPath?: string;
     repositoryRootPath?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
+} | {
+    success: false;
+    outcome?: ScmOperationOutcome;
+    error?: string;
+    errorCode?: ScmOperationErrorCode;
 };
 
-export type ScmWorktreeRemoveRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmWorktreeRemoveRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     worktreePath: string;
     confirmed: true;
     authorizationToken: 'remove-worktree';
@@ -628,14 +776,16 @@ export type ScmWorktreeRemoveRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'b
 
 export type ScmWorktreeRemoveResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
-export type ScmWorktreePruneRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'>;
+export type ScmWorktreePruneRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'>;
 export type ScmWorktreePruneResponse = {
     success: boolean;
+    outcome?: ScmOperationOutcome;
     stdout?: string;
     stderr?: string;
     error?: string;
@@ -752,6 +902,7 @@ export type ScmHostingRepositoryPublishResponse =
     | ({
         [key: string]: unknown;
         success: true;
+        outcome?: ScmOperationOutcome;
         repository: ScmHostingRepositorySummary;
         remote: ScmRemoteInfo;
         pushed: boolean;
@@ -762,6 +913,7 @@ export type ScmHostingRepositoryPublishResponse =
     | ({
         [key: string]: unknown;
         success: false;
+        outcome?: ScmOperationOutcome;
         error: string;
         errorCode?: ScmOperationErrorCode;
         remediation?: {
@@ -782,7 +934,7 @@ export type ScmHostingRepositoryPublishResponse =
         stderr?: string;
     });
 
-export type ScmRepositoryInitRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmRepositoryInitRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     [key: string]: unknown;
     initialBranch?: string;
 };
@@ -791,6 +943,7 @@ export type ScmRepositoryInitResponse =
     | ({
         [key: string]: unknown;
         success: true;
+        outcome?: ScmOperationOutcome;
         alreadyInitialized: boolean;
         snapshot?: ScmWorkingSnapshot;
         stdout?: string;
@@ -799,6 +952,7 @@ export type ScmRepositoryInitResponse =
     | ({
         [key: string]: unknown;
         success: false;
+        outcome?: ScmOperationOutcome;
         error: string;
         errorCode?: ScmOperationErrorCode;
         remediation?: {
@@ -819,7 +973,7 @@ export type ScmRepositoryInitResponse =
         stderr?: string;
     });
 
-export type ScmRepositoryRemoveIndexLockRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmRepositoryRemoveIndexLockRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     confirmed: true;
     confirmationToken: 'remove-stale-index-lock';
 };
@@ -828,6 +982,7 @@ export type ScmRepositoryRemoveIndexLockResponse =
     | ({
         [key: string]: unknown;
         success: true;
+        outcome?: ScmOperationOutcome;
         removed: boolean;
         lockPath: string | null;
         reason?: 'removed' | 'absent';
@@ -838,6 +993,7 @@ export type ScmRepositoryRemoveIndexLockResponse =
     | ({
         [key: string]: unknown;
         success: false;
+        outcome?: ScmOperationOutcome;
         error: string;
         errorCode?: ScmOperationErrorCode;
         remediation?: {
@@ -893,6 +1049,7 @@ export type ScmRepositoryCloneOutput =
     | ({
         [key: string]: unknown;
         success: true;
+        outcome?: ScmOperationOutcome;
         destinationPath: string;
         cloneProtocol: 'ssh' | 'https';
         cloneUrl: string;
@@ -904,6 +1061,7 @@ export type ScmRepositoryCloneOutput =
     | ({
         [key: string]: unknown;
         success: false;
+        outcome?: ScmOperationOutcome;
         error: string;
         errorCode?: ScmOperationErrorCode;
         remediation?: {
@@ -935,7 +1093,7 @@ export type ScmFollowupAction =
     })
     | ({ [key: string]: unknown; kind: 'none' });
 
-export type ScmPullRequestListRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmPullRequestListRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     [key: string]: unknown;
     providerId?: string;
     base?: string;
@@ -962,7 +1120,7 @@ export type ScmPullRequestListResponse =
         errorCode?: ScmOperationErrorCode;
     });
 
-export type ScmPullRequestGetRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmPullRequestGetRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     [key: string]: unknown;
     prReference: ScmPullRequestReference;
 };
@@ -986,7 +1144,7 @@ export type ScmPullRequestGetResponse =
         errorCode?: ScmOperationErrorCode;
     });
 
-export type ScmPullRequestOpenComposeRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmPullRequestOpenComposeRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     [key: string]: unknown;
     providerId?: string;
     base: string;
@@ -997,17 +1155,19 @@ export type ScmPullRequestOpenComposeResponse =
     | ({
         [key: string]: unknown;
         success: true;
+        outcome?: ScmOperationOutcome;
         nextAction: ScmFollowupAction;
         composeUrl?: string;
     })
     | ({
         [key: string]: unknown;
         success: false;
+        outcome?: ScmOperationOutcome;
         error: string;
         errorCode?: ScmOperationErrorCode;
     });
 
-export type ScmPullRequestOpenOrReuseRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmPullRequestOpenOrReuseRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     [key: string]: unknown;
     providerId?: string;
     base: string;
@@ -1015,6 +1175,7 @@ export type ScmPullRequestOpenOrReuseRequest = Pick<ScmStatusSnapshotRequest, 'c
     headRepositoryNameWithOwner?: string;
     title?: string;
     body?: string;
+    draft?: boolean;
     defaultBranchPushPolicy?: ScmDefaultBranchPushPolicy;
 };
 
@@ -1022,6 +1183,7 @@ export type ScmPullRequestOpenOrReuseResponse =
     | ({
         [key: string]: unknown;
         success: true;
+        outcome?: ScmOperationOutcome;
         pullRequest?: ScmPullRequestSummary | null;
         reused?: boolean;
         composeUrl?: string;
@@ -1031,11 +1193,12 @@ export type ScmPullRequestOpenOrReuseResponse =
     | ({
         [key: string]: unknown;
         success: false;
+        outcome?: ScmOperationOutcome;
         error: string;
         errorCode?: ScmOperationErrorCode;
     });
 
-export type ScmPullRequestCheckoutRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmPullRequestCheckoutRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     [key: string]: unknown;
     prReference: ScmPullRequestReference;
 };
@@ -1044,6 +1207,7 @@ export type ScmPullRequestCheckoutResponse =
     | ({
         [key: string]: unknown;
         success: true;
+        outcome?: ScmOperationOutcome;
         pullRequest?: ScmPullRequestSummary | null;
         branch?: string;
         headSha?: string | null;
@@ -1052,11 +1216,12 @@ export type ScmPullRequestCheckoutResponse =
     | ({
         [key: string]: unknown;
         success: false;
+        outcome?: ScmOperationOutcome;
         error: string;
         errorCode?: ScmOperationErrorCode;
     });
 
-export type ScmPullRequestPrepareWorktreeRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmPullRequestPrepareWorktreeRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     [key: string]: unknown;
     sourcePath: string;
     prReference: ScmPullRequestReference;
@@ -1067,6 +1232,7 @@ export type ScmPullRequestPrepareWorktreeResponse =
     | ({
         [key: string]: unknown;
         success: true;
+        outcome?: ScmOperationOutcome;
         targetPath: string;
         branch?: string;
         pullRequest?: ScmPullRequestSummary | null;
@@ -1074,6 +1240,7 @@ export type ScmPullRequestPrepareWorktreeResponse =
     | ({
         [key: string]: unknown;
         success: false;
+        outcome?: ScmOperationOutcome;
         error: string;
         errorCode?: ScmOperationErrorCode;
     });
@@ -1088,7 +1255,7 @@ export type ScmPullRequestRunStackedProgressEvent = {
     timestamp: number;
 };
 
-export type ScmPullRequestRunStackedRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & {
+export type ScmPullRequestRunStackedRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     [key: string]: unknown;
     action:
         | 'commit'
@@ -1111,6 +1278,7 @@ export type ScmPullRequestRunStackedResponse =
     | ({
         [key: string]: unknown;
         success: true;
+        outcome?: ScmOperationOutcome;
         pullRequest?: ScmPullRequestSummary | null;
         composeUrl?: string;
         branch?: string | null;
@@ -1121,6 +1289,7 @@ export type ScmPullRequestRunStackedResponse =
     | ({
         [key: string]: unknown;
         success: false;
+        outcome?: ScmOperationOutcome;
         error: string;
         errorCode?: ScmOperationErrorCode;
         events: ScmPullRequestRunStackedProgressEvent[];
@@ -1136,6 +1305,22 @@ export const SCM_OPERATION_ERROR_CODES: Readonly<{
     COMMAND_FAILED: 'COMMAND_FAILED';
     CHANGE_APPLY_FAILED: 'CHANGE_APPLY_FAILED';
     COMMIT_REQUIRED: 'COMMIT_REQUIRED';
+    COMMIT_HOOK_FAILED: 'COMMIT_HOOK_FAILED';
+    COMMIT_SIGNING_FAILED: 'COMMIT_SIGNING_FAILED';
+    COMMIT_IDENTITY_REQUIRED: 'COMMIT_IDENTITY_REQUIRED';
+    COMMIT_EMPTY: 'COMMIT_EMPTY';
+    COMMIT_AMEND_PUBLISHED: 'COMMIT_AMEND_PUBLISHED';
+    INDEX_LOCKED: 'INDEX_LOCKED';
+    INDEX_RECONCILIATION_FAILED: 'INDEX_RECONCILIATION_FAILED';
+    REMOTE_NETWORK_FAILED: 'REMOTE_NETWORK_FAILED';
+    COMMAND_CANCELLED: 'COMMAND_CANCELLED';
+    COMMAND_TIMEOUT: 'COMMAND_TIMEOUT';
+    COMMAND_OUTPUT_LIMIT_EXCEEDED: 'COMMAND_OUTPUT_LIMIT_EXCEEDED';
+    COMMAND_OUTCOME_UNKNOWN: 'COMMAND_OUTCOME_UNKNOWN';
+    REPOSITORY_REFRESH_FAILED: 'REPOSITORY_REFRESH_FAILED';
+    STASH_CREATE_FAILED: 'STASH_CREATE_FAILED';
+    STASH_APPLY_FAILED: 'STASH_APPLY_FAILED';
+    STASH_DROP_FAILED: 'STASH_DROP_FAILED';
     CONFLICTING_WORKTREE: 'CONFLICTING_WORKTREE';
     REMOTE_AUTH_REQUIRED: 'REMOTE_AUTH_REQUIRED';
     REMOTE_UPSTREAM_REQUIRED: 'REMOTE_UPSTREAM_REQUIRED';
@@ -1168,6 +1353,20 @@ export const ScmWorkingSnapshotSchema: {
         | Readonly<{ success: true; data: ScmWorkingSnapshot }>
         | Readonly<{ success: false; error: unknown }>;
 } = canonicalScmWorkingSnapshotSchema;
+export const ScmOperationOutcomeSchema: {
+    parse(value: unknown): ScmOperationOutcome;
+    safeParse(value: unknown):
+        | Readonly<{ success: true; data: ScmOperationOutcome }>
+        | Readonly<{ success: false; error: unknown }>;
+} = canonicalScmOperationOutcomeSchema;
+
+export const normalizeScmOperationOutcome: (response: Readonly<{
+    success: boolean;
+    outcome?: ScmOperationOutcome;
+    errorCode?: ScmOperationErrorCode;
+    error?: string;
+    commitSha?: string;
+}>) => ScmOperationOutcome = canonicalNormalizeScmOperationOutcome;
 export const ScmRefreshPolicySchema: {
     parse(value: unknown): ScmRefreshPolicy;
     safeParse(value: unknown):
@@ -1195,7 +1394,7 @@ export const normalizeScmRemoteName: (
     options?: { allowSlash?: boolean },
 ) => ScmRemoteNameNormalizationResult = canonicalNormalizeScmRemoteName;
 export const normalizeScmRemoteRequest: (
-    request: Readonly<{ remote?: string; branch?: string }>,
+    request: Readonly<Pick<ScmRemoteRequest, 'remote' | 'branch' | 'dirtyPolicy' | 'reconcile' | 'pushMode' | 'expectedRemoteOid'>>,
 ) => ScmRemoteRequestNormalizationResult = canonicalNormalizeScmRemoteRequest;
 export const normalizeScmRemoteUrl: (
     value: string | undefined,

@@ -159,6 +159,7 @@ test('build request identity matches the exact all-component artifact recipe and
     assertSelectedBuildPrerequisitesImpl: () => {},
     resolveServerSupportArtifactFingerprintImpl: async () => 'server-support-a',
     resolveDaemonSupportArtifactFingerprintImpl: async () => 'daemon-support-a',
+    resolveDaemonWorkspaceSourceFingerprintImpl: async () => 'a'.repeat(64),
   });
 
   const web = createRuntimeArtifactFingerprint({
@@ -186,6 +187,7 @@ test('build request identity matches the exact all-component artifact recipe and
   });
 
   assert.deepEqual(result.artifactFingerprints, { web, server, daemon });
+  assert.equal(result.daemonWorkspaceSourceFingerprint, 'a'.repeat(64));
   assert.equal(
     result.snapshotId,
     createRuntimeSnapshotId({ sourceMetadata, componentFingerprints: { web, server, daemon } }),

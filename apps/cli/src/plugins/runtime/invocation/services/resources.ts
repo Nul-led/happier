@@ -30,7 +30,8 @@ import {
     resolveContainedPluginResourcePath,
     resolvePluginResourcePath,
 } from '@/plugins/projection/resources/package/resolve';
-import { runWithOptionalTimeout } from '@/plugins/runtime/lifecycle/utils';
+import { remainingPluginInitializationTimeoutMs, runWithOptionalTimeout } from '@/plugins/runtime/lifecycle/utils';
+import { logger } from '@/ui/logger';
 import type { ResolvedManifestHostAccessRequest } from '@/plugins/runtime/hostAccess/manifestRequests';
 import {
     getActiveAccountSettingsSnapshotLifetimeToken,
@@ -44,23 +45,13 @@ import {
 export const MAX_PLUGIN_RESOURCE_BYTES = 16 * 1024 * 1024;
 export const MAX_PLUGIN_RESOURCE_AGGREGATE_BYTES = 64 * 1024 * 1024;
 export const MAX_PLUGIN_RESOURCES_PER_GENERATION = 512;
-// Exact dynamic Resource contexts are transient generation-owned state,
-// so they use the incumbent generation Resource bound rather than a second
+// Exact dynamic Resource contexts are transient occurrenceId-owned state,
+// so they use the incumbent occurrenceId Resource bound rather than a second
 // externally configurable quota.
 const MAX_PLUGIN_RESOURCE_ACTIVE_CONTEXTS = MAX_PLUGIN_RESOURCES_PER_GENERATION;
 export const MAX_PLUGIN_BRAND_ICON_BYTES = 256 * 1024;
 const MIN_PLUGIN_BRAND_ICON_DIMENSION = 64;
 const MAX_PLUGIN_BRAND_ICON_DIMENSION = 512;
-
-/**
- * Budget for the admission read of one dynamic producer, matching the other
- * plugin-callback budgets this runtime already applies (activation cleanup and
- * retirement both use 5s through the same owner). Plugins are trusted, but a
- * `read()` that never answers must not hold generation admission or reload
- * open forever. The mechanism is the shared plugin-callback timeout owner
- * (`runWithOptionalTimeout`); only the budget is named here.
- */
-const DYNAMIC_RESOURCE_ADMISSION_TIMEOUT_MS = 5_000;
 
 /**
  * A failed dynamic-watch settlement must not consume the only producer
@@ -80,12 +71,13 @@ type ResourceGeneration = Readonly<{
     files: ImmutablePluginGenerationRecord['files'];
     /** Optional manifest-declared local Resource id for the portable brand mark. */
     brandIconResourceId?: string;
+    brandMonochrome?: boolean;
 }>;
 
 type BindPluginResources = Readonly<{
     pluginId: string;
     signal: AbortSignal;
-    isGenerationCurrent(): boolean;
+    isOccurrenceCurrent(): boolean;
     /** Host-stamped exact target context; required only by contextual Resources. */
     context?: PluginResourceContextV1;
     /** Host-private one-shot proof; only `bindForResource` can mint it. */
@@ -161,10 +153,12 @@ type AdmittedDynamicResource = {
     readonly contentType: string;
     readonly maxBytes: number;
     readonly scope: PluginDynamicResourceScopeV1;
-    readonly generation: string;
+    readonly occurrenceId: string;
     readonly hostAccessRequests: readonly ResolvedManifestHostAccessRequest[];
     readonly runtime: PluginDynamicResourceRuntime;
-    /** Global Resources retain the original admission observation for the generation. */
+    /** A failed initial global read makes only this declaration unavailable for its occurrence. */
+    admissionFailure: PluginError | null;
+    /** Global Resources retain the original admission observation for the occurrenceId. */
     globalContext: DynamicResourceContextState | null;
     /** Contextual state is nested under its Resource, never a global Session registry. */
     readonly sessionContexts: Map<string, DynamicResourceContextState>;
@@ -249,16 +243,16 @@ export type StableDynamicPluginResourceProducer = Readonly<{
 export type BindDynamicResourceAccountStorage = (input: Readonly<{
     pluginId: string;
     resourceId: string;
-    generation: string;
+    occurrenceId: string;
     hostAccessRequests: readonly ResolvedManifestHostAccessRequest[];
     signal: AbortSignal;
-    isGenerationCurrent(): boolean | Promise<boolean>;
+    isOccurrenceCurrent(): boolean | Promise<boolean>;
 }>) => PluginAccountStorageScope | undefined;
 
 /**
  * The one bounded Resource availability fact a bound UI surface may consume.
  * It is derived from this full admitted registry only after its caller has
- * already selected the exact origin/generation binding; it deliberately carries
+ * already selected the exact origin/occurrenceId binding; it deliberately carries
  * neither a Resource inventory nor that binding's identity.
  */
 export type PluginUiResourceBindingCapability = PluginUiResourceBindingCapabilityV1;
@@ -553,6 +547,7 @@ function normalizeGeneration(raw: ResourceGeneration): Readonly<{
     rootPath: string;
     filesByPath: ReadonlyMap<string, ImmutablePluginGenerationRecord['files'][number]>;
     brandIconResourceId: string | null;
+    brandMonochrome: boolean;
 }> {
     try {
         const pluginId = boundedString(ownData(raw, 'pluginId'), 256);
@@ -560,24 +555,30 @@ function normalizeGeneration(raw: ResourceGeneration): Readonly<{
         const rootPath = boundedString(ownData(raw, 'rootPath'), 4_096);
         const brandIconResourceIdDescriptor = Object.getOwnPropertyDescriptor(raw, 'brandIconResourceId');
         if (brandIconResourceIdDescriptor && !('value' in brandIconResourceIdDescriptor)) {
-            return fail('plugin_resource_generation_invalid', 'Resource generation is invalid');
+            return fail('plugin_resource_generation_invalid', 'Resource occurrenceId is invalid');
         }
         const brandIconResourceId = brandIconResourceIdDescriptor
             ? boundedString(brandIconResourceIdDescriptor.value, 256)
             : null;
+        const brandMonochromeDescriptor = Object.getOwnPropertyDescriptor(raw, 'brandMonochrome');
+        if (brandMonochromeDescriptor && (!('value' in brandMonochromeDescriptor)
+            || typeof brandMonochromeDescriptor.value !== 'boolean')) {
+            return fail('plugin_resource_generation_invalid', 'Resource occurrenceId is invalid');
+        }
+        const brandMonochrome = brandMonochromeDescriptor?.value === true;
         const files = ownData(raw, 'files');
         if (!Array.isArray(files) || files.length > MAXIMUM_IMMUTABLE_GENERATION_FILES) {
-            return fail('plugin_resource_generation_invalid', 'Resource generation is invalid');
+            return fail('plugin_resource_generation_invalid', 'Resource occurrenceId is invalid');
         }
         const filesByPath = new Map<string, ImmutablePluginGenerationRecord['files'][number]>();
         for (const rawFile of files) {
             const relativePath = boundedString(ownData(rawFile, 'relativePath'), 512);
             const byteLength = ownData(rawFile, 'byteLength');
             if (!Number.isSafeInteger(byteLength) || (byteLength as number) < 0) {
-                return fail('plugin_resource_generation_invalid', 'Resource generation is invalid');
+                return fail('plugin_resource_generation_invalid', 'Resource occurrenceId is invalid');
             }
             if (filesByPath.has(relativePath)) {
-                return fail('plugin_resource_generation_invalid', 'Resource generation is invalid');
+                return fail('plugin_resource_generation_invalid', 'Resource occurrenceId is invalid');
             }
             filesByPath.set(relativePath, Object.freeze({ relativePath, byteLength: byteLength as number }));
         }
@@ -587,10 +588,11 @@ function normalizeGeneration(raw: ResourceGeneration): Readonly<{
             rootPath,
             filesByPath: Object.freeze(filesByPath),
             brandIconResourceId,
+            brandMonochrome,
         });
     } catch (error) {
         if (isPluginError(error)) throw error;
-        return fail('plugin_resource_generation_invalid', 'Resource generation is invalid');
+        return fail('plugin_resource_generation_invalid', 'Resource occurrenceId is invalid');
     }
 }
 
@@ -665,7 +667,7 @@ async function resolveAdmittedPath(rootPath: string, relativePath: string): Prom
         }
         return fail('plugin_resource_path_denied', 'Resource path is denied');
     }
-    const canonicalRoot = await realpath(resolve(rootPath)).catch(() => fail('plugin_resource_generation_invalid', 'Resource generation root is unavailable'));
+    const canonicalRoot = await realpath(resolve(rootPath)).catch(() => fail('plugin_resource_generation_invalid', 'Resource occurrenceId root is unavailable'));
     if (contained.absolutePath !== resolve(canonicalRoot, ...contained.relativePath.split('/'))) {
         return fail('plugin_resource_path_denied', 'Resource path is denied');
     }
@@ -702,12 +704,12 @@ async function readPackagedResourceBytes(
             return fail('plugin_resource_too_large', 'Resource read exceeds its byte limit');
         }
         if (info.size !== expectedSize) {
-            return fail('plugin_resource_integrity_mismatch', 'Resource bytes do not match the admitted generation');
+            return fail('plugin_resource_integrity_mismatch', 'Resource bytes do not match the admitted occurrenceId');
         }
         const bytes = new Uint8Array(await handle.readFile());
         guard();
         if (bytes.byteLength !== expectedSize) {
-            return fail('plugin_resource_integrity_mismatch', 'Resource bytes do not match the admitted generation');
+            return fail('plugin_resource_integrity_mismatch', 'Resource bytes do not match the admitted occurrenceId');
         }
         return bytes;
     } finally {
@@ -724,7 +726,7 @@ async function verifyBytes(resource: AdmittedPackagedResource, maxBytes: number,
         guard,
     );
     if (computePluginResourceDigest(bytes) !== resource.expectedDigest) {
-        return fail('plugin_resource_integrity_mismatch', 'Resource bytes do not match the admitted generation');
+        return fail('plugin_resource_integrity_mismatch', 'Resource bytes do not match the admitted occurrenceId');
     }
     return bytes;
 }
@@ -752,18 +754,21 @@ async function readDynamicBytes(
     maxBytes: number,
     guard: () => void,
     signal: AbortSignal,
-    isGenerationCurrent: () => boolean | Promise<boolean>,
+    isOccurrenceCurrent: () => boolean | Promise<boolean>,
     bindAccountStorage?: BindDynamicResourceAccountStorage,
 ): Promise<Readonly<{ bytes: Uint8Array; digest: string }>> {
     guard();
+    if (!await isOccurrenceCurrent()) {
+        return fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
+    }
     const limit = Math.min(maxBytes, resource.maxBytes);
     const accountStorage = bindAccountStorage?.({
         pluginId: resource.pluginId,
         resourceId: resource.id,
-        generation: resource.generation,
+        occurrenceId: resource.occurrenceId,
         hostAccessRequests: resource.hostAccessRequests,
         signal,
-        isGenerationCurrent,
+        isOccurrenceCurrent,
     });
     if (
         accountStorage === undefined
@@ -779,6 +784,9 @@ async function readDynamicBytes(
     const produced = await withStableResourceErrors(async () => await resource.runtime.read(
         runtimeOptions,
     ));
+    if (!await isOccurrenceCurrent()) {
+        return fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
+    }
     guard();
     const bytes = normalizeProducedBytes(produced);
     if (bytes.byteLength > limit) {
@@ -796,40 +804,48 @@ async function readDynamicBytes(
 async function readAdmissionBytes(
     resource: AdmittedDynamicResource,
     context: DynamicResourceContextState,
+    deadlineMs: number,
     bindAccountStorage?: BindDynamicResourceAccountStorage,
-    isCommittedGenerationCurrent?: () => boolean | Promise<boolean>,
+    isBindingCurrent?: () => boolean | Promise<boolean>,
 ): Promise<Readonly<{ bytes: Uint8Array; digest: string }>> {
+    const remainingMs = deadlineMs - performance.now();
+    if (remainingMs <= 0) {
+        throw new PluginError({
+            code: 'plugin_resource_producer_timed_out',
+            message: 'Dynamic resource producer did not answer within its admission budget',
+        });
+    }
     const controller = new AbortController();
-    let committedGenerationCurrent = true;
-    const isLiveCommittedGenerationCurrent = async (): Promise<boolean> => (
+    let bindingCurrent = true;
+    const isLiveBindingCurrent = async (): Promise<boolean> => (
         !controller.signal.aborted
-        && (isCommittedGenerationCurrent === undefined || await isCommittedGenerationCurrent())
+        && (isBindingCurrent === undefined || await isBindingCurrent())
     );
-    const assertCommittedGenerationCurrent = async (): Promise<void> => {
-        committedGenerationCurrent = await isLiveCommittedGenerationCurrent();
-        if (!committedGenerationCurrent) {
-            return fail('plugin_generation_stale', 'Plugin generation is stale');
+    const assertBindingCurrent = async (): Promise<void> => {
+        bindingCurrent = await isLiveBindingCurrent();
+        if (!bindingCurrent) {
+            return fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
         }
     };
     try {
-        await assertCommittedGenerationCurrent();
+        await assertBindingCurrent();
         return await runWithOptionalTimeout(
-            DYNAMIC_RESOURCE_ADMISSION_TIMEOUT_MS,
+            remainingMs,
             async () => {
                 const observed = await readDynamicBytes(
                     resource,
                     context,
                     MAX_PLUGIN_RESOURCE_BYTES,
                     () => {
-                        if (!committedGenerationCurrent || controller.signal.aborted) {
-                            return fail('plugin_generation_stale', 'Plugin generation is stale');
+                        if (!bindingCurrent || controller.signal.aborted) {
+                            return fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
                         }
                     },
                     controller.signal,
-                    isLiveCommittedGenerationCurrent,
+                    isLiveBindingCurrent,
                     bindAccountStorage,
                 );
-                await assertCommittedGenerationCurrent();
+                await assertBindingCurrent();
                 return observed;
             },
             () => new PluginError({
@@ -891,21 +907,23 @@ function normalizeReadOptions(options: { maxBytes?: number; signal?: AbortSignal
 export async function createStablePluginResourcesOwner(params: Readonly<{
     registry: Pick<ResolvedContributionRegistry, 'resources'>;
     generations: ReadonlyMap<string, ResourceGeneration>;
-    immutableGenerationIdsByPluginId?: ReadonlyMap<string, string>;
+    dynamicOccurrenceIdsByPluginId?: ReadonlyMap<string, string>;
+    isDynamicOccurrenceCurrent?: (pluginId: string, occurrenceId: string) => boolean | Promise<boolean>;
     dynamicProducers?: readonly StableDynamicPluginResourceProducer[];
     bindDynamicResourceAccountStorage?: BindDynamicResourceAccountStorage;
     resolveSessionResourceAccess?: ResolveSessionResourceAccess;
     isCommittedGenerationCurrent?: () => boolean | Promise<boolean>;
+    startupDeadlineAtMs?: number;
 }>): Promise<StablePluginResourcesOwner> {
     if (!Array.isArray(params.registry.resources)) {
-        return fail('plugin_resource_capacity_exceeded', 'Resource generation exceeds its declaration bound');
+        return fail('plugin_resource_capacity_exceeded', 'Resource occurrenceId exceeds its declaration bound');
     }
     const contributions = params.registry.resources.map(normalizeContribution);
     const resourceCountByPluginId = new Map<string, number>();
     for (const contribution of contributions) {
         const nextCount = (resourceCountByPluginId.get(contribution.pluginId) ?? 0) + 1;
         if (nextCount > MAX_PLUGIN_RESOURCES_PER_GENERATION) {
-            return fail('plugin_resource_capacity_exceeded', 'Resource generation exceeds its declaration bound');
+            return fail('plugin_resource_capacity_exceeded', 'Resource occurrenceId exceeds its declaration bound');
         }
         resourceCountByPluginId.set(contribution.pluginId, nextCount);
     }
@@ -913,10 +931,15 @@ export async function createStablePluginResourcesOwner(params: Readonly<{
     return await createStablePluginResourcesOwnerFromNormalized({
         contributions,
         generations: params.generations,
-        ...(params.immutableGenerationIdsByPluginId
-            ? { immutableGenerationIdsByPluginId: params.immutableGenerationIdsByPluginId }
+        ...(params.dynamicOccurrenceIdsByPluginId
+            ? { dynamicOccurrenceIdsByPluginId: params.dynamicOccurrenceIdsByPluginId }
+            : {}),
+        ...(params.isDynamicOccurrenceCurrent
+            ? { isDynamicOccurrenceCurrent: params.isDynamicOccurrenceCurrent }
             : {}),
         dynamicProducers: params.dynamicProducers ?? [],
+        ...(params.startupDeadlineAtMs === undefined
+            ? {} : { startupDeadlineAtMs: params.startupDeadlineAtMs }),
         ...(params.bindDynamicResourceAccountStorage
             ? { bindDynamicResourceAccountStorage: params.bindDynamicResourceAccountStorage }
             : {}),
@@ -940,10 +963,11 @@ export async function createStableImmutablePluginResourcesOwner(
         files: ImmutablePluginGenerationRecord['files'];
         declarations: readonly PluginResourceContributionV2[];
         brandIconResourceId?: string;
+        brandMonochrome?: boolean;
         dynamicProducers?: readonly StableDynamicPluginResourceProducer[];
         bindDynamicResourceAccountStorage?: BindDynamicResourceAccountStorage;
         resolveSessionResourceAccess?: ResolveSessionResourceAccess;
-        isGenerationCurrent?: () => boolean | Promise<boolean>;
+        isOccurrenceCurrent?: () => boolean | Promise<boolean>;
     }>,
 ): Promise<StablePluginResourcesOwner> {
     if (
@@ -953,7 +977,7 @@ export async function createStableImmutablePluginResourcesOwner(
     ) {
         return fail(
             'plugin_resource_capacity_exceeded',
-            'Resource generation exceeds its declaration bound',
+            'Resource occurrenceId exceeds its declaration bound',
         );
     }
     return await createStablePluginResourcesOwnerFromNormalized({
@@ -974,6 +998,9 @@ export async function createStableImmutablePluginResourcesOwner(
                 ...(params.brandIconResourceId === undefined
                     ? {}
                     : { brandIconResourceId: params.brandIconResourceId }),
+                ...(params.brandMonochrome === undefined
+                    ? {}
+                    : { brandMonochrome: params.brandMonochrome }),
             }),
         ]]),
         dynamicProducers: params.dynamicProducers ?? [],
@@ -983,11 +1010,83 @@ export async function createStableImmutablePluginResourcesOwner(
         ...(params.resolveSessionResourceAccess
             ? { resolveSessionResourceAccess: params.resolveSessionResourceAccess }
             : {}),
-        ...(params.isGenerationCurrent
+        ...(params.isOccurrenceCurrent
             ? {
                 isCommittedGenerationCurrent:
-                    params.isGenerationCurrent,
+                    params.isOccurrenceCurrent,
             }
+            : {}),
+    });
+}
+
+/**
+ * Admits packaged Resources from an already-attested retained source root.
+ * Unlike the managed-occurrenceId owner, this seam does not require or invent a
+ * occurrenceId-store inventory for bundled first-party runtime snapshots. It
+ * snapshots only the manifest-declared Resource files through the same
+ * containment and regular-file checks used by Resource reads.
+ */
+export async function createStableRetainedPluginResourcesOwner(
+    params: Readonly<{
+        sourceIdentity: string;
+        pluginId: string;
+        rootPath: string;
+        declarations: readonly PluginResourceContributionV2[];
+        brandIconResourceId?: string;
+        brandMonochrome?: boolean;
+        isSourceCurrent?: () => boolean | Promise<boolean>;
+    }>,
+): Promise<StablePluginResourcesOwner> {
+    if (
+        !Array.isArray(params.declarations)
+        || params.declarations.length > MAX_PLUGIN_RESOURCES_PER_GENERATION
+    ) {
+        return fail(
+            'plugin_resource_capacity_exceeded',
+            'Resource source exceeds its declaration bound',
+        );
+    }
+    const filesByPath = new Map<
+        string,
+        ImmutablePluginGenerationRecord['files'][number]
+    >();
+    for (const declaration of params.declarations) {
+        const normalized = normalizeImmutableContribution({
+            pluginId: params.pluginId,
+            pluginRootPath: params.rootPath,
+            declaration,
+        });
+        if (normalized.source === 'dynamic') continue;
+        const relativePath = normalized.path
+            ?? fail(
+                'plugin_resource_declaration_invalid',
+                'Resource declaration is invalid',
+            );
+        if (filesByPath.has(relativePath)) continue;
+        const absolutePath = await resolveAdmittedPath(
+            params.rootPath,
+            relativePath,
+        );
+        const info = await lstat(absolutePath);
+        filesByPath.set(relativePath, Object.freeze({
+            relativePath,
+            byteLength: info.size,
+        }));
+    }
+    return await createStableImmutablePluginResourcesOwner({
+        generationId: params.sourceIdentity,
+        pluginId: params.pluginId,
+        rootPath: params.rootPath,
+        files: [...filesByPath.values()],
+        declarations: params.declarations,
+        ...(params.brandIconResourceId === undefined
+            ? {}
+            : { brandIconResourceId: params.brandIconResourceId }),
+        ...(params.brandMonochrome === undefined
+            ? {}
+            : { brandMonochrome: params.brandMonochrome }),
+        ...(params.isSourceCurrent
+            ? { isOccurrenceCurrent: params.isSourceCurrent }
             : {}),
     });
 }
@@ -996,8 +1095,10 @@ async function createStablePluginResourcesOwnerFromNormalized(
     params: Readonly<{
         contributions: readonly NormalizedResourceContribution[];
         generations: ReadonlyMap<string, ResourceGeneration>;
-        immutableGenerationIdsByPluginId?: ReadonlyMap<string, string>;
+        dynamicOccurrenceIdsByPluginId?: ReadonlyMap<string, string>;
+        isDynamicOccurrenceCurrent?: (pluginId: string, occurrenceId: string) => boolean | Promise<boolean>;
         dynamicProducers: readonly StableDynamicPluginResourceProducer[];
+        startupDeadlineAtMs?: number;
         bindDynamicResourceAccountStorage?: BindDynamicResourceAccountStorage;
         resolveSessionResourceAccess?: ResolveSessionResourceAccess;
         isCommittedGenerationCurrent?:
@@ -1014,15 +1115,12 @@ async function createStablePluginResourcesOwnerFromNormalized(
         generationsByPluginId.set(pluginId, generation);
         immutableGenerationIdsByPluginId.set(pluginId, generation.immutableGenerationId);
     }
-    for (const [pluginId, immutableGenerationId] of params.immutableGenerationIdsByPluginId ?? []) {
-        const normalizedPluginId = boundedString(pluginId, 256);
-        const normalizedGenerationId = boundedString(immutableGenerationId, 160);
-        const existingGenerationId = immutableGenerationIdsByPluginId.get(normalizedPluginId);
-        if (existingGenerationId && existingGenerationId !== normalizedGenerationId) {
-            return fail('plugin_resource_generation_invalid', 'Resource generation identity does not match its declaration');
-        }
-        immutableGenerationIdsByPluginId.set(normalizedPluginId, normalizedGenerationId);
-    }
+    const dynamicOccurrenceIdsByPluginId = new Map(
+        [...(params.dynamicOccurrenceIdsByPluginId ?? [])].map(([pluginId, occurrenceId]) => [
+            boundedString(pluginId, 256),
+            boundedString(occurrenceId, 160),
+        ]),
+    );
 
     const admittedByPlugin = new Map<string, Map<string, AdmittedResource>>();
     const brandAssetsByPluginId = new Map<string, PluginProjectionBrandAssetV2>();
@@ -1041,8 +1139,12 @@ async function createStablePluginResourcesOwnerFromNormalized(
     let aggregateBytes = 0;
     let activeDynamicResourceContexts = 0;
     for (const contribution of params.contributions) {
-        if (!immutableGenerationIdsByPluginId.has(contribution.pluginId)) {
-            return fail('plugin_resource_generation_invalid', 'Resource generation is unavailable');
+        if (
+            contribution.source === 'dynamic'
+                ? !dynamicOccurrenceIdsByPluginId.has(contribution.pluginId)
+                : !immutableGenerationIdsByPluginId.has(contribution.pluginId)
+        ) {
+            return fail('plugin_resource_generation_invalid', 'Resource currentness binding is unavailable');
         }
         const generation = generationsByPluginId.get(contribution.pluginId);
         const isBrandResource = generation?.brandIconResourceId === contribution.id;
@@ -1078,10 +1180,11 @@ async function createStablePluginResourcesOwnerFromNormalized(
                 contentType: contribution.contentType,
                 maxBytes: contribution.maxBytes ?? MAX_PLUGIN_RESOURCE_BYTES,
                 scope: contribution.scope ?? fail('plugin_resource_declaration_invalid', 'Resource declaration is invalid'),
-                generation: immutableGenerationIdsByPluginId.get(contribution.pluginId)
-                    ?? fail('plugin_resource_generation_invalid', 'Resource generation is unavailable'),
+                occurrenceId: dynamicOccurrenceIdsByPluginId.get(contribution.pluginId)
+                    ?? fail('plugin_resource_generation_invalid', 'Resource occurrenceId is unavailable'),
                 hostAccessRequests,
                 runtime: producer.runtime,
+                admissionFailure: null,
                 globalContext: contribution.scope === 'global'
                     ? createDynamicContextState({ kind: 'global' })
                     : null,
@@ -1176,6 +1279,7 @@ async function createStablePluginResourcesOwnerFromNormalized(
                     width: dimensions.width,
                     height: dimensions.height,
                     digest: expectedDigest,
+                    ...(generation.brandMonochrome ? { monochrome: true } : {}),
                 }));
             }
         } catch (error) {
@@ -1193,7 +1297,7 @@ async function createStablePluginResourcesOwnerFromNormalized(
      * The aggregate byte bound is a live fact, not an admission-time snapshot:
      * a dynamic producer can grow after admission. Every observation of dynamic
      * bytes is admitted here by size delta, and a breach retains the last known
-     * good observation rather than publishing a descriptor this generation is
+     * good observation rather than publishing a descriptor this occurrenceId is
      * not allowed to hold.
      */
     function captureDynamicResourceAccountLifetime(
@@ -1249,25 +1353,40 @@ async function createStablePluginResourcesOwnerFromNormalized(
         return true;
     }
 
-    // Global dynamic Resources retain their established admission behavior. A
-    // session-scoped declaration is structural only: its producer receives no
-    // call until an exact host Session binding owns a read or watch.
-    for (const dynamic of admittedDynamicResources) {
+    // Global admissions share the remaining cold-start initialization window. Parallelism is
+    // bounded by the aggregate byte cap, so stalled producers cannot multiply
+    // daemon startup time or let concurrent replies exceed the byte budget.
+    const admissionDeadlineMs = performance.now()
+        + remainingPluginInitializationTimeoutMs(params.startupDeadlineAtMs);
+    async function admitGlobalDynamicResource(dynamic: AdmittedDynamicResource): Promise<void> {
         const context = dynamic.globalContext;
-        if (!context) continue;
+        if (!context) return;
+        if (performance.now() >= admissionDeadlineMs) {
+            // The queue never invoked this producer. Leave it readable on
+            // demand instead of publishing a permanent producer failure.
+            logger.warn('[PLUGIN RUNTIME] Dynamic Resource admission deferred', {
+                pluginId: dynamic.pluginId,
+                localId: dynamic.id,
+                abortReason: 'admission_not_attempted',
+            });
+            return;
+        }
         const accountLifetimeToken = captureDynamicResourceAccountLifetime(dynamic);
         const isAdmissionCurrent = async (): Promise<boolean> => {
             if (!isDynamicResourceAccountLifetimeCurrent(dynamic, accountLifetimeToken)) return false;
-            if (params.isCommittedGenerationCurrent && !await params.isCommittedGenerationCurrent()) {
-                return false;
-            }
+            if (
+                params.isDynamicOccurrenceCurrent
+                && !await params.isDynamicOccurrenceCurrent(dynamic.pluginId, dynamic.occurrenceId)
+            ) return false;
             return isDynamicResourceAccountLifetimeCurrent(dynamic, accountLifetimeToken);
         };
         let observed: Readonly<{ bytes: Uint8Array; digest: string }>;
+        const admissionStartedAt = Date.now();
         try {
             observed = await readAdmissionBytes(
                 dynamic,
                 context,
+                admissionDeadlineMs,
                 params.bindDynamicResourceAccountStorage,
                 isAdmissionCurrent,
             );
@@ -1275,22 +1394,59 @@ async function createStablePluginResourcesOwnerFromNormalized(
             // The sole active Account lifetime changed while this callback was
             // in flight. Its old bytes are not an admission failure for B and
             // must not become a B descriptor.
-            if (!isDynamicResourceAccountLifetimeCurrent(dynamic, accountLifetimeToken)) continue;
-            // A fresh Account can publish the admitted declaration before its
-            // Account Data contract is readable. Keep the declaration and its
-            // truthful method capability, but do not manufacture an initial
-            // descriptor/snapshot. Every other admission failure stays fatal.
-            if (!isPendingInitialAccountDataUnavailable(dynamic, error)) throw error;
-            continue;
+            if (!isDynamicResourceAccountLifetimeCurrent(dynamic, accountLifetimeToken)) return;
+            // A fresh Account can publish its declaration before Account Data
+            // is readable. This case remains retryable through the Resource
+            // watch; other initial failures are isolated to this declaration.
+            if (isPendingInitialAccountDataUnavailable(dynamic, error)) return;
+            // A retired occurrence invalidates the registry attempt itself;
+            // it is not evidence that this producer is unavailable.
+            if (isPluginError(error) && error.code === 'plugin_generation_stale') throw error;
+            const abortReason = isPluginError(error) && error.code === 'plugin_resource_producer_timed_out'
+                ? 'admission_timeout'
+                : 'producer_failure';
+            dynamic.admissionFailure = new PluginError({
+                code: 'plugin_resource_admission_unavailable',
+                message: `Resource '${dynamic.pluginId}/${dynamic.id}' is unavailable after admission failure`,
+            });
+            logger.warn('[PLUGIN RUNTIME] Dynamic Resource admission failed', {
+                pluginId: dynamic.pluginId,
+                localId: dynamic.id,
+                elapsedMs: Date.now() - admissionStartedAt,
+                abortReason,
+            });
+            if (generationsByPluginId.get(dynamic.pluginId)?.brandIconResourceId === dynamic.id) {
+                brandAssetsByPluginId.set(dynamic.pluginId, brandAssetFallback('invalid'));
+            }
+            return;
         }
-        if (!isDynamicResourceAccountLifetimeCurrent(dynamic, accountLifetimeToken)) continue;
+        if (!isDynamicResourceAccountLifetimeCurrent(dynamic, accountLifetimeToken)) return;
         if (!admitDynamicObservation(dynamic, context, observed, accountLifetimeToken)) {
-            return fail('plugin_resource_capacity_exceeded', 'Resource generation exceeds its aggregate byte bound');
+            return fail('plugin_resource_capacity_exceeded', 'Resource occurrenceId exceeds its aggregate byte bound');
         }
     }
+    // Session and surface declarations remain structural until an exact host
+    // binding requests them; only global declarations run here.
+    const globalDynamicResources = admittedDynamicResources.filter((dynamic) => dynamic.globalContext);
+    const admissionConcurrency = Math.min(
+        globalDynamicResources.length,
+        Math.max(1, Math.floor(MAX_PLUGIN_RESOURCE_AGGREGATE_BYTES / MAX_PLUGIN_RESOURCE_BYTES)),
+    );
+    let nextAdmissionIndex = 0;
+    const admissions = await Promise.allSettled(Array.from({ length: admissionConcurrency }, async () => {
+        while (nextAdmissionIndex < globalDynamicResources.length) {
+            const dynamic = globalDynamicResources[nextAdmissionIndex++];
+            await admitGlobalDynamicResource(dynamic!);
+        }
+    }));
+    const rejectedAdmission = admissions.find((result) => result.status === 'rejected');
+    if (rejectedAdmission?.status === 'rejected') throw rejectedAdmission.reason;
 
     const retiredPluginIds = new Set<string>();
-    const admittedPluginIds = new Set(immutableGenerationIdsByPluginId.keys());
+    const admittedPluginIds = new Set([
+        ...immutableGenerationIdsByPluginId.keys(),
+        ...dynamicOccurrenceIdsByPluginId.keys(),
+    ]);
 
     type DynamicWatcher = {
         readonly listener: (change: { digest: string }) => void;
@@ -1414,25 +1570,26 @@ async function createStablePluginResourcesOwnerFromNormalized(
     /**
      * Account storage already owns operation-time currentness. Resource must
      * give that owner both facts that define one live callback: the local
-     * Resource/watch edge and the durable committed generation. Rechecking
+     * Resource/watch edge and the exact plugin occurrence. Rechecking
      * local currentness after the async witness closes replacement races.
      */
     function composeAccountStorageCurrentness(
+        resource: AdmittedDynamicResource,
         isLocalCurrent: () => boolean,
     ): () => boolean | Promise<boolean> {
-        const isCommittedGenerationCurrent = params.isCommittedGenerationCurrent;
-        if (!isCommittedGenerationCurrent) return isLocalCurrent;
-        return async (): Promise<boolean> => {
-            if (!isLocalCurrent()) return false;
-            if (!await isCommittedGenerationCurrent()) return false;
-            return isLocalCurrent();
-        };
+        const isDynamicOccurrenceCurrent = params.isDynamicOccurrenceCurrent;
+        if (!isDynamicOccurrenceCurrent) return isLocalCurrent;
+        return async (): Promise<boolean> => (
+            isLocalCurrent()
+            && await isDynamicOccurrenceCurrent(resource.pluginId, resource.occurrenceId)
+            && isLocalCurrent()
+        );
     }
 
     /**
      * A settled dynamic observation owns more than an Account-storage call:
      * it can replace this context's last-known-good bytes and wake consumers.
-     * Check the committed-generation witness around the producer await so an
+     * Check the exact occurrence witness around the producer await so an
      * ignored producer result cannot cross that owner boundary after retirement.
      */
     async function isDynamicWatchSettlementCurrent(
@@ -1440,14 +1597,13 @@ async function createStablePluginResourcesOwnerFromNormalized(
         callbackController: AbortController,
     ): Promise<boolean> {
         if (!isDynamicWatchCurrent(watch, callbackController)) return false;
-        const isCommittedGenerationCurrent = params.isCommittedGenerationCurrent;
-        if (isCommittedGenerationCurrent) {
-            try {
-                if (!await isCommittedGenerationCurrent()) return false;
-            } catch {
-                return false;
-            }
-        }
+        if (
+            params.isDynamicOccurrenceCurrent
+            && !await params.isDynamicOccurrenceCurrent(
+                watch.resource.pluginId,
+                watch.resource.occurrenceId,
+            )
+        ) return false;
         return isDynamicWatchCurrent(watch, callbackController);
     }
 
@@ -1542,7 +1698,7 @@ async function createStablePluginResourcesOwnerFromNormalized(
             return fail('plugin_resource_context_unavailable', 'Resource context has no observed snapshot');
         }
         if (activeDynamicResourceContexts >= MAX_PLUGIN_RESOURCE_ACTIVE_CONTEXTS) {
-            return fail('plugin_resource_capacity_exceeded', 'Resource generation exceeds its active context bound');
+            return fail('plugin_resource_capacity_exceeded', 'Resource occurrenceId exceeds its active context bound');
         }
         const created = createDynamicContextState(boundContext, admission);
         resource.sessionContexts.set(boundContext.sessionId, created);
@@ -1632,9 +1788,9 @@ async function createStablePluginResourcesOwnerFromNormalized(
             surfaceAccessAdmission,
             true,
         );
-        // Exact Session state is generation-owned rather than UI-owner-owned:
+        // Exact Session state is occurrenceId-owned rather than UI-owner-owned:
         // releasing a read or watch stops that operation, but it must retain the
-        // Session LKG until the Session is permanently removed or the generation
+        // Session LKG until the Session is permanently removed or the occurrenceId
         // retires. This owner currently observes the latter lifecycle directly.
         return Object.freeze({ context, release: () => undefined });
     }
@@ -1730,7 +1886,7 @@ async function createStablePluginResourcesOwnerFromNormalized(
                                     callbackController.signal,
                                     settlementReadController.signal,
                                 ]),
-                                composeAccountStorageCurrentness(() => (
+                                composeAccountStorageCurrentness(watch.resource, () => (
                                     !settlementReadController.signal.aborted
                                     && isDynamicWatchCurrent(watch, callbackController)
                                     && isDynamicResourceAccountLifetimeCurrent(resource, accountLifetimeToken)
@@ -1753,7 +1909,7 @@ async function createStablePluginResourcesOwnerFromNormalized(
                     // Fence ignored-abort producer results before every state
                     // mutation and delivery, not only at the read boundary.
                     if (!await isDynamicWatchSettlementCurrent(watch, callbackController)) return;
-                    // Awaiting the committed-generation witness above yields
+                    // Awaiting the exact-occurrence witness above yields
                     // before this continuation resumes. A Session witness can
                     // retire this exact context in that gap, so the local
                     // context/watch owner is the last synchronous authority
@@ -1949,10 +2105,11 @@ async function createStablePluginResourcesOwnerFromNormalized(
             const accountStorage = params.bindDynamicResourceAccountStorage?.({
                 pluginId: resource.pluginId,
                 resourceId: resource.id,
-                generation: resource.generation,
+                occurrenceId: resource.occurrenceId,
                 hostAccessRequests: resource.hostAccessRequests,
                 signal: callbackController.signal,
-                isGenerationCurrent: composeAccountStorageCurrentness(
+                isOccurrenceCurrent: composeAccountStorageCurrentness(
+                    resource,
                     () => isDynamicWatchCurrent(watch, callbackController),
                 ),
             });
@@ -2182,9 +2339,9 @@ async function createStablePluginResourcesOwnerFromNormalized(
         if (
             retiredPluginIds.has(bindParams.pluginId)
             || !admittedPluginIds.has(bindParams.pluginId)
-            || !bindParams.isGenerationCurrent()
+            || !bindParams.isOccurrenceCurrent()
         ) {
-            return fail('plugin_generation_stale', 'Plugin generation is stale');
+            return fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
         }
         if (bindParams.signal.aborted) {
             return fail('plugin_resource_aborted', 'Resource operation was aborted');
@@ -2279,7 +2436,7 @@ async function createStablePluginResourcesOwnerFromNormalized(
         }
         if (existing) retireDynamicSurfaceContext(resource, existing);
         if (activeDynamicResourceContexts >= MAX_PLUGIN_RESOURCE_ACTIVE_CONTEXTS) {
-            return fail('plugin_resource_capacity_exceeded', 'Resource generation exceeds its active context bound');
+            return fail('plugin_resource_capacity_exceeded', 'Resource occurrenceId exceeds its active context bound');
         }
         resource.surfaceContexts.set(context.mountInstanceKey, candidate);
         activeDynamicResourceContexts += 1;
@@ -2303,9 +2460,12 @@ async function createStablePluginResourcesOwnerFromNormalized(
             if (!resources || resources.size === 0) {
                 return Object.freeze({ readable: false, dynamic: false });
             }
+            const available = [...resources.values()].filter((resource) => (
+                resource.source !== 'dynamic' || resource.admissionFailure === null
+            ));
             return Object.freeze({
-                readable: true,
-                dynamic: [...resources.values()].some((resource) => resource.source === 'dynamic'),
+                readable: available.length > 0,
+                dynamic: available.some((resource) => resource.source === 'dynamic'),
             });
         },
         getPluginBrandAsset(pluginId: string): PluginProjectionBrandAssetV2 | undefined {
@@ -2351,7 +2511,7 @@ async function createStablePluginResourcesOwnerFromNormalized(
         },
         bind(bindParams): PluginResourcesService {
             if (!admittedPluginIds.has(bindParams.pluginId)) {
-                return fail('plugin_generation_stale', 'Plugin generation is stale');
+                return fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
             }
             const resources = admittedByPlugin.get(bindParams.pluginId) ?? new Map<string, AdmittedResource>();
             const boundContext = normalizeBoundContext(bindParams.context);
@@ -2386,8 +2546,8 @@ async function createStablePluginResourcesOwnerFromNormalized(
             if (bindParams.signal.aborted) retireBinding();
             else bindParams.signal.addEventListener('abort', retireBinding, { once: true });
             function guard(signal?: AbortSignal): void {
-                if (retiredPluginIds.has(bindParams.pluginId) || !bindParams.isGenerationCurrent()) {
-                    return fail('plugin_generation_stale', 'Plugin generation is stale');
+                if (retiredPluginIds.has(bindParams.pluginId) || !bindParams.isOccurrenceCurrent()) {
+                    return fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
                 }
                 if (bindingRetired || bindParams.signal.aborted || signal?.aborted) {
                     return fail('plugin_resource_aborted', 'Resource operation was aborted');
@@ -2398,11 +2558,13 @@ async function createStablePluginResourcesOwnerFromNormalized(
                 if (typeof id !== 'string' || id.length === 0 || id.trim() !== id || id.length > 256) {
                     return fail('plugin_resource_not_found', 'Resource is not declared for this plugin');
                 }
-                return resources.get(id) ?? fail('plugin_resource_not_found', 'Resource is not declared for this plugin');
+                const resource = resources.get(id) ?? fail('plugin_resource_not_found', 'Resource is not declared for this plugin');
+                if (resource.source === 'dynamic' && resource.admissionFailure) throw resource.admissionFailure;
+                return resource;
             }
             async function guardCommittedGeneration(): Promise<void> {
                 if (params.isCommittedGenerationCurrent && !await params.isCommittedGenerationCurrent()) {
-                    return fail('plugin_generation_stale', 'Plugin generation is stale');
+                    return fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
                 }
             }
             return Object.freeze({
@@ -2451,22 +2613,20 @@ async function createStablePluginResourcesOwnerFromNormalized(
                             };
                             const observed = await withStableResourceErrors(async () => {
                                 try {
-                                    await guardCommittedGeneration();
                                     const value = await readDynamicBytes(
                                         resource,
                                         acquired.context,
                                         normalizedOptions.maxBytes,
                                         guardDynamicRead,
                                         callbackSignal,
-                                        composeAccountStorageCurrentness(() => (
+                                        composeAccountStorageCurrentness(resource, () => (
                                             !callbackController.signal.aborted
-                                            && bindParams.isGenerationCurrent()
+                                            && bindParams.isOccurrenceCurrent()
                                             && isDynamicContextCurrent(resource, acquired.context)
                                             && isDynamicResourceAccountLifetimeCurrent(resource, accountLifetimeToken)
                                         )),
                                         params.bindDynamicResourceAccountStorage,
                                     );
-                                    await guardCommittedGeneration();
                                     guardDynamicRead();
                                     return value;
                                 } finally {
@@ -2486,7 +2646,7 @@ async function createStablePluginResourcesOwnerFromNormalized(
                                 observed,
                                 accountLifetimeToken,
                             )) {
-                                return fail('plugin_resource_capacity_exceeded', 'Resource generation exceeds its aggregate byte bound');
+                                return fail('plugin_resource_capacity_exceeded', 'Resource occurrenceId exceeds its aggregate byte bound');
                             }
                             guardDynamicRead();
                             return Object.freeze({
@@ -2520,9 +2680,9 @@ async function createStablePluginResourcesOwnerFromNormalized(
                     const resource = find(id);
                     if (resource.source !== 'dynamic') {
                         // A packaged resource is a file of an immutable
-                        // generation: it cannot change, so watching it is not a
+                        // occurrenceId: it cannot change, so watching it is not a
                         // missing feature (§3.6.1).
-                        return fail('plugin_resource_watch_unavailable', 'Resource watch is unavailable for this immutable generation');
+                        return fail('plugin_resource_watch_unavailable', 'Resource watch is unavailable for this immutable occurrenceId');
                     }
                     if (typeof listener !== 'function') {
                         return fail('plugin_resource_options_invalid', 'Resource watch listener is invalid');
@@ -2542,7 +2702,7 @@ async function createStablePluginResourcesOwnerFromNormalized(
                                 !bindingRetired
                                 && !bindParams.signal.aborted
                                 && !retiredPluginIds.has(bindParams.pluginId)
-                                && bindParams.isGenerationCurrent()
+                                && bindParams.isOccurrenceCurrent()
                             ),
                             releaseContext: acquired.release,
                             ...(

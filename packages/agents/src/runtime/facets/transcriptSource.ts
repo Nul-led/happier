@@ -53,6 +53,8 @@ export async function followTranscriptSourceWithFiniteActions<TItem>(params: Rea
   waitForNextPoll: () => Promise<void>;
   onItems?: (page: Readonly<{ items: TItem[]; nextCursor: string }>) => Promise<void> | void;
   shouldContinue?: () => boolean;
+  /** Live observers keep their existing lease across inactivity; finite iterators retain terminal draining by default. */
+  stopWhenInactive?: boolean;
 }>): Promise<TranscriptSourceFiniteActionFollowState> {
   let cursor = params.initialCursor;
   let finalDrain = false;
@@ -80,7 +82,7 @@ export async function followTranscriptSourceWithFiniteActions<TItem>(params: Rea
       if (finalDrain) {
         return { tailCursor: cursor, stopped: 'inactive' };
       }
-      if (!await params.isSessionActive()) {
+      if (!await params.isSessionActive() && params.stopWhenInactive !== false) {
         finalDrain = true;
         continue;
       }

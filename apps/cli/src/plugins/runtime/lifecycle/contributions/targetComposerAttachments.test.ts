@@ -79,7 +79,7 @@ function fixture(
   const completedContexts: ReturnType<typeof vi.fn>[] = [];
   const createInvocationContext = vi.fn((input: Readonly<{
     attachment: Readonly<{ pluginId: string; localId: string }>;
-    generation: string;
+    occurrenceId: string;
     scope:
       | Readonly<{ kind: 'session'; sessionId: string }>
       | Readonly<{ kind: 'execution_run'; executionRunId: string }>;
@@ -119,7 +119,7 @@ function fixture(
   };
   const entry = Object.freeze({
     pluginId: ATTACHMENT.pluginId,
-    generation: '7',
+    occurrenceId: '7',
     registration: Object.freeze({
       family: 'composerAttachments' as const,
       localId: ATTACHMENT.localId,
@@ -129,7 +129,7 @@ function fixture(
   const registry = createTargetComposerAttachmentRegistry({
     activateAttachmentOnDemand: async () => {},
     targetRegistrations: [entry],
-    resolveGenerationLifecycle: () => ({
+    resolveOccurrenceLifecycle: () => ({
       isCurrent: () => current,
       retirementSignal: retirement.signal,
     }),
@@ -177,7 +177,7 @@ describe('target composer attachment registry', () => {
     };
     const registration = Object.freeze({
       pluginId: ATTACHMENT.pluginId,
-      generation: '7',
+      occurrenceId: '7',
       registration: Object.freeze({
         family: 'composerAttachments' as const,
         localId: ATTACHMENT.localId,
@@ -196,14 +196,14 @@ describe('target composer attachment registry', () => {
     const retained = createTargetComposerAttachmentRegistry({
       activateAttachmentOnDemand: async () => {},
       targetRegistrations: [registration],
-      resolveGenerationLifecycle: lifecycle,
+      resolveOccurrenceLifecycle: lifecycle,
       createInvocationContext,
     });
     await expect(retained.supports({ attachment: ATTACHMENT, phase: 'prepareForSend' })).resolves.toBe(true);
     expect(() => createTargetComposerAttachmentRegistry({
       activateAttachmentOnDemand: async () => {},
       targetRegistrations: [registration, registration],
-      resolveGenerationLifecycle: lifecycle,
+      resolveOccurrenceLifecycle: lifecycle,
       createInvocationContext,
     })).toThrow(/more than once/i);
   });
@@ -248,7 +248,7 @@ describe('target composer attachment registry', () => {
     expect(subject.createInvocationContext).toHaveBeenCalledTimes(3);
     expect(subject.createInvocationContext).toHaveBeenNthCalledWith(1, expect.objectContaining({
       attachment: ATTACHMENT,
-      generation: '7',
+      occurrenceId: '7',
       scope: { kind: 'session', sessionId: 'session-1' },
       signal: expect.any(AbortSignal),
       isCurrent: expect.any(Function),
@@ -360,7 +360,7 @@ describe('target composer attachment registry', () => {
     // contributes no entry until its exact attachment is demanded.
     const targetRegistrations: Array<{
       pluginId: string;
-      generation: string;
+      occurrenceId: string;
       registration: Readonly<{
         family: 'composerAttachments';
         localId: string;
@@ -370,7 +370,7 @@ describe('target composer attachment registry', () => {
     const activateAttachmentOnDemand = vi.fn(async () => {
       targetRegistrations.push({
         pluginId: ATTACHMENT.pluginId,
-        generation: '7',
+        occurrenceId: '7',
         registration: Object.freeze({
           family: 'composerAttachments' as const,
           localId: ATTACHMENT.localId,
@@ -387,7 +387,7 @@ describe('target composer attachment registry', () => {
         valueSchema: { type: 'object' },
         runtime: { resolveForDispatch: true },
       }],
-      resolveGenerationLifecycle: () => ({
+      resolveOccurrenceLifecycle: () => ({
         isCurrent: () => true,
         retirementSignal: new AbortController().signal,
       }),
@@ -432,7 +432,7 @@ describe('target composer attachment registry', () => {
         valueSchema: { type: 'object' },
         runtime: { prepareForSend: true },
       }],
-      resolveGenerationLifecycle: () => ({
+      resolveOccurrenceLifecycle: () => ({
         isCurrent: () => true,
         retirementSignal: new AbortController().signal,
       }),
@@ -477,7 +477,7 @@ describe('target composer attachment registry', () => {
       activateAttachmentOnDemand: async () => {},
       targetRegistrations: [],
       declaredAttachments,
-      resolveGenerationLifecycle: () => ({
+      resolveOccurrenceLifecycle: () => ({
         isCurrent: () => true,
         retirementSignal: new AbortController().signal,
       }),
@@ -535,7 +535,7 @@ describe('target composer attachment registry', () => {
         cardinality: 'many',
         valueSchema: { type: 'object' },
       }],
-      resolveGenerationLifecycle: () => ({
+      resolveOccurrenceLifecycle: () => ({
         isCurrent: () => true,
         retirementSignal: new AbortController().signal,
       }),
@@ -587,7 +587,7 @@ describe('target composer attachment registry', () => {
         cardinality: 'many',
         valueSchema: { type: 'object' },
       }],
-      resolveGenerationLifecycle: () => ({
+      resolveOccurrenceLifecycle: () => ({
         isCurrent: () => current,
         retirementSignal: new AbortController().signal,
       }),

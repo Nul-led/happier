@@ -24,6 +24,7 @@ import {
 import type {
     JsonValue,
 } from '@happier-dev/plugin-sdk';
+import { derivePluginDaemonContributionRegistrationRights } from '@happier-dev/protocol';
 import type {
     PluginJsonStreamClient,
     PluginProtocolClientHandle,
@@ -49,7 +50,6 @@ import { readPluginManifest } from '@/plugins/manifest/read';
 import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
 import {
     createImmutablePluginGenerationRecordFromSource,
-    persistValidatedAgentSessionRunnerFactories,
     prepareImmutablePluginGeneration,
 } from '@/plugins/store/registry/generationStore';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
@@ -929,7 +929,7 @@ function createPiExecBoundaryContext(input: Readonly<{
 }
 
 describe('first-party runner Agent factory matrix', () => {
-    it('loads every real Session runtime through its retained generation binding', async () => {
+    it('loads every real Session runtime through its retained custody binding', async () => {
         const happyHomeDir = await mkdtemp(
             resolve(repoRoot, '.happier-first-party-runner-matrix-'),
         );
@@ -1041,7 +1041,7 @@ describe('first-party runner Agent factory matrix', () => {
                         kind: 'localPath',
                         canonicalPath: stagedSourceRoot,
                     },
-                    updatePolicy: 'reviewEveryUpdate',
+                    updatePolicy: 'allowed',
                     createdAtMs: 1,
                 });
                 const prepared = await prepareImmutablePluginGeneration({
@@ -1091,15 +1091,25 @@ describe('first-party runner Agent factory matrix', () => {
                 const activation = await activateContributionModule({
                     pluginId,
                     manifestAuthority: 'bundled_first_party',
-                    generation: generated.immutableGenerationId,
+                    occurrenceId: generated.immutableGenerationId,
                     manifest: immutableManifest.manifest,
                     moduleNamespace: module,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                     resolveRelativeModule: source.resolveRelativeModule,
                 });
-                if (activation.status !== 'active') {
+                const daemonRegistrationRights =
+                    derivePluginDaemonContributionRegistrationRights(
+                        immutableManifest.manifest
+                            .contributes as unknown as Readonly<
+                                Record<string, unknown>
+                            >,
+                    );
+                const expectedActivationStatus = daemonRegistrationRights.length === 0
+                    ? 'dormant'
+                    : 'active';
+                if (activation.status !== expectedActivationStatus) {
                     throw new Error(
-                        `Failed to activate bundled plugin '${agent.id}': ${
+                        `Bundled plugin '${agent.id}' activation was '${activation.status}', expected '${expectedActivationStatus}': ${
                             JSON.stringify(activation.diagnostics)
                         }`,
                     );
@@ -1134,9 +1144,28 @@ describe('first-party runner Agent factory matrix', () => {
                                     immutableGenerationId: generated.immutableGenerationId,
                                     rootPath: prepared.rootPath,
                                     record: generated,
+                                    installation: {
+                                        enabled: true,
+                                        trust: {
+                                            pluginId,
+                                            distribution: {
+                                                kind: 'localPath',
+                                                canonicalPath: stagedSourceRoot,
+                                            },
+                                            state: 'trusted',
+                                            approvedAtMs: 1,
+                                        },
+                                        source: {
+                                            distribution: {
+                                                kind: 'localPath',
+                                                canonicalPath: stagedSourceRoot,
+                                            },
+                                        },
+                                        updatePolicy: 'allowed',
+                                        optionalAccess: [],
+                                    },
                                 }]]),
                                 rejectedGenerations: new Map(),
-                                unavailableBundledPackageNames: new Set(),
                                 isCurrent: async () => true,
                             },
                         });
@@ -1149,7 +1178,12 @@ describe('first-party runner Agent factory matrix', () => {
                                 kind: 'host_declarative_acp_v1',
                                 pluginId,
                                 localAgentId,
-                                immutableGenerationId: generated.immutableGenerationId,
+                                sourceCustody: {
+                                    kind: 'managed',
+                                    immutableGenerationId:
+                                        generated.immutableGenerationId,
+                                    installSource: 'localPath',
+                                },
                             });
                             const runtime = await lease.createRuntime({
                                 signal: new AbortController().signal,
@@ -1276,18 +1310,6 @@ describe('first-party runner Agent factory matrix', () => {
                             agent.id,
                         ).toBeUndefined();
                     }
-                    await persistValidatedAgentSessionRunnerFactories({
-                        paths,
-                        record: generated,
-                        manifestAuthority: 'bundled_first_party',
-                        factories: [{
-                            localAgentId,
-                            locator,
-                            normalizedModulePath:
-                                resolution.normalizedModulePath,
-                            loadMode: resolution.loadMode,
-                        }],
-                    });
                     const binding =
                         createAgentSessionRunnerFactoryBinding({
                             v: 1,
@@ -1295,8 +1317,14 @@ describe('first-party runner Agent factory matrix', () => {
                             pluginVersion: metadata.packageVersion,
                             agentId: agent.id,
                             localAgentId,
-                            immutableGenerationId:
-                                generated.immutableGenerationId,
+                            sourceCustody: {
+                                kind: 'bundled_first_party',
+                                packagedRuntime: {
+                                    kind: 'pinned_runner_snapshot',
+                                    snapshotId:
+                                        'first-party-agent-runtime-factory-matrix',
+                                },
+                            },
                             locator,
                             normalizedModulePath:
                                 resolution.normalizedModulePath,
@@ -1305,6 +1333,11 @@ describe('first-party runner Agent factory matrix', () => {
                     const leaf = await loadRetainedAgentRuntimeLeaf({
                         paths,
                         binding,
+                        resolveBundledPluginRoot: async () => ({
+                            rootPath: packageRoot,
+                            cacheIdentity:
+                                'pinned_runner_snapshot:first-party-agent-runtime-factory-matrix',
+                        }),
                     }).catch((error: unknown) => {
                         throw new Error(
                             `Failed to load runner factory for '${agent.id}'`,
@@ -1518,10 +1551,10 @@ describe('first-party runner Agent factory matrix', () => {
                 const activation = await activateContributionModule({
                     pluginId: metadata.pluginId,
                     manifestAuthority: 'bundled_first_party',
-                    generation: 'first-party-agent-runtime-factory-matrix',
+                    occurrenceId: 'first-party-agent-runtime-factory-matrix',
                     manifest,
                     moduleNamespace: module,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                 });
                 if (activation.status !== 'active') {
                     throw new Error(

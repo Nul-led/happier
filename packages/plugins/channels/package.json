@@ -18,7 +18,12 @@
       "types": "./dist/targetedContributions.d.ts",
       "default": "./dist/targetedContributions.js"
     },
-    "./happier-plugin-ui/*": "./dist/happier-plugin-ui/*"
+    "./happier-plugin-ui/channels-app-native": "./src/ui/renderSurface.tsx",
+    "./happier-plugin-ui/channels-glance-native": "./src/ui/glance/channelsGlance.tsx",
+    "./happier-plugin-ui/channel-state-migrations": "./src/collectionMigrationArtifact.ts",
+    "./happier-plugin-ui/react-native/channels-app-native/entry.cjs.bundle": "./dist/happier-plugin-ui/react-native/channels-app-native/entry.cjs.bundle",
+    "./happier-plugin-ui/react-native/channels-glance-native/entry.cjs.bundle": "./dist/happier-plugin-ui/react-native/channels-glance-native/entry.cjs.bundle",
+    "./happier-plugin-ui/react-native/channel-state-migrations/entry.cjs.bundle": "./dist/happier-plugin-ui/react-native/channel-state-migrations/entry.cjs.bundle"
   },
   "files": [
     "dist",
@@ -44,20 +49,13 @@
     "@happier-dev/plugin-ui": "0.0.0"
   },
   "devDependencies": {
-    "@callstack/repack": "5.2.5",
     "@happier-dev/plugins-channel-discord": "0.0.0",
     "@happier-dev/plugins-channel-telegram": "0.0.0",
     "@happier-dev/plugins-scm-github": "0.0.0",
-    "@react-native-community/cli": "20.1.2",
-    "@react-native/metro-config": "0.83.5",
-    "@rspack/core": "2.1.3",
-    "@swc/helpers": "0.5.23",
     "@types/react": "19.2.0",
     "react": "19.2.0",
     "react-native": "0.83.5",
-    "react-native-web": "^0.21.0",
     "typescript": "^5.9.2",
-    "vite": "7.3.1",
     "vitest": "^3.2.4"
   }
 }

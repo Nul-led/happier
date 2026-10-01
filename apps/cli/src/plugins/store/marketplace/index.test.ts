@@ -14,7 +14,7 @@ const entry = (pluginId: string, packageName: string, status: 'approved' | 'with
   compatibility: { happier: '>=1.0.0', platforms: ['darwin', 'linux'] },
   summary: { contributions: ['agents'], requiredHostAccess: ['process'], optionalHostAccess: [], executableRealms: ['daemon'] },
   review: { status, reviewedAt: '2026-07-13T00:00:00.000Z' },
-  categories: ['agents'], media: [], updatePolicy: 'reviewSensitiveChanges', links: { homepage: 'https://example.com/plugin' },
+  categories: ['agents'], media: [], updatePolicy: 'allowed', links: { homepage: 'https://example.com/plugin' },
 });
 
 const source = (id: string, kind: 'curated' | 'user' | 'community-npm', entries: MarketplaceIndexSourceSnapshotV1['entries'], freshness: MarketplaceIndexSourceSnapshotV1['freshness'] = { state: 'fresh', fetchedAtMs: 100 }): MarketplaceIndexSourceSnapshotV1 => ({
@@ -27,7 +27,7 @@ const source = (id: string, kind: 'curated' | 'user' | 'community-npm', entries:
 describe('createMarketplaceIndex', () => {
   it('retains one listing per source and plugin while ranking sources deterministically', () => {
     const curated = entry('acme.agent', '@acme/agent');
-    const unreviewed = { ...curated, review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'reviewEveryUpdate' as const };
+    const unreviewed = { ...curated, review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'allowed' as const };
     const result = createMarketplaceIndex({
       revision: 7,
       sources: [source('community', 'community-npm', [unreviewed]), source('curated', 'curated', [curated]), source('user', 'user', [{ ...unreviewed, distribution: { ...curated.distribution, packageName: '@attacker/rebound' } }])],
@@ -48,7 +48,7 @@ describe('createMarketplaceIndex', () => {
     const community = {
       ...withdrawn,
       review: { status: 'unreviewed' as const, reviewedAt: null },
-      updatePolicy: 'reviewEveryUpdate' as const,
+      updatePolicy: 'allowed' as const,
     };
     const result = createMarketplaceIndex({
       revision: 1,
@@ -119,7 +119,7 @@ describe('createMarketplaceIndex', () => {
     const variants = [
       entry('acme.approved', '@acme/approved'),
       { ...entry('acme.pinned', '@acme/pinned'), updatePolicy: 'pinned' as const },
-      { ...entry('acme.withdrawn', '@acme/withdrawn', 'withdrawn'), updatePolicy: 'reviewEveryUpdate' as const },
+      { ...entry('acme.withdrawn', '@acme/withdrawn', 'withdrawn'), updatePolicy: 'allowed' as const },
     ];
     const result = createMarketplaceIndex({ revision: 1, sources: [source('curated', 'curated', variants)], query: { filters: { includeUnavailable: true } } });
     expect(result.items).toHaveLength(3);
@@ -164,7 +164,7 @@ describe('createMarketplaceIndex', () => {
     const conflicts = Array.from({ length: 200 }, (_, index) => ({
       ...entry('acme.agent', `@attacker/rebound-${index}`),
       review: { status: 'unreviewed' as const, reviewedAt: null },
-      updatePolicy: 'reviewEveryUpdate' as const,
+      updatePolicy: 'allowed' as const,
     }));
     const result = createMarketplaceIndex({
       revision: 1,

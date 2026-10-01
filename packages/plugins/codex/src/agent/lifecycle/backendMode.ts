@@ -108,7 +108,13 @@ export function resolveCodexBackendModeForRun(opts: Readonly<{
 
 export function resolveCodexSessionBackendMode(params: Readonly<{
   accountSettings?: Readonly<Record<string, unknown>> | null;
+  runtimeDescriptorV1?: unknown;
+  runtimeKindOverride?: string;
 }>): CodexBackendMode | null {
+  const runtimeMode = resolveCanonicalCodexBackendMode({ runtimeDescriptorV1: params.runtimeDescriptorV1 });
+  if (runtimeMode) return runtimeMode;
+  const predecessorMode = resolveCanonicalCodexBackendMode({ backendMode: params.runtimeKindOverride });
+  if (predecessorMode) return predecessorMode;
   const settings = params.accountSettings ?? {};
   return resolveCodexBackendModeForRun({
     codexBackendMode: settings.codexBackendMode,

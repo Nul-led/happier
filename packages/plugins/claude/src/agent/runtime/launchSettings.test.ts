@@ -9,7 +9,44 @@ import {
   resolveClaudeNativeLaunchSettings,
 } from './launchSettings.js';
 
+const titlePermissions = {
+  allow: ['mcp__happier__change_title', 'mcp__happier__session_title_set'],
+};
+
 describe('resolveClaudeNativeLaunchSettings', () => {
+  it.each(['interactive_terminal', 'noninteractive_sdk'] as const)(
+    'denies native workspace writes under bypass for %s while keeping Happier tools available',
+    (interactionKind) => {
+      const args = resolveClaudeLaunchSettingsOverlayArgs({
+        args: ['--settings', JSON.stringify({ permissions: { deny: ['WebFetch'], allow: ['Read'] } })],
+        interactionKind,
+        permissionMode: 'bypassPermissions',
+        launchSettings: {},
+        workspaceWrites: 'deny',
+      });
+      const settings = JSON.parse(args[args.indexOf('--settings') + 1] ?? '{}');
+      expect(settings.permissions.deny).toEqual(expect.arrayContaining(['WebFetch', 'Edit', 'Write', 'NotebookEdit', 'Bash']));
+      expect(settings.permissions.deny).not.toContain('mcp__happier__*');
+      expect(settings.permissions.allow).toContain('Read');
+    },
+  );
+
+  it('includes the Happier title tools in the interactive launch allow rules', () => {
+    const args = resolveClaudeLaunchSettingsOverlayArgs({
+      args: ['--model', 'sonnet'],
+      interactionKind: 'interactive_terminal',
+      permissionMode: 'default',
+      launchSettings: {},
+    });
+    const settingsIndex = args.indexOf('--settings');
+    expect(settingsIndex).toBeGreaterThanOrEqual(0);
+    const settings = JSON.parse(args[settingsIndex + 1] ?? '{}');
+    expect(settings.permissions?.allow).toEqual(expect.arrayContaining([
+      'mcp__happier__change_title',
+      'mcp__happier__session_title_set',
+    ]));
+  });
+
   it('acknowledges bypass mode only for interactive terminal launches', () => {
     expect(resolveClaudeLaunchSettingsOverlayArgs({
       args: ['--model', 'sonnet'],
@@ -20,7 +57,7 @@ describe('resolveClaudeNativeLaunchSettings', () => {
       '--model',
       'sonnet',
       '--settings',
-      JSON.stringify({ skipDangerousModePermissionPrompt: true }),
+      JSON.stringify({ skipDangerousModePermissionPrompt: true, permissions: titlePermissions }),
     ]);
 
     expect(resolveClaudeLaunchSettingsOverlayArgs({
@@ -28,7 +65,7 @@ describe('resolveClaudeNativeLaunchSettings', () => {
       interactionKind: 'interactive_terminal',
       permissionMode: 'default',
       launchSettings: {},
-    })).toEqual(['--model', 'sonnet']);
+    })).toEqual(['--model', 'sonnet', '--settings', JSON.stringify({ permissions: titlePermissions })]);
 
     expect(resolveClaudeLaunchSettingsOverlayArgs({
       args: ['--model', 'sonnet'],
@@ -52,6 +89,7 @@ describe('resolveClaudeNativeLaunchSettings', () => {
         ultracode: true,
         statusLine: { type: 'command', command: 'status-forwarder' },
         skipDangerousModePermissionPrompt: true,
+        permissions: titlePermissions,
       }),
     ]);
   });
@@ -59,7 +97,10 @@ describe('resolveClaudeNativeLaunchSettings', () => {
   it('reads file-backed settings into the inline launch overlay without creating a sibling file', async () => {
     const settingsDir = await mkdtemp(join(tmpdir(), 'happier-claude-launch-settings-'));
     const settingsPath = join(settingsDir, 'settings.json');
-    const sourceSettings = { permissions: { allow: ['mcp__happier__change_title'] } };
+    const sourceSettings = { permissions: {
+      allow: ['mcp__happier__change_title'],
+      deny: ['Bash'],
+    } };
     await writeFile(settingsPath, JSON.stringify(sourceSettings));
 
     try {
@@ -71,7 +112,7 @@ describe('resolveClaudeNativeLaunchSettings', () => {
       })).toEqual([
         '--settings',
         JSON.stringify({
-          ...sourceSettings,
+          permissions: { ...titlePermissions, deny: ['Bash'] },
           skipDangerousModePermissionPrompt: true,
         }),
       ]);

@@ -228,11 +228,11 @@ describe('createPluginHttpService', () => {
         const seed = Object.freeze({
             plugin: Object.freeze({ id: 'caller.plugin', version: '1.0.0' }),
             contribution: Object.freeze({ id: 'run', qualifiedId: 'caller.plugin/actions/run' }),
-            generation: 'generation-websocket',
+            occurrenceId: 'generation-websocket',
             correlationId: 'correlation-websocket',
             surface: 'agent' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const httpOnly = host.bind(seed, createLoggerAndEventsAvailablePluginInvocationServiceBinding(
             'generation-websocket',
@@ -303,11 +303,11 @@ describe('createPluginHttpService', () => {
         const seed = Object.freeze({
             plugin: Object.freeze({ id: 'caller.plugin', version: '1.0.0' }),
             contribution: Object.freeze({ id: 'gateway', qualifiedId: 'caller.plugin/actions/gateway' }),
-            generation: 'generation-websocket-family',
+            occurrenceId: 'generation-websocket-family',
             correlationId: 'correlation-websocket-family',
             surface: 'agent' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const service = host.bind(seed, createLoggerAndEventsAvailablePluginInvocationServiceBinding(
             'generation-websocket-family',
@@ -373,11 +373,11 @@ describe('createPluginHttpService', () => {
         const seed = Object.freeze({
             plugin: Object.freeze({ id: 'caller.plugin', version: '1.0.0' }),
             contribution: Object.freeze({ id: 'loopback', qualifiedId: 'caller.plugin/actions/loopback' }),
-            generation: 'generation-websocket-loopback',
+            occurrenceId: 'generation-websocket-loopback',
             correlationId: 'correlation-websocket-loopback',
             surface: 'agent' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const bind = (id: string, origin: string, privateNetwork?: boolean) => host.bind(
             seed,
@@ -440,11 +440,11 @@ describe('createPluginHttpService', () => {
         const seed = Object.freeze({
             plugin: Object.freeze({ id: 'caller.plugin', version: '1.0.0' }),
             contribution: Object.freeze({ id: 'snapshot', qualifiedId: 'caller.plugin/actions/snapshot' }),
-            generation: 'generation-websocket-snapshot',
+            occurrenceId: 'generation-websocket-snapshot',
             correlationId: 'correlation-websocket-snapshot',
             surface: 'agent' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const service = host.bind(seed, createLoggerAndEventsAvailablePluginInvocationServiceBinding(
             'generation-websocket-snapshot',
@@ -510,11 +510,11 @@ describe('createPluginHttpService', () => {
         const seed = Object.freeze({
             plugin: Object.freeze({ id: 'caller.plugin', version: '1.0.0' }),
             contribution: Object.freeze({ id: 'pin', qualifiedId: 'caller.plugin/actions/pin' }),
-            generation: 'generation-websocket-pin',
+            occurrenceId: 'generation-websocket-pin',
             correlationId: 'correlation-websocket-pin',
             surface: 'agent' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const binding = Object.freeze({
             ...createLoggerAndEventsAvailablePluginInvocationServiceBinding(
@@ -562,11 +562,11 @@ describe('createPluginHttpService', () => {
         const seed = Object.freeze({
             plugin: Object.freeze({ id: 'caller.plugin', version: '1.0.0' }),
             contribution: Object.freeze({ id: 'retire', qualifiedId: 'caller.plugin/actions/retire' }),
-            generation: 'generation-websocket-retire-after-dns',
+            occurrenceId: 'generation-websocket-retire-after-dns',
             correlationId: 'correlation-websocket-retire-after-dns',
             surface: 'agent' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const binding = Object.freeze({
             ...createLoggerAndEventsAvailablePluginInvocationServiceBinding(
@@ -618,11 +618,11 @@ describe('createPluginHttpService', () => {
         const seed = Object.freeze({
             plugin: Object.freeze({ id: 'caller.plugin', version: '1.0.0' }),
             contribution: Object.freeze({ id: 'pending-open', qualifiedId: 'caller.plugin/actions/pending-open' }),
-            generation: 'generation-pending-open',
+            occurrenceId: 'generation-pending-open',
             correlationId: 'correlation-pending-open',
             surface: 'agent' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const binding = Object.freeze({
             ...createLoggerAndEventsAvailablePluginInvocationServiceBinding(
@@ -745,15 +745,15 @@ describe('createPluginHttpService', () => {
         const createSeed = (
             id: string,
             signal: AbortSignal,
-            isGenerationCurrent: () => boolean = () => true,
+            isOccurrenceCurrent: () => boolean = () => true,
         ) => Object.freeze({
             plugin: Object.freeze({ id: 'caller.plugin', version: '1.0.0' }),
             contribution: Object.freeze({ id, qualifiedId: `caller.plugin/actions/${id}` }),
-            generation: 'generation-websocket',
+            occurrenceId: 'generation-websocket',
             correlationId: id,
             surface: 'agent' as const,
             signal,
-            isGenerationCurrent,
+            isOccurrenceCurrent,
         });
 
         const configurationA = new AbortController();
@@ -848,9 +848,9 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7', correlationId: 'correlation-redirect', surface: 'agent',
+            occurrenceId: 'generation-7', correlationId: 'correlation-redirect', surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         const first = await service.request({
@@ -897,9 +897,9 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7', correlationId: 'correlation-redacted-path', surface: 'agent',
+            occurrenceId: 'generation-7', correlationId: 'correlation-redacted-path', surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         await expect(service.request({
@@ -947,9 +947,9 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7', correlationId: 'correlation-redacted-path-mutation', surface: 'agent',
+            occurrenceId: 'generation-7', correlationId: 'correlation-redacted-path-mutation', surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         await expect(service.request({
@@ -986,9 +986,9 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7', correlationId: 'correlation-redaction-failure', surface: 'agent',
+            occurrenceId: 'generation-7', correlationId: 'correlation-redaction-failure', surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         let failure: unknown;
@@ -1016,9 +1016,9 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7', correlationId: 'correlation-never-settles', surface: 'agent',
+            occurrenceId: 'generation-7', correlationId: 'correlation-never-settles', surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         await expect(service.request({
@@ -1077,11 +1077,11 @@ describe('createPluginHttpService', () => {
                 id: 'run',
                 qualifiedId: 'retained.plugin/agents/run',
             },
-            generation: 'generation-g',
+            occurrenceId: 'generation-g',
             correlationId: 'correlation-retained',
             surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding, {
             interceptorRegistry: legacyInterceptorRegistry([{
                 pluginId: 'current.policy',
@@ -1140,11 +1140,11 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: 'correlation-connected-account',
             surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         await expect(service.request({
@@ -1191,9 +1191,9 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7', correlationId: 'selected-resource', surface: 'agent',
+            occurrenceId: 'generation-7', correlationId: 'selected-resource', surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         await expect(service.request({
@@ -1249,11 +1249,11 @@ describe('createPluginHttpService', () => {
                 service: host.bind({
                     plugin: { id: 'caller.plugin', version: '1.0.0' },
                     contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-                    generation: 'generation-7',
+                    occurrenceId: 'generation-7',
                     correlationId: `resolved-private-${privateNetwork}`,
                     surface: 'agent',
                     signal: new AbortController().signal,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                 }, binding),
             };
         };
@@ -1302,11 +1302,11 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: 'private-disclosure',
             surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         await expect(service.request({
@@ -1361,11 +1361,11 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: 'dns-pin',
             surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         await expect(service.request({
@@ -1404,11 +1404,11 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-http-retire-after-dns',
+            occurrenceId: 'generation-http-retire-after-dns',
             correlationId: 'http-retire-after-dns',
             surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, Object.freeze({
             ...baseBinding,
             networkCurrentness: () => {
@@ -1462,11 +1462,11 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: 'correlation-connected-account-retry',
             surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         await expect(service.request({
@@ -1519,9 +1519,9 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7', correlationId: 'correlation-1', surface: 'agent',
+            occurrenceId: 'generation-7', correlationId: 'correlation-1', surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         await expect(service.request({
@@ -1602,11 +1602,11 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-credential',
+            occurrenceId: 'generation-credential',
             correlationId: 'correlation-credential',
             surface: 'ui',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
         const credentialBinding = Object.freeze({
             kind: 'voiceAccountOperation' as const,
@@ -1697,11 +1697,11 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-raw-credential',
+            occurrenceId: 'generation-raw-credential',
             correlationId: 'correlation-raw-credential',
             surface: 'ui',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
         const headers = Object.freeze({ authorization: 'Bearer connected-account-secret' });
 
@@ -1774,11 +1774,11 @@ describe('createPluginHttpService', () => {
         const service = host.bind({
             plugin: { id: 'caller.plugin', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: 'correlation-listeners',
             surface: 'agent',
             signal: invocationAbort.signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, binding);
 
         await expect(service.request({
@@ -1852,11 +1852,11 @@ describe('createPluginHttpService', () => {
         const createSeed = (qualifiedId: string) => Object.freeze({
             plugin: Object.freeze({ id: 'caller.plugin', version: '1.0.0' }),
             contribution: Object.freeze({ id: qualifiedId.split('/').at(-1)!, qualifiedId }),
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             correlationId: qualifiedId,
             surface: 'agent' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         nestedService = host.bind(createSeed('caller.plugin/actions/nested'), binding);
         const outerService = host.bind(createSeed('caller.plugin/actions/outer'), binding);
@@ -1878,7 +1878,7 @@ describe('createPluginHttpService', () => {
         const activationOrder: string[] = [];
         const bindings: Array<{
             pluginId: string;
-            generation: string;
+            occurrenceId: string;
             contribution: { id: string; origins: string[]; methods: ['GET']; priority: number };
             invoke(request: PluginInterceptedRequest): Promise<PluginInterceptorResult>;
         }> = [];
@@ -1890,7 +1890,7 @@ describe('createPluginHttpService', () => {
             activationOrder.push(`activate:${demands.map((demand) => demand.pluginId).join(',')}`);
             bindings.push({
                 pluginId: 'matching.policy',
-                generation: '7',
+                occurrenceId: '7',
                 contribution: {
                     id: 'rewrite',
                     origins: ['https://api.example.test'],

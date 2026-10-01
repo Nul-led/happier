@@ -3,7 +3,9 @@ import type { TriageEntryRefV1 } from '@happier-dev/triage-protocol/v1';
 import { triageEntryRowKey, type TriageListRowV1 } from '../../projection/listWindow.js';
 import {
   projectTriageEntryDisplay,
+  type TriageEntryDetailKindV1,
   type TriageEntryDisplayTextV1,
+  type TriageEntryDisplayV1,
 } from '../window/entryDisplay.js';
 import type { TriagePinnedEntryV1 } from './pinCommand.js';
 
@@ -34,6 +36,12 @@ export type TriageListDisplayRowV1 = Readonly<{
   /** The quiet trailing line: why it needs the reader, or why it cannot be shown. */
   detail: string | null;
   tone: 'neutral' | 'warning' | 'danger';
+  /** What `detail` is, so the row can make an attention reason its one loud fact. */
+  detailKind: TriageEntryDetailKindV1 | null;
+  /** The lifecycle presentation behind `lifecycleLabel`, for the row's mark. */
+  lifecyclePresentation: TriageEntryDisplayV1['lifecyclePresentation'];
+  /** The provider's own last-activity moment (display only), or `null`. */
+  activityAtMs: number | null;
   /**
    * The facts a row draws and announces: what kind of thing
    * it is, which lifecycle it is in, and whether what is on screen is still
@@ -101,6 +109,9 @@ export function projectTriageWindowRow(
     identifierLabel: display.identifierLabel,
     detail: display.detail,
     tone: display.tone,
+    detailKind: display.detailKind,
+    lifecyclePresentation: display.lifecyclePresentation,
+    activityAtMs: display.activityAtMs,
     pinned: pins.has(display.key),
     materialized: true,
     sourceInstanceId: row.selected.kind === 'selected' ? row.selected.sourceInstanceId : null,
@@ -130,6 +141,9 @@ export function projectTriagePinnedRow(
       identifierLabel: display.identifierLabel,
       detail: display.detail,
       tone: display.tone,
+      detailKind: display.detailKind,
+      lifecyclePresentation: display.lifecyclePresentation,
+      activityAtMs: display.activityAtMs,
       pinned: true,
       materialized: true,
       sourceInstanceId: projected.selected.kind === 'selected'
@@ -152,6 +166,9 @@ export function projectTriagePinnedRow(
       ? UNMATERIALIZED_PIN_DETAIL
       : text(UNMATERIALIZED_PIN_DETAIL_KEY, UNMATERIALIZED_PIN_DETAIL),
     tone: 'neutral',
+    detailKind: 'presence',
+    lifecyclePresentation: null,
+    activityAtMs: null,
     pinned: true,
     materialized: false,
     // A pin this mount never materialized names no present observation, so

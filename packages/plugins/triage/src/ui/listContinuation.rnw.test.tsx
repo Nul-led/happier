@@ -313,23 +313,15 @@ afterEach(async () => {
     for (const fixture of mounted.splice(0)) await fixture.dispose();
 });
 
-describe('the mounted continuation row', () => {
+describe('the mounted window continuations', () => {
     it('reaches the entries after the transport bound, and keeps the ones already listed', async () => {
         const harness = createEntriesHarness();
         const shell = await mountShell(harness);
 
-        // The section is unfinished, so it closes with the stated row — and that
-        // row now carries a control. It was inert from the day it was written,
-        // which is what made entry 57 unreachable.
-        await expect(shell.getByText('More entries may exist'))
-            .resolves.toEqual({ content: 'More entries may exist' });
-        // The statement is a noninteractive grid row. Only its explicit
-        // continuation control is a button; List must not synthesize a dead
-        // primary action for an item with no entry/detail destination.
-        await expect(shell.getByRole('row', { name: 'More entries may exist' }))
-            .resolves.toBeDefined();
-        await expect(shell.queryByRole('button', { name: 'More entries may exist' }))
-            .resolves.toBeUndefined();
+        // The window is unfinished, so the Collection's footer says so and carries the one control that reads
+        // more. It is a control beside the honesty line, never a dead row with no entry behind it.
+        await expect(shell.getByRole('button', { name: 'Load more' })).resolves.toBeDefined();
+        await expect(shell.queryByRole('row', { name: 'More entries may exist' })).resolves.toBeUndefined();
         await expect(shell.getByText('Change 1.0')).resolves.toEqual({ content: 'Change 1.0' });
         await expect(shell.queryByText('Change 2.0')).resolves.toBeUndefined();
 
@@ -340,8 +332,10 @@ describe('the mounted continuation row', () => {
         // The next bounded window is on screen, and the first one is still there.
         await act(async () => {
             await vi.waitFor(async () => {
-                await expect(shell.getByText('Change 2.0'))
-                    .resolves.toEqual({ content: 'Change 2.0' });
+                // The appended window lands after the rows already listed (the virtualizer mounts only the
+                // first of them here), so the footer's own count is what says it arrived.
+                await expect(shell.getByText('112 loaded'))
+                    .resolves.toEqual({ content: '112 loaded' });
             });
         });
         await expect(shell.getByText('Change 1.0')).resolves.toEqual({ content: 'Change 1.0' });
@@ -370,8 +364,10 @@ describe('the mounted continuation row', () => {
 
         await act(async () => {
             await vi.waitFor(async () => {
-                await expect(shell.getByText('Change 2.0'))
-                    .resolves.toEqual({ content: 'Change 2.0' });
+                // The appended window lands after the rows already listed (the virtualizer mounts only the
+                // first of them here), so the footer's own count is what says it arrived.
+                await expect(shell.getByText('112 loaded'))
+                    .resolves.toEqual({ content: '112 loaded' });
             });
         });
     });
@@ -387,7 +383,7 @@ describe('the mounted continuation row', () => {
             .resolves.toEqual({ content: 'More pinned entries exist' });
 
         await act(async () => {
-            await shell.press(await shell.getByRole('button', { name: 'Load more' }));
+            await shell.press(await shell.getByRole('button', { name: 'Load more pins' }));
         });
 
         await expect(shell.getByText('Pinned change 0'))
@@ -412,7 +408,7 @@ describe('the mounted continuation row', () => {
         harness.state.repeatMarksCursor = true;
 
         await act(async () => {
-            await shell.press(await shell.getByRole('button', { name: 'Load more' }));
+            await shell.press(await shell.getByRole('button', { name: 'Load more pins' }));
         });
 
         await expect(shell.getByText('Pinned change 3')).resolves.toBeDefined();
@@ -434,10 +430,10 @@ describe('the mounted continuation row', () => {
         // each individual cursor advances, but the walk has returned to a
         // position it already consumed and can never reach the two older pins.
         await act(async () => {
-            await shell.press(await shell.getByRole('button', { name: 'Load more' }));
+            await shell.press(await shell.getByRole('button', { name: 'Load more pins' }));
         });
         await act(async () => {
-            await shell.press(await shell.getByRole('button', { name: 'Load more' }));
+            await shell.press(await shell.getByRole('button', { name: 'Load more pins' }));
         });
 
         await expect(shell.getByText('Pinned change 2')).resolves.toBeDefined();

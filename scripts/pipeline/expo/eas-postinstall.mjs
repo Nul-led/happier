@@ -15,7 +15,7 @@ async function defaultEnsureUiWorkspacePackagesBuilt({ env } = {}) {
     throw new Error('[eas-postinstall] ensureUiWorkspacePackagesBuilt export missing');
   }
 
-  await mod.ensureUiWorkspacePackagesBuilt({ env });
+  await mod.ensureUiWorkspacePackagesBuilt({ env, publicationMode: 'artifact' });
 }
 
 export async function runEasPostinstall({
@@ -25,7 +25,7 @@ export async function runEasPostinstall({
   const enabled = env.HAPPIER_EAS_ENSURE_UI_WORKSPACES_BUILT === '1' || env.HAPPIER_EAS_ENSURE_UI_WORKSPACES_BUILT === 'true';
   if (!enabled) return;
 
-  await ensureUiWorkspacePackagesBuilt({ env });
+  await ensureUiWorkspacePackagesBuilt({ env, publicationMode: 'artifact' });
 }
 
 async function main() {
@@ -38,4 +38,3 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     process.exitCode = 1;
   });
 }
-

@@ -1,6 +1,7 @@
 import type {
   AgentAccountUsageMeter,
   AgentAccountUsageRecoveryCredits,
+  AgentAccountUsageSubscription,
   AgentAccountUsageSnapshot,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
@@ -32,6 +33,7 @@ export type MapCodexProviderHttpUsageSnapshotInput = Readonly<{
   planLabel?: string | null;
   accountLabel?: string | null;
   recoveryCredits?: AgentAccountUsageRecoveryCredits;
+  subscription?: AgentAccountUsageSubscription;
   meters: readonly AgentAccountUsageMeter[];
 }>;
 
@@ -76,6 +78,7 @@ export function mapCodexProviderHttpUsageSnapshot(
     state: params.meters.length > 0 ? 'loaded_data' : 'loaded_empty',
     planLabel: params.planLabel ?? null,
     accountLabel: params.accountLabel ?? null,
+    ...(params.subscription ? { subscription: params.subscription } : {}),
     ...(params.recoveryCredits
       ? { recoveryCredits: { ...params.recoveryCredits, credits: [...params.recoveryCredits.credits] } }
       : {}),

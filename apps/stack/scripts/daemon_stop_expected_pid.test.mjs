@@ -136,15 +136,16 @@ test('stopLocalDaemon stops a live daemon from daemon.state.json when cli dist i
     const cliHomeDir = join(tmp, 'cli-home');
     const cliBin = join(cliDir, 'bin', 'happier.mjs');
     const internalServerUrl = 'http://127.0.0.1:3005';
+    const stackName = 'daemon-stop-test';
 
     await mkdir(join(cliDir, 'bin'), { recursive: true });
     await writeFile(join(cliDir, 'package.json'), '{}\n', 'utf-8');
     await writeFile(join(cliBin), "throw new Error('cli bin should not run when dist is missing');\n", 'utf-8');
 
-    const daemonPid = await spawnDaemonLikeProcess({ cliHomeDir, internalServerUrl });
+    const daemonPid = await spawnDaemonLikeProcess({ cliHomeDir, internalServerUrl, stackName });
     const runtimeStatePath = join(tmp, 'stack.runtime.json');
     await recordStackRuntimeStart(runtimeStatePath, {
-      stackName: 'daemon-stop-test',
+      stackName,
       ownerPid: process.pid,
       processes: { daemonPid, daemonPids: [daemonPid] },
     });
@@ -157,7 +158,8 @@ test('stopLocalDaemon stops a live daemon from daemon.state.json when cli dist i
       cliHomeDir,
       internalServerUrl,
       runtimeStatePath,
-      env: process.env,
+      stackName,
+      env: { ...process.env, HAPPIER_STACK_STACK: stackName },
     });
 
     let alive = true;

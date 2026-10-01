@@ -10,6 +10,7 @@ export {
     isAgentExternalSessionsResultWithinByteBudget,
 } from '../../externalSessions.js';
 export type { AgentExternalSessionCandidate } from '../../externalSessions.js';
+export type { AgentExternalSessionCandidateThread } from '../../externalSessions.js';
 export type { AgentExternalSessionCandidateIndexLookup } from '../../externalSessions.js';
 export type { AgentExternalSessionCandidateIndexState } from '../../externalSessions.js';
 export type { AgentExternalSessionHookCustodiedEntryProjection } from '../../externalSessionHooks.js';
@@ -44,6 +45,7 @@ export type { AgentExternalSessionTakeoverLaunchPlan } from '../externalSessionT
 export type { AgentExternalSessionTakeoverResolveLaunchCallback } from '../externalSessionTakeover.js';
 export type { AgentExternalSessionTakeoverResolveLaunchRequest } from '../externalSessionTakeover.js';
 export type { AgentExternalSessionTakeoverResolveLaunchResult } from '../externalSessionTakeover.js';
+export type { AgentExternalSessionTerminalObservation } from '../../externalSessions.js';
 export type { AgentExternalSessionTranscriptItem } from '../../externalSessions.js';
 export type { AgentExternalSessionTranscriptRawRecord } from '../../externalSessions.js';
 export { AgentExternalSessionTranscriptRawRecordSchema } from '../../externalSessions.js';

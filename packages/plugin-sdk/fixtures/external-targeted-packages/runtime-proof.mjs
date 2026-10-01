@@ -183,7 +183,7 @@ const exactDetailSurface = Object.freeze({
   contributor: Object.freeze({
     pluginId: 'fixture.physical-copy-contributor',
     contributionId: 'physical-copy-source',
-    immutableGenerationId: 'physical-copy-contributor-generation-a',
+    occurrenceId: 'physical-copy-contributor-occurrence-a',
   }),
   role: 'detail',
   presentation: 'content',
@@ -191,7 +191,7 @@ const exactDetailSurface = Object.freeze({
 const targetedContributions = Object.freeze({
   target: Object.freeze({
     pluginId: 'fixture.physical-copy-target',
-    immutableGenerationId: 'physical-copy-target-generation-a',
+    occurrenceId: 'physical-copy-target-occurrence-a',
   }),
   points: Object.freeze([Object.freeze({
     pointId: 'sources',
@@ -216,7 +216,7 @@ if (target.selectPhysicalCopyDetailSurface(Object.freeze({
 })) !== null) {
   throw new Error('Target React/RNW A surface did not fail closed for a missing B handle');
 }
-const mismatchedGenerationContributions = Object.freeze({
+const mismatchedOccurrenceContributions = Object.freeze({
   ...targetedContributions,
   points: Object.freeze([Object.freeze({
     ...targetedContributions.points[0],
@@ -228,15 +228,15 @@ const mismatchedGenerationContributions = Object.freeze({
           ...exactDetailSurface,
           contributor: Object.freeze({
             ...exactDetailSurface.contributor,
-            immutableGenerationId: 'stale-generation',
+            occurrenceId: 'stale-occurrence',
           }),
         })]),
       })]),
     })]),
   })]),
 });
-if (target.selectPhysicalCopyDetailSurface(mismatchedGenerationContributions) !== null) {
-  throw new Error('Target React/RNW A surface did not fail closed for a stale B generation');
+if (target.selectPhysicalCopyDetailSurface(mismatchedOccurrenceContributions) !== null) {
+  throw new Error('Target React/RNW A surface did not fail closed for a stale B occurrence');
 }
 if (target.selectPhysicalCopyDetailSurface(Object.freeze({
   ...targetedContributions,

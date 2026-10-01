@@ -347,6 +347,9 @@ describe('plugin WebSocket host adapter', () => {
         expect(() => normalizePluginWebSocketOpenInput({
             url: 'ws://example.test/socket',
         })).toThrow(expect.objectContaining({ code: 'plugin_websocket_insecure_url_denied' }));
+        expect(normalizePluginWebSocketOpenInput({
+            url: 'ws://[::ffff:127.0.0.1]/socket',
+        }).targetOrigin).toBe('http://[::ffff:7f00:1]');
         expect(() => normalizePluginWebSocketOpenInput({
             url: 'wss://example.test/socket',
             headers: [{ name: 'x-api-key', value: 'abc\r\ndef' }],

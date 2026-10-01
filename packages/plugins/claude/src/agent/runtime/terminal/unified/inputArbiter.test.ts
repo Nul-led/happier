@@ -49,6 +49,71 @@ describe('createClaudeUnifiedInputArbiter', () => {
     vi.useRealTimers();
   });
 
+  it.each(['injecting', 'pending', 'custody'] as const)(
+    'requires transcript consumption for a steer in %s custody despite an exact submit hook',
+    async (phase) => {
+      const input = promptInput('queued-steer');
+      const accepted: string[] = [];
+      const duringInjection: boolean[] = [];
+      let arbiter!: ReturnType<typeof createClaudeUnifiedInputArbiter>;
+      const submitEvidence = {
+        promptText: input.text,
+        acceptanceEvidenceId: 'prompt:steer',
+        source: 'prompt_submit' as const,
+      };
+      arbiter = createClaudeUnifiedInputArbiter({
+        injectPrompt: async () => {
+          if (phase === 'injecting') {
+            duringInjection.push(await arbiter.confirmProviderAcceptance(submitEvidence));
+          }
+          return injected();
+        },
+        onPromptAccepted: (acceptedInput) => { accepted.push(acceptedInput.text); },
+      });
+      try {
+        arbiter.observeReadiness(readiness({ activeTurnId: 'running-turn' }));
+        arbiter.enqueue(input);
+        await arbiter.drain();
+        if (phase === 'injecting') expect(duringInjection).toEqual([false]);
+        if (phase === 'custody') await arbiter.observeTerminalPromptCustody(input);
+        expect(await arbiter.confirmProviderAcceptance(submitEvidence)).toBe(false);
+        expect(accepted).toEqual([]);
+        expect(await arbiter.confirmProviderAcceptance({ ...submitEvidence, source: 'transcript' })).toBe(true);
+        expect(accepted).toEqual([input.text]);
+      } finally { arbiter.dispose(); }
+    },
+  );
+
+  it('does not resurrect exact retired custody after an in-flight terminal write', async () => {
+    let finishWrite!: (result: TerminalInputInjectionResult) => void;
+    const first = promptInput('retired-write', { localIds: ['retired-local'] });
+    const next = promptInput('following-write', { localIds: ['next-local'] });
+    const injectedInputs: TerminalPromptInput[] = [];
+    const arbiter = createClaudeUnifiedInputArbiter({
+      injectPrompt: async (input) => {
+        injectedInputs.push(input);
+        return input === first
+          ? await new Promise<TerminalInputInjectionResult>((resolve) => { finishWrite = resolve; })
+          : injected();
+      },
+    });
+    arbiter.observeReadiness(readiness());
+    arbiter.enqueue(first);
+    const draining = arbiter.drain();
+    await vi.waitFor(() => expect(injectedInputs).toEqual([first]));
+    expect(arbiter.retirePendingInputs(['unrelated-local'])).toEqual([]);
+    expect(arbiter.retirePendingInputs(['retired-local'])).toEqual([first]);
+    arbiter.enqueue(next);
+    finishWrite(injected());
+    await draining;
+    await arbiter.drain();
+    expect(injectedInputs).toEqual([first, next]);
+    expect(arbiter.snapshot()).toMatchObject({ queuedCount: 1, providerAcceptancePendingCount: 1 });
+    await expect(arbiter.confirmProviderAcceptance({ promptText: first.text })).resolves.toBe(false);
+    await expect(arbiter.confirmProviderAcceptance({ promptText: next.text })).resolves.toBe(true);
+    arbiter.dispose();
+  });
+
   it('settles a turn-neutral goal control at terminal injection and admits the following prompt', async () => {
     const goalControl = promptInput('goal-clear', { kind: 'rpc' });
     const nextPrompt = promptInput('next-prompt');
@@ -707,6 +772,75 @@ describe('createClaudeUnifiedInputArbiter', () => {
     arbiter.dispose();
   });
 
+  it('fills Claude native steer queue without waiting for prior steer consumption', async () => {
+    const first = promptInput('native-queue-first');
+    const second = promptInput('native-queue-second');
+    const third = promptInput('native-queue-third');
+    const injectedTexts: string[] = [];
+    const acceptedTexts: string[] = [];
+    const arbiter = createClaudeUnifiedInputArbiter({
+      injectPrompt: vi.fn(async (input) => {
+        injectedTexts.push(input.text);
+        return injected();
+      }),
+      onPromptAccepted: (input) => {
+        acceptedTexts.push(input.text);
+      },
+    });
+
+    arbiter.observeReadiness(readiness({ activeTurnId: 'turn-native-queue' }));
+    arbiter.enqueue(first);
+    await arbiter.drain();
+    await expect(arbiter.observeTerminalPromptCustody(first)).resolves.toBe(true);
+    arbiter.enqueue(second);
+    arbiter.enqueue(third);
+    await arbiter.drain();
+
+    expect(injectedTexts).toEqual([first.text, second.text, third.text]);
+    expect(acceptedTexts).toEqual([]);
+    await expect(arbiter.confirmProviderAcceptance({ promptText: first.text, source: 'transcript' })).resolves.toBe(true);
+    await expect(arbiter.confirmProviderAcceptance({ promptText: second.text, source: 'transcript' })).resolves.toBe(true);
+    await expect(arbiter.confirmProviderAcceptance({ promptText: third.text, source: 'transcript' })).resolves.toBe(true);
+    expect(acceptedTexts).toEqual([first.text, second.text, third.text]);
+
+    arbiter.dispose();
+  });
+
+  it('allows evidence seen before registration to accept the later registered input', async () => {
+    const input = promptInput('out-of-order');
+    const arbiter = createClaudeUnifiedInputArbiter({ injectPrompt: async () => injected() });
+    const evidence = { promptText: input.text, acceptanceEvidenceId: 'prompt:early' };
+    try {
+      await expect(arbiter.confirmProviderAcceptance(evidence)).resolves.toBe(false);
+      arbiter.observeReadiness(readiness());
+      arbiter.enqueue(input);
+      await arbiter.drain();
+      await expect(arbiter.confirmProviderAcceptance(evidence)).resolves.toBe(true);
+    } finally { arbiter.dispose(); }
+  });
+
+  it('does not reuse an accepted provider prompt id for a later identical input', async () => {
+    const first = promptInput('same-text', { localIds: ['first'] });
+    const second = { ...first, origin: { ...first.origin, nonce: 'second', localIds: ['second'] } };
+    const accepted: string[] = [];
+    const arbiter = createClaudeUnifiedInputArbiter({
+      injectPrompt: async () => injected(),
+      onPromptAccepted: (input) => { accepted.push(...(input.origin.localIds ?? [])); },
+    });
+    try {
+      arbiter.observeReadiness(readiness());
+      arbiter.enqueue(first);
+      await arbiter.drain();
+      await expect(arbiter.confirmProviderAcceptance({ promptText: first.text, acceptanceEvidenceId: 'prompt:first-provider-id' })).resolves.toBe(true);
+      arbiter.enqueue(second);
+      await arbiter.drain();
+      await expect(arbiter.confirmProviderAcceptance({ promptText: first.text, acceptanceEvidenceId: 'prompt:first-provider-id' })).resolves.toBe(false);
+      expect(accepted).toEqual(['first']);
+      await expect(arbiter.confirmProviderAcceptance({ promptText: second.text, acceptanceEvidenceId: 'prompt:second-provider-id' })).resolves.toBe(true);
+      expect(accepted).toEqual(['first', 'second']);
+    } finally { arbiter.dispose(); }
+  });
+
   it('fails closed when prompt-only acceptance matches multiple terminal-custody inputs', async () => {
     const first = promptInput('identical-terminal-custody', {
       localIds: ['first-local'],
@@ -738,9 +872,19 @@ describe('createClaudeUnifiedInputArbiter', () => {
     await expect(arbiter.confirmProviderAcceptance({
       promptText: first.text,
       exactPromptText: true,
+      acceptanceEvidenceId: 'prompt:ambiguous-id',
     })).resolves.toBe(false);
     expect(acceptedLocalIds).toEqual([]);
     expect(arbiter.snapshot()).toMatchObject({ terminalCustodyCount: 2 });
+    arbiter.retirePendingInputs(['first-local']);
+    await expect(arbiter.confirmProviderAcceptance({
+      promptText: second.text, acceptanceEvidenceId: 'prompt:ambiguous-id',
+    })).resolves.toBe(false);
+    expect(acceptedLocalIds).toEqual([]);
+    await expect(arbiter.confirmProviderAcceptance({
+      promptText: second.text, acceptanceEvidenceId: 'prompt:fresh-id',
+    })).resolves.toBe(true);
+    expect(acceptedLocalIds).toEqual(['second-local']);
 
     arbiter.dispose();
   });

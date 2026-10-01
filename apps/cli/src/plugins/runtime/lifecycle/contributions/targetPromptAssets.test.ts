@@ -67,7 +67,6 @@ function createFixture(params?: Readonly<{
     const retirement = new AbortController();
     let current = true;
     const projection = createTargetPromptAssetAdapterRegistry({
-        generation: 7,
         promptAssets: [{
             pluginId: 'acme.prompts',
             localId: 'external-skills',
@@ -75,14 +74,14 @@ function createFixture(params?: Readonly<{
         }],
         targetRegistrations: [{
             pluginId: 'acme.prompts',
-            generation: '7',
+            occurrenceId: '7',
             registration: {
                 family: 'promptAssets',
                 localId: 'external-skills',
                 value: adapter,
             },
         }],
-        resolveGenerationLifecycle: () => ({
+        resolveOccurrenceLifecycle: () => ({
             isCurrent: () => current,
             retirementSignal: retirement.signal,
         }),
@@ -208,14 +207,13 @@ describe('target Prompt Asset adapters', () => {
         });
 
         const projection = createTargetPromptAssetAdapterRegistry({
-            generation: 7,
             promptAssets: [
                 { pluginId: 'good.plugin', localId: 'good-skills', adapterDescriptor: goodDescriptor },
                 { pluginId: 'bad.plugin', localId: 'bad-skills', adapterDescriptor: badDeclared },
             ],
             targetRegistrations: [{
                 pluginId: 'good.plugin',
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'promptAssets',
                     localId: 'good-skills',
@@ -223,14 +221,14 @@ describe('target Prompt Asset adapters', () => {
                 },
             }, {
                 pluginId: 'bad.plugin',
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'promptAssets',
                     localId: 'bad-skills',
                     value: adapterFor(badRegistered),
                 },
             }],
-            resolveGenerationLifecycle: () => ({
+            resolveOccurrenceLifecycle: () => ({
                 isCurrent: () => true,
                 retirementSignal: retirement.signal,
             }),
@@ -262,7 +260,6 @@ describe('target Prompt Asset adapters', () => {
         });
 
         const projection = createTargetPromptAssetAdapterRegistry({
-            generation: 7,
             promptAssets: [
                 { pluginId: 'first.plugin', localId: 'skills', adapterDescriptor: shared },
                 { pluginId: 'second.plugin', localId: 'skills', adapterDescriptor: shared },
@@ -274,14 +271,14 @@ describe('target Prompt Asset adapters', () => {
                 'third.plugin',
             ].map((pluginId) => ({
                 pluginId,
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'promptAssets' as const,
                     localId: 'skills',
                     value: adapterFor(pluginId === 'third.plugin' ? other : shared),
                 },
             })),
-            resolveGenerationLifecycle: () => ({
+            resolveOccurrenceLifecycle: () => ({
                 isCurrent: () => true,
                 retirementSignal: retirement.signal,
             }),

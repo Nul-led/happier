@@ -60,35 +60,16 @@ describe('bundled Inspector canonical UI graph', () => {
             }),
         ]));
 
-        expect(inspectorArtifacts.map((entry) => entry.platform).sort()).toEqual([
-            'android',
-            'ios',
-            'web',
-        ]);
-        expect(inspectorArtifacts.find((entry) => entry.platform === 'web')).toMatchObject({
-            contributionId: 'inspector-app-native',
+        expect(inspectorArtifacts).toEqual([
+          expect.objectContaining({
+            artifactId: 'inspector-app-native',
             tier: 'reactNative',
-            builtWith: { bundler: 'vite' },
-        });
-        expect(inspectorArtifacts.find((entry) => entry.platform === 'web')).not.toHaveProperty('repack');
-        expect(inspectorArtifacts.filter((entry) => entry.platform !== 'web')).toEqual([
-            expect.objectContaining({
-                builtWith: expect.objectContaining({ bundler: 'repack' }),
-                repack: {
-                    containerName: 'happier_inspector_inspector_app_native',
-                    modulePath: './renderSurface',
-                    exportName: 'renderSurface',
-                },
-            }),
-            expect.objectContaining({
-                builtWith: expect.objectContaining({ bundler: 'repack' }),
-                repack: {
-                    containerName: 'happier_inspector_inspector_app_native',
-                    modulePath: './renderSurface',
-                    exportName: 'renderSurface',
-                },
-            }),
+            builtWith: expect.objectContaining({ bundler: 'esbuild' }),
+            executable: { exports: ['renderSurface'] },
+          }),
         ]);
+        expect(inspectorArtifacts[0]).not.toHaveProperty('platform');
+        expect(inspectorArtifacts[0]).not.toHaveProperty('repack');
 
         expect(contributions.uiTranslations?.some((entry) => entry.pluginId === INSPECTOR_PLUGIN_ID)).toBe(false);
 

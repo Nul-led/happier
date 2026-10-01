@@ -251,7 +251,7 @@ const providerDefinition = ProviderContributionV1Schema.parse({
     }],
   },
   compatibilityOverrides: [{
-    agentTargetKey: 'backend:codex',
+    agentTargetKey: 'agent:happier.agent.codex/codex',
     protocol: 'openai-responses',
     status: 'verified',
     reason: 'integration proof',
@@ -444,7 +444,7 @@ function request(
       v: 1,
       updatedAt: 1,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: connectionId,
         modelId: 'model-a',
       },
@@ -652,6 +652,34 @@ describe('foreground admission composed real Provider authorization seam', () =>
     });
     expect(boundaries.bridgePrepared).not.toHaveBeenCalled();
     expect(boundaries.leaseRelease).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'reference_forbidden',
+    'reference_deleted',
+    'reference_mode_incompatible',
+    'reference_repair_required',
+    'reference_corrupt',
+  ] as const)('keeps an unusable %s Profile binding a missing-secret refusal', async (reason) => {
+    const sharedRef = 'happier:shared-secret:v1:resource-profile-shared';
+    publishSettings({ version: 1, profileSecretRef: sharedRef });
+    const refreshSavedSecretCatalogForOperation = vi.fn(async () => {
+      throw new SavedSecretOperationAdmissionError({ reason, reference: sharedRef });
+    });
+
+    const admitted = await prepareForegroundAgentRuntimeAdmission(
+      request(),
+      { refreshSavedSecretCatalogForOperation },
+    );
+
+    expect(admitted).toEqual({
+      ok: false,
+      error: createProviderErrorV1('provider_secret_missing', {
+        machineId: 'machine-1',
+        sourceProfileId: 'profile-1',
+      }),
+    });
+    expect(boundaries.bridgePrepared).not.toHaveBeenCalled();
   });
 
   it('refreshes shared Saved Secret authorization before creating Session bootstrap effects', async () => {

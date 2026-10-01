@@ -78,12 +78,16 @@ export type ClaudeUnifiedInputArbiter = Readonly<{
   observeReadiness(readiness: TerminalInputReadinessV1): void;
   observeCompaction(event: Readonly<{ phase: 'started' | 'completed' }>): void;
   drain(): Promise<void>;
+  retirePendingInputs(localIds: readonly string[]): readonly TerminalPromptInput[];
   confirmProviderAcceptance(evidence?: Readonly<{
+    source?: 'prompt_submit' | 'transcript';
     promptText?: string;
     exactPromptText?: boolean;
     includeTimedOutAmbiguous?: boolean;
     agentTurnId?: string | null;
+    acceptanceEvidenceId?: string;
   }>): Promise<boolean>;
+  hasPendingProviderPrompt(promptText: string): boolean;
   observeTerminalPromptCustody(input: TerminalPromptInput): Promise<boolean>;
   readPendingInputInterruptAndRunLocalId(): string | null;
   claimPendingInputInterruptAndRun(localId: string): boolean;
@@ -268,8 +272,13 @@ export function createClaudeUnifiedInputArbiter(
     reason: ClaudeUnifiedPromptDeliveryBlockedReason;
   }> | null = null;
   const providerAcceptanceUnknownTerminalInputs = new Set<TerminalPromptInput>();
+  // Closed evidence must outlive retired inputs: durable ambiguous attempts have no expiry.
+  const closedAcceptanceEvidenceIds = new Set<string>();
   const terminalCustodyInputs = new Set<TerminalPromptInput>();
   const terminalCustodyAcceptances: PendingProviderAcceptance[] = [];
+  // Claude's TUI can retain several in-flight steers before consuming any of them. Keep those
+  // submitted inputs correlated in FIFO order while allowing the injection queue to continue.
+  const submittedSteerAcceptances: PendingProviderAcceptance[] = [];
   const turnNeutralControlInputs = new WeakSet<TerminalPromptInput>();
   const turnNeutralControlWaiters = new Map<TerminalPromptInput, Readonly<{
     resolve: () => void;
@@ -307,6 +316,7 @@ export function createClaudeUnifiedInputArbiter(
 
   const providerAcceptancePendingCount = (): number =>
     terminalCustodyAcceptances.length +
+    submittedSteerAcceptances.length +
     (pendingProviderAcceptance ? 1 : 0);
 
   const pendingInjectionCount = (): number =>
@@ -318,7 +328,7 @@ export function createClaudeUnifiedInputArbiter(
 
   function snapshot(): ClaudeUnifiedInputArbiterSnapshot {
     return {
-      queuedCount: queue.length + terminalCustodyAcceptances.length,
+      queuedCount: queue.length + terminalCustodyAcceptances.length + submittedSteerAcceptances.length,
       pendingInjectionCount: pendingInjectionCount(),
       terminalCustodyCount: terminalCustodyAcceptances.length,
       providerAcceptancePendingCount: providerAcceptancePendingCount(),
@@ -384,6 +394,13 @@ export function createClaudeUnifiedInputArbiter(
     const index = terminalCustodyAcceptances.findIndex((pending) => pending.input === input);
     if (index < 0) return null;
     const [pending] = terminalCustodyAcceptances.splice(index, 1);
+    return pending ?? null;
+  }
+
+  function removeSubmittedSteerAcceptance(input: TerminalPromptInput): PendingProviderAcceptance | null {
+    const index = submittedSteerAcceptances.findIndex((pending) => pending.input === input);
+    if (index < 0) return null;
+    const [pending] = submittedSteerAcceptances.splice(index, 1);
     return pending ?? null;
   }
 
@@ -453,14 +470,28 @@ export function createClaudeUnifiedInputArbiter(
   }
 
   async function acceptHeadPrompt(evidence?: Readonly<{
+    source?: 'prompt_submit' | 'transcript';
     promptText?: string;
     exactPromptText?: boolean;
     includeTimedOutAmbiguous?: boolean;
     agentTurnId?: string | null;
+    acceptanceEvidenceId?: string;
   }>): Promise<boolean> {
+    const evidenceId = evidence?.acceptanceEvidenceId;
+    if (evidenceId && closedAcceptanceEvidenceIds.has(evidenceId)) return false;
+    const closeEvidence = () => {
+      if (evidenceId) closedAcceptanceEvidenceIds.add(evidenceId);
+    };
     if (typeof evidence?.promptText === 'string') {
       const matchingInputs = new Set<TerminalPromptInput>();
       for (const pending of terminalCustodyAcceptances) {
+        if (promptTextMatchesQueuedInput(
+          pending.input,
+          evidence.promptText,
+          evidence.exactPromptText === true,
+        )) matchingInputs.add(pending.input);
+      }
+      for (const pending of submittedSteerAcceptances) {
         if (promptTextMatchesQueuedInput(
           pending.input,
           evidence.promptText,
@@ -477,15 +508,21 @@ export function createClaudeUnifiedInputArbiter(
       // Native prompt_submitted evidence has text/turn identity but no Pending localId. More than
       // one text match is therefore ambiguous: FIFO selection could settle a neighbor on duplicate
       // evidence. A later exact identity source may still resolve either input.
-      if (matchingInputs.size !== 1) return false;
+      if (matchingInputs.size !== 1) {
+        // An unknown prompt can arrive before registration. Only ambiguity closes its proof.
+        if (matchingInputs.size > 1) closeEvidence();
+        return false;
+      }
     }
     const terminalCustodyAcceptance = terminalCustodyAcceptances[0];
     if (terminalCustodyAcceptance) {
+      if (evidence?.source === 'prompt_submit' && terminalCustodyAcceptance.acceptance.acceptedAs === 'in_flight_steer') return false;
       if (!promptTextMatchesQueuedInput(
         terminalCustodyAcceptance.input,
         evidence?.promptText,
         evidence?.exactPromptText === true,
       )) return false;
+      closeEvidence();
       terminalCustodyAcceptances.shift();
       await acceptPrompt({
         ...terminalCustodyAcceptance,
@@ -494,15 +531,34 @@ export function createClaudeUnifiedInputArbiter(
       return true;
     }
 
+    const submittedSteerAcceptance = submittedSteerAcceptances[0];
+    if (submittedSteerAcceptance) {
+      if (evidence?.source === 'prompt_submit' && submittedSteerAcceptance.acceptance.acceptedAs === 'in_flight_steer') return false;
+      if (!promptTextMatchesQueuedInput(
+        submittedSteerAcceptance.input,
+        evidence?.promptText,
+        evidence?.exactPromptText === true,
+      )) return false;
+      closeEvidence();
+      submittedSteerAcceptances.shift();
+      await acceptPrompt({
+        ...submittedSteerAcceptance,
+        acceptance: withProviderTurnId(submittedSteerAcceptance.acceptance, evidence?.agentTurnId),
+      });
+      return true;
+    }
+
     const pending = pendingProviderAcceptance;
     if (!pending) {
       const injecting = injectingProviderAcceptance;
       if (!injecting || queue[0] !== injecting.input) return false;
+      if (evidence?.source === 'prompt_submit' && injecting.acceptance.acceptedAs === 'in_flight_steer') return false;
       if (!promptTextMatchesQueuedInput(
         injecting.input,
         evidence?.promptText,
         evidence?.exactPromptText === true,
       )) return false;
+      closeEvidence();
       providerAcceptanceObservedDuringInjection = {
         ...injecting,
         acceptance: withProviderTurnId(injecting.acceptance, evidence?.agentTurnId),
@@ -510,12 +566,14 @@ export function createClaudeUnifiedInputArbiter(
       return true;
     }
     if (queue[0] !== pending.input) return false;
+    if (evidence?.source === 'prompt_submit' && pending.acceptance.acceptedAs === 'in_flight_steer') return false;
     if (!promptTextMatchesQueuedInput(
       pending.input,
       evidence?.promptText,
       evidence?.exactPromptText === true,
     )) return false;
 
+    closeEvidence();
     queue.shift();
     await acceptPrompt({
       ...pending,
@@ -530,12 +588,14 @@ export function createClaudeUnifiedInputArbiter(
     }
     providerAcceptanceUnknownTerminalInputs.delete(pending.input);
     terminalCustodyInputs.delete(pending.input);
+    removeSubmittedSteerAcceptance(pending.input);
+    removeTerminalCustodyAcceptance(pending.input);
     retryAttempt = 0;
     lastDeferredReason = null;
     lastFailureReason = null;
     headInputState = 'submitted';
     await options.onPromptAccepted?.(pending.input, pending.acceptance);
-    if (pendingProviderAcceptance) {
+    if (pendingProviderAcceptance || submittedSteerAcceptances.length > 0) {
       headInputState = 'awaiting_provider_acceptance';
     } else if (queue.length > 0) {
       headInputState = 'queued';
@@ -543,16 +603,21 @@ export function createClaudeUnifiedInputArbiter(
   }
 
   async function observeTerminalPromptCustody(input: TerminalPromptInput): Promise<boolean> {
-    if (disposed || queue[0] !== input) return false;
-    const currentAcceptance = pendingProviderAcceptance;
-    if (!currentAcceptance || currentAcceptance.input !== input) return false;
+    if (disposed) return false;
+    const currentAcceptance = pendingProviderAcceptance?.input === input
+      ? pendingProviderAcceptance
+      : submittedSteerAcceptances.find((pending) => pending.input === input) ?? null;
+    if (!currentAcceptance) return false;
 
+    if (pendingProviderAcceptance?.input === input) {
+      if (queue[0] !== input) return false;
+      queue.shift();
+      pendingProviderAcceptance = null;
+    } else {
+      removeSubmittedSteerAcceptance(input);
+    }
     terminalCustodyInputs.add(input);
     terminalCustodyAcceptances.push(currentAcceptance);
-    queue.shift();
-    if (pendingProviderAcceptance?.input === input) {
-      pendingProviderAcceptance = null;
-    }
     lastFailureReason = null;
     headInputState = 'awaiting_provider_acceptance';
     if (queue.length > 0) scheduleRetry(0);
@@ -563,6 +628,13 @@ export function createClaudeUnifiedInputArbiter(
     rejection?: ClaudeUnifiedPromptTerminalRejection,
   ): boolean {
     if (disposed) return false;
+    if (submittedSteerAcceptances.length > 0) {
+      const submitted = submittedSteerAcceptances.splice(0, submittedSteerAcceptances.length);
+      for (const acceptance of submitted) {
+        terminalCustodyInputs.add(acceptance.input);
+        terminalCustodyAcceptances.push(acceptance);
+      }
+    }
     const terminalCustodyAcceptance = terminalCustodyAcceptances[0];
     if (terminalCustodyAcceptance) {
       const result = buildProviderAcceptanceTimeoutResult(readiness);
@@ -693,6 +765,39 @@ export function createClaudeUnifiedInputArbiter(
     return true;
   }
 
+  function retirePendingInputs(localIds: readonly string[]): readonly TerminalPromptInput[] {
+    if (disposed) return [];
+    const retiredIds = new Set(localIds);
+    const candidates = new Set([
+      ...queue,
+      ...terminalCustodyAcceptances.map(({ input }) => input),
+      ...submittedSteerAcceptances.map(({ input }) => input),
+    ]);
+    const retired: TerminalPromptInput[] = [];
+    for (const input of candidates) {
+      if (input.origin.kind !== 'ui_pending' || !input.origin.localIds?.length) continue;
+      if (!input.origin.localIds.every((localId) => retiredIds.has(localId))) continue;
+      const index = queue.indexOf(input);
+      if (index >= 0) queue.splice(index, 1);
+      if (pendingProviderAcceptance?.input === input) pendingProviderAcceptance = null;
+      if (injectingProviderAcceptance?.input === input) injectingProviderAcceptance = null;
+      if (retainedHeadDeliveryBlocker?.input === input) retainedHeadDeliveryBlocker = null;
+      removeTerminalCustodyAcceptance(input);
+      removeSubmittedSteerAcceptance(input);
+      terminalCustodyInputs.delete(input);
+      providerAcceptanceUnknownTerminalInputs.delete(input);
+      retired.push(input);
+    }
+    if (retired.length > 0) {
+      lastFailureReason = null;
+      lastDeferredReason = null;
+      headInputState = queue.length > 0 ? 'queued' : null;
+      publishPendingInputInterruptAndRunLocalId();
+      if (queue.length > 0) scheduleRetry(0);
+    }
+    return retired;
+  }
+
   async function drainQueue(): Promise<void> {
     clearRetryTimer();
     while (!disposed && queue.length > 0) {
@@ -751,6 +856,9 @@ export function createClaudeUnifiedInputArbiter(
         injectingProviderAcceptance = null;
       }
 
+      // Host retirement can arrive while the terminal write is in flight. Do not resurrect its custody.
+      if (!queue.includes(input)) continue;
+
       if (result.status === 'injected') {
         retryAttempt = 0;
         lastDeferredReason = null;
@@ -772,6 +880,13 @@ export function createClaudeUnifiedInputArbiter(
           queue.shift();
           await acceptPrompt(providerAcceptedDuringInjection);
           return;
+        }
+        if (acceptance.acceptedAs === 'in_flight_steer') {
+          queue.shift();
+          pendingProviderAcceptance = null;
+          submittedSteerAcceptances.push(injectionAcceptance);
+          headInputState = queue.length > 0 ? 'queued' : 'awaiting_provider_acceptance';
+          if (queue.length > 0) continue;
         }
         return;
       }
@@ -954,12 +1069,17 @@ export function createClaudeUnifiedInputArbiter(
       }
     },
     drain,
+    retirePendingInputs,
     async confirmProviderAcceptance(evidence) {
       try {
         return await acceptHeadPrompt(evidence);
       } finally {
         publishPendingInputInterruptAndRunLocalId();
       }
+    },
+    hasPendingProviderPrompt(promptText) {
+      return [...terminalCustodyAcceptances, ...submittedSteerAcceptances, pendingProviderAcceptance, injectingProviderAcceptance]
+        .some((pending) => pending && promptTextMatchesQueuedInput(pending.input, promptText, false));
     },
     async observeTerminalPromptCustody(input) {
       try {
@@ -1013,8 +1133,10 @@ export function createClaudeUnifiedInputArbiter(
       injectingProviderAcceptance = null;
       providerAcceptanceObservedDuringInjection = null;
       providerAcceptanceUnknownTerminalInputs.clear();
+      closedAcceptanceEvidenceIds.clear();
       terminalCustodyInputs.clear();
       terminalCustodyAcceptances.length = 0;
+      submittedSteerAcceptances.length = 0;
     },
   };
 }

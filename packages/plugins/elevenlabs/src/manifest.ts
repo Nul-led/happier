@@ -571,7 +571,6 @@ export const ELEVENLABS_PLUGIN = definePlugin({
         },
         client: {
           artifactId: 'voice-runtime',
-          modulePath: './ui/voice',
           exportName: 'activate',
         },
       },

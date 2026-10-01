@@ -593,7 +593,7 @@ describe('createPluginTestkit', () => {
               surface: context.surface,
               callerPluginId: context.caller.pluginId,
               callerContribution: context.caller.contribution.qualifiedId,
-              callerMaterialization: context.caller.materialization,
+              callerMaterialization: context.caller.materialization ?? null,
             };
           });
         },
@@ -609,6 +609,9 @@ describe('createPluginTestkit', () => {
               throw new Error('Expected a host-stamped plugin caller');
             }
             const caller = context.caller;
+            if (!caller.materialization) {
+              throw new Error('Expected a materialized testkit caller');
+            }
             const gamma = await context.services.actions.execute(
               { pluginId: 'acme.gamma', localId: 'receive' },
               { upstreamCaller: caller.pluginId },
@@ -624,7 +627,8 @@ describe('createPluginTestkit', () => {
                   id: caller.contribution.id,
                   qualifiedId: caller.contribution.qualifiedId,
                 },
-                immutableGenerationId: caller.immutableGenerationId,
+                occurrenceId: caller.occurrenceId,
+                sourceCustody: caller.sourceCustody,
                 materialization: {
                   pluginId: caller.materialization.pluginId,
                   machineId: caller.materialization.machineId,
@@ -671,7 +675,11 @@ describe('createPluginTestkit', () => {
             id: 'send',
             qualifiedId: 'acme.alpha/actions/send',
           },
-          immutableGenerationId: expect.any(String),
+          occurrenceId: expect.any(String),
+          sourceCustody: {
+            kind: 'development',
+            registeredRootId: 'plugin-testkit:acme.alpha',
+          },
           materialization: alphaMaterialization,
           originSurface: 'cli',
         },
@@ -916,8 +924,8 @@ describe('createPluginTestkit', () => {
           contributor: { testkit: betaH, contributionId: 'primary' },
           role: 'publish',
         });
-        expect(freshH.identity.contributor.immutableGenerationId)
-          .not.toBe(original.identity.contributor.immutableGenerationId);
+        expect(freshH.identity.contributor.occurrenceId)
+          .not.toBe(original.identity.contributor.occurrenceId);
 
         operationH.current = original;
         await expect(alphaH.invokeAction('send', null)).rejects.toMatchObject({
@@ -1293,7 +1301,7 @@ describe('createPluginTestkit', () => {
                   contributor: {
                     pluginId: 'acme.contributor',
                     contributionId: 'primary',
-                    immutableGenerationId: 'contributor-generation-g',
+                    occurrenceId: 'contributor-occurrence-g',
                   },
                   role: 'publish',
                 },
@@ -1945,7 +1953,11 @@ describe('createPluginTestkit', () => {
           dispose: vi.fn(),
           async readCurrent() {
             return Object.freeze({
-              generation: 'immutable-target',
+              occurrenceId: 'target-occurrence',
+              sourceCustody: Object.freeze({
+                kind: 'development' as const,
+                registeredRootId: 'target-root',
+              }),
               contributions: Object.freeze([]),
             });
           },
@@ -1975,7 +1987,11 @@ describe('createPluginTestkit', () => {
     await expect(testkit.invokeAction('echo', null)).resolves.toEqual({
       availability: 'available',
     });
-    expect(observedSnapshot).toEqual({ generation: 'immutable-target', contributions: [] });
+    expect(observedSnapshot).toEqual({
+      occurrenceId: 'target-occurrence',
+      sourceCustody: { kind: 'development', registeredRootId: 'target-root' },
+      contributions: [],
+    });
     await testkit.dispose();
 
     const missing = await createPluginTestkit({
@@ -2185,8 +2201,8 @@ describe('createPluginTestkit', () => {
       ok: true,
       value: { baseUrl: 'http://127.0.0.1:4096' },
     });
-    expect(captured?.createArgs({ baseUrl: 'http://127.0.0.1:4096' })).toEqual(['attach']);
-    expect(captured?.resolveReachability({ baseUrl: 'http://127.0.0.1:4096' }))
+    expect(captured?.createArgs({ baseUrl: 'http://127.0.0.1:4096' }, { cliVersion: null })).toEqual(['attach']);
+    expect(captured?.resolveReachability({ baseUrl: 'http://127.0.0.1:4096' }, { cliVersion: null }))
       .toEqual({ kind: 'http', url: 'http://127.0.0.1:4096/global/health' });
     await testkit.dispose();
   });

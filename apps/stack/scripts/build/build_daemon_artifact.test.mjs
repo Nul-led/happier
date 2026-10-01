@@ -7,12 +7,75 @@ import test from 'node:test';
 import {
   buildDaemonArtifact,
   linkDaemonSupportPayload,
+  readDaemonWorkspaceSourceFingerprint,
 } from './build_daemon_artifact.mjs';
+
+test('daemon workspace support identity observes source changes before a dist is installed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'runtime-daemon-source-identity-'));
+  const pluginDir = join(root, 'packages', 'plugins', 'fixture');
+  const sourcePath = join(pluginDir, 'src', 'index.ts');
+  const generatorPath = join(root, 'apps', 'cli', 'scripts', 'build-owned', 'generateBundledPluginEntries.ts');
+  const rendererPath = join(root, 'apps', 'cli', 'scripts', 'build-owned', 'bundledPlugins', 'registry.ts');
+  try {
+    await mkdir(join(pluginDir, 'src'), { recursive: true });
+    await mkdir(join(generatorPath, '..'), { recursive: true });
+    await mkdir(join(rendererPath, '..'), { recursive: true });
+    await writeFile(join(root, 'apps', 'cli', 'package.json'), JSON.stringify({
+      name: '@happier-dev/cli',
+      bundledDependencies: ['@happier-dev/plugins-fixture'],
+      dependencies: { '@happier-dev/plugins-fixture': '0.0.0' },
+    }));
+    await writeFile(join(pluginDir, 'package.json'), JSON.stringify({
+      name: '@happier-dev/plugins-fixture',
+      files: ['dist', 'resources', 'assets', '.happier-plugin', 'package.json'],
+      scripts: { build: 'fixture-build' },
+    }));
+    await writeFile(sourcePath, 'export const value = 1;\n');
+    await writeFile(generatorPath, 'export const generator = 1;\n');
+    await writeFile(rendererPath, 'export const renderRegistry = () => "one";\n');
+    const promptPath = join(pluginDir, 'resources', 'review-prompt.md');
+    const assetPath = join(pluginDir, 'assets', 'icon.svg');
+    const serializedManifestPath = join(pluginDir, '.happier-plugin', 'plugin.json');
+    await mkdir(join(promptPath, '..'), { recursive: true });
+    await mkdir(join(assetPath, '..'), { recursive: true });
+    await mkdir(join(serializedManifestPath, '..'), { recursive: true });
+    await writeFile(promptPath, 'prompt one\n');
+    await writeFile(assetPath, '<svg>one</svg>\n');
+    await writeFile(serializedManifestPath, '{"id":"old"}\n');
+
+    const initial = readDaemonWorkspaceSourceFingerprint({ repoDir: root });
+    await writeFile(serializedManifestPath, '{"id":"generated"}\n');
+    assert.equal(readDaemonWorkspaceSourceFingerprint({ repoDir: root }), initial,
+      'generator output must not change the pre-preparation identity');
+    await writeFile(promptPath, 'prompt two\n');
+    const changedPrompt = readDaemonWorkspaceSourceFingerprint({ repoDir: root });
+    await writeFile(assetPath, '<svg>two</svg>\n');
+    const changedAsset = readDaemonWorkspaceSourceFingerprint({ repoDir: root });
+    assert.notEqual(changedPrompt, initial);
+    assert.notEqual(changedAsset, changedPrompt);
+    await writeFile(sourcePath, 'export const value = 2;\n');
+    const changedSource = readDaemonWorkspaceSourceFingerprint({ repoDir: root });
+    await writeFile(generatorPath, 'export const generator = 2;\n');
+    const changedGenerator = readDaemonWorkspaceSourceFingerprint({ repoDir: root });
+    assert.notEqual(changedSource, initial);
+    assert.notEqual(changedGenerator, changedSource);
+    await writeFile(rendererPath, 'export const renderRegistry = () => "two";\n');
+    const changedRenderer = readDaemonWorkspaceSourceFingerprint({ repoDir: root });
+    assert.notEqual(changedRenderer, changedGenerator,
+      'a renderer-only source change must invalidate the same daemon support identity');
+    await writeFile(join(rendererPath, '..', 'registry.test.ts'), 'test fixture changed\n');
+    assert.equal(readDaemonWorkspaceSourceFingerprint({ repoDir: root }), changedRenderer,
+      'test-only changes must retain the same daemon support identity');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 async function writeDaemonSupportPayload({ payloadDir, fingerprint }) {
   await mkdir(join(payloadDir, 'node_modules'), { recursive: true });
   await mkdir(join(payloadDir, 'tools'), { recursive: true });
   await mkdir(join(payloadDir, 'scripts'), { recursive: true });
+  await mkdir(join(payloadDir, '.project'), { recursive: true });
   await writeFile(join(payloadDir, 'node_modules', 'runtime.txt'), `runtime:${fingerprint}`, 'utf8');
   await writeFile(join(payloadDir, 'tools', 'tool.txt'), `tool:${fingerprint}`, 'utf8');
   await writeFile(join(payloadDir, 'scripts', 'sidecar.cjs'), `sidecar:${fingerprint}`, 'utf8');
@@ -47,6 +110,10 @@ test('two concurrent code-only daemon publications reuse one immutable support p
   const stackBaseDir = join(root, 'stack');
   const supportFingerprint = 'daemon-support-stable';
   const supportWorkspaceRuntimeIdentity = 'a'.repeat(64);
+  const preparedWorkspacePublication = {
+    workspaceRuntimeIdentity: supportWorkspaceRuntimeIdentity,
+    workspaceRuntimePackages: ['@happier-dev/cli-common'],
+  };
   let supportBuilds = 0;
   let codeBuilds = 0;
   const runtimeManifestInputs = [];
@@ -68,10 +135,14 @@ test('two concurrent code-only daemon publications reuse one immutable support p
       artifactDir: join(stackBaseDir, 'artifacts', 'daemon', artifactFingerprint),
       artifactFingerprint,
       supportArtifactFingerprint: supportFingerprint,
+      preparedWorkspacePublication,
+      requiredCliDistInputFingerprint: 'c'.repeat(64),
+      workspaceSourceFingerprint: 'd'.repeat(64),
       sourceMetadata: sourceMetadata(root),
       runCaptureImpl: readFixtureGoVersion,
       resolveDaemonSupportArtifactFingerprintImpl: async () => supportFingerprint,
       buildDaemonSupportArtifactPayloadImpl: async (args) => {
+        assert.equal(args.workspaceSourceFingerprint, 'd'.repeat(64));
         supportBuilds += 1;
         if (supportBuilds === 1) {
           releaseFirstSupportBuild();
@@ -84,6 +155,8 @@ test('two concurrent code-only daemon publications reuse one immutable support p
       },
       buildCliBinaryArtifactPayloadImpl: async (args) => {
         codeBuilds += 1;
+        assert.equal(args.preparedWorkspacePublication, preparedWorkspacePublication);
+        assert.equal(args.requiredCliDistInputFingerprint, 'c'.repeat(64));
         return await writeDaemonCodePayload(args);
       },
       writeCliBinaryArtifactRuntimeAssetBuildManifestImpl: (params) => {
@@ -221,6 +294,7 @@ test('daemon support references request Windows junctions for directory payloads
     ['/artifact/daemon-support/payload/node_modules', '/artifact/daemon/payload/node_modules', 'junction'],
     ['/artifact/daemon-support/payload/tools', '/artifact/daemon/payload/tools', 'junction'],
     ['/artifact/daemon-support/payload/scripts', '/artifact/daemon/payload/scripts', 'junction'],
+    ['/artifact/daemon-support/payload/.project', '/artifact/daemon/payload/.project', 'junction'],
   ]);
 });
 

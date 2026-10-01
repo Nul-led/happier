@@ -14,7 +14,11 @@ const binding = createAgentSessionRunnerFactoryBinding({
   pluginVersion: '1.0.0',
   agentId: 'runner',
   localAgentId: 'runner',
-  immutableGenerationId: 'generation-g',
+  sourceCustody: {
+    kind: 'managed',
+    immutableGenerationId: 'generation-g',
+    installSource: 'localPath',
+  },
   locator: {
     module: './runtime.mjs',
     export: 'createRuntime',
@@ -48,8 +52,7 @@ function tracked(): TrackedSession {
     sessionRunnerPid: 42,
     startedBy: 'daemon',
     happySessionId: 'session-1',
-    runnerAgentImmutableGenerationId:
-      binding.immutableGenerationId,
+    runnerAgentSourceCustodyV1: binding.sourceCustody,
     processStartTimeMs: 123,
     processCommandHash: '5'.repeat(64),
     agentRuntimeDaemonServiceAdmittedTurnId:
@@ -71,6 +74,21 @@ describe('tracked Runner Agent daemon-service operation authority', () => {
       witness,
       allowIdleCurrentGeneration: false,
     })).toBe(true);
+    const reattached = tracked();
+    reattached.processCommandHash = '6'.repeat(64);
+    expect(authorizeTrackedRunnerAgentDaemonServiceOperation({
+      tracked: reattached,
+      ...direct,
+      witness,
+      allowIdleCurrentGeneration: false,
+    })).toBe(true);
+    reattached.processStartTimeMs = runner.processStartTimeMs + 1;
+    expect(authorizeTrackedRunnerAgentDaemonServiceOperation({
+      tracked: reattached,
+      ...direct,
+      witness,
+      allowIdleCurrentGeneration: false,
+    })).toBe(false);
 
     for (const deniedWitness of [
       undefined,
@@ -115,8 +133,11 @@ describe('tracked Runner Agent daemon-service operation authority', () => {
     })).toBe(true);
 
     const replaced = tracked();
-    replaced.runnerAgentImmutableGenerationId =
-      'generation-replaced';
+    replaced.runnerAgentSourceCustodyV1 = {
+      kind: 'managed',
+      immutableGenerationId: 'generation-replaced',
+      installSource: 'localPath',
+    };
     expect(authorizeTrackedRunnerAgentDaemonServiceOperation({
       tracked: replaced,
       ...direct,

@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -13,49 +12,6 @@ import { bundledPluginManifestSource } from './testkit/packageLayoutSandbox';
 
 const PLUGIN_PACKAGE_NAME = '@happier-dev/plugins-grok';
 const PLUGIN_WORKSPACE_NAME = 'plugins-grok';
-const INVENTORY_RELATIVE_PATH =
-  'apps/cli/scripts/build-owned/generatedBundledPluginSourceIntegrities.json';
-
-function sha256Digest(bytes: Buffer): string {
-  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-}
-
-function collectPackageTreeRelativePaths(packageDir: string): string[] {
-  const found: string[] = [];
-  const visit = (absolutePath: string): void => {
-    for (const entry of readdirSync(absolutePath, { withFileTypes: true })) {
-      if (absolutePath === packageDir && entry.name === 'node_modules') continue;
-      const childPath = resolve(absolutePath, entry.name);
-      if (entry.isDirectory()) visit(childPath);
-      else if (entry.isFile()) found.push(relative(packageDir, childPath).split(sep).join('/'));
-    }
-  };
-  visit(packageDir);
-  return found
-    // `files` in the plugin manifest selects what a published package tree carries.
-    .filter((relativePath) => relativePath === 'package.json' || relativePath.startsWith('dist/'))
-    .sort((left, right) => left.localeCompare(right));
-}
-
-function writeArtifactInventory(repoRoot: string, packageDirsByName: ReadonlyMap<string, string>): void {
-  const inventoryPath = resolve(repoRoot, INVENTORY_RELATIVE_PATH);
-  const integrities = [...packageDirsByName].map(([packageName, packageDir]) => ({
-    packageName,
-    files: collectPackageTreeRelativePaths(packageDir).map((relativePath) => {
-      const bytes = readFileSync(resolve(packageDir, ...relativePath.split('/')));
-      return { relativePath, byteLength: bytes.byteLength, digest: sha256Digest(bytes) };
-    }),
-  }));
-  mkdirSync(dirname(inventoryPath), { recursive: true });
-  writeFileSync(
-    inventoryPath,
-    `${JSON.stringify({
-      BUNDLED_FIRST_PARTY_SOURCE_ARTIFACT_INTEGRITIES: integrities,
-    }, null, 2)}\n`,
-    'utf8',
-  );
-}
-
 function writeFile(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, contents, 'utf8');
@@ -134,17 +90,15 @@ function createSandboxWorkspaceCompiler(sandbox: Sandbox) {
 }
 
 /**
- * Publishes the inventory the artifact ships from the exact package outputs this run
- * produced, which is the contract the canonical generator owns in the real repository.
+ * Stages the exact package output produced by this run. The workspace bundler validates
+ * source-to-prepared-package correspondence at its own publication boundary.
  */
 function createSandboxArtifactPublisher(sandbox: Sandbox) {
   return async ({ workspaceNames = [] }: { workspaceNames?: readonly string[] }) => {
-    const packageDirsByName = new Map<string, string>();
     for (const workspaceName of workspaceNames) {
       if (workspaceName !== PLUGIN_WORKSPACE_NAME) continue;
-      packageDirsByName.set(PLUGIN_PACKAGE_NAME, stagePluginPackage(sandbox));
+      stagePluginPackage(sandbox);
     }
-    writeArtifactInventory(sandbox.repoRoot, packageDirsByName);
     return true;
   };
 }
@@ -219,8 +173,8 @@ describe('CLI artifact publication chain', () => {
   it('emits no tarball while a bundled plugin fails to build and ships the repaired source once it compiles', async () => {
     const sandbox = createSandbox();
     try {
-      // A previously published generation is installed and inventoried. This is exactly the
-      // state that let a publication build succeed on stale plugin bytes.
+      // A previously published generation is installed. This is exactly the state that
+      // must not let a publication build succeed on stale plugin bytes.
       writeFile(sandbox.pluginSourcePath, 'export const grokPluginMarker = "last-green";\n');
       await createSandboxWorkspaceCompiler(sandbox)(sandbox.repoRoot, [PLUGIN_PACKAGE_NAME]);
       bundleWorkspacePackageWithRuntimeDependencies({
@@ -230,11 +184,6 @@ describe('CLI artifact publication chain', () => {
         dereferenceRootDir: sandbox.repoRoot,
         preserveDestinationPath: true,
       });
-      writeArtifactInventory(
-        sandbox.repoRoot,
-        new Map([[PLUGIN_PACKAGE_NAME, sandbox.installedPluginDir]]),
-      );
-
       // 1. Break the plugin build. The chain must refuse before anything can be packed.
       writeFile(
         sandbox.pluginSourcePath,

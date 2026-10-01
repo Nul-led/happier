@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { TriagePullRequestStatusResultV1Schema } from '@happier-dev/triage-protocol/v1';
 import {
   EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
   isExternalActionResultWithinResponseEnvelopeLimitV1,
@@ -23,7 +24,12 @@ import {
   listGitlabPipelines,
   readGitlabRawDiff,
   readGitlabApprovals,
+  readGitlabPullRequestStatus,
 } from './detailOperations.js';
+import { admitGitlabItemInvocation } from './admission.js';
+import { readGitlabPipelinesPage } from './detail/reads.js';
+import { readGitlabTriageEntryForOverview } from './sourceGet.js';
+import { createGitlabHttpFetcher, readGitlabConnectedAccounts } from './invocation.js';
 import {
   GITLAB_TEST_COLLISION_SCOPE,
   GITLAB_TEST_ORIGIN,
@@ -80,6 +86,124 @@ function ok(body: unknown, headers: Readonly<Record<string, string>> = {}): Stub
 function pathOf(request: RecordedGitlabRequest): string {
   return new URL(request.url).pathname;
 }
+
+describe('GitLab shared pull request status', () => {
+  const mergeRequest = {
+    id: 700, project_id: 3, iid: 7,
+    references: { full: `${ROUTING_TOKEN}!7` },
+    title: 'Current MR', state: 'opened', draft: false,
+    sha: 'a'.repeat(40), author: { username: 'author' },
+    source_branch: 'feature/status', target_branch: 'main',
+    detailed_merge_status: 'not_approved',
+    reviewers: [{ username: 'approved-reviewer' }, { username: 'pending-reviewer' }],
+  };
+
+  it('projects branch and merge facts from the same identity-checked overview read', async () => {
+    const stub = createStubGitlabTransport({ respond: (request) => {
+      if (pathOf(request).endsWith('/merge_requests/7')) return ok(mergeRequest);
+      if (pathOf(request).endsWith('/user')) return ok({ id: 41, username: 'viewer' });
+      return undefined;
+    } });
+    expect(await readGitlabTriageEntryForOverview({
+      get: { v: 1, instance: gitlabTestConfiguredInstance(), localRef: MERGE_REQUEST_REF,
+        lastKnownLocator: { v: 1, routingToken: ROUTING_TOKEN } },
+      connectedAccounts: readGitlabConnectedAccounts(stub.context),
+      fetcher: createGitlabHttpFetcher(stub.context), signal: stub.context.signal, nowMs: Date.now(),
+    })).toMatchObject({ result: { kind: 'present' }, pullRequest: {
+      branch: { head: 'feature/status', base: 'main' },
+      merge: { state: 'blocked', blocker: 'not_approved' },
+    } });
+  });
+
+  it('publishes real job counts and rows across pages, approval facts and branch', async () => {
+    const stub = createStubGitlabTransport({ respond: (request) => {
+      const path = pathOf(request);
+      if (path.endsWith('/merge_requests/7')) return ok(mergeRequest);
+      if (path.endsWith('/user')) return ok({ id: 41, username: 'viewer' });
+      if (path.endsWith('/approvals')) return ok({ approvals_required: 2, approvals_left: 1,
+        approved_by: [{ user: { username: 'approved-reviewer' } }] });
+      if (path.endsWith('/approval_rules')) return { status: 403 };
+      if (path.endsWith('/merge_requests/7/pipelines')) return ok([{ id: 91, status: 'success' }]);
+      if (path.endsWith('/pipelines/91/jobs')) {
+        if (new URL(request.url).searchParams.get('page') === '2') {
+          return ok([{ id: 3, name: 'deploy', status: 'scheduled' }, { id: 4, name: 'optional', status: 'skipped' }]);
+        }
+        return ok([{ id: 1, name: 'unit', status: 'success' },
+          { id: 2, name: 'web', status: 'failed', started_at: '2026-09-30T00:00:00Z' }],
+        gitlabNextLinkHeader(`${GITLAB_TEST_ORIGIN}/api/v4/projects/3/pipelines/91/jobs?page=2&per_page=100`));
+      }
+      return undefined;
+    } });
+    const admitted = await admitGitlabItemInvocation({ ...itemInput(), admissibleKinds: ['merge-request'] }, stub.context);
+    if (!admitted.ok) throw new Error('fixture admission failed');
+    const result = await readGitlabPipelinesPage({ route: admitted.route, perPage: 100,
+      position: { kind: 'first' } }, admitted.dependencies);
+    expect(result).toMatchObject({ ok: true, value: {
+      jobs: { total: 4, incomplete: false, rows: [
+        { id: '1', name: 'unit', state: 'passed' },
+        { id: '2', name: 'web', state: 'failed', startedAtMs: 1790726400000 },
+        { id: '3', name: 'deploy', state: 'pending' },
+        { id: '4', name: 'optional', state: 'neutral' },
+      ] },
+    } });
+    const status = TriagePullRequestStatusResultV1Schema.parse(await readGitlabPullRequestStatus({
+      v: 1, instance: gitlabTestConfiguredInstance(), localRef: MERGE_REQUEST_REF,
+      lastKnownLocator: { v: 1, routingToken: ROUTING_TOKEN },
+    }, stub.context));
+    expect(status).toMatchObject({ kind: 'status',
+      checks: { state: 'complete', passed: 1, failed: 1, pending: 1, total: 4, incomplete: false },
+      review: { decision: 'reviewRequired', reviewers: [
+        { name: 'approved-reviewer', verb: 'approved' }, { name: 'pending-reviewer', verb: 'pending' },
+      ], incomplete: false },
+      merge: { state: 'blocked', blocker: 'not_approved' },
+      branch: { head: 'feature/status', base: 'main' },
+    });
+  });
+
+  it('keeps passing pipeline aggregates unknown when the jobs cannot be read', async () => {
+    const stub = createStubGitlabTransport({ respond: (request) => {
+      const path = pathOf(request);
+      if (path.endsWith('/merge_requests/7')) return ok({ ...mergeRequest, detailed_merge_status: 'checking' });
+      if (path.endsWith('/user')) return ok({ id: 41, username: 'viewer' });
+      if (path.endsWith('/approvals')) return { status: 403 };
+      if (path.endsWith('/merge_requests/7/pipelines')) return ok([{ id: 91, status: 'success' }]);
+      if (path.endsWith('/pipelines/91/jobs')) return { status: 403 };
+      return undefined;
+    } });
+    const admitted = await admitGitlabItemInvocation({ ...itemInput(), admissibleKinds: ['merge-request'] }, stub.context);
+    if (!admitted.ok) throw new Error('fixture admission failed');
+    expect(await readGitlabPipelinesPage({ route: admitted.route, perPage: 100,
+      position: { kind: 'first' } }, admitted.dependencies)).toMatchObject({
+      ok: true, value: { jobs: { total: null, rows: [], incomplete: true }, rollup: null },
+    });
+    expect(await readGitlabPullRequestStatus({
+      v: 1, instance: gitlabTestConfiguredInstance(), localRef: MERGE_REQUEST_REF,
+      lastKnownLocator: { v: 1, routingToken: ROUTING_TOKEN },
+    }, stub.context)).toMatchObject({ kind: 'status',
+      checks: { state: 'unknown', passed: null, failed: null, pending: null, total: null, rows: [], incomplete: true },
+      review: null, merge: { state: 'unknown', blocker: null },
+    });
+  });
+
+  it('retains observed jobs without publishing totals when a later jobs page is unreadable', async () => {
+    const stub = createStubGitlabTransport({ respond: (request) => {
+      const path = pathOf(request);
+      if (path.endsWith('/merge_requests/7/pipelines')) return ok([{ id: 91, status: 'failed' }]);
+      if (path.endsWith('/pipelines/91/jobs')) {
+        if (new URL(request.url).searchParams.get('page') === '2') return { status: 403 };
+        return ok([{ id: 1, name: 'unit', status: 'success' }],
+          gitlabNextLinkHeader(`${GITLAB_TEST_ORIGIN}/api/v4/projects/3/pipelines/91/jobs?page=2&per_page=100`));
+      }
+      return undefined;
+    } });
+    const admitted = await admitGitlabItemInvocation({ ...itemInput(), admissibleKinds: ['merge-request'] }, stub.context);
+    if (!admitted.ok) throw new Error('fixture admission failed');
+    expect(await readGitlabPipelinesPage({ route: admitted.route, perPage: 100,
+      position: { kind: 'first' } }, admitted.dependencies)).toMatchObject({
+      ok: true, value: { jobs: { total: null, rows: [{ id: '1', name: 'unit', state: 'passed' }], incomplete: true }, rollup: null },
+    });
+  });
+});
 
 /* ------------------------------------------------------------------ overview */
 

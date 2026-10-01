@@ -56,6 +56,7 @@ import {
   type MetadataEntry,
   type PluginTranslate,
 } from '@happier-dev/plugin-ui';
+import { TriageDetailPanel } from '@happier-dev/triage-sources/ui';
 import {
   TriageDetailSurfaceInputV1Schema,
   type TriageDetailSurfaceInputV1,
@@ -248,6 +249,21 @@ function azureFactLabel(field: AzureDetailFieldV1, text: PluginTranslate): strin
   }
 }
 
+/** The write controls as the Triage detail header's `actions` panel (r0.42). */
+function AzureActionsPanel({
+  input,
+  overview,
+}: Readonly<{ input: TriageDetailSurfaceInputV1; overview: AzureDetailOverviewV1 }>): React.ReactElement {
+  return (
+    <Stack gap="small">
+      <AzureMutationControls input={input} overview={overview} />
+      {overview.state.presentation === 'active'
+        ? <AzureReviewPublicationControls input={input} />
+        : null}
+    </Stack>
+  );
+}
+
 function OverviewPanel({
   input,
   overview,
@@ -255,6 +271,7 @@ function OverviewPanel({
   locale,
   nowMs,
   onRefreshIterations,
+  withWrites = true,
 }: Readonly<{
   input: TriageDetailSurfaceInputV1;
   overview: AzureDetailOverviewV1;
@@ -262,6 +279,8 @@ function OverviewPanel({
   locale: string;
   nowMs: number;
   onRefreshIterations: () => void;
+  /** False when the Triage detail places the write controls in its header (r0.42). */
+  withWrites?: boolean;
 }>): React.ReactElement {
   const text = usePluginTranslation();
   const statusFields = overview.fields.filter(
@@ -326,10 +345,7 @@ function OverviewPanel({
           * already states what this pull request currently is. A tab of their own would put a
           * destructive control behind a click that says nothing about what is behind it.
           */}
-        <AzureMutationControls input={input} overview={overview} />
-        {overview.state.presentation === 'active'
-          ? <AzureReviewPublicationControls input={input} />
-          : null}
+        {withWrites ? <AzureActionsPanel input={input} overview={overview} /> : null}
         <Divider />
         <Metadata
           title="Observation"
@@ -1123,6 +1139,41 @@ function AzureDetailBody({
     threads: <ThreadsPanel input={input} />,
   };
 
+  // The Triage detail asked for one panel (r0.42): its frame draws the tabs.
+  // Threads fold into Activity; branch policies are this source's Checks.
+  if (input.panel !== undefined) {
+    return (
+      <Screen safeArea>
+        <TriageDetailPanel
+          panel={input.panel}
+          ariaLabel={text('plugins.azureDevops.ui.tabsLabel', 'Azure DevOps pull request detail')}
+          panels={{
+            overview: (
+              <OverviewPanel
+                input={input}
+                overview={overview}
+                iterations={iterations.state}
+                locale={locale}
+                nowMs={nowMs}
+                onRefreshIterations={iterations.refresh}
+                withWrites={false}
+              />
+            ),
+            activity: (
+              <Stack gap="large" style={{ flex: 1, minHeight: 0 }}>
+                <Stack style={{ flex: 1, minHeight: 0 }}>{panels.threads}</Stack>
+                <Stack style={{ flex: 1, minHeight: 0 }}>{panels.activity}</Stack>
+              </Stack>
+            ),
+            files: panels.files,
+            checks: panels.policies,
+            actions: <AzureActionsPanel input={input} overview={overview} />,
+          }}
+        />
+      </Screen>
+    );
+  }
+
   return (
     <Screen safeArea>
       <Tabs
@@ -1178,7 +1229,6 @@ function AzureDetailSurface(context: RenderContext): React.ReactElement {
 }
 
 /**
- * The exact export name the build target's Module Federation identity names. Renaming it breaks
- * the native artifact contract, not just this file.
+ * The manifest names this exact universal CommonJS export.
  */
 export const renderSurface = defineUiSurface(AzureDetailSurface);

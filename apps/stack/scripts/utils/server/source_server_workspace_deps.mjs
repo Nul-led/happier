@@ -6,7 +6,6 @@ export async function ensureSourceServerWorkspacePackagesBuilt(
     serverDir,
     env = process.env,
     quiet = false,
-    admitPriorOutputsImmediately = false,
   } = {},
   { ensureWorkspacePackagesBuiltForComponentImpl = ensureWorkspacePackagesBuiltForComponent } = {},
 ) {
@@ -17,7 +16,6 @@ export async function ensureSourceServerWorkspacePackagesBuilt(
   const result = await ensureWorkspacePackagesBuiltForComponentImpl(serverDir, {
     quiet,
     env,
-    ...(admitPriorOutputsImmediately ? { admitPriorOutputsImmediately: true } : {}),
   });
   return { ran: true, reason: 'source-server', result };
 }

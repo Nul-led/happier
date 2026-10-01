@@ -89,6 +89,8 @@ import {
 } from './permissionProfile.js';
 import {
   buildCodexAppServerTurnInput,
+  CodexBrowserImageUnavailableError,
+  resolveCodexBrowserImageStructuredInput,
   type CodexAppServerTurnInputItem,
 } from './turnInput.js';
 import {
@@ -100,6 +102,7 @@ import {
 } from './connectedServiceRuntimeIdentity.js';
 import {
   createCodexAppServerTurnFailure,
+  isCodexAppServerWorkspaceRoutingUnauthorizedError,
 } from './turns/failure.js';
 import { createCodexAppServerAssistantReasoningProjector } from './projection/assistantReasoning.js';
 import {
@@ -200,7 +203,9 @@ const codexAppServerRuntimeStarters = new WeakMap<object, CodexAppServerStartSes
 const codexAppServerRuntimeCompletionWaiters = new WeakMap<object, () => Promise<void>>();
 
 export type CodexAppServerRuntime = CodexAppServerSession & Readonly<{
+  updateConfig: NonNullable<CodexAppServerSession['updateConfig']>;
   realtimeConversation: AgentSessionRealtimeConversation;
+  prepareProviderCliAttach(): Promise<string>;
   supportsInFlightSteer(): boolean;
   isTurnInFlight(): boolean;
   canSteerPrompt(): boolean;
@@ -282,8 +287,11 @@ type CodexAppServerRuntimeParams = CodexAppServerRuntimeTarget & Readonly<{
   directory: string;
   initialProviderSessionId?: string | null;
   appServerEndpoint?: string | null;
+  appServerTransport?: 'daemonProxy' | null;
   initialModelId?: string | null;
   initialCollaborationModeId?: string | null;
+  initialWorkspaceWrites?: 'allow' | 'deny';
+  initialPermissionMode?: string;
   initialProviderBinding?: CodexProviderBindingEngineConfigV1 | null;
   processEnv?: Readonly<Record<string, string | undefined>>;
   mcpServers?: unknown;
@@ -293,9 +301,11 @@ type CodexAppServerRuntimeParams = CodexAppServerRuntimeTarget & Readonly<{
 
 export type CodexAppServerRuntimeHost = Readonly<{
   baseProcessEnv: Readonly<Record<string, string | undefined>>;
+  inputFiles?: AgentSessionRuntimeContext['session']['services']['inputFiles'];
   nativeHome?: NonNullable<AgentSessionRuntimeContext['session']['services']['nativeHome']>;
   logger: Readonly<{
     debug(message: string, fields?: Readonly<Record<string, unknown>>): void;
+    warn(message: string, fields?: Readonly<Record<string, unknown>>): void;
   }>;
   createClient(params: Readonly<{
     cwd: string;
@@ -309,6 +319,7 @@ export type CodexAppServerRuntimeHost = Readonly<{
   }>): Promise<unknown>;
   accountUsage?: CodexAppServerAccountUsageService;
   ui?: Pick<AgentSessionRuntimeContext['services']['interactions'], 'requestApproval' | 'askQuestions'>;
+  sendUserMessage?(request: Readonly<{ idempotencyKey: string; text: string; toolCallId: string }>): Promise<void>;
   mcp?: Pick<
     NonNullable<AgentSessionRuntimeContext['services']['sessions']['current']>['mcp'],
     'elicit'
@@ -324,6 +335,8 @@ const DEFAULT_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS = 25;
 const MAX_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS = 5_000;
 const CODEX_APP_SERVER_TURN_FAILURE_CODE = 'codex_app_server_turn_failed';
 const CODEX_APP_SERVER_TURN_FAILURE_PREVIEW = 'Codex app-server turn failed.';
+const CODEX_APP_SERVER_WORKSPACE_ROUTING_AUTH_PREVIEW = 'Codex authentication failed (HTTP 401).';
+const CODEX_APP_SERVER_WORKSPACE_ROUTING_ERROR_SUMMARY = 'Codex workspace routing unauthorized (HTTP 401)';
 const CODEX_APP_SERVER_CANCEL_STARTUP_RETRY_WINDOW_MS = 1_000;
 const CODEX_APP_SERVER_CANCEL_STARTUP_RETRY_INTERVAL_MS = 50;
 const CODEX_APP_SERVER_STATE_RUNTIME_RETRY_INITIAL_DELAY_MS = 250;
@@ -694,7 +707,9 @@ function buildCodexAppServerTurnFailureIssue(
     occurredAt: Date.now(),
     agentId: 'codex',
     ...(activeTurn.agentTurnId ? { agentTurnId: activeTurn.agentTurnId } : {}),
-    sanitizedPreview: CODEX_APP_SERVER_TURN_FAILURE_PREVIEW,
+    sanitizedPreview: isCodexAppServerWorkspaceRoutingUnauthorizedError(error)
+      ? CODEX_APP_SERVER_WORKSPACE_ROUTING_AUTH_PREVIEW
+      : CODEX_APP_SERVER_TURN_FAILURE_PREVIEW,
   };
 }
 
@@ -836,6 +851,7 @@ export function createCodexAppServerRuntime(
     params.processEnv ?? params.host.baseProcessEnv;
   let clientPromise: Promise<DisposableCodexAppServerClient> | null = null;
   let client: DisposableCodexAppServerClient | null = null;
+  let handleAsyncQuestionNotification: ((raw: unknown) => boolean) | null = null;
   let threadId: string | null = readExactCodexProviderSessionId(params.initialProviderSessionId);
   let currentModelId: string | null = trimStringValue(params.initialModelId);
   let currentCollaborationModeId: string | null = trimStringValue(params.initialCollaborationModeId);
@@ -856,9 +872,13 @@ export function createCodexAppServerRuntime(
   let currentReasoningEffort: string | null = null;
   let currentServiceTier: string | null = null;
   let currentPermissionPolicyOverride: CodexAppServerPolicy | null = null;
+  let currentWorkspaceWrites = params.initialWorkspaceWrites;
+  let currentPermissionMode = params.initialPermissionMode;
   let hasServiceTierOverride = false;
   let permissionSupport: CodexAppServerPermissionSupport = 'unknown';
   let publishedThreadId: string | null = null;
+  // Realtime acceptance can publish an identity without persisting a native-resumable rollout.
+  let nativeReadyThreadId: string | null = null;
   let turnSeq = 0;
   let pendingTurn: PendingTurn | null = null;
   let connectedServiceAuthApplyTail: Promise<void> = Promise.resolve();
@@ -1358,6 +1378,7 @@ export function createCodexAppServerRuntime(
         backendMode: 'appServer',
         providerSessionId: exactThreadId,
         appServerEndpoint: params.appServerEndpoint,
+        appServerTransport: params.appServerTransport,
         homePath: resolveCodexHome(readRuntimeProcessEnv()),
       }),
     });
@@ -1512,6 +1533,9 @@ export function createCodexAppServerRuntime(
       }, context);
     }
     if (method !== 'item/completed') return false;
+    if (handleAsyncQuestionNotification?.(notificationParams)) {
+      return true;
+    }
     const itemType = readNormalizedProviderEventItemType(notificationParams);
     const itemRole = readProviderEventItemRole(notificationParams);
     const text = readProviderEventText(notificationParams, ['text', 'message', 'outputText', 'output_text']);
@@ -1731,6 +1755,7 @@ export function createCodexAppServerRuntime(
     if (terminatedProviderTurnIds.has(agentTurnId)) return null;
     // Older Codex versions can return a thread id before materializing resumable state.
     // Provider turn activity is the first durable boundary for a freshly started thread.
+    nativeReadyThreadId = notificationThreadId;
     publishThreadIdentity(notificationThreadId);
 
     if (activeTurn) {
@@ -1972,10 +1997,16 @@ export function createCodexAppServerRuntime(
     if (params.host.refreshRuntimeAuth) {
       nextClient.registerRequestHandler('account/chatgptAuthTokens/refresh', refreshChatGptAuthTokens);
     }
-    registerCodexAppServerInteractionHandlers({
+    handleAsyncQuestionNotification = registerCodexAppServerInteractionHandlers({
       client: nextClient,
       ...(params.host.ui ? { ui: params.host.ui } : {}),
       ...(params.host.mcp ? { mcp: params.host.mcp } : {}),
+      ...(params.host.sendUserMessage ? { sendUserMessage: params.host.sendUserMessage } : {}),
+      onAsyncQuestionDeliveryError: (error) => {
+        params.host.logger.warn('Codex async question reply delivery failed', {
+          errorName: error instanceof Error ? error.name : typeof error,
+        });
+      },
       getThreadId: () => threadId,
     });
     nextClient.registerNotificationHandler('account/rateLimits/updated', (notificationParams) => {
@@ -2042,6 +2073,10 @@ export function createCodexAppServerRuntime(
         ?? readTurnId(notificationParams);
       if (!errorThreadId || !errorTurnId) return;
       if (!notificationMatchesPendingTurn(notificationParams)) return;
+      const providerError = createErrorFromAppServerNotification(
+        notificationParams,
+        pendingTurn?.providerOperationIdentity ?? null,
+      );
       // App-server `error` is diagnostic and can be followed by more activity
       // for the same native turn even when willRetry is false. Only a provider
       // terminal turn notification can release the active owner; otherwise a
@@ -2050,6 +2085,10 @@ export function createCodexAppServerRuntime(
         threadId: errorThreadId,
         turnId: errorTurnId,
         willRetry: record?.willRetry === true,
+        runtimeIssueSource: resolveCodexRuntimeIssueSource(providerError),
+        providerErrorSummary: isCodexAppServerWorkspaceRoutingUnauthorizedError(providerError)
+          ? CODEX_APP_SERVER_WORKSPACE_ROUTING_ERROR_SUMMARY
+          : 'Codex provider error',
       });
     });
     for (const method of [
@@ -2070,6 +2109,14 @@ export function createCodexAppServerRuntime(
             || method === 'item/started',
         })) return;
         if (method === 'item/started' || method === 'item/completed') {
+          const item = readRecord(readRecord(notificationParams)?.item);
+          const compactionId = trimStringValue(item?.id);
+          if (item?.type === 'contextCompaction' && compactionId) {
+            publishRuntimeEvent({ kind: 'context-compaction', compactionId,
+              phase: method === 'item/started' ? 'started' : 'completed', trigger: 'unknown',
+              ...(pendingTurn?.sessionTurnId ? { turnId: pendingTurn.sessionTurnId } : {}),
+            });
+          }
           markCorrelatedProviderUserMessageAccepted(notificationParams);
         }
         if (method === 'item/started') {
@@ -2343,6 +2390,7 @@ export function createCodexAppServerRuntime(
     currentModelId = readModelId(response) ?? currentModelId;
     currentServiceTier = readServiceTier(response) ?? (hasServiceTierOverride ? currentServiceTier : null);
     if (requestedThreadId) {
+      nativeReadyThreadId = nextThreadId;
       publishThreadIdentity(nextThreadId);
     }
     return nextThreadId;
@@ -2373,6 +2421,29 @@ export function createCodexAppServerRuntime(
     const requested = readExactCodexProviderSessionId(requestedSessionId);
     if (threadId && (!requested || requested === threadId)) return threadId;
     return await openSession(requested ? { existingSessionId: requested, importHistory: false } : undefined);
+  };
+
+  const prepareProviderCliAttach = async (): Promise<string> => {
+    const attachedThreadId = await ensureThreadId();
+    if (nativeReadyThreadId !== attachedThreadId) {
+      const appServerClient = await ensureClient();
+      await appServerClient.request('thread/name/set', {
+        threadId: attachedThreadId,
+        name: `Happier session ${runtimeTargetId}`,
+      });
+      // A fresh paginated Codex thread needs metadata and a full read to
+      // persist its zero-turn rollout before another client can resume it.
+      const snapshot = await appServerClient.request('thread/read', {
+        threadId: attachedThreadId,
+        includeTurns: true,
+      });
+      if (readThreadId(snapshot) !== attachedThreadId || threadId !== attachedThreadId) {
+        throw new Error('Codex native attachment materialized a different thread');
+      }
+      nativeReadyThreadId = attachedThreadId;
+    }
+    publishThreadIdentity(attachedThreadId);
+    return attachedThreadId;
   };
 
   const realtimeConversation = createCodexAppServerRealtimeConversation({
@@ -2473,13 +2544,15 @@ export function createCodexAppServerRuntime(
         // A Codex app-server that predates structured turn input items rejects them with
         // invalid params. The user's text still has to reach the provider rather than failing
         // the turn outright.
-        if (turnInput.length <= 1 || !isCodexAppServerInvalidParamsError(error)) throw error;
+        if (turnInput.length <= 1 || turnInput.some((item) => item.type === 'image' || item.type === 'localImage')
+          || !isCodexAppServerInvalidParamsError(error)) throw error;
         return await requestTurnStart({
           ...requestParams,
           input: buildCodexAppServerTurnInput({ text: prompt }),
         });
       });
       const agentTurnId = readTurnId(response);
+      nativeReadyThreadId = activeTurn.threadId;
       publishThreadIdentity(activeTurn.threadId);
       activeTurn.providerStartAcknowledged = true;
       if (activeTurn.interruptWhenProviderTurnIdArrives) {
@@ -2591,7 +2664,8 @@ export function createCodexAppServerRuntime(
       } catch (error) {
         // A Codex app-server that predates structured turn input items rejects them with
         // invalid params; the steered text must still reach the provider.
-        if (steerInput.length <= 1 || !isCodexAppServerInvalidParamsError(error)) throw error;
+        if (steerInput.length <= 1 || steerInput.some((item) => item.type === 'image' || item.type === 'localImage')
+          || !isCodexAppServerInvalidParamsError(error)) throw error;
         await requestSteer(buildCodexAppServerTurnInput({ text: message }));
       }
     } catch (error) {
@@ -2782,6 +2856,7 @@ export function createCodexAppServerRuntime(
     clientPromise = null;
     collaborationModeSelectionCache.clear();
     publishedThreadId = null;
+    nativeReadyThreadId = null;
     startedEmptyThreadPolicyKey = null;
     let disposeHost = Promise.resolve();
     if (!hostDisposed && params.host.dispose) {
@@ -2986,6 +3061,7 @@ export function createCodexAppServerRuntime(
 
   const runtime: CodexAppServerRuntime = {
     realtimeConversation,
+    prepareProviderCliAttach,
     identity: {
       read() {
         return { providerSessionId: publishedThreadId };
@@ -3013,17 +3089,32 @@ export function createCodexAppServerRuntime(
           diagnostic: 'Codex app-server does not support queued follow-up delivery yet',
         };
       }
+      let structuredInput: unknown;
+      try {
+        structuredInput = await resolveCodexBrowserImageStructuredInput(input.structuredInput, params.host.inputFiles, options?.signal);
+      } catch (error) {
+        if (!(error instanceof CodexBrowserImageUnavailableError)) throw error;
+        return { status: 'rejected', diagnostic: error.code };
+      }
       const turnInput: CodexAppServerInput = {
         text,
-        ...(input.structuredInput === undefined ? {} : { structuredInput: input.structuredInput }),
+        ...(structuredInput === undefined ? {} : { structuredInput }),
       };
       if (options?.deliverAs === 'steer') {
-        await steerInFlightTurn(turnInput, options);
+        try { await steerInFlightTurn(turnInput, options); }
+        catch (error) {
+          if (!isCodexAppServerInvalidParamsError(error) || !buildCodexAppServerTurnInput(turnInput).some((item) => item.type === 'image' || item.type === 'localImage')) throw error;
+          return { status: 'unsupported', diagnostic: 'codex_image_input_unsupported' };
+        }
         return acceptedSendResult();
       }
       const submitted = sendTurnPrompt(turnInput, options);
       observeCompletionInBackground(submitted);
-      await submitted;
+      try { await submitted; }
+      catch (error) {
+        if (!isCodexAppServerInvalidParamsError(error) || !buildCodexAppServerTurnInput(turnInput).some((item) => item.type === 'image' || item.type === 'localImage')) throw error;
+        return { status: 'unsupported', diagnostic: 'codex_image_input_unsupported' };
+      }
       return acceptedSendResult();
     },
     async cancel(expectedTurnId?: string) {
@@ -3043,13 +3134,23 @@ export function createCodexAppServerRuntime(
     permissions: { capability: 'inline' },
     async updateConfig(update) {
       const updateRecord = readRecord(update);
+      if ((updateRecord?.workspaceWrites === 'allow' || updateRecord?.workspaceWrites === 'deny')
+        && updateRecord.workspaceWrites !== currentWorkspaceWrites
+        && (pendingTurn !== null || realtimeConversation.isActive())) {
+        throw Object.assign(new Error('The active Codex turn retains its admitted sandbox'), { code: 'role_policy_restart_required' });
+      }
       const collaborationModeId = trimStringValue(updateRecord?.collaborationModeId);
       const nextPermissionMode = trimStringValue(updateRecord?.permissionMode);
-      if (nextPermissionMode) {
-        const nextPolicy = resolveCodexTerminalPermissionPolicy(nextPermissionMode);
+      if (nextPermissionMode) currentPermissionMode = nextPermissionMode;
+      if (updateRecord?.workspaceWrites === 'allow' || updateRecord?.workspaceWrites === 'deny') {
+        currentWorkspaceWrites = updateRecord.workspaceWrites;
+      }
+      if (currentPermissionMode) {
+        const nextPolicy = resolveCodexTerminalPermissionPolicy(currentPermissionMode, currentWorkspaceWrites);
         const nextPolicyKey = serializeCodexAppServerPolicy(nextPolicy);
         if (
           threadId
+          && publishedThreadId !== threadId
           && turnSeq === 0
           && pendingTurn === null
           && !realtimeConversation.isActive()
@@ -3057,6 +3158,7 @@ export function createCodexAppServerRuntime(
           && startedEmptyThreadPolicyKey !== nextPolicyKey
         ) {
           threadId = null;
+          nativeReadyThreadId = null;
           publishedThreadId = null;
           startedEmptyThreadPolicyKey = null;
           startedEmptyThreadWithoutExplicitModel = false;
@@ -3067,6 +3169,7 @@ export function createCodexAppServerRuntime(
       if (nextModelId) {
         if (
           threadId
+          && publishedThreadId !== threadId
           && turnSeq === 0
           && pendingTurn === null
           && !realtimeConversation.isActive()
@@ -3074,6 +3177,7 @@ export function createCodexAppServerRuntime(
           && currentModelId !== nextModelId
         ) {
           threadId = null;
+          nativeReadyThreadId = null;
           publishedThreadId = null;
           startedEmptyThreadPolicyKey = null;
           startedEmptyThreadWithoutExplicitModel = false;

@@ -4,15 +4,19 @@ import type {
   PluginHostAccessRequestV2,
 } from '@happier-dev/protocol';
 import type { PluginAccessSelection } from '@/plugins/store/install/accessScopeRegistry';
+import type { PluginRuntimeOccurrenceId } from '../runtimeSlots';
+import type { PluginSourceCustody } from '../sourceAuthority';
 
-export type PluginFinalPolicyCurrentGeneration = Readonly<{
-  /** The exact generation whose declaration describes this operation. */
-  immutableGenerationId: string;
-  /** The durable desired generation; it can move without retiring a retained target. */
-  desiredImmutableGenerationId: string | null;
-  /** The generation actually applied to this operation's active runtime. */
-  appliedImmutableGenerationId: string | null;
-  /** Compatibility projection for current catalog consumers. */
+export type PluginFinalPolicyCurrentRuntime = Readonly<{
+  /** Exact process-local runtime occurrence whose declaration describes this operation. */
+  occurrenceId: PluginRuntimeOccurrenceId;
+  /** Durable provenance of the source that produced the occurrence. */
+  sourceCustody: PluginSourceCustody;
+  /** Current desired occurrence, absent only when this runtime is retired. */
+  desiredOccurrenceId: PluginRuntimeOccurrenceId | null;
+  /** Occurrence actually applied to this operation's active runtime. */
+  appliedOccurrenceId: PluginRuntimeOccurrenceId | null;
+  /** Whether this exact occurrence is currently applied. */
   applied: boolean;
   selectedAccess: readonly SelectedPluginAccess[];
 }>;
@@ -51,22 +55,22 @@ export function resolveRequiredPluginNetworkOrigins(params: Readonly<{
 }
 
 /**
- * Materializes direct generation/currentness and independently owned authorization facts
+ * Materializes direct runtime currentness and independently owned authorization facts
  * once for every final-policy consumer. It deliberately does not decide action
  * surfaces/danger or Voice pack/license/resource semantics.
  */
 export function resolvePluginFinalPolicyAuthorizationFacts(params: Readonly<{
   pluginId: string;
-  current: PluginFinalPolicyCurrentGeneration | null;
+  current: PluginFinalPolicyCurrentRuntime | null;
   targetGenerationMode?: PluginFinalPolicyTargetGenerationMode;
   resourceSelections?: PluginFinalPolicyAuthorizationFacts['resourceSelections'];
   scopedGrants?: PluginFinalPolicyAuthorizationFacts['scopedGrants'];
   operatingSystemAuthorization?: PluginFinalPolicyAuthorizationFacts['operatingSystemAuthorization'];
 }>): PluginFinalPolicyAuthorizationFacts {
-  const targetGeneration = params.current?.immutableGenerationId
+  const targetGeneration = params.current?.occurrenceId
     ?? `uncommitted:${params.pluginId}`;
-  const desiredGeneration = params.current?.desiredImmutableGenerationId ?? null;
-  const appliedGeneration = params.current?.appliedImmutableGenerationId ?? null;
+  const desiredGeneration = params.current?.desiredOccurrenceId ?? null;
+  const appliedGeneration = params.current?.appliedOccurrenceId ?? null;
 
   return Object.freeze({
     generation: Object.freeze({

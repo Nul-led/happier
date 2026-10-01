@@ -19,6 +19,14 @@ vi.mock('react-native', () => ({
   FlatList: 'FlatList',
   Pressable: 'Pressable',
   ScrollView: 'ScrollView',
+  // The public barrel also loads the shared cursor's native stylesheet.
+  StyleSheet: {
+    hairlineWidth: 1,
+    absoluteFillObject: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
+    create: <T extends Record<string, unknown>>(styles: T) => styles,
+  },
+  // A Toggle is the platform switch on native (the shared HappierSwitchNative).
+  Switch: 'Switch',
   Text: 'Text',
   TextInput: 'TextInput',
   View: 'View',
@@ -140,9 +148,9 @@ async function renderInteractiveFamilies(
 
 function findPressable(testID: string) {
   const target = renderer!.root.findAll((node) => (
-    node.type === 'Pressable' && node.props.testID === testID
+    (node.type === 'Pressable' || node.type === 'Switch') && node.props.testID === testID
   ));
-  expect(target, `missing native Pressable ${testID}`).toHaveLength(1);
+  expect(target, `missing native interactive host ${testID}`).toHaveLength(1);
   return target[0]!;
 }
 

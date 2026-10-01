@@ -78,10 +78,10 @@ describe('runtimeDescriptorReaderRegistry', () => {
       agentId: 'opencode',
       runtimeKind: 'server',
       backendMode: 'server',
-      providerSessionId: 'opencode-session-1',
+      providerSessionId: ' opencode-session-1 ',
       runtimeHandle: {
         backendMode: 'server',
-        providerSessionId: 'opencode-session-1',
+        providerSessionId: ' opencode-session-1 ',
         serverBaseUrl: 'http://127.0.0.1:4096/',
         serverBaseUrlExplicit: true,
       },

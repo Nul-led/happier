@@ -21,6 +21,7 @@ import type {
   TriageGetResultV1,
   TriageSourceEntryLocalRefV1,
   TriageSourceFailureV1,
+  TriagePullRequestStatusV1,
 } from '@happier-dev/triage-protocol/v1';
 
 import { authorizeGitlabConfiguredInstance } from './configuredInstance.js';
@@ -35,11 +36,17 @@ import {
   type GitlabHttpFetcher,
 } from './http/gitlabClient.js';
 import { readGitlabViewerIdentity } from './invocation.js';
-import { decodeGitlabRow } from './mapping/gitlabEntry.js';
+import { decodeGitlabRow, projectGitlabMergeStatus } from './mapping/gitlabEntry.js';
+import { boundGitlabText } from './mapping/bounded.js';
+import type { GitlabMappedEntry } from './types.js';
 import { deriveGitlabItemInvolvement } from './mapping/gitlabInvolvement.js';
 import { projectGitlabSourceFailure } from './sourceFailure.js';
 import { projectGitlabPresentObservation } from './sourceObservation.js';
 import { buildGitlabItemUrl } from './detail/routes.js';
+import type { GitlabDetailRouteInputV1 } from './detail/routes.js';
+import type { GitlabDetailReadDependenciesV1 } from './detail/reads.js';
+
+type GitlabOverviewReadContext = Readonly<{ route: GitlabDetailRouteInputV1; dependencies: GitlabDetailReadDependenciesV1 }>;
 
 export type GitlabGetOperationInput = Readonly<{
   get: TriageGetInputV1;
@@ -58,7 +65,7 @@ function unresolved(
 
 async function executeGitlabTriageEntry(
   input: GitlabGetOperationInput,
-  captureDescription?: (description: string | null) => void,
+  captureDescription?: (description: string | null, entry: GitlabMappedEntry, readContext: GitlabOverviewReadContext) => void,
 ): Promise<TriageGetResultV1> {
   const localRef = input.get.localRef;
   const identity = admitGitlabItemIdentity({
@@ -133,7 +140,10 @@ async function executeGitlabTriageEntry(
   }
   if (captureDescription !== undefined) {
     const body = item.response.body as Readonly<Record<string, unknown>>;
-    captureDescription(typeof body.description === 'string' ? body.description : null);
+    captureDescription(typeof body.description === 'string' ? body.description : null, entry, {
+      route: routed.route,
+      dependencies: { invocation, fetcher: input.fetcher, signal: input.signal, nowMs: input.nowMs },
+    });
   }
 
   const viewer = await readGitlabViewerIdentity({
@@ -162,8 +172,36 @@ export async function getGitlabTriageEntry(
 /** The Overview consumes the same exact current read as `get`, plus GitLab's body. */
 export async function readGitlabTriageEntryForOverview(
   input: GitlabGetOperationInput,
-): Promise<Readonly<{ result: TriageGetResultV1; description: string | null }>> {
+): Promise<Readonly<{
+  result: TriageGetResultV1;
+  description: string | null;
+  readContext: GitlabOverviewReadContext | null;
+  pullRequest: Readonly<{
+    branch: TriagePullRequestStatusV1['branch'];
+    merge: TriagePullRequestStatusV1['merge'];
+    reviewers: readonly string[];
+    changesRequested: boolean;
+    projectionTruncated: boolean;
+  }> | null;
+}>> {
   let description: string | null = null;
-  const result = await executeGitlabTriageEntry(input, (value) => { description = value; });
-  return Object.freeze({ result, description });
+  let readContext: GitlabOverviewReadContext | null = null;
+  let pullRequest: Awaited<ReturnType<typeof readGitlabTriageEntryForOverview>>['pullRequest'] = null;
+  const result = await executeGitlabTriageEntry(input, (value, entry, admitted) => {
+    description = value;
+    readContext = admitted;
+    if (entry.identity.kindId !== 'merge-request') return;
+    const head = entry.snapshot.branches?.source;
+    const base = entry.snapshot.branches?.target;
+    const boundedHead = head ? boundGitlabText(head) : null;
+    const boundedBase = base ? boundGitlabText(base) : null;
+    pullRequest = {
+      branch: boundedHead && boundedBase ? { head: boundedHead.text, base: boundedBase.text } : null,
+      merge: projectGitlabMergeStatus(entry.snapshot.detailedMergeStatus),
+      reviewers: entry.snapshot.reviewers.map((reviewer) => reviewer.username),
+      changesRequested: entry.snapshot.detailedMergeStatus === 'requested_changes',
+      projectionTruncated: (boundedHead?.truncated ?? false) || (boundedBase?.truncated ?? false),
+    };
+  });
+  return Object.freeze({ result, description, pullRequest, readContext });
 }

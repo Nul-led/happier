@@ -1,3 +1,11 @@
+import { codexStateSharingDescriptor } from './auth/services/state/sharing/descriptor.js';
+
+const { providerId: _providerId, ...stateSharing } = codexStateSharingDescriptor;
+export const AGENT_STATE_SHARING_DESCRIPTOR = {
+  ...stateSharing,
+  nativeHome: { environmentKey: 'CODEX_HOME', defaultRelativePath: '.codex' },
+} as const;
+
 // IMPORTANT: this must stay JSON-serializable (data-only).
 const CODEX_AGENT_ID = 'codex';
 
@@ -19,6 +27,7 @@ const CODEX_RUNTIME_DESCRIPTOR_READER_PROJECTION = {
     { key: 'backendMode', kind: 'runtimeKind', runtimeHandle: 'whenPresent' },
     { key: 'providerSessionId', kind: 'opaqueIdentifier', runtimeHandle: 'whenPresent' },
     { key: 'appServerEndpoint', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
+    { key: 'appServerTransport', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
     { key: 'home', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
     { key: 'connectedServiceId', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
     { key: 'connectedServiceProfileId', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
@@ -31,6 +40,7 @@ const CODEX_RUNTIME_DESCRIPTOR_READER_PROJECTION = {
       { key: 'backendMode', sourceKey: 'codexBackendMode', kind: 'runtimeKind', runtimeHandle: 'whenPresent' },
       { key: 'providerSessionId', sourceKey: 'codexSessionId', kind: 'opaqueIdentifier', runtimeHandle: 'whenPresent' },
       { key: 'appServerEndpoint', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
+      { key: 'appServerTransport', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
       { key: 'home', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
       { key: 'connectedServiceId', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
       { key: 'connectedServiceProfileId', kind: 'trimmedString', runtimeHandle: 'whenPresent' },
@@ -101,7 +111,12 @@ export const AGENT_DEFINITION = Object.freeze({
       },
     },
     handoff: { vendorStateTransfer: 'experimental', requiresExplicitSessionId: true },
-    localControl: { supported: true, topology: 'shared', attachStrategy: 'provider_attach' },
+    localControl: {
+      supported: true,
+      topology: 'shared',
+      attachStrategy: 'provider_attach',
+      remoteWritable: true,
+    },
     tools: { delivery: 'native_mcp', support: 'supported' },
   },
   sessionModeDescriptor: { source: 'acp', semantics: 'policy-presets', runtimeSwitch: 'metadata-gating' },

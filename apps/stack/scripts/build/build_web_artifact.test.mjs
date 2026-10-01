@@ -48,6 +48,7 @@ test('exportWebPayloadToArtifactPayloadDir exports via project-local staging dir
 
   const fakeExpoExec = async ({ dir, args }) => {
     assert.equal(dir, uiDir);
+    assert.ok(!args.includes('-c'), 'managed export should reuse the isolated Metro cache by default');
     const outIndex = args.indexOf('--output-dir');
     assert.ok(outIndex >= 0, 'expected --output-dir in expo args');
     const outDir = args[outIndex + 1];

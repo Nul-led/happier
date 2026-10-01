@@ -7,6 +7,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { buildPluginContributionIntrospectionQualifiedId } from '@/plugins/projection/introspection/project';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import { resolveBuiltInContributions } from './resolveBuiltInContributions';
 import type {
     ResolvedActionContribution,
@@ -144,6 +145,13 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
                 : []
         )),
     ));
+    const occurrenceIdsByPluginId = Object.freeze(Object.fromEntries(
+        Object.entries(inputs.occurrenceIdsByPluginId ?? {}).flatMap(([pluginId, occurrenceId]) => (
+            typeof occurrenceId === 'string' && occurrenceId.trim().length > 0
+                ? [[pluginId, occurrenceId] as const]
+                : []
+        )),
+    ));
     const introspectionContributions = Object.freeze([...(inputs.introspectionContributions ?? [])].sort((left, right) => (
         resolveIntrospectionCandidateSortKey(left).localeCompare(resolveIntrospectionCandidateSortKey(right))
     )));
@@ -234,6 +242,8 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
     const connectedAccountDescriptors = Object.freeze([...(inputs.connectedAccountDescriptors ?? [])].sort(compareConnectedAccountDescriptorContributes));
     const requestInterceptors = Object.freeze([...(inputs.requestInterceptors ?? [])].sort(compareRequestInterceptorContributes));
     const voiceModelPacks = Object.freeze([...(inputs.voiceModelPacks ?? [])].sort(compareVoiceModelPackContributes));
+    const roles = Object.freeze([...(inputs.roles ?? [])].sort((left, right) =>
+        buildQualifiedPluginContributionKey(left.identity).localeCompare(buildQualifiedPluginContributionKey(right.identity))));
     const voiceProviders = Object.freeze([...(inputs.voiceProviders ?? [])].sort((left, right) => (
         buildQualifiedPluginContributionKey(left.identity).localeCompare(buildQualifiedPluginContributionKey(right.identity))
     )));
@@ -252,7 +262,7 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
         targetedPluginContributions,
         actions,
         uiRenderersV2,
-        immutableGenerationIdsByPluginId,
+        occurrenceIdsByPluginId,
     });
     const pluginDiagnosticsByPluginId = mergePluginDiagnostics(
         scmBackendsResult.pluginDiagnosticsByPluginId,
@@ -436,7 +446,7 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
     const automationEligibleEvents = deriveAutomationEligibleEvents({
         events,
         actionsById,
-        immutableGenerationIdsByPluginId,
+        occurrenceIdsByPluginId,
     });
 
     for (const profile of executionRunProfiles) {
@@ -520,6 +530,7 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
         connectedAccountDescriptors,
         requestInterceptors,
         voiceModelPacks,
+        roles,
         voiceProviders,
         accountCollections,
         pluginContributionPoints,
@@ -530,6 +541,7 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
         activationTargets,
         materializationIdsByPluginId,
         immutableGenerationIdsByPluginId,
+        occurrenceIdsByPluginId,
         actionsById: Object.freeze(actionsById),
         toolsById: Object.freeze(toolsById),
         commandsById: Object.freeze(commandsById),
@@ -588,9 +600,9 @@ function readEventPresentationText(value: unknown): string | null {
 function resolveCurrentAutomationEventAction(params: Readonly<{
     actionRef: Readonly<{ pluginId: string; localId: string }> | undefined;
     pluginId: string;
-    immutableGenerationId: string;
+    occurrenceId: PluginRuntimeOccurrenceId;
     actionsById: ReadonlyMap<string, ResolvedActionContribution>;
-    immutableGenerationIdsByPluginId: Readonly<Record<string, string>>;
+    occurrenceIdsByPluginId: Readonly<Record<string, PluginRuntimeOccurrenceId>>;
 }>): ResolvedAutomationEligibleEventAction | null {
     const actionRef = params.actionRef;
     if (!actionRef || actionRef.pluginId !== params.pluginId) return null;
@@ -600,14 +612,15 @@ function resolveCurrentAutomationEventAction(params: Readonly<{
     });
     const id = buildQualifiedPluginContributionKey(identity);
     const action = params.actionsById.get(id);
-    const actionImmutableGenerationId = action?.pluginId
-        ? readRequiredContributionString(params.immutableGenerationIdsByPluginId[action.pluginId])
+    const actionOccurrenceId = action?.pluginId
+        ? params.occurrenceIdsByPluginId[action.pluginId] ?? null
         : null;
     if (
         !action
         || action.pluginId !== params.pluginId
         || action.definition.surfaces.plugin !== true
-        || actionImmutableGenerationId !== params.immutableGenerationId
+        || !actionOccurrenceId?.trim()
+        || actionOccurrenceId !== params.occurrenceId
     ) {
         return null;
     }
@@ -616,7 +629,7 @@ function resolveCurrentAutomationEventAction(params: Readonly<{
     return Object.freeze({
         id,
         identity,
-        immutableGenerationId: params.immutableGenerationId,
+        occurrenceId: params.occurrenceId,
         title,
         description: readRequiredContributionString(action.definition.description),
         inputSchema: action.definition.inputSchema,
@@ -634,7 +647,7 @@ function resolveCurrentAutomationEventAction(params: Readonly<{
 function deriveAutomationEligibleEvents(params: Readonly<{
     events: readonly ResolvedEventContribution[];
     actionsById: ReadonlyMap<string, ResolvedActionContribution>;
-    immutableGenerationIdsByPluginId: Readonly<Record<string, string>>;
+    occurrenceIdsByPluginId: Readonly<Record<string, PluginRuntimeOccurrenceId>>;
 }>): readonly ResolvedAutomationEligibleEvent[] {
     const eligible: ResolvedAutomationEligibleEvent[] = [];
     for (const event of params.events) {
@@ -642,14 +655,14 @@ function deriveAutomationEligibleEvents(params: Readonly<{
         const pluginId = readRequiredContributionString(event.pluginId);
         const localId = readRequiredContributionString(event.definition.localId);
         const setupActionRef = event.definition.automation.source.setupActionRef;
-        const immutableGenerationId = pluginId
-            ? readRequiredContributionString(params.immutableGenerationIdsByPluginId[pluginId])
+        const occurrenceId = pluginId
+            ? params.occurrenceIdsByPluginId[pluginId] ?? null
             : null;
         if (
             !pluginId
             || !localId
             || setupActionRef.pluginId !== pluginId
-            || !immutableGenerationId
+            || !occurrenceId?.trim()
         ) {
             continue;
         }
@@ -657,24 +670,24 @@ function deriveAutomationEligibleEvents(params: Readonly<{
         const setupAction = resolveCurrentAutomationEventAction({
             actionRef: setupActionRef,
             pluginId,
-            immutableGenerationId,
+            occurrenceId,
             actionsById: params.actionsById,
-            immutableGenerationIdsByPluginId: params.immutableGenerationIdsByPluginId,
+            occurrenceIdsByPluginId: params.occurrenceIdsByPluginId,
         });
         if (!eventTitle || !setupAction) continue;
         const eventIdentity = createPluginContributionIdentity({ pluginId, localId });
         const historyGapResetAction = resolveCurrentAutomationEventAction({
             actionRef: event.definition.automation.source.historyGapResetActionRef,
             pluginId,
-            immutableGenerationId,
+            occurrenceId,
             actionsById: params.actionsById,
-            immutableGenerationIdsByPluginId: params.immutableGenerationIdsByPluginId,
+            occurrenceIdsByPluginId: params.occurrenceIdsByPluginId,
         });
         eligible.push(Object.freeze({
             event: Object.freeze({
                 id: readEventRegistryId(event),
                 identity: eventIdentity,
-                immutableGenerationId,
+                occurrenceId,
                 title: eventTitle,
                 description: readEventPresentationText(event.definition.description),
                 ...(event.definition.payloadSchema === undefined
@@ -1032,6 +1045,7 @@ export function createMergedContributionRegistry(
         scmBackends: Object.freeze([...(builtIn.scmBackends ?? []), ...(plugin.scmBackends ?? [])]),
         connectedAccountDescriptors: Object.freeze([...(builtIn.connectedAccountDescriptors ?? []), ...(plugin.connectedAccountDescriptors ?? [])]),
         voiceModelPacks: Object.freeze([...(builtIn.voiceModelPacks ?? []), ...(plugin.voiceModelPacks ?? [])]),
+        roles: Object.freeze([...(builtIn.roles ?? []), ...(plugin.roles ?? [])]),
         voiceProviders: Object.freeze([...(builtIn.voiceProviders ?? []), ...(plugin.voiceProviders ?? [])]),
         accountCollections: Object.freeze([...(builtIn.accountCollections ?? []), ...(plugin.accountCollections ?? [])]),
         pluginContributionPoints: Object.freeze([
@@ -1050,6 +1064,10 @@ export function createMergedContributionRegistry(
         immutableGenerationIdsByPluginId: Object.freeze({
             ...(builtIn.immutableGenerationIdsByPluginId ?? {}),
             ...(plugin.immutableGenerationIdsByPluginId ?? {}),
+        }),
+        occurrenceIdsByPluginId: Object.freeze({
+            ...(builtIn.occurrenceIdsByPluginId ?? {}),
+            ...(plugin.occurrenceIdsByPluginId ?? {}),
         }),
         pluginDiagnosticsByPluginId: Object.freeze({
             ...(builtIn.pluginDiagnosticsByPluginId ?? {}),

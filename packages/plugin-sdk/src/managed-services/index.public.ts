@@ -14,7 +14,12 @@ export type { ManagedServiceEndpointUrlRejection } from './contract.js';
 export type { ManagedServiceEndpointUrlResult } from './contract.js';
 export type { ManagedServiceErrorCode } from './contract.js';
 export type { ManagedServiceHandle } from './contract.js';
-export type { ManagedServiceHealthCheck } from './contract.js';
+export type {
+    ManagedServiceHealthCheck,
+    ManagedServiceHttpHealthAlternative,
+    ManagedServiceHttpHealthJsonPropertyRequirement,
+    ManagedServiceHttpHealthResponse,
+} from './contract.js';
 export type { ManagedServiceLocalId } from './contract.js';
 export { ManagedServiceLocalIdSchema } from './contract.js';
 export type { ManagedServiceMaterializationInjection } from './contract.js';

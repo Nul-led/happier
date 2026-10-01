@@ -134,12 +134,14 @@ describe('Plugin Inspector manifest', () => {
         target: { kind: 'app' },
         renderer: 'inspector-renderer',
         title: { key: 'plugins.inspector.title', fallback: 'Plugin Inspector' },
+        placement: { kind: 'rail' },
       }, {
         id: 'inspector-page',
         container: 'appPage',
         target: { kind: 'app' },
         renderer: 'inspector-renderer',
         title: { key: 'plugins.inspector.title', fallback: 'Plugin Inspector' },
+        placement: { kind: 'rail' },
       }, {
         id: 'inspector-browser-panel',
         container: 'browserPanel',
@@ -168,8 +170,10 @@ describe('Plugin Inspector manifest', () => {
       }]),
     });
     expect(PLUGIN_MANIFEST.contributes.ui).toEqual(INSPECTOR_UI);
-    for (const view of INSPECTOR_UI.views) {
+    for (const view of INSPECTOR_UI.views.slice(2)) {
       expect(view).not.toHaveProperty('placement');
+    }
+    for (const view of INSPECTOR_UI.views) {
       expect(view).not.toHaveProperty('binding');
     }
   });

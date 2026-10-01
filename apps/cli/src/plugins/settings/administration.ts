@@ -526,11 +526,11 @@ async function accountSettingsService(params: Readonly<{
   const service = host.bind({
     plugin: { id: params.pluginId, version: target.manifest.version },
     contribution: { id: 'settings-administration', qualifiedId: `${params.pluginId}/settings-administration` },
-    generation: 'settings-administration-v1',
+    occurrenceId: randomUUID(),
     correlationId: randomUUID(),
     surface: 'cli',
     signal,
-    isGenerationCurrent: () => !signal.aborted,
+    isOccurrenceCurrent: () => !signal.aborted,
   });
   if (!service) {
     administrationError('plugin_settings_unavailable', 'The requested plugin has no Settings service.');

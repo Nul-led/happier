@@ -190,7 +190,21 @@ describe('createOpenCodeAgentRuntime server dispatch', () => {
   });
 
   it('routes the canonical configuration override through the common ACP composer', async () => {
-    const session = createSession();
+    const session = {
+      ...createSession(),
+      runtimeCapabilities: {
+        sessionCapabilities: {
+          sessionListing: 'unsupported' as const,
+          sessionFork: {
+            conversation: 'supported' as const,
+            fromMessage: 'unsupported' as const,
+            protocol: 'acp' as const,
+          },
+          sessionRollback: { conversation: 'unsupported' as const },
+          usageLimitRecovery: { checkNow: 'unsupported' as const },
+        },
+      },
+    };
     const openAcp = vi.fn(async () => session);
     const runtime = createOpenCodeAgentRuntime({
       plugin: { id: 'happier.agent.opencode', version: '0.0.0' },
@@ -207,6 +221,13 @@ describe('createOpenCodeAgentRuntime server dispatch', () => {
         permissionIntent: { value: null, updatedAtMs: 0 },
         options: {
           opencodeBackendMode: { value: 'acp', updatedAtMs: 1 },
+          opencodeCliGeneration: { value: 'v2', updatedAtMs: 1 },
+        },
+      },
+      mcpServers: {
+        happier: {
+          command: '/opt/happier/bin/happier-mcp',
+          args: ['--stdio'],
         },
       },
     };
@@ -223,6 +244,10 @@ describe('createOpenCodeAgentRuntime server dispatch', () => {
       send: session.send,
       runtimeCapabilities: {
         localControl: null,
+        tools: {
+          delivery: 'native_mcp',
+          support: 'supported',
+        },
         sessionCapabilities: {
           sessionFork: {
             conversation: 'supported',
@@ -240,11 +265,18 @@ describe('createOpenCodeAgentRuntime server dispatch', () => {
       diagnostic: { code: 'opencode_acp_compaction_unsupported' },
       retryable: false,
     });
-    expect(openAcp).toHaveBeenCalledWith(request, expect.objectContaining({
+    expect(openAcp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mcpServers: request.mcpServers,
+      }),
+      expect.objectContaining({
       transport: expect.objectContaining({
         kind: 'stdio',
-        executable: { kind: 'systemTool', id: 'opencode-cli' },
+        executable: { kind: 'systemTool', id: 'opencode-cli-v2' },
         args: ['acp'],
+      }),
+      definition: expect.objectContaining({
+        mcp: { policy: 'pass_through' },
       }),
     }));
     expect(openOpenCodeServerSession).not.toHaveBeenCalled();
@@ -487,7 +519,20 @@ describe('createOpenCodeAgentRuntime server dispatch', () => {
   });
 
   it('preserves the other provider request-auth marker when direct and OAuth purposes are mixed', async () => {
-    const session = createSession();
+    const session = {
+      ...createSession(),
+      runtimeCapabilities: {
+        sessionCapabilities: {
+          sessionListing: 'supported' as const,
+          sessionFork: {
+            conversation: 'unsupported' as const,
+            fromMessage: 'unsupported' as const,
+          },
+          sessionRollback: { conversation: 'unsupported' as const },
+          usageLimitRecovery: { checkNow: 'unsupported' as const },
+        },
+      },
+    };
     const harness = createConnectedAccountsHarness({
       bindings: {
         'anthropic-model-request': {
@@ -545,10 +590,11 @@ describe('createOpenCodeAgentRuntime server dispatch', () => {
       sessionCapabilities: {
         sessionListing: 'supported',
         sessionFork: {
-          conversation: 'supported',
-          fromMessage: 'supported',
+          conversation: 'unsupported',
+          fromMessage: 'unsupported',
         },
         sessionRollback: { conversation: 'unsupported' },
+        usageLimitRecovery: { checkNow: 'unsupported' },
       },
     });
 

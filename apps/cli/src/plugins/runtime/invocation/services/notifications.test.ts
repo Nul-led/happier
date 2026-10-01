@@ -55,15 +55,132 @@ const channels: readonly ResolvedNotificationChannelContribution[] = Object.free
 const seed = Object.freeze({
     plugin: Object.freeze({ id: 'acme.notifications', version: '1.0.0' }),
     contribution: Object.freeze({ id: 'run', qualifiedId: 'acme.notifications/actions/run' }),
-    generation: '7',
+    occurrenceId: '7',
     correlationId: 'correlation-1',
     surface: 'cli' as const,
     signal: new AbortController().signal,
-    isGenerationCurrent: () => true,
+    isOccurrenceCurrent: () => true,
 });
 
 describe('stable plugin notifications service', () => {
-    it('demands the exact qualified channel, re-reads its generation, and replays stable per-channel results', async () => {
+    it('discovers current host channels and delivers without claiming a plugin category or caller', async () => {
+        const requests: PluginNotificationSendRequest[] = [];
+        const activated: string[] = [];
+        let binding: PluginNotificationSenderBinding | null = null;
+        const owner = createStablePluginNotificationsOwner({
+            categories: [], channels,
+            async activateChannel(ref) {
+                activated.push(`${ref.pluginId}/${ref.localId}`);
+                binding = Object.freeze({
+                    occurrenceId: 'channel-occurrence',
+                    isCurrent: () => true,
+                    async send(request) {
+                        requests.push(request);
+                        return {
+                            deliveryId: request.deliveryId,
+                            channelId: request.channelId,
+                            status: 'accepted',
+                            evidence: 'provider',
+                        };
+                    },
+                });
+            },
+            readChannel: (_ref, callerSeed) => {
+                expect(callerSeed).toBeUndefined();
+                return binding;
+            },
+        });
+
+        await expect(owner.availableHostChannels()).resolves.toEqual([
+            { value: 'acme.notifications/configured', label: 'Configured (acme.notifications)', kind: 'plugin' },
+        ]);
+        expect(activated).toEqual([]);
+        await expect(owner.sendHostNotification({
+            channelId: 'acme.notifications/configured', title: 'Ready', body: 'Review the result',
+            data: { runId: 'run-1' },
+        })).resolves.toBe(true);
+        expect(requests).toEqual([expect.objectContaining({
+            channelId: 'acme.notifications/configured', title: 'Ready', body: 'Review the result',
+            data: { runId: 'run-1' },
+        })]);
+        expect(requests[0]).not.toHaveProperty('categoryId');
+        expect(activated).toEqual(['acme.notifications/configured']);
+        await expect(owner.sendHostNotification({
+            channelId: 'acme.delivery/external', title: 'Disabled',
+        })).resolves.toBe(false);
+        await expect(owner.sendHostNotification({
+            channelId: 'unqualified', title: 'Unknown',
+        })).resolves.toBe(false);
+        expect(requests).toHaveLength(1);
+    });
+
+    it('keeps host discovery and sending behind manifest policy and the current sender occurrence', async () => {
+        let current = true;
+        const requests: PluginNotificationSendRequest[] = [];
+        const owner = createStablePluginNotificationsOwner({
+            categories: [],
+            channels: [channels[0]!, {
+                ...channels[0]!,
+                definition: {
+                    ...channels[0]!.definition, id: 'hidden',
+                    availability: { when: { fact: 'session.exists', operator: 'equals', value: true } },
+                },
+            }],
+            async activateChannel() {},
+            readChannel: () => ({
+                occurrenceId: 'channel-occurrence', isCurrent: () => current,
+                async send(request) {
+                    requests.push(request);
+                    current = false;
+                    return {
+                        deliveryId: request.deliveryId, channelId: request.channelId,
+                        status: 'accepted', evidence: 'provider',
+                    };
+                },
+            }),
+        });
+        await expect(owner.availableHostChannels()).resolves.toEqual([
+            { value: 'acme.notifications/configured', label: 'Configured (acme.notifications)', kind: 'plugin' },
+        ]);
+        await expect(owner.sendHostNotification({
+            channelId: 'acme.notifications/hidden', title: 'Hidden',
+        })).resolves.toBe(false);
+        await expect(owner.sendHostNotification({
+            channelId: 'acme.notifications/configured', title: 'Retired during send',
+        })).resolves.toBe(false);
+        await expect(owner.availableHostChannels()).resolves.toEqual([]);
+        await expect(owner.sendHostNotification({
+            channelId: 'acme.notifications/configured', title: 'Retired before send',
+        })).resolves.toBe(false);
+        expect(requests).toHaveLength(1);
+    });
+
+    it('settles a host send as undelivered when its channel retires before the sender answers', async () => {
+        const retirement = new AbortController();
+        let started!: () => void;
+        const sending = new Promise<void>((resolve) => { started = resolve; });
+        const owner = createStablePluginNotificationsOwner({
+            categories: [], channels,
+            async activateChannel() {},
+            readChannel: () => ({
+                occurrenceId: 'channel-occurrence',
+                retirementSignal: retirement.signal,
+                isCurrent: () => !retirement.signal.aborted,
+                send: () => {
+                    started();
+                    return new Promise(() => {});
+                },
+            }),
+        });
+        const result = owner.sendHostNotification({
+            channelId: 'acme.notifications/configured', title: 'Ready',
+        });
+        await sending;
+        retirement.abort();
+        await expect(result).resolves.toBe(false);
+    });
+
+    it('demands the exact qualified channel, re-reads its occurrenceId, and replays stable per-channel results', async () => {
         const demands: string[] = [];
         let binding: PluginNotificationSenderBinding | null = null;
         const sender = vi.fn(async (request: PluginNotificationSendRequest): Promise<PluginNotificationSendResult> => Object.freeze({
@@ -76,7 +193,7 @@ describe('stable plugin notifications service', () => {
             categories: [category], channels,
             async activateChannel(ref) {
                 demands.push(`${ref.pluginId}/notificationChannels/${ref.localId}`);
-                binding = Object.freeze({ generation: '7', isCurrent: () => true, send: sender });
+                binding = Object.freeze({ occurrenceId: '7', isCurrent: () => true, send: sender });
             },
             readChannel: () => binding,
             now: () => 1_000,
@@ -219,7 +336,7 @@ describe('stable plugin notifications service', () => {
             categories: [category, unavailableCategory],
             channels: [disabledChannel, unknownChannel],
             activateChannel,
-            readChannel: () => Object.freeze({ generation: '7', isCurrent: () => true, send: sender }),
+            readChannel: () => Object.freeze({ occurrenceId: '7', isCurrent: () => true, send: sender }),
             now: () => 1_000,
         });
 
@@ -282,7 +399,7 @@ describe('stable plugin notifications service', () => {
             categories: [category],
             channels,
             activateChannel: async () => undefined,
-            readChannel: () => Object.freeze({ generation: '7', isCurrent: () => true, send: sender }),
+            readChannel: () => Object.freeze({ occurrenceId: '7', isCurrent: () => true, send: sender }),
             preferencePolicy: {
                 read(params) {
                     return Object.freeze({
@@ -344,7 +461,7 @@ describe('stable plugin notifications service', () => {
             categories: [category], channels,
             activateChannel: async () => undefined,
             readChannel: () => Object.freeze({
-                generation: '7',
+                occurrenceId: '7',
                 isCurrent: async () => false,
                 send: sender,
             }),
@@ -382,7 +499,7 @@ describe('stable plugin notifications service', () => {
             categories: [category], channels,
             activateChannel: async () => undefined,
             readChannel: () => Object.freeze({
-                generation: '7',
+                occurrenceId: '7',
                 isCurrent: async () => current,
                 send: sender,
             }),
@@ -404,7 +521,7 @@ describe('stable plugin notifications service', () => {
         expect(sender).toHaveBeenCalledTimes(1);
     });
 
-    it('settles an unresponsive sender on generation retirement, then expires its terminal evidence', async () => {
+    it('settles an unresponsive sender on occurrenceId retirement, then expires its terminal evidence', async () => {
         let now = 1_000;
         const retiredGeneration = new AbortController();
         const currentGeneration = new AbortController();
@@ -441,8 +558,8 @@ describe('stable plugin notifications service', () => {
             categories: [category], channels,
             activateChannel: async () => undefined,
             readChannel: (_ref, callerSeed) => Object.freeze({
-                generation: callerSeed.generation,
-                isCurrent: () => !callerSeed.signal.aborted,
+                occurrenceId: callerSeed!.occurrenceId,
+                isCurrent: () => !callerSeed!.signal.aborted,
                 send: sender,
             }),
             now: () => now,
@@ -456,7 +573,7 @@ describe('stable plugin notifications service', () => {
         const retiredService = owner.bind(Object.freeze({
             ...seed,
             signal: retiredGeneration.signal,
-            isGenerationCurrent: () => !retiredGeneration.signal.aborted,
+            isOccurrenceCurrent: () => !retiredGeneration.signal.aborted,
         }));
 
         const pendingSuccess = retiredService.send(request('request-late-success'));
@@ -512,9 +629,9 @@ describe('stable plugin notifications service', () => {
 
         const currentService = owner.bind(Object.freeze({
             ...seed,
-            generation: '8',
+            occurrenceId: '8',
             signal: currentGeneration.signal,
-            isGenerationCurrent: () => !currentGeneration.signal.aborted,
+            isOccurrenceCurrent: () => !currentGeneration.signal.aborted,
         }));
         for (const clientRequestId of ['request-late-success', 'request-late-failure']) {
             await expect(currentService.send(request(clientRequestId))).resolves.toEqual({
@@ -540,9 +657,9 @@ describe('stable plugin notifications service', () => {
         expect(sender).toHaveBeenCalledTimes(4);
     });
 
-    it('owns a real preference watch with the caller generation and fences late publication', () => {
-        const generation = new AbortController();
-        const generationSeed = Object.freeze({ ...seed, signal: generation.signal });
+    it('owns a real preference watch with the caller occurrenceId and fences late publication', () => {
+        const occurrenceId = new AbortController();
+        const generationSeed = Object.freeze({ ...seed, signal: occurrenceId.signal });
         const disposeHostWatch = vi.fn();
         let publish: ((preferences: PluginNotificationPreferences) => void) | undefined;
         const service = createStablePluginNotificationsService(generationSeed, {
@@ -553,7 +670,7 @@ describe('stable plugin notifications service', () => {
                 expect(params).toMatchObject({
                     pluginId: 'acme.notifications',
                     contributionId: 'acme.notifications/actions/run',
-                    generation: '7',
+                    occurrenceId: '7',
                     categoryId: 'review-ready',
                 });
                 publish = params.listener;
@@ -569,7 +686,7 @@ describe('stable plugin notifications service', () => {
         publish?.(first);
         expect(listener).toHaveBeenCalledWith(first);
 
-        generation.abort();
+        occurrenceId.abort();
         expect(disposeHostWatch).toHaveBeenCalledTimes(1);
         publish?.(Object.freeze({ ...first, revision: '2' }));
         expect(listener).toHaveBeenCalledTimes(1);
@@ -577,7 +694,7 @@ describe('stable plugin notifications service', () => {
         expect(disposeHostWatch).toHaveBeenCalledTimes(1);
     });
 
-    it('rejects undeclared, conflicting, oversized, and retired-generation operations before unsafe delivery', async () => {
+    it('rejects undeclared, conflicting, oversized, and retired-occurrenceId operations before unsafe delivery', async () => {
         let current = true;
         const sender = vi.fn(async (request: PluginNotificationSendRequest): Promise<PluginNotificationSendResult> => {
             current = false;
@@ -588,11 +705,11 @@ describe('stable plugin notifications service', () => {
                 evidence: 'hostAdapter' as const,
             });
         });
-        const retiredSeed = Object.freeze({ ...seed, isGenerationCurrent: () => current });
+        const retiredSeed = Object.freeze({ ...seed, isOccurrenceCurrent: () => current });
         const service = createStablePluginNotificationsService(retiredSeed, {
             categories: [category], channels,
             activateChannel: async () => undefined,
-            readChannel: () => Object.freeze({ generation: '7', isCurrent: () => true, send: sender }),
+            readChannel: () => Object.freeze({ occurrenceId: '7', isCurrent: () => true, send: sender }),
             now: () => 1_000,
         });
 
@@ -671,7 +788,7 @@ describe('stable plugin notifications service', () => {
         const service = createStablePluginNotificationsService(seed, {
             categories: [duplicateDefaults], channels,
             activateChannel: async () => undefined,
-            readChannel: () => Object.freeze({ generation: '7', isCurrent: () => true, send: sender }),
+            readChannel: () => Object.freeze({ occurrenceId: '7', isCurrent: () => true, send: sender }),
             now: () => 1_000,
         });
 
@@ -715,7 +832,7 @@ describe('stable plugin notifications service', () => {
             })],
             channels: [slashChannel],
             activateChannel: async () => undefined,
-            readChannel: () => Object.freeze({ generation: '7', isCurrent: () => true, send: sender }),
+            readChannel: () => Object.freeze({ occurrenceId: '7', isCurrent: () => true, send: sender }),
             now: () => 1_000,
         });
 
@@ -756,7 +873,7 @@ describe('stable plugin notifications service', () => {
         const owner = createStablePluginNotificationsOwner({
             categories: [category], channels,
             activateChannel: async () => undefined,
-            readChannel: () => Object.freeze({ generation: '7', isCurrent: () => true, send: sender }),
+            readChannel: () => Object.freeze({ occurrenceId: '7', isCurrent: () => true, send: sender }),
             now: () => 1_000,
         });
         const first = owner.bind(seed);
@@ -781,7 +898,7 @@ describe('stable plugin notifications service', () => {
         const service = createStablePluginNotificationsService(seed, {
             categories: [category], channels,
             activateChannel: async () => undefined,
-            readChannel: () => Object.freeze({ generation: '7', isCurrent: () => true, send: sender }),
+            readChannel: () => Object.freeze({ occurrenceId: '7', isCurrent: () => true, send: sender }),
             now: () => 1_000,
         });
         const request = Object.freeze({
@@ -836,7 +953,7 @@ describe('stable plugin notifications service', () => {
         const service = createStablePluginNotificationsService(seed, {
             categories: [category], channels,
             activateChannel: async () => undefined,
-            readChannel: () => Object.freeze({ generation: '7', isCurrent: () => true, send: sender }),
+            readChannel: () => Object.freeze({ occurrenceId: '7', isCurrent: () => true, send: sender }),
             now: () => now,
         });
         const request = Object.freeze({

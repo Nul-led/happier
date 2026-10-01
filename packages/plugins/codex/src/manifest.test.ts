@@ -61,7 +61,7 @@ describe('Codex plugin manifest', () => {
     ]);
     expect(PLUGIN_MANIFEST.contributes.connectedAccountDescriptors).toEqual([{
       id: 'openai-codex',
-      title: 'Codex',
+      title: 'ChatGPT',
       recoveryCredits: { supported: true },
       authentication: {
         defaultModeId: 'oauth',
@@ -158,7 +158,6 @@ describe('Codex plugin manifest', () => {
       },
       client: {
         artifactId: 'voice-runtime-web',
-        modulePath: './ui/voice',
         exportName: 'activate',
       },
     }]);

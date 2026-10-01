@@ -62,6 +62,7 @@ import { MAX_CONVERSATION_POLL_FAILURE_ATTEMPTS } from './connectionPollFailureB
 /** Canonical Data contribution identifiers; never publish camelCase aliases. */
 export const CHANNEL_STATE_COLLECTION_ID = 'channel-state';
 export const CHANNEL_DELIVERIES_COLLECTION_ID = 'channel-deliveries';
+export const CHANNEL_STATE_MIGRATIONS_ARTIFACT_ID = 'channel-state-migrations';
 
 export const CHANNEL_STATE_FIELD = {
   id: 'id',
@@ -190,11 +191,11 @@ const OCCURRENCE_ID_SCHEMA = boundedString(MAX_CONVERSATION_OCCURRENCE_ID_UTF8_B
 /**
  * The durable provider-operation identity. The plugin id remains a separate
  * connection fact because it also fences the stamped execution origin; this
- * selection narrows that plugin to its one admitted contribution generation.
+ * selection narrows that plugin to its stable contribution identity. Runtime
+ * execution re-admits that identity through the current Provider snapshot.
  */
 export type PersistedConversationProviderContributionSelection = Readonly<{
   contributionId: string;
-  immutableGenerationId: string;
 }>;
 
 export const ConversationProviderContributionSelectionJsonSchema: PluginJsonSchema = {
@@ -203,9 +204,8 @@ export const ConversationProviderContributionSelectionJsonSchema: PluginJsonSche
     // Reuse the canonical contribution-local-id grammar instead of creating a
     // Channels-specific identifier dialect.
     contributionId: PluginContributionIdentityV1JsonSchema.properties!.localId!,
-    immutableGenerationId: boundedString(MAX_PLUGIN_ID_LENGTH),
   },
-  required: ['contributionId', 'immutableGenerationId'],
+  required: ['contributionId'],
   additionalProperties: false,
 };
 
@@ -1461,15 +1461,74 @@ export function migrateChannelStateV1ToV2(
   };
 }
 
+function removeProviderSelectionGeneration(value: JsonValue | undefined): Readonly<Record<string, JsonValue>> {
+  if (!isChannelStateJsonRecord(value)) {
+    throw new Error('A V2 provider contribution selection must be an object.');
+  }
+  const { immutableGenerationId: _retired, ...stableSelection } = value;
+  return stableSelection;
+}
+
 /**
- * One strict V2 Account Collection contract for all Channels configuration,
+ * Contracts Channels persistence to stable contribution identity. Generation
+ * is executable currentness owned by the host snapshot and must not strand an
+ * otherwise-current connection after slot replacement or daemon restart.
+ */
+export function migrateChannelStateV2ToV3(
+  value: Readonly<Record<string, JsonValue>>,
+): Readonly<Record<string, JsonValue>> {
+  const payload = value.payload;
+  if (!isChannelStateJsonRecord(payload)) return value;
+  if (value[CHANNEL_STATE_FIELD.recordKind] === CHANNEL_STATE_RECORD_KIND.connection) {
+    const pendingOldTransportStop = payload.pendingOldTransportStop;
+    return {
+      ...value,
+      payload: {
+        ...payload,
+        providerContributionSelection: removeProviderSelectionGeneration(
+          payload.providerContributionSelection,
+        ),
+        ...(isChannelStateJsonRecord(pendingOldTransportStop)
+          ? {
+            pendingOldTransportStop: {
+              ...pendingOldTransportStop,
+              providerContributionSelection: removeProviderSelectionGeneration(
+                pendingOldTransportStop.providerContributionSelection,
+              ),
+            },
+          }
+          : {}),
+      },
+    };
+  }
+  if (value[CHANNEL_STATE_FIELD.recordKind] === CHANNEL_STATE_RECORD_KIND.ingressObligation) {
+    const target = payload.target;
+    if (!isChannelStateJsonRecord(target) || target.kind !== 'event') return value;
+    return {
+      ...value,
+      payload: {
+        ...payload,
+        target: {
+          ...target,
+          providerContributionSelection: removeProviderSelectionGeneration(
+            target.providerContributionSelection,
+          ),
+        },
+      },
+    };
+  }
+  return value;
+}
+
+/**
+ * One strict V3 Account Collection contract for all Channels configuration,
  * ingress, checkpoint, projection-frontier, and rotation state. Every row
  * family remains explicit; no later core phase gets an opaque escape hatch.
  */
 export const CHANNEL_STATE_COLLECTION = defineAccountCollection({
   id: CHANNEL_STATE_COLLECTION_ID,
-  schemaVersion: 2,
-  readableSchemaVersions: [1],
+  schemaVersion: 3,
+  readableSchemaVersions: [1, 2],
   schema: {
     type: 'object',
     properties: {
@@ -1587,7 +1646,16 @@ export const CHANNEL_STATE_COLLECTION = defineAccountCollection({
     fromSchemaVersion: 1,
     toSchemaVersion: 2,
     migrate: migrateChannelStateV1ToV2,
+  }, {
+    id: 'channel-state-v2-to-v3',
+    fromSchemaVersion: 2,
+    toSchemaVersion: 3,
+    migrate: migrateChannelStateV2ToV3,
   }],
+  migrationArtifact: {
+    artifactId: CHANNEL_STATE_MIGRATIONS_ARTIFACT_ID,
+    exportName: 'collectionMigrations',
+  },
   quota: {
     maxRowEncodedBytes: MAX_CHANNEL_STATE_ROW_BYTES,
     maxRowsByIndexPrefix: [

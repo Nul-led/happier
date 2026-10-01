@@ -1,4 +1,5 @@
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import type { PluginRuntimeSlotOccurrence } from '@/plugins/runtime/runtimeSlots';
 import { configuration } from '@/configuration';
 
 import type { PluginReloadController, PluginRuntimeRegistryLease } from './controller';
@@ -23,18 +24,36 @@ export function createEphemeralPluginRuntimeRegistryLease(
     };
 }
 
-export async function acquireAuthoritativePluginRuntimeRegistryLease(params?: Readonly<{
+type AuthoritativeControllerParams = Readonly<{
     happyHomeDir?: string;
     controller?: PluginReloadController;
-}>): Promise<PluginRuntimeRegistryLease> {
+}>;
+
+function resolveAuthoritativeController(params?: AuthoritativeControllerParams): PluginReloadController | null {
     // Callers may scope the registry resolution to a specific home directory (tests, multi-home
     // diagnostics). The singleton controller is global and reads `configuration.happyHomeDir`,
     // so only alternate explicit home-dir requests should bypass it.
     const shouldUseSingletonController = typeof params?.happyHomeDir !== 'string'
         || params.happyHomeDir === configuration.happyHomeDir;
-    const controller = params?.controller
+    return params?.controller
         ?? (shouldUseSingletonController ? pluginReloadController : null);
-    const lease = controller?.tryAcquireRuntimeRegistry() ?? null;
+}
+
+/**
+ * The occurrence one plugin's slot serves now, read from the runtime owner's
+ * slot map. Reading a per-plugin identity fact needs no registry lease.
+ */
+export function readAuthoritativePluginSlotOccurrence(
+    pluginId: string,
+    params?: AuthoritativeControllerParams,
+): PluginRuntimeSlotOccurrence | null {
+    return resolveAuthoritativeController(params)?.readPluginSlot?.(pluginId)?.current ?? null;
+}
+
+export async function acquireAuthoritativePluginRuntimeRegistryLease(
+    params?: AuthoritativeControllerParams,
+): Promise<PluginRuntimeRegistryLease> {
+    const lease = resolveAuthoritativeController(params)?.tryAcquireRuntimeRegistry() ?? null;
     if (lease) {
         return lease;
     }
@@ -46,13 +65,8 @@ export async function acquireAuthoritativePluginRuntimeRegistryLease(params?: Re
     throw error;
 }
 
-export function tryAcquireAuthoritativePluginRuntimeRegistryLease(params?: Readonly<{
-    happyHomeDir?: string;
-    controller?: PluginReloadController;
-}>): PluginRuntimeRegistryLease | null {
-    const shouldUseSingletonController = typeof params?.happyHomeDir !== 'string'
-        || params.happyHomeDir === configuration.happyHomeDir;
-    const controller = params?.controller
-        ?? (shouldUseSingletonController ? pluginReloadController : null);
-    return controller?.tryAcquireRuntimeRegistry() ?? null;
+export function tryAcquireAuthoritativePluginRuntimeRegistryLease(
+    params?: AuthoritativeControllerParams,
+): PluginRuntimeRegistryLease | null {
+    return resolveAuthoritativeController(params)?.tryAcquireRuntimeRegistry() ?? null;
 }

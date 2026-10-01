@@ -1,4 +1,5 @@
 export { isHappierActionApprovalRequestCreated } from './approval.js';
+export type { HappierSessionController, HappierSessionLiveOptions, HappierSessionSnapshot } from './live/types.js';
 export type {
   HappierSessionExecutionRun,
   HappierSessionExecutionRuns,
@@ -9,6 +10,7 @@ export type {
 export {
   connect,
   type HappierActions,
+  type HappierApiTokens,
   type HappierClient,
   type HappierMachineActionExecute,
   type HappierMachineActionExecutionOptions,
@@ -29,6 +31,15 @@ export type {
   HappierTranscriptItem,
 } from './subscriptions.js';
 export type { HappierMachine, MachineListOptions } from './machines.js';
+export type {
+  HappierEmbed,
+  HappierEmbedActionOptions,
+  HappierEmbedOptions,
+  HappierEmbedCreateSessionInput,
+  HappierEmbedListSessionsInput,
+  HappierEmbedCreateCredentialInput,
+  HappierEmbedCredential,
+} from './fluent/embed.js';
 export {
   HappierAgentUnavailableError,
   HappierSessionInitialInputError,
@@ -36,6 +47,7 @@ export {
   type HappierAgentUnavailableReason,
   type HappierMachineSessions,
   type HappierSession,
+  type HappierSessionListInput,
   type HappierSessionSendAndWaitInput,
   type HappierSessionSpawnInput,
   type HappierSessionSpawnOptions,

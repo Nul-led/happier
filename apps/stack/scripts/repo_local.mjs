@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { scrubHappierStackEnv, STACK_WRAPPER_PRESERVE_KEYS } from './utils/env/scrub_env.mjs';
+import { scrubHappierStackEnv, STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS, STACK_WRAPPER_PRESERVE_KEYS } from './utils/env/scrub_env.mjs';
 import { applyStackActiveServerScopeEnv } from './utils/auth/stable_scope_id.mjs';
 import { readExecutionHostProfile } from './utils/execution_host/config.mjs';
 import { resolveHostWorkspaceMapping } from './utils/execution_host/delegation.mjs';
@@ -336,23 +336,7 @@ async function main() {
   // - avoid leaking previously-exported stack env (main stack urls, home dir, etc.)
   const cleaned = scrubHappierStackEnv(process.env, {
     keepHappierStackKeys: STACK_WRAPPER_PRESERVE_KEYS,
-    clearUnprefixedKeys: [
-      'HAPPIER_SERVER_URL',
-      'HAPPIER_PUBLIC_SERVER_URL',
-      'HAPPIER_WEBAPP_URL',
-      'HAPPIER_HOME_DIR',
-      'APP_ENV',
-      'EXPO_UPDATES_CHANNEL',
-      'EXPO_PUBLIC_HAPPIER_FEATURE_POLICY_ENV',
-      'EXPO_PUBLIC_HAPPIER_BUILD_FEATURES_ALLOW',
-      'EXPO_PUBLIC_HAPPIER_BUILD_FEATURES_DENY',
-      'HAPPIER_FEATURE_POLICY_ENV',
-      'HAPPIER_EMBEDDED_POLICY_ENV',
-      'HAPPIER_BUILD_FEATURES_ALLOW',
-      'HAPPIER_BUILD_FEATURES_DENY',
-      // Prevent accidental credential scoping to the user's "main" stack config.
-      'HAPPIER_ACTIVE_SERVER_ID',
-    ],
+    clearUnprefixedKeys: STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS,
   });
 
   const inheritedForeignStackSelection = isRuntimeSnapshotSelection

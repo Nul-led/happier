@@ -208,6 +208,7 @@ describe('Collection candidate preparation runtime owner', () => {
             await seedCandidateFixture({ happyHomeDir, pluginRoot });
             runtime = await resolveExecutablePluginRuntimeRegistry({
                 happyHomeDir,
+                pluginIds: [pluginId],
                 resolveCurrentMachineId: () => 'candidate-machine',
                 resolveCurrentMachineExecutionOriginContext: async () => ({
                     serverIdentityId: 'srv_candidate_fixture',

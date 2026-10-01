@@ -27,6 +27,7 @@ type CodexAppServerEnv = Readonly<Record<string, string | undefined>>;
 
 export type CodexAppServerTransport =
     | Readonly<{ kind: 'stdio' }>
+    | Readonly<{ kind: 'daemonProxy' }>
     | Readonly<{
         kind: 'unixWebSocket';
         socketPath: string;
@@ -69,7 +70,9 @@ export function isCodexAppServerOversizedJsonFrameError(error: unknown): boolean
 
 const CODEX_REALTIME_ENABLED_LAUNCH_UNAVAILABLE =
     'CODEX_REALTIME_ENABLED_LAUNCH_UNAVAILABLE';
-const DEFAULT_JSON_LINE_MAX_CHARS = 32 * 1024 * 1024;
+// A resume response can carry the complete Codex thread. Preserve the established
+// 0.2 app-server boundary instead of introducing a lower plugin-only rejection cap.
+const DEFAULT_JSON_LINE_MAX_CHARS = 128 * 1024 * 1024;
 
 export function isCodexRealtimeEnabledAppServerLaunchUnavailableError(
     error: unknown,
@@ -206,6 +209,9 @@ export function buildCodexAppServerArgs(params: Readonly<{
     listenUrl?: string;
     transport?: CodexAppServerTransport;
 }>): string[] {
+    if (params.transport?.kind === 'daemonProxy') {
+        return ['app-server', 'proxy'];
+    }
     const userMcpOverrides = params.disableUserMcpServers === true
         ? readCodexMcpServerKeysFromConfigToml(params.env).map((key) => `mcp_servers.${key}.enabled=false`)
         : [];
@@ -414,13 +420,16 @@ export async function createCodexNativeAppServerClient(params: Readonly<{
     });
     const realtimeConversationAdvertised = params.transport?.kind === 'unixWebSocket'
         ? params.transport.realtimeConversationAdvertised
-        : await probeCodexRealtimeConversationFeature({
+        : params.transport?.kind === 'daemonProxy'
+          ? false
+          : await probeCodexRealtimeConversationFeature({
             exec: params.exec,
             executable: resolvedSystemTool.executable,
             env,
             ...(params.signal ? { signal: params.signal } : {}),
         });
     const enableRealtimeConversation = params.transport?.kind !== 'unixWebSocket'
+        && params.transport?.kind !== 'daemonProxy'
         && realtimeConversationAdvertised;
     let handle: Pick<PluginProtocolClientHandle<'jsonRpc'>, 'client' | 'wait' | 'dispose'>;
     try {

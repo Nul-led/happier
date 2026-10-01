@@ -6,6 +6,7 @@ export const HAPPY_AGENTS_PACKAGE = '@happier-dev/agents';
 export const CANONICAL_AGENTS_CORE = CANONICAL_AGENTS_CORE_FROM_MANIFEST;
 export const CANONICAL_AGENT_MODEL_CONFIG = CANONICAL_AGENT_MODEL_CONFIG_FROM_MODELS;
 export const CANONICAL_AGENT_CLI_RUNTIME_SPECS = CANONICAL_AGENT_CLI_RUNTIME_SPECS_FROM_RUNTIME;
+export { readReleasedOutputNonTranscriptRecordTypes } from './definitions/releasedOutputTranscriptRecordReader.js';
 
 export {
   isNonSteerablePromptPayload,
@@ -461,6 +462,7 @@ export {
   type AgentCliInstallCommand,
   type AgentCliInstallPlatform,
   type AgentCliManagedInstallSpec,
+  type AgentCliNativeUpdateSpec,
   type AgentCliManualInstallKind,
   type AgentCliManualInstallRecipes,
   type AgentCliRuntimeSpec,

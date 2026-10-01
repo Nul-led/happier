@@ -1,18 +1,17 @@
 import type {
   AgentSessionRunnerBindingV1,
 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
-import { loadRetainedAgentRuntimeLeaf } from '@/plugins/runtime/runner/loadRetainedAgentRuntimeLeaf';
+import { attestFreshRunnerAgentBinding } from '@/plugins/runtime/retainedPluginSourceAttestation';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import {
   readCurrentPluginHardRevocationRevision,
   readCurrentPluginImmutableGenerationIntegrityCurrentness,
-  resolveBundledImmutablePluginArtifact,
 } from '@/plugins/store/registry/generationStore';
 import {
   attachExactRunnerRetainedPluginGenerations,
 } from '@/plugins/store/registry/generationCustodyRetirement';
 import { readProcessIdentityByPid } from '@/daemon/processIdentity';
+import { processIdentityMatches } from '@happier-dev/cli-common/processInstance';
 import { hashProcessCommand } from '@/daemon/sessionRegistry';
 import {
   resolveTrackedSessionCatalogAgentId,
@@ -23,7 +22,7 @@ import {
 import type { TrackedSession } from '@/daemon/types';
 import {
   readSessionMarkerForPid,
-  updateSessionMarkerRunnerAgentImmutableGenerationId,
+  updateSessionMarkerRunnerAgentSourceCustody,
   updateSessionMarkerRunnerManagedDependencyRetention,
   updateSessionMarkerRunnerManagedProviderAuthority,
 } from '@/daemon/sessionRegistry';
@@ -56,22 +55,12 @@ function resolveRetainedAgentCurrentnessProof(
   requiredAgentSessionRunnerFactoryLocalAgentId?: string;
   retainedManifestAuthority?: 'external' | 'bundled_first_party';
 }> {
-  return 'kind' in retainedAgent
-    && retainedAgent.kind === 'host_declarative_acp_v1'
+  return !('kind' in retainedAgent)
     ? Object.freeze({
-        retainedManifestAuthority:
-          resolveBundledImmutablePluginArtifact({
-            bundledArtifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-            pluginId: retainedAgent.pluginId,
-            immutableGenerationId: retainedAgent.immutableGenerationId,
-          })
-            ? 'bundled_first_party' as const
-            : 'external' as const,
-      })
-    : Object.freeze({
         requiredAgentSessionRunnerFactoryLocalAgentId:
           retainedAgent.localAgentId,
-      });
+      })
+    : Object.freeze({});
 }
 
 async function resolveTrackedRunnerIdentity(input: Readonly<{
@@ -94,16 +83,15 @@ async function resolveTrackedRunnerIdentity(input: Readonly<{
     );
   }
   const processCommandHash = hashProcessCommand(identity.command);
-  if (
-    (
-      input.tracked.processCommandHash !== undefined
-      && input.tracked.processCommandHash !== processCommandHash
-    )
-    || (
-      input.tracked.processStartTimeMs !== undefined
-      && input.tracked.processStartTimeMs !== processStartTimeMs
-    )
-  ) {
+  if (!processIdentityMatches({
+    pid: runnerPid,
+    processStartTimeMs: input.tracked.processStartTimeMs,
+    processCommandHash: input.tracked.processCommandHash,
+  }, {
+    pid: identity.pid,
+    processStartTimeMs,
+    processCommandHash,
+  })) {
     throw new Error(
       'Runner Agent daemon-service authority process identity changed',
     );
@@ -172,7 +160,7 @@ async function readReusableExistingAuthority(input: Readonly<{
   status: 'integrityFailure';
   pluginId: string;
   immutableGenerationId: string;
-}> | Readonly<{ status: 'unavailable' }> | null> {
+}> | null> {
   const authority =
     await readAgentRuntimeDaemonServiceAuthorityForVerifiedMarker({
       happyHomeDir: input.happyHomeDir,
@@ -200,32 +188,26 @@ async function readReusableExistingAuthority(input: Readonly<{
   }
   const currentnessProof =
     resolveRetainedAgentCurrentnessProof(retainedAgent);
-  if (!await input.readPluginImmutableGenerationIntegrityCurrentness(
-    pluginId,
-    retainedAgent.immutableGenerationId,
-    currentnessProof.requiredAgentSessionRunnerFactoryLocalAgentId,
-    currentnessProof.retainedManifestAuthority,
-  )) {
+  if (
+    retainedAgent.sourceCustody.kind === 'managed'
+    && !await input.readPluginImmutableGenerationIntegrityCurrentness(
+      pluginId,
+      retainedAgent.sourceCustody.immutableGenerationId,
+      currentnessProof.requiredAgentSessionRunnerFactoryLocalAgentId,
+      currentnessProof.retainedManifestAuthority,
+    )
+  ) {
     return Object.freeze({
       status: 'integrityFailure',
       pluginId,
-      immutableGenerationId: retainedAgent.immutableGenerationId,
+      immutableGenerationId:
+        retainedAgent.sourceCustody.immutableGenerationId,
     });
   }
-  try {
-    await loadRetainedAgentRuntimeLeaf({
-      paths: resolvePluginStorePaths({
-        happyHomeDir: input.happyHomeDir,
-      }),
-      binding: retainedAgent,
-    });
-  } catch {
-    // A generation can remain exactly current while its runtime is temporarily
-    // unavailable, incompatible with this host, or missing an optional export.
-    // Only the explicit immutable-currentness owner above proves custody or
-    // integrity failure and may trigger hard revocation.
-    return Object.freeze({ status: 'unavailable' });
-  }
+  // The live runner already loaded its pinned Agent runtime. Reattaching its
+  // daemon authority only needs the exact signed document, process identity,
+  // hard-revocation check, and the source-custody attestation below. Importing
+  // every retained Agent module here can stall or exhaust successor startup.
   return Object.freeze({
     status: 'reusable',
     retainedAgent,
@@ -244,6 +226,7 @@ export async function refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority(
     sessionId: string;
     tracked: TrackedSession;
     resolveCurrentRetainedAgent: ResolveCurrentRetainedAgent;
+    bundledAttestationModuleUrl?: string;
     reserveManagedDependencyRetention?(
       retainedAgent: AgentSessionRunnerBindingV1,
     ): Readonly<{
@@ -255,8 +238,8 @@ export async function refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority(
     }>>;
     persistRunnerManagedDependencyRetention?:
       typeof updateSessionMarkerRunnerManagedDependencyRetention;
-    persistRunnerAgentImmutableGenerationId?:
-      typeof updateSessionMarkerRunnerAgentImmutableGenerationId;
+    persistRunnerAgentSourceCustody?:
+      typeof updateSessionMarkerRunnerAgentSourceCustody;
     attachRunnerRetainedPluginGenerations?:
       typeof attachExactRunnerRetainedPluginGenerations;
     readProcessIdentityByPidFn?: typeof readProcessIdentityByPid;
@@ -325,8 +308,6 @@ export async function refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority(
         paths,
         pluginId,
         immutableGenerationId,
-        bundledArtifacts:
-          BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
         ...(requiredAgentSessionRunnerFactoryLocalAgentId
           ? { requiredAgentSessionRunnerFactoryLocalAgentId }
           : {}),
@@ -341,10 +322,7 @@ export async function refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority(
   const persistedMarkerIsExact = Boolean(
     persistedMarker
     && persistedMarker.happySessionId === sessionId
-    && persistedMarker.processCommandHash
-      === runner.processCommandHash
-    && persistedMarker.processStartTimeMs
-      === runner.processStartTimeMs,
+    && processIdentityMatches(persistedMarker, runner),
   );
   const persistedManagedDependencyRetention =
     persistedMarkerIsExact
@@ -369,11 +347,15 @@ export async function refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority(
       currentHardRevocationRevision
       !== adoptedManagedProviderAuthority
         .hardRevocationRevisionAtAdmission
-      || !await readPluginImmutableGenerationIntegrityCurrentness(
-        adoptedManagedProviderAuthority.pluginId,
-        adoptedManagedProviderAuthority.immutableGenerationId,
-        undefined,
-        adoptedManagedProviderAuthority.manifestAuthority,
+      || (
+        adoptedManagedProviderAuthority.sourceCustody.kind === 'managed'
+        && !await readPluginImmutableGenerationIntegrityCurrentness(
+          adoptedManagedProviderAuthority.pluginId,
+          adoptedManagedProviderAuthority.sourceCustody
+            .immutableGenerationId,
+          undefined,
+          adoptedManagedProviderAuthority.manifestAuthority,
+        )
       )
       || await readPluginHardRevocationRevision(
         adoptedManagedProviderAuthority.pluginId,
@@ -423,7 +405,7 @@ export async function refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority(
       'Reattached Runner Agent daemon-service authority is unavailable',
     );
   }
-  const retainedAgent = reusable?.retainedAgent ?? await (async () => {
+  const selectedRetainedAgent = reusable?.retainedAgent ?? await (async () => {
     const agentId = resolveTrackedRunnerAgentId({
       tracked: input.tracked,
     });
@@ -436,15 +418,26 @@ export async function refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority(
       agentId,
     });
   })();
+  const retainedAgent = await attestFreshRunnerAgentBinding({
+    binding: selectedRetainedAgent,
+    paths,
+    runnerSnapshotIdentity: runner.snapshotIdentity,
+    ...(input.bundledAttestationModuleUrl
+      ? { moduleUrl: input.bundledAttestationModuleUrl }
+      : {}),
+  });
   const retainedAgentCurrentnessProof =
     resolveRetainedAgentCurrentnessProof(retainedAgent);
-  if (!await readPluginImmutableGenerationIntegrityCurrentness(
-    retainedAgent.pluginId,
-    retainedAgent.immutableGenerationId,
-    retainedAgentCurrentnessProof
-      .requiredAgentSessionRunnerFactoryLocalAgentId,
-    retainedAgentCurrentnessProof.retainedManifestAuthority,
-  )) {
+  if (
+    retainedAgent.sourceCustody.kind === 'managed'
+    && !await readPluginImmutableGenerationIntegrityCurrentness(
+      retainedAgent.pluginId,
+      retainedAgent.sourceCustody.immutableGenerationId,
+      retainedAgentCurrentnessProof
+        .requiredAgentSessionRunnerFactoryLocalAgentId,
+      retainedAgentCurrentnessProof.retainedManifestAuthority,
+    )
+  ) {
     throw new Error(
       'Runner Agent daemon-service authority immutable generation is hard-revoked',
     );
@@ -476,30 +469,35 @@ export async function refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority(
     )({
       paths,
       immutableGenerationIds: [
-        retainedAgent.immutableGenerationId,
-        ...runnerManagedDependencyRetentionV1.sourceGenerationIds,
+        ...(retainedAgent.sourceCustody.kind === 'managed'
+          ? [retainedAgent.sourceCustody.immutableGenerationId]
+          : []),
+        ...runnerManagedDependencyRetentionV1.sourceCustodies.flatMap(
+          (custody) => custody.kind === 'managed'
+            ? [custody.immutableGenerationId]
+            : [],
+        ),
         ...(runnerManagedDependencyRetentionV1
-          .adoptedManagedProviderAuthority
+          .adoptedManagedProviderAuthority?.sourceCustody.kind === 'managed'
           ? [runnerManagedDependencyRetentionV1
-            .adoptedManagedProviderAuthority.immutableGenerationId]
+            .adoptedManagedProviderAuthority.sourceCustody.immutableGenerationId]
           : []),
       ],
       attach: async () => {
         if (
           !await (
-            input.persistRunnerAgentImmutableGenerationId
-            ?? updateSessionMarkerRunnerAgentImmutableGenerationId
+            input.persistRunnerAgentSourceCustody
+            ?? updateSessionMarkerRunnerAgentSourceCustody
           )({
             pid: runner.pid,
             sessionId,
             processCommandHash: runner.processCommandHash,
             processStartTimeMs: runner.processStartTimeMs,
-            immutableGenerationId:
-              retainedAgent.immutableGenerationId,
+            sourceCustody: retainedAgent.sourceCustody,
           })
         ) {
           throw new Error(
-            'Runner Agent immutable generation retention attachment is unavailable',
+            'Runner Agent source custody retention attachment is unavailable',
           );
         }
         if (
@@ -543,8 +541,7 @@ export async function refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority(
     });
   input.tracked.agentRuntimeDaemonServiceCapabilityHash =
     published.capabilityDigest;
-  input.tracked.runnerAgentImmutableGenerationId =
-    retainedAgent.immutableGenerationId;
+  input.tracked.runnerAgentSourceCustodyV1 = retainedAgent.sourceCustody;
   input.tracked.runnerManagedDependencyRetentionV1 =
     withRunnerManagedProviderAuthorityRetention(
       runnerManagedDependencyRetentionV1,
@@ -553,12 +550,15 @@ export async function refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority(
         ?? null,
     );
   const retainedAgentCurrent =
-    await readPluginImmutableGenerationIntegrityCurrentness(
-      retainedAgent.pluginId,
-      retainedAgent.immutableGenerationId,
-      retainedAgentCurrentnessProof
-        .requiredAgentSessionRunnerFactoryLocalAgentId,
-      retainedAgentCurrentnessProof.retainedManifestAuthority,
+    (
+      retainedAgent.sourceCustody.kind !== 'managed'
+      || await readPluginImmutableGenerationIntegrityCurrentness(
+        retainedAgent.pluginId,
+        retainedAgent.sourceCustody.immutableGenerationId,
+        retainedAgentCurrentnessProof
+          .requiredAgentSessionRunnerFactoryLocalAgentId,
+        retainedAgentCurrentnessProof.retainedManifestAuthority,
+      )
     )
     // Hard revocation is the final async fence: an advance while immutable
     // currentness awaits must not leave the just-published authority installed.

@@ -19,6 +19,7 @@ import type {
     SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
 import type { PluginUiSelectedActionInputCarrierV1 } from '@happier-dev/protocol/plugins/ui';
+import type { PluginSourceCustody } from '@/plugins/runtime/sourceAuthority';
 import type { PluginServiceUnavailableDiagnostic } from './unavailable';
 import type {
     HostCurrentSessionUiServices,
@@ -56,9 +57,10 @@ export type PluginInvocationServicesSeed = Readonly<{
     sessionListAccess?: import('@happier-dev/protocol').ActionExecutorContext['sessionListAccess'];
     plugin: Readonly<{ id: string; version: string }>;
     contribution: Readonly<{ id: string; qualifiedId: string }>;
-    generation: string;
-    /** Exact admitted plugin bytes; never plugin-authored invocation input. */
-    immutableGenerationId?: string;
+    /** Exact process-local occurrence; never plugin-authored invocation input. */
+    occurrenceId: string;
+    /** Durable source custody; never plugin-authored invocation input. */
+    sourceCustody?: PluginSourceCustody;
     correlationId: string;
     surface: PluginInvocationSurface;
     /** Host-stamped provenance for a nested target invocation. */
@@ -84,7 +86,7 @@ export type PluginInvocationServicesSeed = Readonly<{
     redactionLifetimeSignal?: AbortSignal;
     /** Host-private current-turn authority for runner-owned privileged effects. */
     readActiveTurnAdmissionWitness?(): AgentInvocationTurnAdmissionWitness | null;
-    isGenerationCurrent(): boolean;
+    isOccurrenceCurrent(): boolean;
 }>;
 
 export type PluginProviderOperationsSource = Readonly<{
@@ -146,13 +148,13 @@ export type PluginNetworkClientBindingScope = Readonly<{
 export type PluginAccountStorageAvailability = 'available' | 'unavailable' | 'denied';
 
 /**
- * Host-private capability token. Invocation code may verify its generation,
+ * Host-private capability token. Invocation code may verify its occurrenceId,
  * but only the host services owner interprets the binding id and service facts.
  */
 export type PluginInvocationServiceBinding = Readonly<{
     kind: 'plugin_invocation_service_binding_v1';
     id: string;
-    generation: string;
+    occurrenceId: string;
     availability: Readonly<Record<PluginServiceId, 'available' | 'unavailable' | 'denied'>>;
     /** Host-private, descriptor-derived reasons for deterministic unavailable services. */
     unavailableDiagnostics?: Readonly<Partial<Record<PluginServiceId, PluginServiceUnavailableDiagnostic>>>;
@@ -219,7 +221,7 @@ export type CreateAgentInvocationServices = (
         pluginId: string;
         pluginVersion: string;
         agentId: string;
-        generation: string;
+        occurrenceId: string;
         correlationId: string;
         cwd: string;
         environment?: Readonly<Record<string, string>>;
@@ -235,12 +237,12 @@ export type CreateAgentInvocationServices = (
         currentSession?: HostCurrentSessionUiServices;
         readActiveTurnAdmissionWitness?():
             AgentInvocationTurnAdmissionWitness | null;
-        isGenerationCurrent(): boolean;
+        isOccurrenceCurrent(): boolean;
     }>,
     ) => Promise<PluginServices>;
 
 export type CreatePluginInvocationServiceBinding = (
-    generation: string,
+    occurrenceId: string,
     id: string,
     hostAccessRequests?: readonly Readonly<{ request: import('@happier-dev/protocol').PluginHostAccessRequestV2; required: boolean }>[],
     contributionQualifiedId?: string,

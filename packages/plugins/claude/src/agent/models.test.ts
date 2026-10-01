@@ -15,7 +15,7 @@ function ultracodeOption(id: string) {
 
 describe('CLAUDE_STATIC_MODELS ultracode option', () => {
     it('offers the ultracode boolean option only on xhigh-capable models', () => {
-        for (const id of ['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-mythos-5', 'claude-opus-4-8', 'claude-opus-4-7']) {
+        for (const id of ['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-mythos-5', 'claude-opus-4-8', 'claude-opus-4-7']) {
             const option = ultracodeOption(id);
             expect(option, id).not.toBeNull();
             expect(option?.type).toBe('boolean');
@@ -30,7 +30,7 @@ describe('CLAUDE_STATIC_MODELS ultracode option', () => {
     // has to hardcode Claude's rule, and a user stored on `low` sees Low highlighted while the
     // agent runs xhigh.
     it('declares that ultracode overrides reasoning_effort and forces xhigh', () => {
-        for (const id of ['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-mythos-5', 'claude-opus-4-8', 'claude-opus-4-7']) {
+        for (const id of ['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-mythos-5', 'claude-opus-4-8', 'claude-opus-4-7']) {
             const option = ultracodeOption(id);
             expect(option?.overridesWhenOn, id).toEqual({
                 optionIds: ['reasoning_effort'],
@@ -63,7 +63,7 @@ describe('CLAUDE_STATIC_MODELS extended-context variant declaration', () => {
     });
 
     it('declares no variant for always-1M or non-1M models', () => {
-        for (const id of ['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-mythos-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-haiku-4-5', 'claude-opus-4-5', 'claude-sonnet-4-5']) {
+        for (const id of ['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-mythos-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-haiku-4-5', 'claude-opus-4-5', 'claude-sonnet-4-5']) {
             expect(model(id).extendedContextModelId, id).toBeUndefined();
         }
     });
@@ -129,6 +129,7 @@ describe('CLAUDE_STATIC_MODELS limited-availability model facts', () => {
 
 describe('CLAUDE_STATIC_MODELS flagship default', () => {
     it('keeps the flagship Claude default pointing at a real catalog model', () => {
+        expect(CLAUDE_FLAGSHIP_MODEL_ID).toBe('claude-opus-5-5');
         expect(CLAUDE_STATIC_MODELS.some((candidate) => candidate.id === CLAUDE_FLAGSHIP_MODEL_ID)).toBe(true);
     });
 });

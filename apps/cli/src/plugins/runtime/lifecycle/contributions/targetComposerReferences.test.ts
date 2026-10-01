@@ -38,7 +38,7 @@ function fixture(
   };
   const entry = Object.freeze({
     pluginId: REFERENCE.pluginId,
-    generation: options.registrationGeneration ?? '7',
+    occurrenceId: options.registrationGeneration ?? '7',
     registration: Object.freeze({
       family: 'composerReferences' as const,
       localId: REFERENCE.localId,
@@ -48,7 +48,7 @@ function fixture(
   const triggers: readonly ('@' | '$' | '/')[] = options.triggers ?? ['@'];
   const registry = createTargetComposerReferenceRegistry({
     targetRegistrations: [entry],
-    resolveGenerationLifecycle: () => ({
+    resolveOccurrenceLifecycle: () => ({
       isCurrent: () => current,
       retirementSignal: retirement.signal,
     }),

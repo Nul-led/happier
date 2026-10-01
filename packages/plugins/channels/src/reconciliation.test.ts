@@ -25,7 +25,8 @@ function caller(input: Readonly<{
       id: 'channel-background',
       qualifiedId: `${input.pluginId}/background/channel-background`,
     },
-    immutableGenerationId: `${input.pluginId}-fixture-generation`,
+    occurrenceId: `${input.pluginId}-fixture-occurrence`,
+    sourceCustody: { kind: 'development', registeredRootId: `${input.pluginId}-fixture-root` },
     materialization: {
       machineId: 'machine-1',
       materializationId: input.materializationId,

@@ -62,6 +62,7 @@ import { createTriageEphemeralSharedScopeFixture } from './window/ephemeralShare
 import { renderSurface as renderShellSurface } from './surface.js';
 import { TriageListShell } from './shell/root.js';
 import { TRIAGE_UI_TRANSLATIONS } from './translations.js';
+import { toolbarMenuItem } from './shell/toolbarMenus.test-support.js';
 import {
     buildTriageRouteSubPathV1,
     TRIAGE_ROUTE_DEFAULT_LENS_V1,
@@ -321,6 +322,7 @@ async function mountSurface(
             surfaceContext: createSurfaceContextFixture(context),
             adapter: createPluginUiRnwSemanticSurfaceAdapter({
                 ephemeralSharedScope: harness.ephemeralSharedScope,
+                overlays: true,
             }),
             handlers: {
                 publishCurrentUiContext: ({ enrichment }) => {
@@ -411,8 +413,11 @@ describe('the mounted PRs & Issues surface', () => {
 
         await visibleTexts(shell, [
             TRIAGE_UI_TRANSLATIONS.fr['plugins.triage.surface.upToDate'],
-            TRIAGE_UI_TRANSLATIONS.fr['plugins.triage.surface.refresh'],
         ]);
+        // Refresh is the toolbar's icon control: its translated words are its name.
+        await expect(shell.getByRole('button', {
+            name: TRIAGE_UI_TRANSLATIONS.fr['plugins.triage.surface.refresh'],
+        })).resolves.toBeDefined();
         await expect(shell.queryByText('Up to date')).resolves.toBeUndefined();
     });
 
@@ -547,7 +552,7 @@ describe('the mounted PRs & Issues surface', () => {
         // One press of one facet, through the shared public option control:
         // rail -> reducer -> window lens -> rows. Every hop is real here.
         await act(async () => {
-            await shell.press(await shell.getByRole('checkbox', { name: LABEL_B }));
+            await shell.press(await toolbarMenuItem(shell, 'Source', 'menuitemcheckbox', { name: LABEL_B }));
         });
         await act(async () => { await Promise.resolve(); });
 
@@ -557,7 +562,7 @@ describe('the mounted PRs & Issues surface', () => {
         // And the honest empty state when a facet matches nothing: the sources
         // all answered, so the healthy claim is available and false.
         await act(async () => {
-            await shell.press(await shell.getByRole('checkbox', { name: 'Done' }));
+            await shell.press(await toolbarMenuItem(shell, 'State', 'menuitemcheckbox', { name: 'Done' }));
         });
         await act(async () => { await Promise.resolve(); });
 

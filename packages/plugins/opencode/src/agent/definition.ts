@@ -11,7 +11,10 @@ const OPENCODE_AGENT_CORE = Object.freeze({
   sessionStorage: { direct: true, persisted: true },
   sessionCapabilities: {
     sessionListing: 'supported',
-    sessionFork: { conversation: 'supported', fromMessage: 'supported' },
+    // Both released server dialects can fork the current conversation. The
+    // Happier from-message checkpoint path remains unsupported until its
+    // generic cutoff semantics can preserve the exact provider boundary.
+    sessionFork: { conversation: 'supported', fromMessage: 'unsupported' },
     sessionRollback: { conversation: 'unsupported' },
     usageLimitRecovery: { checkNow: 'unsupported' },
   },
@@ -24,7 +27,6 @@ const OPENCODE_AGENT_CORE = Object.freeze({
         overrides: {
           sessionStorage: { direct: false },
           sessionCapabilities: {
-            sessionFork: { fromMessage: 'unsupported' },
             usageLimitRecovery: { checkNow: 'unsupported' },
           },
           localControl: null,

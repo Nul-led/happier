@@ -4,7 +4,7 @@ import { definePluginProjectionFamilyV2 } from '@/plugins/projection/families';
 
 export const providerProjectionFamily = definePluginProjectionFamilyV2({
     family: 'providers',
-    project: ({ registry, generation }) => ({
+    project: ({ registry }) => ({
         family: 'providers',
         entriesById: Object.freeze(Object.fromEntries(
             (registry.providers ?? []).map((provider) => {
@@ -14,9 +14,6 @@ export const providerProjectionFamily = definePluginProjectionFamilyV2({
                     Object.freeze({
                         id: contributionKey,
                         pluginId: provider.pluginId,
-                        generation,
-                        contributionKey,
-                        definition: provider.definition,
                     }),
                 ];
             }),

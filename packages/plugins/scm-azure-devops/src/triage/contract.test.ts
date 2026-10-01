@@ -261,14 +261,19 @@ describe('Azure DevOps present-observation projection', () => {
     expect(observation.viewer.involvement).toEqual([]);
   });
 
-  it('maps abandoned and completed to closed while retaining the provider word', () => {
-    for (const [state, nativeLabel] of [['completed', 'Completed'], ['abandoned', 'Abandoned']] as const) {
+  it('maps completed to resolved and abandoned to closed while retaining the provider word', () => {
+    // A completed pull request merged; an abandoned one closed without merging.
+    // The Triage fix-PR link reads exactly that distinction (`design/FIX-LINK.md`).
+    for (const [state, nativeLabel, presentation] of [
+      ['completed', 'Completed', 'resolved'],
+      ['abandoned', 'Abandoned', 'closed'],
+    ] as const) {
       const observation = projectAzurePresentObservation({
         entry: entry({ state, presentation: 'closed', nativeLabel }),
         involvement: ['author'],
       });
       if (observation.kind !== 'present') throw new Error('expected a present observation');
-      expect(observation.snapshot.state).toEqual({ presentation: 'closed', nativeLabel });
+      expect(observation.snapshot.state).toEqual({ presentation, nativeLabel });
     }
   });
 

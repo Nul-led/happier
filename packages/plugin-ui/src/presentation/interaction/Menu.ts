@@ -382,6 +382,13 @@ export function resolveHappierMenuSelection(input: Readonly<{
 export type HappierResolvedPopoverPlacement = 'top' | 'bottom' | 'left' | 'right';
 export type HappierPopoverPlacement = HappierResolvedPopoverPlacement | 'auto' | 'auto-vertical' | 'auto-horizontal';
 
+const OPPOSITE_POPOVER_PLACEMENT: Readonly<Record<HappierResolvedPopoverPlacement, HappierResolvedPopoverPlacement>> = {
+  top: 'bottom',
+  bottom: 'top',
+  left: 'right',
+  right: 'left',
+};
+
 /**
  * Pure placement policy shared by the core Popover adapter and plugin-facing
  * overlay semantics. Portal target, measurements, focus, Escape and Android
@@ -392,6 +399,11 @@ export function resolveHappierPopoverPlacement(input: Readonly<{
   placement: HappierPopoverPlacement;
   available: Readonly<Record<HappierResolvedPopoverPlacement, number>>;
   preferredMinAvailable?: number;
+  /**
+   * An explicit side that has less than `preferredMinAvailable` moves to the opposite side when
+   * that one has more room (a tooltip on a control at the window's top edge opens below it).
+   */
+  flip?: boolean;
 }>): HappierResolvedPopoverPlacement {
   if (input.placement === 'auto-vertical') {
     const preferredMinAvailable = Math.max(0, input.preferredMinAvailable ?? 0);
@@ -404,7 +416,15 @@ export function resolveHappierPopoverPlacement(input: Readonly<{
     if (input.available.left >= preferredMinAvailable) return 'left';
     return input.available.right >= input.available.left ? 'right' : 'left';
   }
-  if (input.placement !== 'auto') return input.placement;
+  if (input.placement !== 'auto') {
+    if (input.flip !== true) return input.placement;
+    const opposite = OPPOSITE_POPOVER_PLACEMENT[input.placement];
+    const preferredMinAvailable = Math.max(0, input.preferredMinAvailable ?? 0);
+    return input.available[input.placement] < preferredMinAvailable
+      && input.available[opposite] > input.available[input.placement]
+      ? opposite
+      : input.placement;
+  }
   const entries = Object.entries(input.available) as Array<[HappierResolvedPopoverPlacement, number]>;
   entries.sort((left, right) => right[1] - left[1]);
   return entries[0]?.[0] ?? 'top';

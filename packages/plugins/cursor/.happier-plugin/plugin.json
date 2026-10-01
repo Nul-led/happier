@@ -31,7 +31,7 @@
             ]
           },
           "tools": {
-            "delivery": "shell_bridge"
+            "delivery": "native_mcp"
           }
         },
         "catalog": {
@@ -69,6 +69,14 @@
             "managed": null,
             "manual": {
               "kind": "vendor_recipe"
+            },
+            "nativeUpdate": {
+              "args": [
+                "update"
+              ],
+              "installPaths": [
+                ".local/share/cursor-agent"
+              ]
             }
           }
         },
@@ -279,6 +287,18 @@
   },
   "id": "happier.agent.cursor",
   "runtime": {
+    "agentFactories": [
+      {
+        "loadMode": "immutable-js",
+        "localAgentId": "cursor",
+        "locator": {
+          "export": "createCursorAgentRuntime",
+          "module": "./agent/runtime/engine",
+          "runtimeApiVersion": 1
+        },
+        "normalizedModulePath": ".happier-plugin/agent/runtime/engine.js"
+      }
+    ],
     "apiVersion": 1
   },
   "schemaVersion": 2,

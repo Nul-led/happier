@@ -5,14 +5,23 @@ import { readFile } from 'node:fs/promises';
 test('retains the portable production reference package contract', async () => {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   // This is a code-defined package. The canonical author build evaluates its
-  // `definePlugin(...)` entry and emits the staged cold manifest only for the
-  // package artifact; a handwritten source manifest would be a second owner.
-  await assert.rejects(
-    () => readFile(new URL('../.happier-plugin/plugin.json', import.meta.url), 'utf8'),
-    { code: 'ENOENT' },
-  );
+  // `definePlugin(...)` entry and materializes the generated cold manifest;
+  // authors still never maintain that manifest as a second source owner.
+  let builtManifest = null;
+  try {
+    builtManifest = JSON.parse(await readFile(
+      new URL('../.happier-plugin/plugin.json', import.meta.url),
+      'utf8',
+    ));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
   const module = await import('../dist/daemon.js');
   const manifest = module.manifest;
+  if (builtManifest !== null) {
+    assert.equal(builtManifest.id, manifest.id);
+    assert.equal(builtManifest.entrypoints.daemon, './dist/daemon.js');
+  }
   const uiArtifactsManifest = JSON.parse(await readFile(
     new URL('../dist/happier-plugin-ui/ui-artifacts.json', import.meta.url),
     'utf8',
@@ -97,7 +106,7 @@ test('retains the portable production reference package contract', async () => {
   assert.deepEqual(
     uiArtifactsManifest.entries
       .map((entry) => entry.contributionId)
-      .filter((contributionId) => contributionId.endsWith('-hosted-html-renderer')),
+      .filter((contributionId) => contributionId?.endsWith('-hosted-html-renderer')),
     [],
   );
   assert.deepEqual(
@@ -133,11 +142,11 @@ test('retains the portable production reference package contract', async () => {
   // contribution: a stable qualified surface identity plus the declared
   // renderer chain, with no destination, instance policy or placement.
   assert.deepEqual(
-    manifest.contributes.ui.views.filter((view) => view.container === 'sessionWidget'),
+    manifest.contributes.ui.views.filter((view) => view.container === 'widget'),
     [
       {
         id: 'review-status-widget',
-        container: 'sessionWidget',
+        container: 'widget',
         target: { kind: 'session' },
         renderer: 'review-native',
         fallbackRenderers: ['review-web'],
@@ -196,7 +205,7 @@ test('retains the portable production reference package contract', async () => {
   assert.match(nativeSurface, /readReviewWidgetView\(context\.launchInput\)/u);
   assert.match(nativeSurface, /useLivePluginResource\('review-session-status'\)/u);
   assert.match(nativeSurface, /Action\.Execute[\s\S]*?action="review-summary"/u);
-  assert.match(hostedSurface, /mount\.kind === 'embedded' && mount\.role === 'sessionWidget'/u);
+  assert.match(hostedSurface, /mount\.kind === 'embedded' && mount\.role === 'widget'/u);
   const reviewAgent = manifest.contributes.agents.find((agent) => agent.id === 'review-agent');
   assert.deepEqual(
     reviewAgent.ui.components.slots.map(({ slot, surfaceId }) => ({ slot, surfaceId })),

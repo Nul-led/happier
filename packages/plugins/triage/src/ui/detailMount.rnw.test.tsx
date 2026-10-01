@@ -149,7 +149,8 @@ const CONTRIBUTOR_MANIFEST = definePlugin({
 const CONTRIBUTOR = Object.freeze({
     pluginId: SOURCE.pluginId,
     contributionId: SOURCE.localId,
-    immutableGenerationId: CONTRIBUTOR_GENERATION,
+    occurrenceId: CONTRIBUTOR_GENERATION,
+    sourceCustody: { kind: 'development' as const, registeredRootId: 'example-source-root' },
 });
 
 /**
@@ -169,7 +170,8 @@ const OTHER_SOURCE = Object.freeze({
 const OTHER_CONTRIBUTOR = Object.freeze({
     pluginId: OTHER_SOURCE.pluginId,
     contributionId: OTHER_SOURCE.localId,
-    immutableGenerationId: 'other-generation-a',
+    occurrenceId: 'other-generation-a',
+    sourceCustody: { kind: 'development' as const, registeredRootId: 'other-source-root' },
 });
 const OTHER_DETAIL_BODY_TEXT = 'The other source detail body';
 const OTHER_DETAIL_SURFACE = Object.freeze({
@@ -217,7 +219,7 @@ function projectedDetailModel(input: Readonly<{
             pluginId: input.pluginId,
             localId: DETAIL_RENDERER_ID,
             qualifiedId: `${input.pluginId}/${DETAIL_RENDERER_ID}`,
-            generation: input.generation,
+            occurrenceId: input.generation,
         }),
         visible: true,
         requiredHostMethods: Object.freeze([]),
@@ -244,7 +246,8 @@ function projectedDetailModel(input: Readonly<{
  */
 const ADMITTED_MOUNT = Object.freeze({
     kind: 'targetedSurface',
-    target: { pluginId: TRIAGE_SOURCES_TARGET_PLUGIN_ID_V1, immutableGenerationId: TARGET_GENERATION },
+    target: { pluginId: TRIAGE_SOURCES_TARGET_PLUGIN_ID_V1, occurrenceId: TARGET_GENERATION,
+        sourceCustody: { kind: 'development' as const, registeredRootId: 'triage-root' } },
     point: { pointId: TRIAGE_SOURCES_CONTRIBUTION_POINT_ID_V1, protocol: PROTOCOL },
     contributor: CONTRIBUTOR,
     role: TRIAGE_SOURCE_DETAIL_SURFACE_ROLE_V1,
@@ -274,7 +277,7 @@ const ADMITTED_MOUNT = Object.freeze({
     },
     resourceCapability: { readable: true, dynamic: true },
     contributorTargetedContributions: {
-        target: { pluginId: SOURCE.pluginId, immutableGenerationId: CONTRIBUTOR_GENERATION },
+        target: { pluginId: SOURCE.pluginId, occurrenceId: CONTRIBUTOR.occurrenceId, sourceCustody: CONTRIBUTOR.sourceCustody },
         points: [],
     },
 });
@@ -290,7 +293,7 @@ const OTHER_ADMITTED_MOUNT = Object.freeze({
             contributionId: DETAIL_RENDERER_ID,
             model: projectedDetailModel({
                 pluginId: OTHER_SOURCE.pluginId,
-                generation: OTHER_CONTRIBUTOR.immutableGenerationId,
+                generation: OTHER_CONTRIBUTOR.occurrenceId,
                 text: OTHER_DETAIL_BODY_TEXT,
             }),
         },
@@ -305,7 +308,7 @@ const OTHER_ADMITTED_MOUNT = Object.freeze({
         },
     },
     contributorTargetedContributions: {
-        target: { pluginId: OTHER_SOURCE.pluginId, immutableGenerationId: 'other-generation-a' },
+        target: { pluginId: OTHER_SOURCE.pluginId, occurrenceId: OTHER_CONTRIBUTOR.occurrenceId, sourceCustody: OTHER_CONTRIBUTOR.sourceCustody },
         points: [],
     },
 });
@@ -321,7 +324,8 @@ function surfaceContext(options: Readonly<{ contributesDetail?: boolean }> = {})
         targetedContributions: {
             target: {
                 pluginId: TRIAGE_SOURCES_TARGET_PLUGIN_ID_V1,
-                immutableGenerationId: TARGET_GENERATION,
+                occurrenceId: TARGET_GENERATION,
+                sourceCustody: { kind: 'development', registeredRootId: 'triage-root' },
             },
             points: [{
                 pointId: TRIAGE_SOURCES_CONTRIBUTION_POINT_ID_V1,
@@ -686,6 +690,7 @@ async function mountShell(
         secondInstanceObservesEntry?: boolean;
         otherSourceEntry?: boolean;
         linkedSessionCount?: number;
+        hostedDetail?: boolean;
         replacePageLocation?: (request: Readonly<{
             subPath: string;
             backLocation: string | undefined;
@@ -716,6 +721,7 @@ async function mountShell(
             surfaceContext: surfaceContext(options),
             adapter: createPluginUiRnwSemanticSurfaceAdapter({
                 ephemeralSharedScope: harness.ephemeralSharedScope,
+                ...(options.hostedDetail ? { detailsPane: { available: true } } : {}),
                 targetedSurfaces: {
                     readCurrentMounts: () => [ADMITTED_MOUNT, OTHER_ADMITTED_MOUNT],
                     readContributorManifest: (pluginId: string) => (
@@ -1031,9 +1037,24 @@ describe('opening a row into the source detail', () => {
         await act(async () => { await Promise.resolve(); });
     });
 
+    it('updates the host detail identity after a source mutation', async () => {
+        const shell = await mountShell({ hostedDetail: true });
+        await openTheRow(shell);
+        const harness = currentHarness;
+        if (harness === null) throw new Error('the shell was not mounted');
+
+        harness.publishNewerObservation();
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Complete source mutation' }));
+        });
+        await expect(shell.getByRole('heading', {
+            name: 'Replace the duplicated normalizer after mutation',
+        })).resolves.toBeDefined();
+        await expect(shell.queryByRole('button', { name: 'Close' })).resolves.toBeUndefined();
+    });
+
     it('never renders A post-mutation state under deferred B and retires it before A is revisited', async () => {
-        const shell = await mountShell();
-        await measureFillRegion(900);
+        const shell = await mountShell({ hostedDetail: true });
         await openTheRow(shell);
         const harness = currentHarness;
         if (harness === null) throw new Error('the shell was not mounted');
@@ -1093,8 +1114,7 @@ describe('opening a row into the source detail', () => {
     });
 
     it('retires post-mutation state when the same local entry belongs to a different source', async () => {
-        const shell = await mountShell({ otherSourceEntry: true });
-        await measureFillRegion(900);
+        const shell = await mountShell({ otherSourceEntry: true, hostedDetail: true });
         await openTheRow(shell);
         const harness = currentHarness;
         if (harness === null) throw new Error('the shell was not mounted');
@@ -1487,6 +1507,7 @@ describe('opening a row into the source detail', () => {
         const query = 'canonical';
         const openedAt = buildTriageRouteSubPathV1({ ...TRIAGE_ROUTE_DEFAULT_LENS_V1, query });
         const shell = await mountShell({
+            hostedDetail: true,
             subPath: openedAt,
             launchInput: buildTriageEntryDetailLaunchInput({
                 entryRef: entryB,
@@ -1502,6 +1523,8 @@ describe('opening a row into the source detail', () => {
         // would be false twice over: refreshing forever would not bring it back,
         // clearing the query would.
         await expect(shell.getByText('This entry is outside the current filter')).resolves.toBeDefined();
+        await expect(shell.getByRole('group', { name: 'Details pane' })).resolves.toBeDefined();
+        await expect(shell.queryByRole('button', { name: 'Close' })).resolves.toBeUndefined();
         await expect(shell.queryByText('This entry is no longer in the list')).resolves.toBeUndefined();
 
         // Acceptance is not complete at the reducer: the one route owner wrote
@@ -1516,7 +1539,7 @@ describe('opening a row into the source detail', () => {
         // other row is listed and the launched entry is not. That exclusion is
         // what made the old fall-through silent.
         await act(async () => {
-            await shell.press(await shell.getByRole('button', { name: 'Close' }));
+            await shell.press(await shell.getByRole('button', { name: 'Close details' }));
         });
         await expect(shell.getByRole('button', { name: LONG_REF_ROW_TITLE })).resolves.toBeDefined();
         await expect(shell.queryByRole('button', {

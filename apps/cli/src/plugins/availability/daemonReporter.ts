@@ -8,6 +8,14 @@ import {
   isPluginAvailabilityReleaseContentConflictError,
 } from './serverPublisher';
 
+type PendingAvailabilityReport = Readonly<{
+  inventory: Parameters<DaemonPluginAvailabilityReporter['report']>[0];
+}>;
+
+type DrainResult =
+  | Readonly<{ status: 'fulfilled' }>
+  | Readonly<{ status: 'rejected'; error: unknown }>;
+
 /**
  * Binds the install registry's exact persisted Availability facts to the
  * daemon's live transport identity. The registry remains the only owner of
@@ -23,24 +31,26 @@ export function createDaemonPluginAvailabilityReporter(params: Readonly<{
     credentials: params.credentials,
   });
 
-  return Object.freeze({
-    async report(inventory) {
-      const snapshot = params.serverFeaturesSnapshotStore.getSnapshot();
-      const serverIdentityId = snapshot?.status === 'ready'
-        ? snapshot.features.capabilities.serverIdentity.serverIdentityId
+  let pendingLatest: PendingAvailabilityReport | null = null;
+  let inFlight: Promise<void> | null = null;
+  let lastAcknowledgedBody: string | null = null;
+  let lastAcknowledgedServerRevision: number | null = null;
+
+  const reportOne = async (initial: PendingAvailabilityReport): Promise<void> => {
+    let current = initial;
+    while (true) {
+      const features = params.serverFeaturesSnapshotStore.getSnapshot();
+      const serverIdentityId = features?.status === 'ready'
+        ? features.features.capabilities.serverIdentity.serverIdentityId
         : null;
       if (!serverIdentityId) return;
 
-      for (const release of inventory.releasePublications) {
+      for (const release of current.inventory.releasePublications) {
         try {
           await publisher.publishRelease(release);
         } catch (error) {
           if (!isPluginAvailabilityReleaseContentConflictError(error)) throw error;
           const { pluginId, version } = release.facts.ref;
-          // Materialization evidence is intentionally retained. The Account
-          // release owner classifies its digest mismatch as a visible conflict
-          // and exact-currentness continues to reject it; filtering would hide
-          // the required version-bump diagnosis from every consumer.
           logger.warn('[PLUGIN AVAILABILITY] Release-content conflict retained for Account availability classification; publish a new version', {
             pluginId,
             version,
@@ -49,19 +59,77 @@ export function createDaemonPluginAvailabilityReporter(params: Readonly<{
       }
 
       const machineId = params.getMachineId();
-      await publisher.reportMaterializations({
-        snapshot: {
+      const snapshot = {
+        serverIdentityId,
+        machineId,
+        materializations: current.inventory.materializations.map((materialization) => ({
+          ...materialization,
           serverIdentityId,
           machineId,
-          revision: inventory.revision,
-          materializations: inventory.materializations
-            .map((materialization) => ({
-              ...materialization,
-              serverIdentityId,
-              machineId,
-            })),
-        },
+        })),
+      };
+      const body = JSON.stringify(snapshot);
+      if (body === lastAcknowledgedBody) return;
+
+      const result = await publisher.reportMaterializations({
+        expectedRevision: lastAcknowledgedServerRevision,
+        snapshot,
       });
+      lastAcknowledgedServerRevision = result.revision;
+      if (result.outcome !== 'conflict') {
+        lastAcknowledgedBody = body;
+        return;
+      }
+
+      // A conflict refreshes only this report seam's CAS token. If a newer
+      // local commit arrived while this request was in flight, resend that
+      // complete body rather than the superseded candidate.
+      if (pendingLatest) {
+        current = pendingLatest;
+        pendingLatest = null;
+      }
+    }
+  };
+
+  const drain = async (): Promise<void> => {
+    while (pendingLatest) {
+      const current = pendingLatest;
+      pendingLatest = null;
+      try {
+        await reportOne(current);
+      } catch (error) {
+        if (!pendingLatest) throw error;
+      }
+    }
+  };
+
+  const settleDrain = async (result: DrainResult): Promise<void> => {
+    inFlight = null;
+    if (pendingLatest) {
+      await startDrain();
+      return;
+    }
+    if (result.status === 'rejected') throw result.error;
+  };
+
+  function startDrain(): Promise<void> {
+    const active = drain()
+      .then<DrainResult, DrainResult>(
+        () => ({ status: 'fulfilled' }),
+        (error: unknown) => ({ status: 'rejected', error }),
+      )
+      .then(settleDrain);
+    inFlight = active;
+    return active;
+  }
+
+  return Object.freeze({
+    report(inventory) {
+      pendingLatest = { inventory };
+      if (!inFlight) {
+        inFlight = startDrain();
+      }
+      return inFlight;
     },
   });
 }

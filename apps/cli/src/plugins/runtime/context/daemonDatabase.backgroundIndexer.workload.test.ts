@@ -70,7 +70,7 @@ describe.runIf(process.env.HAPPIER_RUN_DAEMON_DATABASE_WORKLOAD === '1')(
                     pluginId: 'examples.background-indexer',
                     paths,
                     signal: controller.signal,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                     limits: BACKGROUND_INDEXER_LIMITS,
                     declarations: [{
                         id: 'workspace-index',

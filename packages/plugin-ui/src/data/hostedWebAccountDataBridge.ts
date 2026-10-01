@@ -1,6 +1,7 @@
-import { PluginError, projectPluginAccountCollectionDeclaration, type JsonValue } from '@happier-dev/plugin-sdk';
+import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
 import { mergeAbortSignals } from '@happier-dev/plugin-sdk/async';
 import type { PluginAccountCollectionDefinition } from '@happier-dev/plugin-sdk/collections';
+import { projectPluginAccountCollectionDeclaration } from '@happier-dev/plugin-sdk/host/registration';
 import type { AccountKvEntry } from '@happier-dev/plugin-sdk/storage';
 import {
   PluginHostedWebAccountDataBridgeOperationV1Schema,

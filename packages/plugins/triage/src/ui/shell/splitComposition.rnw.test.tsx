@@ -23,16 +23,21 @@ import {
 import { renderSurface as renderShellSurface } from '../surface.js';
 import { refreshTriageListWindow } from '../window/mountedWindow.js';
 import { createTriageEphemeralSharedScopeFixture } from '../window/ephemeralSharedScope.test-support.js';
-import { TRIAGE_SHELL_FILL_TEST_ID_V1, TRIAGE_SHELL_LIST_REGION_TEST_ID_V1 } from './root.js';
+import {
+    TRIAGE_SHELL_DETAIL_REGION_TEST_ID_V1,
+    TRIAGE_SHELL_FILL_TEST_ID_V1,
+    TRIAGE_SHELL_LIST_REGION_TEST_ID_V1,
+} from './root.js';
+import { resolveTriageDetailPaneMinimumWidthV1, resolveTriageListPaneMinimumWidthV1 } from './layout.js';
 
 /**
  * `core/SURFACE.md` §2.1's split composition, driven by the shell's own
  * measurement of its fill region.
  *
- * The solver (`ui/shell/layout.ts`) has always been tested; what was missing was
- * a producer for `availableWidth`, so production never called it and opening an
- * entry replaced the whole page at every width. These cases mount the real
- * surface and supply the one measurement the platform would.
+ * Triage supplies its reading measures to the public ListDetailLayout owner.
+ * These cases mount the real surface and supply the one measurement the
+ * platform would, keeping the product-level selection and retention contract
+ * covered across that shared composition.
  *
  * jsdom ships no `ResizeObserver`, so React Native Web's shared observer never
  * fires here. It does install the author's callback on the real host node under
@@ -135,7 +140,19 @@ async function executeAction(action: string): Promise<JsonValue> {
 
 const mounted: PluginUiTestkit[] = [];
 
-async function mountShell(textScale = 1): Promise<PluginUiTestkit> {
+type ShellMountOptions = Readonly<{
+    textScale?: number;
+    /** The app page's details pane, as the host places a Triage page (`PluginAppPageScreen`). */
+    detailsPane?: Readonly<{ available: boolean }>;
+    /** The host's page facts: whether Triage's own views column is on screen beside the page. */
+    page?: Readonly<{ columnVisible: boolean }>;
+}>;
+
+const requestedActions: string[] = [];
+const pageLocations: string[] = [];
+
+async function mountShell(options: number | ShellMountOptions = {}): Promise<PluginUiTestkit> {
+    const { textScale = 1, detailsPane, page } = typeof options === 'number' ? { textScale: options } : options;
     const ephemeralSharedScope = createTriageEphemeralSharedScopeFixture();
     let fixture!: PluginUiTestkit;
     await act(async () => {
@@ -150,12 +167,22 @@ async function mountShell(textScale = 1): Promise<PluginUiTestkit> {
                     container: 'appPage',
                 },
                 textScale,
+                ...(page === undefined ? {} : { page }),
             }),
-            adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope }),
+            adapter: createPluginUiRnwSemanticSurfaceAdapter({
+                ephemeralSharedScope,
+                ...(detailsPane === undefined ? {} : { detailsPane }),
+            }),
             handlers: {
                 publishCurrentUiContext: () => undefined,
-                executeAction: async ({ action }) => await executeAction(action),
-                replacePageLocation: ({ subPath }) => subPath,
+                executeAction: async ({ action }) => {
+                    requestedActions.push(action);
+                    return await executeAction(action);
+                },
+                replacePageLocation: ({ subPath }) => {
+                    pageLocations.push(subPath);
+                    return subPath;
+                },
             },
         });
     });
@@ -178,7 +205,8 @@ type LayoutHandler = (event: Readonly<{
  * of silently receiving a width nothing in production would have produced.
  */
 async function measureFillRegion(width: number): Promise<void> {
-    const node = document.querySelector(`[data-testid="${TRIAGE_SHELL_FILL_TEST_ID_V1}"]`);
+    // The Collection measures its stage: the region below the page's own toolbar that holds both panes.
+    const node = document.querySelector(`[data-testid="${TRIAGE_SHELL_FILL_TEST_ID_V1}:stage"]`);
     if (node === null) throw new Error('The Triage shell rendered no measured fill region.');
     const handler = (node as unknown as Record<string, unknown>).__reactLayoutHandler;
     if (typeof handler !== 'function') {
@@ -231,6 +259,8 @@ async function closeTheDetail(shell: PluginUiTestkit): Promise<void> {
 
 afterEach(async () => {
     for (const fixture of mounted.splice(0)) await fixture.dispose();
+    requestedActions.length = 0;
+    pageLocations.length = 0;
 });
 
 describe('the Triage shell composition under its own measurement', () => {
@@ -282,6 +312,21 @@ describe('the Triage shell composition under its own measurement', () => {
         await expect(shell.getByRole('button', { name: 'Close' })).resolves.toBeDefined();
         // §2.1's stacked rule: the selection replaces the list rather than
         // appearing beside it, and the list is not duplicated underneath.
+        await expect(shell.queryByRole('button', { name: ENTRY_TITLE })).resolves.toBeUndefined();
+    });
+
+    it('splits only once both readable panes fit side by side', async () => {
+        // The panes meet at a hairline, not a gutter, so the two minima are the whole requirement.
+        const shell = await mountShell();
+        const { theme } = createSurfaceContextFixture();
+        const input = { type: theme.typography, spacing: theme.spacing };
+        const justTooNarrow = resolveTriageListPaneMinimumWidthV1(input)
+            + resolveTriageDetailPaneMinimumWidthV1(input) - 1;
+        await measureFillRegion(justTooNarrow);
+
+        await openTheRow(shell);
+
+        await expect(shell.getByRole('button', { name: 'Close' })).resolves.toBeDefined();
         await expect(shell.queryByRole('button', { name: ENTRY_TITLE })).resolves.toBeUndefined();
     });
 
@@ -352,5 +397,160 @@ describe('the Triage shell composition under its own measurement', () => {
         // the list has to come back beside it rather than instead of it.
         await expect(shell.getByRole('button', { name: 'Close' })).resolves.toBeDefined();
         await expect(shell.getByRole('button', { name: ENTRY_TITLE })).resolves.toBeDefined();
+    });
+});
+
+/**
+ * Shell extensibility O8 (`shell-extensibility.md` §3.4): on its app page Triage opens an entry in the page's app
+ * details pane — the host pane drawn beside the page, OUTSIDE the plugin's React tree — through the Collection's one
+ * `renderDetail`. The table narrows beneath it and keeps the entry selected; where no pane is beside the page the
+ * detail is pushed inside the page. There is no in-page split on a page the host placed in a pane host.
+ */
+const DESKTOP_WIDTH = 1440;
+const PHONE_WIDTH = 390;
+
+/** The host's pane, beside the page; `null` while nothing is open in it. */
+function detailsPaneNode(): HTMLElement | null {
+    return document.querySelector<HTMLElement>('[role="group"][aria-label="Details pane"]');
+}
+
+/** The table's column header titles (the header row is presentation: hidden from assistive tech, as each row says it). */
+function columnTitles(): string[] {
+    for (const header of listRegionNode().querySelectorAll('[aria-hidden="true"]')) {
+        const titles = [...header.querySelectorAll('[dir="auto"]')].map((node) => node.textContent ?? '');
+        if (titles.includes('Entry')) return titles;
+    }
+    return [];
+}
+
+/** The entry's list row element — its own node, whichever composition holds it. */
+function entryRowNode(): HTMLElement | null {
+    return document.querySelector<HTMLElement>(`[data-testid^="triage-entry-row:"]`);
+}
+
+/**
+ * The open entry, as the page holds it: its location names the entry. (In Triage's multi-selectable table
+ * `aria-selected` is the bulk selection; the open entry keeps the row's tab stop and its location.)
+ */
+function openEntryInLocation(): boolean {
+    return pageLocations.at(-1)?.includes('17') === true;
+}
+
+describe('the Triage entry detail in the host details pane', () => {
+    it('opens the entry in the pane beside the narrowed table, with the entry kept selected and the plugin context intact', async () => {
+        const shell = await mountShell({ detailsPane: { available: true } });
+        await measureFillRegion(DESKTOP_WIDTH);
+        const wideColumns = columnTitles();
+        expect(wideColumns).toContain('Entry');
+
+        await openTheRow(shell);
+
+        const pane = detailsPaneNode();
+        expect(pane, 'the entry opens in the host details pane').not.toBeNull();
+        // The detail lives in the pane: its heading and its own Close, and the entry detail read it made from there
+        // through the plugin's Host API — the context the pane carries across (a lost context throws instead).
+        expect(pane?.textContent).toContain(ENTRY_TITLE);
+        expect(pane?.querySelector('[aria-label="Close"]')).not.toBeNull();
+        expect(requestedActions).toContain(TRIAGE_READ_ENTRY_DETAIL_ACTION_LOCAL_ID_V1);
+        // Nothing of it stays in the page: no in-page split, no second copy.
+        expect(document.querySelectorAll('[aria-label="Close"]')).toHaveLength(1);
+        expect(document.querySelector(`[data-testid="${TRIAGE_SHELL_DETAIL_REGION_TEST_ID_V1}"]`)?.textContent ?? '').toBe('');
+        // The table stays on screen beside it, with the entry selected; the location names it.
+        expect(listRegionNode().style.display).toBe('');
+        expect(columnTitles()).toEqual(wideColumns);
+        expect(openEntryInLocation()).toBe(true);
+
+        // The pane docks and the page narrows: the table drops columns by its priorities, never the entry, and the
+        // selection holds.
+        await measureFillRegion(SPLIT_WIDTH - 300);
+        const narrowColumns = columnTitles();
+        expect(narrowColumns.length).toBeLessThan(wideColumns.length);
+        expect(narrowColumns).toContain('Entry');
+        expect(openEntryInLocation()).toBe(true);
+        expect(detailsPaneNode()?.textContent).toContain(ENTRY_TITLE);
+    });
+
+    it('closes from the pane: the location drops the entry and focus returns to its row', async () => {
+        const shell = await mountShell({ detailsPane: { available: true } });
+        await measureFillRegion(DESKTOP_WIDTH);
+        await openTheRow(shell);
+        const openedAt = pageLocations.at(-1);
+
+        // The host's own close (its close control, or Escape, which the host routes to the same close).
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Close details' }));
+        });
+        await act(async () => { await Promise.resolve(); });
+
+        expect(detailsPaneNode()).toBeNull();
+        expect(pageLocations.at(-1)).not.toBe(openedAt);
+        expect(openEntryInLocation()).toBe(false);
+        const row = entryRowNode();
+        expect(row).not.toBeNull();
+        expect(row?.contains(document.activeElement)).toBe(true);
+    });
+
+    it('opens a board card into the same pane, the board staying on screen', async () => {
+        const shell = await mountShell({ detailsPane: { available: true } });
+        await measureFillRegion(DESKTOP_WIDTH);
+
+        await act(async () => {
+            await shell.press(await shell.getByRole('radio', { name: 'Board' }));
+        });
+        expect(collectionNode()).toBeNull();
+        await act(async () => {
+            await shell.press(await shell.getByRole('option', { name: ENTRY_TITLE }));
+        });
+        await act(async () => { await Promise.resolve(); });
+
+        expect(detailsPaneNode()?.textContent).toContain(ENTRY_TITLE);
+        await expect(shell.getByRole('option', { name: ENTRY_TITLE })).resolves.toBeDefined();
+
+        // Back to List: the same open entry, still in the pane, beside the table.
+        await act(async () => {
+            await shell.press(await shell.getByRole('radio', { name: 'List' }));
+        });
+        expect(collectionNode()).not.toBeNull();
+        expect(detailsPaneNode()?.textContent).toContain(ENTRY_TITLE);
+    });
+
+    it('pushes the detail inside the page where no pane is beside it (a phone)', async () => {
+        const shell = await mountShell({ detailsPane: { available: false } });
+        await measureFillRegion(PHONE_WIDTH);
+
+        await openTheRow(shell);
+
+        expect(detailsPaneNode()).toBeNull();
+        await expect(shell.getByRole('button', { name: 'Close' })).resolves.toBeDefined();
+        expect(listRegionNode().style.display).toBe('none');
+
+        await closeTheDetail(shell);
+        await expect(shell.getByRole('button', { name: ENTRY_TITLE })).resolves.toBeDefined();
+    });
+
+    it('pushes rather than splitting in the page when side panes are turned off, however wide the page', async () => {
+        const shell = await mountShell({ detailsPane: { available: false } });
+        await measureFillRegion(DESKTOP_WIDTH);
+
+        await openTheRow(shell);
+
+        // The page's pane host decides where details go; with its pane off there is no second, in-page geometry.
+        expect(detailsPaneNode()).toBeNull();
+        await expect(shell.getByRole('button', { name: 'Close' })).resolves.toBeDefined();
+        expect(listRegionNode().style.display).toBe('none');
+        await expect(shell.queryByRole('button', { name: ENTRY_TITLE })).resolves.toBeUndefined();
+    });
+
+    it('keeps the list page beside its own views column and opens the entry in the same pane', async () => {
+        // `page.columnVisible` (channels-integration): Triage's column lists saved views, so its page stays the
+        // Collection whether or not the column is on screen — no selection prompt replaces it.
+        const shell = await mountShell({ detailsPane: { available: true }, page: { columnVisible: true } });
+        await measureFillRegion(DESKTOP_WIDTH);
+        expect(columnTitles()).toContain('Entry');
+
+        await openTheRow(shell);
+
+        expect(detailsPaneNode()?.textContent).toContain(ENTRY_TITLE);
+        expect(openEntryInLocation()).toBe(true);
     });
 });

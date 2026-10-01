@@ -49,6 +49,8 @@ export type ClaudeScreenState = Readonly<{
   switchModelDialogVisible: boolean;
   /** Claude usage/session-limit prompt opened by `/rate-limit-options`; provider is unavailable. */
   usageLimitDialogVisible: boolean;
+  /** Provider-owned automatic continuation wait; an empty composer still accepts new prompts. */
+  usageLimitWaitVisible: boolean;
   /** `Change effort level?` confirmation dialog (live probe 2.1.173, incident cmq8y3nlx L6). */
   effortChangeDialogVisible: boolean;
   /** Claude heavy-session startup interstitial asking whether to resume from summary or full history. */
@@ -170,6 +172,10 @@ const FOCUSED_UNINDEXED_SELECTION_LINE = new RegExp(
   'u',
 );
 const SELECTION_CONFIRM_HINT = /enter to confirm[^\n]*esc to cancel/i;
+// Claude Code 2.1.280 live capture: the automatic wait is a footer, not a numbered chooser.
+const USAGE_LIMIT_WAIT_FOOTER = /(?:^|\n)[^\S\n]*continuing automatically[^\n]*\besc to cancel\b/i;
+// Rewind is a sparse message selector: `(current)` can be the only visible focused row.
+const REWIND_SELECTION = /(?:^|\n)[^\S\n]*rewind[^\S\n]*\n[\s\S]*\brestore the code and\/or conversation to the point before[\s\S]*(?:^|\n)[^\S\n]*[>›❯][^\S\n]+[^\n]+[\s\S]*\benter to continue[^\n]*\besc to cancel[^\n]*\s*$/iu;
 const EFFORT_CHANGE_DIALOG_TARGET = /switching to\s+([a-z]+)\s+means the full history/i;
 const PERMISSION_PROMPT = /do you want to proceed\?/i;
 // Legacy wording plus the real 2.1.170 `/permissions` editor tab row
@@ -721,6 +727,12 @@ export function parseClaudeScreenState(rawText: string, context?: ClaudeScreenPa
     : null;
   const visibleNumberedDialog = usageLimitDialogCandidate ?? resolveGenericNumberedDialog(visibleTail);
   const visibleDialogSelection = resolveDialogSelectionPresentation(visibleTail, visibleNumberedDialog);
+  const rewindSelectionVisible = REWIND_SELECTION.test(visibleTail);
+  const lastComposerMatch = lastMatch(new RegExp(COMPOSER_LINE.source, `${COMPOSER_LINE.flags}g`), text);
+  // A notice above the current composer belongs to transcript history, not the active footer.
+  const usageLimitWaitVisible = USAGE_LIMIT_WAIT_FOOTER.test(lastComposerMatch
+    ? text.slice(lastComposerMatch.index + lastComposerMatch[0].length)
+    : visibleTail);
 
   const switchModelDialogVisible = SWITCH_MODEL_DIALOG.test(text);
   const usageLimitDialogVisible = usageLimitSemanticMatch && visibleDialogSelection !== null;
@@ -738,7 +750,9 @@ export function parseClaudeScreenState(rawText: string, context?: ClaudeScreenPa
   const queuedMessageBannerVisible = QUEUED_MESSAGE_BANNER.test(text);
   const generating = ESC_TO_INTERRUPT.test(text) || GENERATING_SPINNER_LINE.test(text) || queuedMessageBannerVisible;
 
-  const composerState = readComposerState(text, rawText, context);
+  const composerState = rewindSelectionVisible
+    ? { content: null, cursorRelation: null }
+    : readComposerState(text, rawText, context);
   const composerContent = composerState.content;
   const hasComposer = composerContent !== null;
   // A host cursor on the parsed composer is direct evidence that the composer, not an older
@@ -782,6 +796,7 @@ export function parseClaudeScreenState(rawText: string, context?: ClaudeScreenPa
     || permissionEditorOpen;
   const hasNonInputComposerState =
     anyDialog
+    || rewindSelectionVisible
     || SELECTION_CURSOR_ROW.test(text)
     || (SELECTION_LIST_HINT.test(text) && !hasComposer);
 
@@ -792,7 +807,7 @@ export function parseClaudeScreenState(rawText: string, context?: ClaudeScreenPa
     !generating
     && !anyDialog
     && (hasComposer || WORK_PROMPT.test(tailLines(text, 10)) || modeMarker !== 'default');
-  const selectionListVisible = SELECTION_CURSOR_ROW.test(text) || (SELECTION_LIST_HINT.test(text) && !hasComposer);
+  const selectionListVisible = rewindSelectionVisible || SELECTION_CURSOR_ROW.test(text) || (SELECTION_LIST_HINT.test(text) && !hasComposer);
 
   return {
     text,
@@ -804,6 +819,7 @@ export function parseClaudeScreenState(rawText: string, context?: ClaudeScreenPa
     trustFolderPromptVisible,
     switchModelDialogVisible,
     usageLimitDialogVisible,
+    usageLimitWaitVisible,
     resumeChoiceDialogVisible,
     resumeChoiceDialogOptions,
     safeguardPauseDialogVisible,
@@ -886,6 +902,11 @@ export function isSafeWindowForModeCycle(state: ClaudeScreenState): boolean {
  * visible user draft, and screens with no interactive composer at all (unknown/transcript-only
  * /heavy-resume renders) — those fail closed to the deferred path.
  */
+/** Escape can cancel the provider's wait; preserve it while an owned draft awaits recovery. */
+export function isClaudeUsageLimitWaitBlockingComposerClear(state: ClaudeScreenState): boolean {
+  return state.usageLimitWaitVisible && (state.composerContent?.length ?? 0) > 0;
+}
+
 export function resolveClaudeScreenInFlightSteerVeto(state: ClaudeScreenState): string | null {
   if (state.permissionPromptVisible) return 'permission_prompt';
   if (state.trustFolderPromptVisible) return 'trust_prompt';
@@ -898,6 +919,7 @@ export function resolveClaudeScreenInFlightSteerVeto(state: ClaudeScreenState): 
   if (state.permissionEditorOpen) return 'permission_editor';
   if (state.slashPickerOpen || (state.composerContent?.startsWith('/') ?? false)) return 'slash_picker';
   if (state.selectionListVisible) return 'selection_list';
+  if (isClaudeUsageLimitWaitBlockingComposerClear(state)) return 'usage_limit_wait';
   if (state.userDraftPresent) return 'user_draft';
   if (state.generating) return null;
   return hasClaudeInteractiveComposer(state) ? null : 'no_interactive_composer';

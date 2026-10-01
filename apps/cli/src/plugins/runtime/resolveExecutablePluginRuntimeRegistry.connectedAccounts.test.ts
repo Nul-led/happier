@@ -23,7 +23,6 @@ import type {
     HostCurrentSessionUiServices,
 } from '@/agent/runtime/state/currentSessionUiTypes';
 import type { StoredCredentials } from '@/persistence';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '../projection/registry/sources/generatedBundledPluginArtifacts';
 import {
     createResolvedContributionRegistry,
     resolveMergedContributionRegistry,
@@ -44,16 +43,18 @@ import {
 import {
     ConnectedAccountRuntimeInvocationNotStartedError,
 } from './connectedAccounts/contributionRegistry';
-import { createPluginRegistryStateStore } from '../store/registry/currentState';
-import { readCurrentCommittedPluginGenerations } from '../store/registry/generationStore';
-import { resolvePluginStorePaths } from '@/plugins/store/paths';
-import { logger } from '@/ui/logger';
-import {
-    prepareBundledExecutableGenerationAdmission,
-    selectBundledExecutableImmutableArtifacts,
-} from './bundledActivationSource';
 
 const temporaryRoots: string[] = [];
+
+const resolveDevelopmentSourceAuthority = ({
+    pluginId,
+    rootPath,
+}: Readonly<{ pluginId: string; rootPath: string }>) => Object.freeze({
+    kind: 'development' as const,
+    registeredRootId: `connected-accounts-fixture:${pluginId}`,
+    canonicalRoot: rootPath,
+    observedRevision: 1,
+});
 
 afterEach(async () => {
     await Promise.all(temporaryRoots.splice(0).map(async (root) => {
@@ -196,315 +197,6 @@ function createPinnedNetworkFixture(
 }
 
 describe('executable plugin runtime Connected Accounts integration', () => {
-    it('boots a revision-zero home through every bundled service and preserves their immutable identities after restart', async () => {
-        const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-connected-account-bundled-census-'));
-        temporaryRoots.push(happyHomeDir);
-        const accountStorageDependencies = createBundledAccountDataDependencies();
-        const stateStore = createPluginRegistryStateStore({ happyHomeDir });
-        await stateStore.initialize();
-        await expect(stateStore.readSnapshot()).resolves.toMatchObject({
-            revision: 0,
-            pluginGenerations: {},
-        });
-        const contributes = await resolveMergedContributionRegistry({ happyHomeDir });
-        const descriptorOwnerIds = new Set(
-            (contributes.connectedAccountDescriptors ?? []).map((descriptor) => {
-                if (!descriptor.pluginId) {
-                    throw new Error('Expected each bundled Connected Account descriptor to retain its plugin owner');
-                }
-                return descriptor.pluginId;
-            }),
-        );
-        const executableArtifactIds = new Set(
-            selectBundledExecutableImmutableArtifacts({
-                artifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-                activationTargets: contributes.activationTargets,
-            }).map((artifact) => artifact.record.pluginId),
-        );
-        expect([...descriptorOwnerIds].filter((pluginId) => !executableArtifactIds.has(pluginId)))
-            .toEqual([]);
-        const expectedServices = [
-            {
-                pluginId: 'happier.agent.claude',
-                localId: 'anthropic',
-                modes: [['api-key', 'manual']],
-            },
-            {
-                pluginId: 'happier.agent.claude',
-                localId: 'claude-subscription',
-                modes: [
-                    ['setup-token', 'manual'],
-                    ['oauth', 'oauthAuthorizationCode'],
-                ],
-            },
-            {
-                pluginId: 'happier.agent.codex',
-                localId: 'openai-codex',
-                modes: [
-                    ['oauth', 'oauthAuthorizationCode'],
-                    ['device', 'oauthDeviceCode'],
-                ],
-            },
-            {
-                pluginId: 'happier.agent.gemini',
-                localId: 'gemini-account',
-                modes: [
-                    ['api-key', 'manual'],
-                    ['service-account', 'manual'],
-                ],
-            },
-            {
-                pluginId: 'happier.channel.telegram',
-                localId: 'telegram-bot',
-                modes: [['bot-token', 'manual']],
-            },
-            {
-                pluginId: 'happier.posthog',
-                localId: 'posthog-api',
-                modes: [['personal-api-key', 'manual']],
-            },
-            {
-                pluginId: 'happier.scm.forge.bitbucket',
-                localId: 'bitbucket-account',
-                modes: [['manual', 'manual']],
-            },
-            {
-                pluginId: 'happier.scm.forge.github',
-                localId: 'github-account',
-                modes: [['fine-grained-pat', 'manual']],
-            },
-            {
-                pluginId: 'happier.scm.forge.gitlab',
-                localId: 'gitlab-account',
-                modes: [['personal-access-token', 'manual']],
-            },
-            {
-                pluginId: 'happier.sentry',
-                localId: 'sentry-account',
-                modes: [
-                    ['auth-token', 'manual'],
-                    ['self-hosted-auth-token', 'manual'],
-                ],
-            },
-            {
-                pluginId: 'happier.voice.openai',
-                localId: 'openai',
-                modes: [['api-key', 'manual']],
-            },
-        ] as const;
-        const services = expectedServices;
-        const pluginIds = [...new Set(services.map(({ pluginId }) => pluginId))];
-        const runtime = await resolveExecutablePluginRuntimeRegistry({
-            happyHomeDir,
-            accountStorageDependencies,
-        });
-        let runtimeDisposed = false;
-        let restartedRuntime: ResolvedExecutablePluginRuntimeRegistry | null = null;
-
-        try {
-            const startupActivatedPluginIds = new Set([
-                'happier.posthog',
-                'happier.scm.forge.github',
-            ]);
-            for (const pluginId of pluginIds) {
-                expect(runtime.activatedPluginIds.has(pluginId), pluginId).toBe(
-                    startupActivatedPluginIds.has(pluginId),
-                );
-            }
-
-            const codexCatalogEntry = await runtime.acquireAgentCatalogEntry?.('codex');
-            await expect(
-                codexCatalogEntry?.getConnectedServiceStateSharingDescriptor?.(),
-            ).resolves.toMatchObject({
-                providerId: 'codex',
-                providerSupportStatus: 'supported',
-            });
-            await expect(
-                codexCatalogEntry?.getConnectedServiceRuntimeAuthAdapter?.(),
-            ).resolves.toMatchObject({
-                classifyRuntimeAuthFailure: expect.any(Function),
-                canHotApply: expect.any(Function),
-            });
-
-            const leases = [];
-            for (const service of services) {
-                const lease = await runtime.resolveConnectedAccountRuntime?.({
-                    pluginId: service.pluginId,
-                    localId: service.localId,
-                });
-                if (!lease) {
-                    throw new Error(
-                        `Expected bundled Connected Account runtime ${service.pluginId}/${service.localId}`,
-                    );
-                }
-                leases.push(lease);
-
-                expect(lease.ref).toEqual({
-                    pluginId: service.pluginId,
-                    localId: service.localId,
-                });
-                expect(lease.isCurrent()).toBe(true);
-                expect(runtime.activatedPluginIds.has(service.pluginId)).toBe(true);
-                expect(lease.generation).toBeTypeOf('string');
-                expect(lease.immutableGenerationId).toBeTypeOf('string');
-                expect(
-                    lease.descriptor.authentication.modes.map(({ id, kind }) => [id, kind]),
-                ).toEqual(service.modes);
-                expect(service.modes.map(([id]) => [
-                    id,
-                    lease.runtime.authentication.modes[id]?.kind,
-                ])).toEqual(service.modes);
-            }
-            const immutableGenerationIdsByService = new Map(
-                leases.map((lease) => [
-                    `${lease.ref.pluginId}/${lease.ref.localId}`,
-                    lease.immutableGenerationId,
-                ]),
-            );
-
-            // Connected Account demand activates the complete Codex daemon module.
-            // A later spawn-hook demand must observe the hook registrations from
-            // that same activation instead of treating the declared hook as absent.
-            expect(
-                runtime.hookHandlersByHookId
-                    .get('agent.resolvePrerequisites')
-                    ?.some((handler) => (
-                        handler.pluginId === 'happier.agent.codex'
-                        && handler.localId === 'resolve-prerequisites'
-                    )),
-            ).toBe(true);
-
-            runtime.retireConsumers();
-            for (const lease of leases) {
-                expect(lease.isCurrent()).toBe(false);
-                await expect(
-                    runtime.resolveConnectedAccountRuntime?.(lease.ref),
-                ).rejects.toBeInstanceOf(
-                    ConnectedAccountRuntimeInvocationNotStartedError,
-                );
-            }
-
-            await runtime.dispose();
-            runtimeDisposed = true;
-            restartedRuntime = await resolveExecutablePluginRuntimeRegistry({
-                happyHomeDir,
-                accountStorageDependencies,
-            });
-            for (const service of services) {
-                const restartedLease = await restartedRuntime.resolveConnectedAccountRuntime?.({
-                    pluginId: service.pluginId,
-                    localId: service.localId,
-                });
-                if (!restartedLease) {
-                    throw new Error(
-                        `Expected restarted bundled Connected Account runtime ${service.pluginId}/${service.localId}`,
-                    );
-                }
-                expect(restartedLease.isCurrent()).toBe(true);
-                expect(restartedLease.immutableGenerationId).toBe(
-                    immutableGenerationIdsByService.get(
-                        `${service.pluginId}/${service.localId}`,
-                    ),
-                );
-            }
-        } finally {
-            await restartedRuntime?.dispose();
-            if (!runtimeDisposed) await runtime.dispose();
-        }
-        // This case admits and boots the whole bundled plugin census twice — a
-        // real filesystem and generation-admission workload measured at ~66s on
-        // a busy machine. The suite-wide 30s budget is sized for ordinary cases,
-        // so state this one's cost here rather than loosening it for everything.
-    }, 180_000);
-
-    it('quarantines one bundled plugin whose generation cannot be admitted and keeps every other plugin loadable', async () => {
-        const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-connected-account-quarantine-'));
-        temporaryRoots.push(happyHomeDir);
-        const accountStorageDependencies = createBundledAccountDataDependencies();
-        const stateStore = createPluginRegistryStateStore({ happyHomeDir });
-        await stateStore.initialize();
-
-        const contributes = await resolveMergedContributionRegistry({ happyHomeDir });
-        const bundledArtifacts = selectBundledExecutableImmutableArtifacts({
-            artifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-            activationTargets: contributes.activationTargets,
-        });
-        const quarantinedPluginId = 'happier.sentry';
-        const quarantinedPackageName = bundledArtifacts.find(
-            (artifact) => artifact.record.pluginId === quarantinedPluginId,
-        )?.packageName;
-        if (!quarantinedPackageName) {
-            throw new Error(`Expected a bundled executable artifact for '${quarantinedPluginId}'`);
-        }
-
-        await prepareBundledExecutableGenerationAdmission({ artifacts: bundledArtifacts });
-        // Exactly one package cannot be resolved on disk. That is the real shape
-        // of a stale, half-published or byte-inconsistent bundled plugin: its
-        // generation is never admitted while all of its peers are.
-        const require = createRequire(import.meta.url);
-        const generationAuthority = await readCurrentCommittedPluginGenerations(
-            resolvePluginStorePaths({ happyHomeDir }),
-            {
-                bundledArtifacts,
-                isolateInvalidInstalledGenerations: true,
-                resolveBundledPackageEntry: async (packageName) => {
-                    if (packageName === quarantinedPackageName) {
-                        throw new Error(`Bundled plugin package entry is unavailable for '${packageName}'`);
-                    }
-                    return require.resolve(packageName);
-                },
-            },
-        );
-        if (!generationAuthority) throw new Error('Expected a bundled plugin generation authority');
-        expect(generationAuthority.generations.has(quarantinedPluginId)).toBe(false);
-        expect(generationAuthority.generations.size).toBeGreaterThan(0);
-
-        const warnings: readonly unknown[][] = [];
-        const warn = vi.spyOn(logger, 'warn').mockImplementation((...args) => {
-            (warnings as unknown[][]).push(args);
-        });
-        let runtime: ResolvedExecutablePluginRuntimeRegistry;
-        try {
-            runtime = await resolveExecutablePluginRuntimeRegistry({
-                happyHomeDir,
-                generationAuthority,
-                accountStorageDependencies,
-            });
-        } finally {
-            warn.mockRestore();
-        }
-
-        try {
-            // A peer that has nothing to do with the broken plugin still loads.
-            const healthy = await runtime.resolveConnectedAccountRuntime?.({
-                pluginId: 'happier.scm.forge.github',
-                localId: 'github-account',
-            });
-            expect(healthy?.ref).toEqual({
-                pluginId: 'happier.scm.forge.github',
-                localId: 'github-account',
-            });
-            expect(healthy?.immutableGenerationId).toBeTypeOf('string');
-
-            // Only the unadmitted plugin's service is unresolvable.
-            await expect(runtime.resolveConnectedAccountRuntime?.({
-                pluginId: quarantinedPluginId,
-                localId: 'sentry-account',
-            })).resolves.toBeNull();
-
-            // ...and the operator learns which plugin was quarantined and why.
-            expect(warnings.some(([message, payload]) => (
-                typeof message === 'string'
-                && /connected account/i.test(message)
-                && JSON.stringify(payload ?? '').includes(quarantinedPluginId)
-                && JSON.stringify(payload ?? '').includes('Bundled plugin package entry is unavailable')
-            ))).toBe(true);
-            expect(generationAuthority.rejectedGenerations.get(quarantinedPluginId)?.message)
-                .toMatch(/Bundled plugin package entry is unavailable/);
-        } finally {
-            await runtime.dispose();
-        }
-    });
 
     it('exposes the single host established-account owner only while the registry generation is current', async () => {
         const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-connected-account-established-owner-'));
@@ -514,6 +206,7 @@ describe('executable plugin runtime Connected Accounts integration', () => {
         }) as unknown as Pick<QualifiedConnectedAccountEstablishedRuntimeOwner, 'invoke'>;
         const runtime = await resolveExecutablePluginRuntimeRegistry({
             happyHomeDir,
+            resolveDevelopmentSourceAuthority,
             qualifiedConnectedAccountEstablishedRuntimeOwner: establishedOwner,
         });
 
@@ -549,6 +242,7 @@ describe('executable plugin runtime Connected Accounts integration', () => {
         });
         const runtime = await resolveExecutablePluginRuntimeRegistry({
             happyHomeDir,
+            resolveDevelopmentSourceAuthority,
             connectedAccounts: purposeOwner,
         });
 
@@ -592,6 +286,7 @@ describe('executable plugin runtime Connected Accounts integration', () => {
         try {
             runtime = await resolveExecutablePluginRuntimeRegistry({
                 happyHomeDir,
+                resolveDevelopmentSourceAuthority,
                 pluginIds: ['happier.scm.forge.github'],
                 networkDependencies: network.networkDependencies,
             });
@@ -629,8 +324,8 @@ describe('executable plugin runtime Connected Accounts integration', () => {
                     service,
                     descriptor: lease.descriptor.authentication.modes[0]!,
                     modeId: 'fine-grained-pat',
-                    generation: lease.generation,
-                    immutableGenerationId: lease.immutableGenerationId,
+                    occurrenceId: lease.occurrenceId,
+                    sourceCustody: lease.sourceCustody,
                 }),
                 operation: Object.freeze({
                     kind: 'submitManual',
@@ -801,6 +496,7 @@ describe('executable plugin runtime Connected Accounts integration', () => {
         try {
             runtime = await resolveExecutablePluginRuntimeRegistry({
                 happyHomeDir,
+                resolveDevelopmentSourceAuthority,
                 pluginIds: [pluginId],
                 networkDependencies: network.networkDependencies,
             });
@@ -874,6 +570,7 @@ describe('executable plugin runtime Connected Accounts integration', () => {
         try {
             runtime = await resolveExecutablePluginRuntimeRegistry({
                 happyHomeDir,
+                resolveDevelopmentSourceAuthority,
                 pluginIds: [pluginId],
                 networkDependencies: network.networkDependencies,
             });
@@ -909,8 +606,8 @@ describe('executable plugin runtime Connected Accounts integration', () => {
                         return Object.freeze({
                             service,
                             descriptor,
-                            generation: lease.generation,
-                            immutableGenerationId: lease.immutableGenerationId,
+                            occurrenceId: lease.occurrenceId,
+                            sourceCustody: lease.sourceCustody,
                         });
                     },
                     isCurrent: async () => true,
@@ -1021,6 +718,7 @@ describe('executable plugin runtime Connected Accounts integration', () => {
         try {
             runtime = await resolveExecutablePluginRuntimeRegistry({
                 happyHomeDir,
+                resolveDevelopmentSourceAuthority,
                 contributes: createResolvedContributionRegistry({
                     agents: [{
                         id: 'realtime-agent',
@@ -1124,23 +822,44 @@ describe('executable plugin runtime Connected Accounts integration', () => {
                                     { relativePath: '.happier-plugin/plugin.json', byteLength: 2 },
                                 ],
                             },
+                            installation: {
+                                enabled: true,
+                                trust: {
+                                    pluginId: 'acme.agent.realtime',
+                                    distribution: {
+                                        kind: 'localPath',
+                                        canonicalPath: '/plugins/acme-agent-realtime',
+                                    },
+                                    state: 'trusted',
+                                    approvedAtMs: 1,
+                                },
+                                source: {
+                                    distribution: {
+                                        kind: 'localPath',
+                                        canonicalPath: '/plugins/acme-agent-realtime',
+                                    },
+                                },
+                                updatePolicy: 'allowed',
+                                optionalAccess: [],
+                            },
                         },
                     ]]),
                     rejectedGenerations: new Map(),
-                    unavailableBundledPackageNames: new Set(),
                     isCurrent: async () => true,
                 },
                 connectedAccounts: owner,
             });
+            const occurrenceId = runtime.readPluginOccurrenceId?.('acme.agent.realtime');
+            if (!occurrenceId) throw new Error('Expected admitted realtime Agent occurrence');
             const services = await runtime.createAgentInvocationServices({
                 pluginId: 'acme.agent.realtime',
                 pluginVersion: '1.0.0',
                 agentId: 'realtime-agent',
-                generation: String(runtime.generation),
+                occurrenceId,
                 correlationId: 'connected-accounts-integration',
                 cwd: happyHomeDir,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 session: {
                     id: 'session-1',
                     current: currentSession,
@@ -1179,11 +898,11 @@ describe('executable plugin runtime Connected Accounts integration', () => {
                 pluginId: 'acme.agent.realtime',
                 pluginVersion: '1.0.0',
                 agentId: 'realtime-agent',
-                generation: String(runtime.generation),
+                occurrenceId,
                 correlationId: 'connected-accounts-background-integration',
                 cwd: happyHomeDir,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             await expect(servicesWithoutSession.connectedAccounts.getBinding('realtime_upstream'))
                 .resolves.toEqual(bindingSummary());

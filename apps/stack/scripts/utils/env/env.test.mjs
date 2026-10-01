@@ -29,6 +29,7 @@ test('env loader overlays explicit stack env over stale inherited stack/server c
         `HAPPIER_STACK_REPO_DIR=${repoDir}`,
         `HAPPIER_STACK_CLI_HOME_DIR=${join(stackDir, 'cli')}`,
         'HAPPIER_STACK_SERVER_PORT=4901',
+        `PI_CODING_AGENT_DIR=${join(stackDir, 'pi-home')}`,
         '',
       ].join('\n'),
       'utf8',
@@ -51,6 +52,8 @@ test('env loader overlays explicit stack env over stale inherited stack/server c
           '  activeServerId: process.env.HAPPIER_ACTIVE_SERVER_ID ?? null,',
           '  webappUrl: process.env.HAPPIER_WEBAPP_URL ?? null,',
           '  tsxTsconfigPath: process.env.TSX_TSCONFIG_PATH ?? null,',
+          '  inheritedAgentHomesAbsent: ["CLAUDE_CONFIG_DIR", "CODEX_HOME"].every((key) => process.env[key] === undefined),',
+          `  piHomeIsStackScoped: process.env.PI_CODING_AGENT_DIR === ${JSON.stringify(join(stackDir, 'pi-home'))},`,
           '}));',
         ].join('\n'),
       ],
@@ -71,6 +74,9 @@ test('env loader overlays explicit stack env over stale inherited stack/server c
           HAPPIER_ACTIVE_SERVER_ID: 'stack_stale__id_default',
           HAPPIER_WEBAPP_URL: 'http://stale.localhost:9999',
           TSX_TSCONFIG_PATH: '/stale/launcher/tsconfig.json',
+          CLAUDE_CONFIG_DIR: '/stale/agent-home',
+          CODEX_HOME: '/stale/agent-home',
+          PI_CODING_AGENT_DIR: '/stale/agent-home',
         },
       },
     );
@@ -86,6 +92,8 @@ test('env loader overlays explicit stack env over stale inherited stack/server c
     assert.equal(payload.activeServerId, 'stack_exp-test__id_default');
     assert.equal(payload.webappUrl, null);
     assert.equal(payload.tsxTsconfigPath, null);
+    assert.equal(payload.inheritedAgentHomesAbsent, true);
+    assert.equal(payload.piHomeIsStackScoped, true);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

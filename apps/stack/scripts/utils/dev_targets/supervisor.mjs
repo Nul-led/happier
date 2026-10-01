@@ -10,6 +10,7 @@ import {
 } from './mutagen_monitor.mjs';
 import {
   ensureDevTargetSyncProject,
+  flushDevTargetSync,
   runDevTargetControlProcess,
 } from './sync_project.mjs';
 import { inspectDevTargetSync, runDevTargetDependencyBootstrap } from './executor.mjs';
@@ -242,6 +243,7 @@ export async function startStackDevTargets(
     waitForDaemonReady = defaultWaitForDaemonReady,
     runDependencyBootstrap = runDevTargetDependencyBootstrap,
     inspectSync = inspectDevTargetSync,
+    flushSync = flushDevTargetSync,
     startManagedRuntime = startDevTargetRuntime,
     logger = console,
   } = {},
@@ -364,6 +366,7 @@ export async function startStackDevTargets(
       let createdTunnel = false;
       let credentialSeedTask = null;
       let credentialSeeded = false;
+      let workspacePreparationCurrent = false;
       deferredCompanionPreparationsByTarget.delete(target.name);
       const beginPhase = (nextPhase) => {
         phase = nextPhase;
@@ -440,10 +443,15 @@ export async function startStackDevTargets(
       const prepareRemoteServices = async () => {
         await beginCredentialSeed();
         beginPhase('bootstrap');
-        if (planRequiresRemoteCliWorkspacePreparation(plan) && remoteWorkspacePreparation) {
+        if (
+          !workspacePreparationCurrent
+          && planRequiresRemoteCliWorkspacePreparation(plan)
+          && remoteWorkspacePreparation
+        ) {
           await (typeof remoteWorkspacePreparation === 'function'
             ? remoteWorkspacePreparation()
             : remoteWorkspacePreparation);
+          workspacePreparationCurrent = true;
         }
         requireSuccessful(
           await runDependencyBootstrap({
@@ -505,6 +513,23 @@ export async function startStackDevTargets(
           }
           if (deferCompanionPreparation && services.daemon) {
             beginCredentialSeed();
+          }
+          if (deferCompanionPreparation && remoteWorkspacePreparation) {
+            beginPhase('bootstrap');
+            try {
+              await (typeof remoteWorkspacePreparation === 'function'
+                ? remoteWorkspacePreparation()
+                : remoteWorkspacePreparation);
+              await flushSync({ target, env: mutagenEnv }, { runProcess });
+              workspacePreparationCurrent = true;
+            } catch (error) {
+              logger.warn?.(
+                `[dev-targets] ${target.name} current workspace publication did not complete before worker launch; `
+                  + `starting from last-green bytes while companion preparation retries: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+              );
+            }
           }
           if (hasServices && !deferCompanionPreparation) {
             await prepareRemoteServices();

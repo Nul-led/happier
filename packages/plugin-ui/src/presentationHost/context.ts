@@ -1,8 +1,15 @@
 import { createContext, createElement, useContext, type ReactElement, type ReactNode, type RefObject } from 'react';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
 import type { PluginUiTargetedContributionSurfaceV1 } from '@happier-dev/plugin-sdk/ui';
+import type { HappierUiPalette, HappierUiTypography } from '../environment/types.js';
 import type { HappierFocusable } from '../presentation/portableTypes.js';
 import type { HappierDiffViewerRequest } from '../presentation/content/DiffViewer.js';
+import type { HappierPageChrome } from '../presentation/layout/pageChrome.js';
+import type { HappierCollectionMotionDriver } from '../presentation/collection/collectionMotion.js';
+import type { HappierDisclosureMotionDriver } from '../presentation/collection/Disclosure.js';
+import type { HappierStateSize } from '../presentation/state/InfoState.js';
+import type { HappierCapsuleHost } from '../presentation/status/capsuleHost.js';
+import type { HappierAgentCursorMotionDriver } from '../presentation/copresence/AgentCursor.js';
 
 export type PluginUiPopoverPresentation = 'popover' | 'menu' | 'dropdown' | 'context';
 
@@ -52,6 +59,73 @@ export type PluginUiTargetedSurfacePresentation = Readonly<{
 }>;
 
 /**
+ * One part of a host-owned Account Session (plan 05 §4.2). `provider` mounts the one Session
+ * controller, resolved inside the mounted surface's own account scope; `transcript` and `composer`
+ * render slots of the nearest host controller; `chat` is provider plus parts in the host's standard
+ * layout. Authors receive no renderer, state, or callback: only the Session id and the read-only
+ * choice cross this seam.
+ */
+export type PluginUiSessionPartPresentation =
+  | Readonly<{ part: 'provider'; sessionId: string; readOnly: boolean; presented?: boolean; children: ReactNode }>
+  | Readonly<{ part: 'transcript'; testID?: string }>
+  | Readonly<{ part: 'composer'; testID?: string }>
+  | Readonly<{ part: 'chat'; sessionId: string; readOnly: boolean; presented?: boolean; testID?: string }>;
+
+/**
+ * What a plugin's `DetailsPane` asks the host to show in the page's app details pane: the pane's header
+ * band (title, subtitle, actions, close) and the detail itself. The host owns the pane's geometry,
+ * persisted width, docked/overlay decision, Escape and focus return.
+ */
+export type PluginUiDetailsPanePresentation = Readonly<{
+  open: boolean;
+  /** The header band's title; omitted, the detail draws its own heading and close control. */
+  title?: string;
+  subtitle?: string;
+  actions?: ReactNode;
+  onClose(): void;
+  children?: ReactNode;
+  testID?: string;
+}>;
+
+/**
+ * The page's app details pane, when the host placed this surface in a pane host (app and plugin pages).
+ * Package-private: authors use the public `DetailsPane` (and `Collection`, which opens its items there).
+ */
+export type PluginUiDetailsPaneHost = Readonly<{
+  /**
+   * Whether the pane sits beside the page right now. False on phones and with side panes turned off:
+   * the detail is then pushed inside the page. A hook: call it unconditionally from a component.
+   */
+  useAvailable(): boolean;
+  /** Publishes the pane from where the detail is declared; renders nothing in place. */
+  renderDetailsPane(input: PluginUiDetailsPanePresentation): ReactNode;
+}>;
+
+/**
+ * What a plugin tab asks the host to show in the pane header it already draws for that tab (the
+ * session sidebar band, a phone surface's large title): the one live line under the title and the
+ * trailing actions, before ⋯. The host owns the header's layout, its title and what fits.
+ */
+export type PluginUiPaneHeaderPresentation = Readonly<{
+  /** The live line's facts, joined by " · " ("1 needs you"); `null` for none. */
+  line: readonly PluginUiPaneHeaderLineSegment[] | null;
+  /** The trailing actions (a "+" and its menu), rendered in the header with this plugin's context. */
+  actions: ReactNode | null;
+}>;
+
+/** Bounded presentation facts: attention styles the fact, never grants authority. */
+export type PluginUiPaneHeaderLineSegment = string | Readonly<{ text: string; attention: true }>;
+
+/**
+ * The pane header of the tab the host mounted this surface in; absent where the surface has no
+ * header of its own (a page, a widget). Package-private: authors use the public `PaneHeaderContent`.
+ */
+export type PluginUiPaneHeaderHost = Readonly<{
+  /** Publishes the header content from where it is declared; renders nothing in place. */
+  renderPaneHeader(input: PluginUiPaneHeaderPresentation): ReactNode;
+}>;
+
+/**
  * Host-owned product renderers that a bundled plugin surface may delegate to.
  *
  * This is deliberately package-internal. Authors get semantic components such
@@ -59,9 +133,62 @@ export type PluginUiTargetedSurfacePresentation = Readonly<{
  * navigation roots, or modal/portal infrastructure.
  */
 export type PluginUiPresentationHost = Readonly<{
+  /**
+   * The host's motion drivers for the Collection's table ⇄ split transition and its peek disclosure
+   * (COLLECTION.md §8). Durations and easings are the host's motion tokens; the animation library stays
+   * host-private. Absent (a hosted-web realm), the Collection's changes land at once.
+   */
+  collectionMotion?: HappierCollectionMotionDriver;
+  /**
+   * The container the surface is mounted in, as Happier's own states size themselves (`pane` in a
+   * session sidebar tab, `phone` on a phone surface, `details` in a details drawer). A plugin state
+   * that passes no `size` takes this one, so a plugin tab's empty and loading states match the host's
+   * without every author passing it.
+   */
+  stateSize?: HappierStateSize;
+  /** The page's app details pane; absent where the surface is not placed in a pane host. */
+  detailsPane?: PluginUiDetailsPaneHost;
+  /** The pane header of the tab this surface fills; absent where it has none. */
+  paneHeader?: PluginUiPaneHeaderHost;
+  /**
+   * The page's own scroller, for a page-sized Collection (`scroll="page"`) on a same-realm host page: the host's
+   * page scroller with its page anatomy. Absent, the Collection scrolls in a plain scroll view.
+   */
+  renderPageScroller?(children: ReactNode): ReactNode;
+  disclosureMotion?: HappierDisclosureMotionDriver;
+  /**
+   * The host's leaves for the floating capsules a plugin draws (`StatusCapsule`, `PresenceCapsule`): its
+   * floating material, row type roles, small button, spinner, icon pack, step morph and dock motion, so
+   * a plugin's capsule is the host's capsule. Absent (a hosted-web realm), they draw a plain solid
+   * capsule whose changes land at once.
+   */
+  capsuleHost?: HappierCapsuleHost;
+  /** The host's motion for the agent cursor (`AgentCursor`). Absent, the hand lands at once. */
+  agentCursorMotion?: HappierAgentCursorMotionDriver;
+  /**
+   * The host's real type-role styles (family, tracking, tabular figures and a
+   * heading step) for same-realm surfaces. The public theme snapshot carries
+   * only metrics; this is the same-realm host fact every shared text owner
+   * reads when present (`presentation/text/typeRole.ts`).
+   */
+  typography?: HappierUiTypography;
+  /**
+   * The host's configuration-page colour roles (sheets, row seams, field boxes,
+   * switches, segmented choices, tiles) for same-realm surfaces. The public
+   * theme snapshot carries no such roles; without this fact shared components
+   * resolve them from the snapshot. A new value accompanies a theme change.
+   */
+  palette?: HappierUiPalette;
+  /**
+   * The navigation chrome the plugin page is mounted in (title shown by the
+   * chrome, the back control, the content column), so the public `PageHeader`
+   * and page sections place themselves exactly as Happier's own pages do.
+   */
+  pageChrome?: HappierPageChrome;
   /** Manifest-owned brand fact for the mounted plugin; authors cannot replace it. */
   brand?: Readonly<{
     displayName: string;
+    monochrome?: boolean;
     resource?: Readonly<{ pluginId: string; localId: string }>;
   }>;
   /**
@@ -87,6 +214,13 @@ export type PluginUiPresentationHost = Readonly<{
    * API diagnostic method.
    */
   targetedSurfaceUnavailableReason?: 'unsupported_nested_targeted_surface';
+  /**
+   * Render one part of a host-owned Account Session (`SessionProvider`, `SessionTranscript`,
+   * `SessionComposer`, `SessionChat`). The host's one Session implementation renders it; the plugin
+   * never renders a transcript or composer itself. Absent where the host cannot present a Session
+   * (isolated tests, hosted-web realms): the author's fallback renders instead.
+   */
+  renderSessionPart?(input: PluginUiSessionPartPresentation): ReactNode;
   /**
    * Transfer an opaque public control target through the mounted app host.
    * The app retains layout currentness and platform-specific physical focus;
@@ -140,9 +274,17 @@ export type PluginUiPresentationHost = Readonly<{
    * accessible representation of the data it carries.
    */
   renderQRCode?(input: PluginUiQRCodePresentation): ReactNode;
+  /**
+   * Render one person's mark through the host's avatar owner (the same generated mark and monogram
+   * Happier draws for people), sized in points. Absent, the public `Avatar` draws a plain monogram.
+   */
+  renderAvatar?(input: Readonly<{ name: string; size: number; testID?: string }>): ReactNode;
 }>;
 
 const PluginUiPresentationHostContext = createContext<PluginUiPresentationHost | null>(null);
+
+/** @internal The surface bridge re-provides this across the host's details pane (`components/surfaceBridge.tsx`). */
+export const PLUGIN_UI_PRESENTATION_HOST_CONTEXT_INTERNAL = PluginUiPresentationHostContext;
 
 /**
  * Physical scroll identity for a plugin-owned ScrollArea. This is private

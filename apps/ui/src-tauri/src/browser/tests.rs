@@ -1,5 +1,5 @@
 use super::platform::{
-    child_embedding_supported_for, child_embedding_verified_for, native_devtools_supported,
+    child_embedding_supported_for, native_devtools_supported,
     resolve_desktop_browser_strategy, resolve_desktop_browser_strategy_for_runtime,
     DesktopBrowserRuntimeSupport,
 };
@@ -275,16 +275,13 @@ fn assert_native_child_view_available(
         availability.supports.native_devtools,
         native_devtools_supported()
     );
-    // Back/forward has no producer and no dispatcher in the vendored Wry fork (no `go_forward`, no
-    // `can_go_*` accessor), so it stays off. Reload/stop ride the same `evaluate_script` primitive
-    // as the already-available in-page diagnostics, so they are on wherever the child view is.
-    assert!(!availability.supports.go_back_forward);
+    assert!(availability.supports.go_back_forward);
     assert!(availability.supports.reload);
     assert!(availability.supports.stop);
     assert!(availability.supports.page_info_diagnostics);
     assert_eq!(availability.supports.capture, capture_supported);
     assert!(!availability.supports.recording);
-    assert!(!availability.supports.automation);
+    assert!(availability.supports.automation);
     assert!(availability.disabled_reasons.is_empty());
 }
 
@@ -469,6 +466,7 @@ impl DesktopBrowserWebViewHost for FakeWebViewHost {
         page_info.record_page_load(DesktopBrowserPageLoadEvent::Finished, url.to_string());
         Ok(Box::new(FakeWebViewHandle {
             view_id: view_id.to_string(),
+            history: std::cell::RefCell::new((vec![url.to_string()], 0)),
             log: self.log.clone(),
             page_info,
             capture_result: self.capture_result.clone(),
@@ -484,6 +482,8 @@ impl DesktopBrowserWebViewHost for FakeWebViewHost {
 
 struct FakeWebViewHandle {
     view_id: String,
+    // Native engine boundary: models the browser-owned history, never a host URL projection.
+    history: std::cell::RefCell<(Vec<String>, usize)>,
     log: FakeWebViewLog,
     page_info: super::DesktopBrowserPageInfoSink,
     capture_result: Arc<Mutex<Result<DesktopBrowserCapturedSnapshot, String>>>,
@@ -492,7 +492,37 @@ struct FakeWebViewHandle {
 }
 
 impl DesktopBrowserWebViewHandle for FakeWebViewHandle {
+    fn navigation_state(&self) -> Result<(bool, bool), String> {
+        let history = self.history.borrow();
+        Ok((history.1 > 0, history.1 + 1 < history.0.len()))
+    }
+
+    fn go_back(&self) -> Result<bool, String> {
+        if !self.navigation_state()?.0 {
+            return Ok(false);
+        }
+        self.history.borrow_mut().1 -= 1;
+        self.publish_history_navigation();
+        Ok(true)
+    }
+
+    fn go_forward(&self) -> Result<bool, String> {
+        if !self.navigation_state()?.1 {
+            return Ok(false);
+        }
+        self.history.borrow_mut().1 += 1;
+        self.publish_history_navigation();
+        Ok(true)
+    }
+
     fn load_url(&self, url: &str) -> Result<(), String> {
+        {
+            let mut history = self.history.borrow_mut();
+            let next = history.1 + 1;
+            history.0.truncate(next);
+            history.0.push(url.to_string());
+            history.1 = next;
+        }
         self.log.push(FakeWebViewEvent::Navigated {
             view_id: self.view_id.clone(),
             url: url.to_string(),
@@ -555,6 +585,17 @@ impl DesktopBrowserWebViewHandle for FakeWebViewHandle {
     }
 }
 
+impl FakeWebViewHandle {
+    fn publish_history_navigation(&self) {
+        let url = {
+            let history = self.history.borrow();
+            history.0[history.1].clone()
+        };
+        self.page_info.record_page_load(DesktopBrowserPageLoadEvent::Started, url.clone());
+        self.page_info.record_page_load(DesktopBrowserPageLoadEvent::Finished, url);
+    }
+}
+
 impl Drop for FakeWebViewHandle {
     fn drop(&mut self) {
         self.log.push(FakeWebViewEvent::Dropped {
@@ -567,80 +608,36 @@ fn permission_name_for_command(command: &str) -> String {
     format!("allow-{}", command.replace('_', "-"))
 }
 
-fn verified_child_embedding_runtime_support() -> DesktopBrowserRuntimeSupport {
+fn native_child_embedding_runtime_support() -> DesktopBrowserRuntimeSupport {
     DesktopBrowserRuntimeSupport {
         macos_custom_data_store_identifiers: true,
-        child_embedding_verified: true,
     }
 }
 
 #[test]
-fn platform_strategy_advertises_verified_native_child_views_without_privileged_ipc() {
-    // With recorded child-embedding verification these platforms advertise the native child view
-    // (the post-flip state). The unverified/fail-closed state is covered separately.
-    assert_native_child_view_available(
-        &resolve_desktop_browser_strategy_for_runtime(
-            DesktopBrowserPlatform::Windows,
-            verified_child_embedding_runtime_support(),
-        ),
-        DesktopBrowserPlatform::Windows,
-        DesktopBrowserPrimitive::WindowsHwndWebView2,
-        false,
-    );
-
-    assert_native_child_view_available(
-        &resolve_desktop_browser_strategy_for_runtime(
-            DesktopBrowserPlatform::LinuxX11,
-            verified_child_embedding_runtime_support(),
-        ),
-        DesktopBrowserPlatform::LinuxX11,
-        DesktopBrowserPrimitive::LinuxX11ChildEmbedding,
-        false,
-    );
-}
-
-#[test]
-fn windows_and_x11_availability_is_gated_behind_verified_child_embedding() {
-    // Pre-verification (no recorded manual-QA evidence): both platforms must fall closed to an
-    // honest typed-unavailable rather than advertise an enabled browser that dies at
-    // `build_as_child`. This is the capability-truth flip the packet exists to make.
-    for (platform, primitive, reason) in [
+fn windows_and_x11_use_supported_child_embedding_without_qa_gate() {
+    for (platform, primitive) in [
         (
             DesktopBrowserPlatform::Windows,
             DesktopBrowserPrimitive::WindowsHwndWebView2,
-            DesktopBrowserDisabledReason::NativeChildViewUnverified,
         ),
         (
             DesktopBrowserPlatform::LinuxX11,
             DesktopBrowserPrimitive::LinuxX11ChildEmbedding,
-            DesktopBrowserDisabledReason::LinuxX11ChildEmbeddingUnverified,
         ),
     ] {
-        let unverified = resolve_desktop_browser_strategy_for_runtime(
+        let availability = resolve_desktop_browser_strategy_for_runtime(
             platform,
             DesktopBrowserRuntimeSupport {
                 macos_custom_data_store_identifiers: false,
-                child_embedding_verified: false,
             },
         );
         assert!(
-            !unverified.available,
-            "{platform:?} must be unavailable until child-embedding is verified",
+            availability.available,
+            "{platform:?} must use its implemented child view without a QA-status gate",
         );
-        assert_eq!(unverified.platform, platform);
-        assert_eq!(unverified.primitive, primitive);
-        assert_eq!(unverified.disabled_reasons, vec![reason]);
-        assert!(!unverified.supports.navigation);
-        assert!(!unverified.privileged_ipc);
-
-        let verified = resolve_desktop_browser_strategy_for_runtime(
-            platform,
-            DesktopBrowserRuntimeSupport {
-                macos_custom_data_store_identifiers: false,
-                child_embedding_verified: true,
-            },
-        );
-        assert_native_child_view_available(&verified, platform, primitive, false);
+        assert!(availability.disabled_reasons.is_empty());
+        assert_native_child_view_available(&availability, platform, primitive, false);
     }
 }
 
@@ -674,8 +671,7 @@ fn child_embedding_primitive_support_is_derived_from_the_implemented_wry_path() 
 
 #[test]
 fn no_desktop_browser_platform_reports_available_without_the_embedding_primitive() {
-    // The browser layers its own recorded-QA gate on top of the primitive owner. Whatever that
-    // gate says, a platform without an implemented child-embedding path must never be advertised.
+    // OS API availability cannot make an unsupported embedding primitive available.
     for platform in [
         DesktopBrowserPlatform::MacOs,
         DesktopBrowserPlatform::Windows,
@@ -685,10 +681,9 @@ fn no_desktop_browser_platform_reports_available_without_the_embedding_primitive
         DesktopBrowserPlatform::Unsupported,
     ] {
         for runtime_support in [
-            verified_child_embedding_runtime_support(),
+            native_child_embedding_runtime_support(),
             DesktopBrowserRuntimeSupport {
-                macos_custom_data_store_identifiers: true,
-                child_embedding_verified: false,
+                macos_custom_data_store_identifiers: false,
             },
         ] {
             let availability =
@@ -702,45 +697,11 @@ fn no_desktop_browser_platform_reports_available_without_the_embedding_primitive
 }
 
 #[test]
-fn child_embedding_verification_defaults_pin_windows_and_x11_to_false() {
-    assert!(!child_embedding_verified_for(
-        DesktopBrowserPlatform::Windows
-    ));
-    assert!(!child_embedding_verified_for(
-        DesktopBrowserPlatform::LinuxX11
-    ));
-}
-
-#[test]
-fn unverified_platform_can_never_report_available() {
-    // Capability-truth regression guard: a future accidental flip that leaves
-    // `child_embedding_verified: false` must never produce `available: true` for the
-    // embedding-gated platforms. macOS rides its own WK-data-store gate and is exempt here.
-    for platform in [
-        DesktopBrowserPlatform::Windows,
-        DesktopBrowserPlatform::LinuxX11,
-    ] {
-        let availability = resolve_desktop_browser_strategy_for_runtime(
-            platform,
-            DesktopBrowserRuntimeSupport {
-                macos_custom_data_store_identifiers: true,
-                child_embedding_verified: false,
-            },
-        );
-        assert!(
-            !availability.available,
-            "{platform:?} must stay unavailable while child-embedding is unverified",
-        );
-    }
-}
-
-#[test]
 fn macos_strategy_requires_custom_wk_data_store_identifier_support() {
     let available = resolve_desktop_browser_strategy_for_runtime(
         DesktopBrowserPlatform::MacOs,
         DesktopBrowserRuntimeSupport {
             macos_custom_data_store_identifiers: true,
-            child_embedding_verified: false,
         },
     );
     assert_native_child_view_available(
@@ -754,7 +715,6 @@ fn macos_strategy_requires_custom_wk_data_store_identifier_support() {
         DesktopBrowserPlatform::MacOs,
         DesktopBrowserRuntimeSupport {
             macos_custom_data_store_identifiers: false,
-            child_embedding_verified: false,
         },
     );
     assert!(!unavailable.available);
@@ -772,7 +732,6 @@ fn macos_strategy_advertises_capture_only_when_wk_snapshot_is_backed() {
         DesktopBrowserPlatform::MacOs,
         DesktopBrowserRuntimeSupport {
             macos_custom_data_store_identifiers: true,
-            child_embedding_verified: false,
         },
     );
     assert!(macos.available);
@@ -782,11 +741,11 @@ fn macos_strategy_advertises_capture_only_when_wk_snapshot_is_backed() {
     for availability in [
         resolve_desktop_browser_strategy_for_runtime(
             DesktopBrowserPlatform::Windows,
-            verified_child_embedding_runtime_support(),
+            native_child_embedding_runtime_support(),
         ),
         resolve_desktop_browser_strategy_for_runtime(
             DesktopBrowserPlatform::LinuxX11,
-            verified_child_embedding_runtime_support(),
+            native_child_embedding_runtime_support(),
         ),
         resolve_desktop_browser_strategy(DesktopBrowserPlatform::LinuxWayland),
     ] {
@@ -799,7 +758,7 @@ fn macos_strategy_advertises_capture_only_when_wk_snapshot_is_backed() {
 fn linux_strategy_keeps_wayland_unavailable_until_gtk_container_embedding_is_proven() {
     let x11 = resolve_desktop_browser_strategy_for_runtime(
         DesktopBrowserPlatform::LinuxX11,
-        verified_child_embedding_runtime_support(),
+        native_child_embedding_runtime_support(),
     );
     assert_native_child_view_available(
         &x11,
@@ -828,7 +787,7 @@ fn native_state_calls_host_when_platform_strategy_is_available() {
     let state = DesktopBrowserState::for_test(
         resolve_desktop_browser_strategy_for_runtime(
             DesktopBrowserPlatform::Windows,
-            verified_child_embedding_runtime_support(),
+            native_child_embedding_runtime_support(),
         ),
         temp_dir.path().to_path_buf(),
         Box::new(host.clone()),
@@ -1240,6 +1199,58 @@ fn native_state_rejects_navigation_dispatch_for_unknown_view() {
         .events()
         .iter()
         .all(|event| !matches!(event, FakeWebViewEvent::EvalScript { .. })));
+}
+
+#[test]
+fn native_history_dispatch_and_page_info_follow_the_engine_history() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let host = FakeWebViewHost::new(false);
+    let state = DesktopBrowserState::for_test(
+        available_test_availability(),
+        temp_dir.path().to_path_buf(),
+        Box::new(host),
+    );
+    assert!(state.open_view(open_request("view_1", "profile_1", "https://example.test/first")).ok);
+    let info = serde_json::to_value(state.get_page_info(view_request("view_1"))).unwrap();
+    assert_eq!(info["pageInfo"]["canGoBack"], false);
+    assert_eq!(info["pageInfo"]["canGoForward"], false);
+    assert!(!state.dispatch_view_navigation(dispatch_navigation_request(
+        "view_1", DesktopBrowserNavigationDispatchKind::GoBack,
+    )).ok);
+    assert!(state.navigate(DesktopBrowserViewCommandRequest {
+        url: Some("https://example.test/second".to_string()),
+        ..view_request("view_1")
+    }).ok);
+    let info = serde_json::to_value(state.get_page_info(view_request("view_1"))).unwrap();
+    assert_eq!(info["pageInfo"]["canGoBack"], true);
+    assert_eq!(info["pageInfo"]["canGoForward"], false);
+
+    for (kind, url, back, forward) in [
+        ("goBack", "https://example.test/first", false, true),
+        ("goForward", "https://example.test/second", true, false),
+    ] {
+        let request = serde_json::from_value(serde_json::json!({
+            "browserSessionId": "browser_session_1", "viewId": "view_1", "kind": kind,
+        })).expect("native history command");
+        assert!(state.dispatch_view_navigation(request).ok);
+        let info = serde_json::to_value(state.get_page_info(view_request("view_1"))).unwrap();
+        assert_eq!(info["pageInfo"]["currentUrl"], url);
+        assert_eq!(info["pageInfo"]["canGoBack"], back);
+        assert_eq!(info["pageInfo"]["canGoForward"], forward);
+    }
+    assert!(!state.dispatch_view_navigation(dispatch_navigation_request(
+        "view_1", DesktopBrowserNavigationDispatchKind::GoForward,
+    )).ok);
+    assert!(state.dispatch_view_navigation(dispatch_navigation_request(
+        "view_1", DesktopBrowserNavigationDispatchKind::GoBack,
+    )).ok);
+    assert!(state.navigate(DesktopBrowserViewCommandRequest {
+        url: Some("https://example.test/third".to_string()),
+        ..view_request("view_1")
+    }).ok);
+    let info = serde_json::to_value(state.get_page_info(view_request("view_1"))).unwrap();
+    assert_eq!(info["pageInfo"]["canGoBack"], true);
+    assert_eq!(info["pageInfo"]["canGoForward"], false);
 }
 
 #[test]
@@ -2097,7 +2108,6 @@ fn availability_for_native_platforms_advertises_only_implemented_browser_familie
                 DesktopBrowserPlatform::MacOs,
                 DesktopBrowserRuntimeSupport {
                     macos_custom_data_store_identifiers: true,
-                    child_embedding_verified: false,
                 },
             ),
             true,
@@ -2105,14 +2115,14 @@ fn availability_for_native_platforms_advertises_only_implemented_browser_familie
         (
             resolve_desktop_browser_strategy_for_runtime(
                 DesktopBrowserPlatform::Windows,
-                verified_child_embedding_runtime_support(),
+                native_child_embedding_runtime_support(),
             ),
             false,
         ),
         (
             resolve_desktop_browser_strategy_for_runtime(
                 DesktopBrowserPlatform::LinuxX11,
-                verified_child_embedding_runtime_support(),
+                native_child_embedding_runtime_support(),
             ),
             false,
         ),
@@ -2122,8 +2132,8 @@ fn availability_for_native_platforms_advertises_only_implemented_browser_familie
         assert!(!availability.privileged_ipc);
         assert_eq!(availability.supports.capture, capture_supported);
         assert!(!availability.supports.recording);
-        assert!(!availability.supports.automation);
-        assert!(!availability.supports.go_back_forward);
+        assert!(availability.supports.automation);
+        assert!(availability.supports.go_back_forward);
         assert!(availability.supports.reload);
         assert!(availability.supports.stop);
     }

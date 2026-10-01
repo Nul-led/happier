@@ -473,12 +473,8 @@ impl HostedArtifactDesktopTransport {
 ///
 /// Structural only. It is derived from `child_embedding_supported_for`, the
 /// single owner of "this shell links a `build_as_child` path for that
-/// platform", and it deliberately does not consume the desktop browser's
-/// `child_embedding_verified_for` product gate: that flag records manual QA of
-/// the *browser* surface (arbitrary navigation, persistent profile, devtools,
-/// capture), none of which this restricted Artifact frame has. Borrowing it
-/// would make this transport depend on a different surface's QA schedule
-/// instead of on its own implementation fact.
+/// platform". Runtime admission follows that implementation fact independently
+/// of either surface's manual-QA schedule.
 ///
 /// Runtime admission uses this executable primitive fact. Loaded QA remains a
 /// separate publication/support evidence gate.
@@ -1281,12 +1277,7 @@ fn refresh_cache_entry_access_preserving_committed_record(
     manifest: CacheManifest,
     last_accessed_order: u64,
 ) -> Result<CacheManifest, String> {
-    match refresh_cache_entry_access(
-        directory,
-        locator,
-        manifest,
-        last_accessed_order,
-    ) {
+    match refresh_cache_entry_access(directory, locator, manifest, last_accessed_order) {
         Ok(refreshed) => Ok(refreshed),
         Err(refresh_error) => {
             // The access stamp is eviction ordering, not cache authority. If
@@ -1575,7 +1566,8 @@ fn write_cache_record_with_budget_protecting(
         incoming_charge,
         budget,
         protected_locators,
-    )? else {
+    )?
+    else {
         return Ok(CacheWriteDisposition::NotPersistedCapacity);
     };
     let directory = prepare_artifact_parent_for_write(root, &input.locator)?;
@@ -2153,7 +2145,8 @@ fn serve_artifact_protocol_request(
         else {
             return protocol_response(404, None, None, Vec::new());
         };
-        let content = match resolve_policy_request(&registration.policy_table, request.uri().path()) {
+        let content = match resolve_policy_request(&registration.policy_table, request.uri().path())
+        {
             PolicyOutcome::Content(content) => content,
             PolicyOutcome::Rejected { status } => {
                 return protocol_response(status, None, None, Vec::new());
@@ -3716,16 +3709,15 @@ mod tests {
         fs::create_dir(directory.join("manifest.access.partial"))
             .expect("refresh blocker should exist");
 
-        let record = read_cache_record_with_access(
-            &root,
-            &input.locator,
-            &input.identity_key_hash,
-            2,
-        )
-        .expect("ordering-only metadata failure must not hide verified bytes")
-        .expect("verified cache record should remain available");
+        let record =
+            read_cache_record_with_access(&root, &input.locator, &input.identity_key_hash, 2)
+                .expect("ordering-only metadata failure must not hide verified bytes")
+                .expect("verified cache record should remain available");
 
-        assert_eq!(record.files[0].bytes_base64, BASE64_STANDARD.encode(b"still readable"));
+        assert_eq!(
+            record.files[0].bytes_base64,
+            BASE64_STANDARD.encode(b"still readable")
+        );
         let manifest = read_manifest(&directory, &input.locator)
             .expect("the previous committed manifest should remain authoritative");
         assert_eq!(manifest.last_accessed_order, 1);
@@ -3819,14 +3811,8 @@ mod tests {
         let protected = HashSet::from([mounted.locator.clone()]);
 
         assert_eq!(
-            write_cache_record_with_budget_protecting(
-                &root,
-                &incoming,
-                budget,
-                2,
-                &protected,
-            )
-            .expect("capacity fallback should not fail"),
+            write_cache_record_with_budget_protecting(&root, &incoming, budget, 2, &protected,)
+                .expect("capacity fallback should not fail"),
             CacheWriteDisposition::NotPersistedCapacity,
         );
         assert!(resolve_existing_artifact_directory(&root, &mounted.locator).is_ok());

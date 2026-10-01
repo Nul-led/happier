@@ -642,7 +642,10 @@ export async function stopStackOwnedServerForRestart(
 
 export async function preflightDevServerRestart(
   { serverDir, serverEnv = {}, consoleImpl = console },
-  { pmExecBinImpl = pmExecBin } = {},
+  {
+    ensureSourceServerWorkspacePackagesBuiltImpl = ensureSourceServerWorkspacePackagesBuilt,
+    pmExecBinImpl = pmExecBin,
+  } = {},
 ) {
   const parentPreflightAlreadyDone = String(
     serverEnv.HAPPIER_STACK_SERVER_RESTART_PREFLIGHT_ALREADY_DONE ?? '',
@@ -661,6 +664,12 @@ export async function preflightDevServerRestart(
   if (!runtimeTypecheckScript) return { ran: false, reason: 'missing-build-script' };
 
   consoleImpl.log('[local] watch: server changed → preflight build...');
+  await ensureSourceServerWorkspacePackagesBuiltImpl({
+    runtimeBackedStart: false,
+    serverDir,
+    env: serverEnv,
+    quiet: false,
+  });
   if (runtimeTypecheckScript === 'typecheck:runtime' && hasPackageScript(serverDir, 'generate:providers')) {
     await pmExecBinImpl({
       dir: serverDir,
@@ -816,16 +825,13 @@ export async function startDevServer({
   const prismaPush = (baseEnv.HAPPIER_STACK_PRISMA_PUSH ?? '1').toString().trim() !== '0';
   const serverScript = resolveServerDevScript({ serverComponentName, serverDir, prismaPush });
 
-  const ensureWorkspacePackagesBuiltBeforeSpawn = async ({
-    admitPrior = admitPriorBuildsImmediately,
-  } = {}) => {
+  const ensureWorkspacePackagesBuiltBeforeSpawn = async () => {
     try {
       await ensureSourceServerWorkspacePackagesBuiltImpl({
         runtimeBackedStart: false,
         serverDir,
         quiet,
         env: serverEnv,
-        admitPriorOutputsImmediately: admitPrior,
       });
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
@@ -848,9 +854,11 @@ export async function startDevServer({
   if (restart && stackMode && runtimeStatePath) {
     if (!usePriorRuntime) {
       if (admitPriorBuildsImmediately) {
-        // The workspace-build owner validates retained outputs and rebuilds when they are missing
-        // or invalid. Do not make source freshness a startup gate for a watch lifecycle.
-        await ensureWorkspacePackagesBuiltBeforeSpawn({ admitPrior: true });
+        // A prior runtime can keep the service available while source refreshes,
+        // but a source server resolves workspace packages through their published
+        // dist entrypoints. It must wait for the canonical publisher rather than
+        // boot against declarations from an older source revision.
+        await ensureWorkspacePackagesBuiltBeforeSpawn();
       } else {
         const preflightResult = await preflightDevServerRestartImpl({ serverDir, serverComponentName, serverEnv, consoleImpl: console });
         if (preflightResult?.ran !== true) {
@@ -980,11 +988,11 @@ export async function startDevServer({
     const failureMessage = error instanceof Error ? error.message : String(error);
     if (attemptedPriorRuntime) {
       if (!quiet) {
-        console.warn(`[local] prior runtime server could not start (${failureMessage}); trying existing source outputs before refreshing.`);
+        console.warn(`[local] prior runtime server could not start (${failureMessage}); preparing current source outputs.`);
       }
       usePriorRuntime = false;
       await prepareDependencies({ admitPrior: true });
-      await ensureWorkspacePackagesBuiltBeforeSpawn({ admitPrior: true });
+      await ensureWorkspacePackagesBuiltBeforeSpawn();
       try {
         provisioned = await provisionServer();
       } catch (sourceError) {
@@ -993,7 +1001,7 @@ export async function startDevServer({
         }
         const sourceFailureMessage = sourceError instanceof Error ? sourceError.message : String(sourceError);
         if (!quiet) {
-          console.warn(`[local] existing source server could not start (${sourceFailureMessage}); refreshing once before retrying.`);
+          console.warn(`[local] current source server could not start (${sourceFailureMessage}); refreshing once before retrying.`);
         }
       }
     } else if (!quiet) {
@@ -1001,7 +1009,7 @@ export async function startDevServer({
     }
     if (!provisioned) {
       await prepareDependencies({ admitPrior: false });
-      await ensureWorkspacePackagesBuiltBeforeSpawn({ admitPrior: false });
+      await ensureWorkspacePackagesBuiltBeforeSpawn();
       usePriorRuntime = false;
       provisioned = await provisionServer();
     }

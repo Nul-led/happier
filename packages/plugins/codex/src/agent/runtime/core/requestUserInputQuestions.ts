@@ -25,6 +25,96 @@ function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+export type CodexAsyncUserInputQuestion = Readonly<{
+  index: number;
+  title: string;
+  options: readonly string[];
+  questionItemId: string;
+}>;
+
+export type CodexAsyncUserInputItem = Readonly<{
+  itemId: string;
+  questions: readonly CodexAsyncUserInputQuestion[];
+}>;
+
+const CODEX_ASYNC_MAX_SUGGESTED_OPTIONS = 32;
+const CODEX_ASYNC_MAX_OPTION_UTF8_BYTES = 512;
+
+function normalizeProviderItemType(value: unknown): string {
+  return normalizeString(value).replace(/[^a-z0-9]/gi, '').toLowerCase();
+}
+
+export function readCodexAsyncUserInputItem(value: unknown): CodexAsyncUserInputItem | null {
+  const envelope = asRecord(value);
+  const item = asRecord(envelope?.item) ?? envelope;
+  if (!item) return null;
+  if (normalizeProviderItemType(item.type) !== 'agentmessage' || item.delivery !== 'async') return null;
+  const itemId = normalizeString(item.id) || normalizeString(item.itemId);
+  if (!itemId || !Array.isArray(item.questions)) return null;
+  const questions: CodexAsyncUserInputQuestion[] = [];
+  for (const [index, rawQuestion] of item.questions.entries()) {
+    const question = asRecord(rawQuestion);
+    const title = normalizeString(question?.title);
+    if (!title) continue;
+    const options = Array.isArray(question?.options)
+      ? question.options
+        .slice(0, CODEX_ASYNC_MAX_SUGGESTED_OPTIONS)
+        .map(normalizeString)
+        .filter((option) => (
+          option.length > 0
+          && Buffer.byteLength(option, 'utf8') <= CODEX_ASYNC_MAX_OPTION_UTF8_BYTES
+        ))
+      : [];
+    questions.push({
+      index,
+      title,
+      options,
+      questionItemId: JSON.stringify(['request_user_input_async', itemId, index]),
+    });
+  }
+  return questions.length > 0 ? { itemId, questions } : null;
+}
+
+function truncateUtf8AtCharacterBoundary(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  let output = '';
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8');
+    if (bytes + characterBytes > maxBytes) break;
+    output += character;
+    bytes += characterBytes;
+  }
+  return output;
+}
+
+export function buildCodexAsyncUserInputReply(params: Readonly<{
+  item: CodexAsyncUserInputItem;
+  answersByKey: Readonly<Record<string, readonly string[]>>;
+}>): string | null {
+  const replies: Array<{ answer: string; question: string; questionItemId: string }> = [];
+  const fallbackReplies: string[] = [];
+  for (const question of params.item.questions) {
+    const answer = params.answersByKey[`async-question-${question.index}`]
+      ?.map(normalizeString)
+      .find(Boolean);
+    if (!answer) continue;
+    const boundedQuestion = truncateUtf8AtCharacterBoundary(question.title, 512).replace(/[\n\r]/g, ' ');
+    if (Buffer.byteLength(question.questionItemId, 'utf8') > 512) {
+      fallbackReplies.push(`> ${boundedQuestion}\n\n${answer}`);
+    } else {
+      replies.push({ answer, question: boundedQuestion, questionItemId: question.questionItemId });
+    }
+  }
+  if (replies.length === 0 && fallbackReplies.length === 0) return null;
+  return [
+    ...(replies.length > 0
+      ? [`<send_user_message_question_reply>\n${JSON.stringify(replies)}\n</send_user_message_question_reply>`]
+      : []),
+    ...fallbackReplies,
+  ].join('\n\n');
+}
+
 function splitCommaSeparatedLabels(value: string): string[] {
   return value
     .split(',')

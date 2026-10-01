@@ -31,7 +31,7 @@ export type PluginInstallationReviewSourceFacts =
       signature: Readonly<{ status: 'notProvided' }>;
       provenance: Readonly<{ status: 'notProvided' }>;
       curation: Readonly<{ status: 'notApplicable' }>;
-      updatePolicy: 'reviewEveryUpdate';
+      updatePolicy: 'allowed';
     }>
   | Readonly<{
       kind: 'archive';
@@ -43,7 +43,7 @@ export type PluginInstallationReviewSourceFacts =
       signature: Readonly<{ status: 'notProvided' }>;
       provenance: Readonly<{ status: 'notProvided' }>;
       curation: Readonly<{ status: 'notApplicable' }>;
-      updatePolicy: 'reviewEveryUpdate';
+      updatePolicy: 'allowed';
     }>
   | Readonly<{
       kind: 'npm';
@@ -128,7 +128,7 @@ function projectOptionalHostAccess(
 
 /**
  * The one executable-realm projection. It is both the realm set a human
- * reviews before installing and the set an automatic `reviewSensitiveChanges`
+ * reviews before installing and the set an automatic `allowed`
  * update may only contract, so the review dialog and the update-review policy
  * read the same realms from one owner.
  */
@@ -275,7 +275,7 @@ function projectRawCredentialRequest(
 /**
  * The one raw-credential disclosure projection. It is both what a human
  * reviews before installing and the fact set an automatic
- * `reviewSensitiveChanges` update must not expand, so the review dialog and
+ * `allowed` update must not expand, so the review dialog and
  * the update-review policy read the same facts from one owner.
  */
 export function projectPluginInstallationReviewRawCredentialAccess(

@@ -35,6 +35,7 @@ describe('AGENT_DEFINITION', () => {
         supported: true,
         topology: 'shared',
         attachStrategy: 'provider_attach',
+        remoteWritable: true,
       },
     });
   });

@@ -52,7 +52,7 @@ async function seedFixture(writeBrandFile: boolean): Promise<Readonly<{
         engines: { happier: '^0.2.0' },
         runtime: { apiVersion: 1 },
         entrypoints: { daemon: './daemon.mjs' },
-        brand: { iconResourceId: 'brand-icon' },
+        brand: { iconResourceId: 'brand-icon', monochrome: true },
         activation: { events: [{ kind: 'startup' }] },
         hostAccess: { required: [], optional: [] },
         contributes: {
@@ -80,7 +80,7 @@ async function resolveFixtureRuntimeInputs(fixture: Readonly<{
 }>) {
     const generationAuthority = await readCurrentCommittedPluginGenerations(
         resolvePluginStorePaths({ happyHomeDir: fixture.happyHomeDir }),
-        { bundledArtifacts: [], isolateInvalidInstalledGenerations: false },
+        { isolateInvalidInstalledGenerations: false },
     );
     const admitted = generationAuthority?.generations.get(PLUGIN_ID);
     if (!generationAuthority || !admitted) {
@@ -111,6 +111,7 @@ async function resolveFixtureRuntimeInputs(fixture: Readonly<{
         resolvedVersion: '1.0.0',
     };
     return Object.freeze({
+        admitted,
         generationAuthority,
         contributes: createResolvedContributionRegistry({
             resources: [{
@@ -161,13 +162,23 @@ describe('executable plugin portable brand Resource projection', () => {
             );
             expect(runtime.getPluginBrandAsset?.(PLUGIN_ID)).toEqual({
                 state: 'available',
+                monochrome: true,
                 resource: { pluginId: PLUGIN_ID, localId: 'brand-icon' },
                 width: 64,
                 height: 64,
                 digest: digest(fixture.brandBytes),
             });
+            const occurrenceId = runtime.readPluginOccurrenceId?.(PLUGIN_ID);
+            expect(occurrenceId).toBeTruthy();
+            expect(runtime.readPluginSourceCustody?.(PLUGIN_ID)).toMatchObject({
+                kind: 'managed',
+                immutableGenerationId: inputs.admitted.record.immutableGenerationId,
+            });
             runtime.retirePluginConsumers?.([PLUGIN_ID]);
             expect(runtime.getPluginBrandAsset?.(PLUGIN_ID)).toEqual({ state: 'retired' });
+            expect(runtime.readPluginOccurrenceId?.(PLUGIN_ID)).toBeNull();
+            expect(runtime.readPluginSourceCustody?.(PLUGIN_ID)).toBeNull();
+            expect(runtime.isPluginOccurrenceCurrent?.(PLUGIN_ID, occurrenceId!)).toBe(false);
         } finally {
             await runtime?.dispose();
             await rm(fixture.happyHomeDir, { recursive: true, force: true });

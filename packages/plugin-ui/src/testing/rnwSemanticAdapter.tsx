@@ -1,4 +1,5 @@
-import { act, cloneElement, Fragment, isValidElement, type ReactElement, type ReactNode } from 'react';
+import { act, cloneElement, Fragment, isValidElement, useLayoutEffect, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
+import { Pressable, Text as NativeText, View } from 'react-native';
 
 import {
   PluginUiSemanticRoleSchema,
@@ -19,17 +20,51 @@ import type { PluginUiEphemeralSharedScope } from '../hostApi/ephemeralSharedSco
 import { Text } from '../components/Text.js';
 import {
   PluginUiPresentationHostProviderInternal,
+  type PluginUiDetailsPaneHost,
+  type PluginUiDetailsPanePresentation,
+  type PluginUiPaneHeaderHost,
+  type PluginUiPaneHeaderPresentation,
   type PluginUiPresentationHost,
+  type PluginUiSessionPartPresentation,
   type PluginUiTargetedSurfacePresentation,
 } from '../presentationHost/context.js';
 import { PLUGIN_UI_PRIVATE_SURFACE_ENTRY_PROVIDER_KEY } from '../privateCarrierKeys.js';
 
 /** Optional strict targeted-Surface support for the public RNW semantic adapter. */
 export type PluginUiRnwSemanticSurfaceAdapterOptions = Readonly<{
+  /**
+   * Present overlays (`Popover`, `Menu`, `Dropdown`, a `Select` menu) inline
+   * while they are open, the way the app host presents them in its portal, so
+   * their rows are reachable by role. Off by default: a mount with no overlay
+   * host renders only the trigger.
+   */
+  overlays?: boolean;
   /** Test-environment physical focus owner used by public logical focus targets. */
   physicalFocus?: (target: HappierFocusable) => boolean;
+  /**
+   * Present session parts the way a same-realm Happier host does, as semantic stand-ins: a
+   * `SessionChat` or `SessionProvider` becomes a `group` named "Session <id>" ("Session <id>, read
+   * only" for a read-only view) holding its transcript and composer stand-ins. The host's real Session
+   * view is app product composition and never runs here. Omitted, session parts render the author's
+   * `fallback`, as in any host that cannot present a Session.
+   */
+  sessions?: boolean;
   /** Optional host-owned scope shared by the artifact mounts under test. */
   ephemeralSharedScope?: PluginUiEphemeralSharedScope;
+  /**
+   * Mount the surface as the host mounts an app page: inside a page with the app details pane beside it. A
+   * `DetailsPane` (or a `Collection` opening an item) then renders its detail in a host pane drawn OUTSIDE the
+   * surface's React tree — a `group` named "Details pane", with the host's "Close details" control and the band
+   * title when one is given. `available: false` is a page whose pane is not beside it right now (a phone, side panes
+   * turned off). Omitted, the surface is in no pane host.
+   */
+  detailsPane?: Readonly<{ available: boolean }>;
+  /**
+   * Mount the surface as the host mounts a session tab: under the pane header the host draws for it. What the
+   * surface's `PaneHeaderContent` publishes then renders in a host header OUTSIDE the surface's React tree — a
+   * `group` named "Pane header" with the live line and the actions. Omitted, the surface has no pane header.
+   */
+  paneHeader?: boolean;
   targetedSurfaces?: Readonly<{
     /** Read the current strict daemon cold-admission projection on every render. */
     readCurrentMounts(): unknown;
@@ -44,18 +79,46 @@ export type PluginUiRnwSemanticSurfaceAdapterOptions = Readonly<{
   }>;
 }>;
 
+function renderSemanticSessionPart(input: PluginUiSessionPartPresentation): ReactNode {
+  if (input.part === 'transcript' || input.part === 'composer') {
+    return <Text value={input.part === 'transcript' ? 'Session transcript' : 'Session composer'} />;
+  }
+  const name = `Session ${input.sessionId}${input.readOnly ? ', read only' : ''}`;
+  return (
+    <View role="group" aria-label={name}>
+      {input.part === 'provider' ? input.children : (
+        <>
+          <Text value="Session transcript" />
+          {input.readOnly ? null : <Text value="Session composer" />}
+        </>
+      )}
+    </View>
+  );
+}
+
 function createSemanticPresentationHost(input: Readonly<{
   options: PluginUiRnwSemanticSurfaceAdapterOptions;
   readCurrentContext(): RenderContext;
+  detailsPane?: PluginUiDetailsPaneHost;
+  paneHeader?: PluginUiPaneHeaderHost;
 }>): PluginUiPresentationHost {
   return Object.freeze({
+    ...(input.detailsPane === undefined ? {} : { detailsPane: input.detailsPane }),
+    ...(input.paneHeader === undefined ? {} : { paneHeader: input.paneHeader }),
     ...(input.options.physicalFocus === undefined
       ? {}
       : { focusTarget: input.options.physicalFocus }),
-    renderMarkdown: () => null,
+    renderMarkdown: input.options.overlays === true
+      ? (markdown: Readonly<{ value: string }>) => <Text value={markdown.value} />
+      : () => null,
     renderCodeBlock: () => null,
-    renderPopover: () => null,
+    renderPopover: input.options.overlays === true
+      ? (popover: Parameters<PluginUiPresentationHost['renderPopover']>[0]) => (popover.open
+        ? popover.content({ requestClose: () => popover.onRequestClose(), maxHeight: 10_000 })
+        : null)
+      : () => null,
     renderIcon: () => null,
+    ...(input.options.sessions === true ? { renderSessionPart: renderSemanticSessionPart } : {}),
     renderTargetedSurface(presentation: PluginUiTargetedSurfacePresentation) {
       const context = input.readCurrentContext();
       const targetedSurfaces = input.options.targetedSurfaces;
@@ -79,6 +142,94 @@ function createSemanticPresentationHost(input: Readonly<{
       );
     },
   });
+}
+
+/**
+ * The app details pane as the host binds it to a page: the surface publishes the pane from where it declares it, and
+ * the pane itself is a sibling of the surface, outside every plugin provider — so only what the surface carries
+ * across (its own context bridge) reaches the detail. The pane's own chrome is therefore host-drawn (plain React
+ * Native), never a plugin component.
+ */
+function createSemanticDetailsPane(available: boolean): Readonly<{ binding: PluginUiDetailsPaneHost; pane: ReactNode }> {
+  let published: PluginUiDetailsPanePresentation | null = null;
+  const listeners = new Set<() => void>();
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
+  };
+  const read = () => published;
+  function Publisher(props: Readonly<{ input: PluginUiDetailsPanePresentation }>): null {
+    const { input } = props;
+    useLayoutEffect(() => {
+      published = input;
+      listeners.forEach((listener) => listener());
+    });
+    // Unmounted (the surface stopped declaring a pane), the pane has nothing to show.
+    useLayoutEffect(() => () => {
+      published = null;
+      listeners.forEach((listener) => listener());
+    }, []);
+    return null;
+  }
+  function Pane(): ReactElement | null {
+    const input = useSyncExternalStore(subscribe, read, read);
+    if (input === null || !input.open) return null;
+    return (
+      <View role="group" aria-label="Details pane">
+        {input.title === undefined ? null : <NativeText accessibilityRole="header">{input.title}</NativeText>}
+        {input.subtitle === undefined ? null : <NativeText>{input.subtitle}</NativeText>}
+        {input.actions}
+        <Pressable accessibilityRole="button" accessibilityLabel="Close details" onPress={() => input.onClose()}>
+          <NativeText>Close details</NativeText>
+        </Pressable>
+        {input.children}
+      </View>
+    );
+  }
+  return {
+    binding: {
+      useAvailable: () => available,
+      renderDetailsPane: (input) => <Publisher input={input} />,
+    },
+    pane: <Pane />,
+  };
+}
+
+/** The session tab's pane header as the host draws it: a sibling of the surface, outside every plugin provider. */
+function createSemanticPaneHeader(): Readonly<{ binding: PluginUiPaneHeaderHost; header: ReactNode }> {
+  let published: PluginUiPaneHeaderPresentation | null = null;
+  const listeners = new Set<() => void>();
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
+  };
+  const read = () => published;
+  function Publisher(props: Readonly<{ input: PluginUiPaneHeaderPresentation }>): null {
+    const { input } = props;
+    useLayoutEffect(() => {
+      published = input;
+      listeners.forEach((listener) => listener());
+    });
+    useLayoutEffect(() => () => {
+      published = null;
+      listeners.forEach((listener) => listener());
+    }, []);
+    return null;
+  }
+  function Header(): ReactElement | null {
+    const input = useSyncExternalStore(subscribe, read, read);
+    if (input === null) return null;
+    return (
+      <View role="group" aria-label="Pane header">
+        {input.line === null ? null : <NativeText>{input.line.map((part) => typeof part === 'string' ? part : part.text).join(' · ')}</NativeText>}
+        {input.actions}
+      </View>
+    );
+  }
+  return {
+    binding: { renderPaneHeader: (input) => <Publisher input={input} /> },
+    header: <Header />,
+  };
 }
 
 function renderSemanticSurface(input: Readonly<{
@@ -111,6 +262,9 @@ const PRESSABLE_ROLES = new Set<PluginUiSemanticRole>([
   'button',
   'checkbox',
   'link',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
   'option',
   'radio',
   'switch',
@@ -343,20 +497,42 @@ export function createPluginUiRnwSemanticSurfaceAdapter(
     async mount({ surface, context, signal }) {
       if (signal.aborted) throw new Error('The Plugin UI semantic surface was already cancelled.');
       let currentContext = context;
-      const presentationHost = options.targetedSurfaces === undefined && options.physicalFocus === undefined
+      const detailsPane = options.detailsPane === undefined
+        ? undefined
+        : createSemanticDetailsPane(options.detailsPane.available);
+      const paneHeader = options.paneHeader === true ? createSemanticPaneHeader() : undefined;
+      const presentationHost = options.targetedSurfaces === undefined
+        && options.physicalFocus === undefined
+        && options.overlays !== true
+        && options.sessions !== true
+        && detailsPane === undefined
+        && paneHeader === undefined
         ? undefined
         : createSemanticPresentationHost({
             options,
             readCurrentContext: () => currentContext,
+            ...(detailsPane === undefined ? {} : { detailsPane: detailsPane.binding }),
+            ...(paneHeader === undefined ? {} : { paneHeader: paneHeader.binding }),
           });
-      const mount = await mountRnw(renderSemanticSurface({
-        surface,
-        context,
-        presentationHost,
-        ...(options.ephemeralSharedScope === undefined
-          ? {}
-          : { ephemeralSharedScope: options.ephemeralSharedScope }),
-      }));
+      const renderPage = (renderContext: RenderContext): ReactNode => {
+        const page = renderSemanticSurface({
+          surface,
+          context: renderContext,
+          presentationHost,
+          ...(options.ephemeralSharedScope === undefined
+            ? {}
+            : { ephemeralSharedScope: options.ephemeralSharedScope }),
+        });
+        if (paneHeader === undefined && detailsPane === undefined) return page;
+        return (
+          <>
+            {paneHeader === undefined ? null : paneHeader.header}
+            {page}
+            {detailsPane === undefined ? null : detailsPane.pane}
+          </>
+        );
+      };
+      const mount = await mountRnw(renderPage(context));
       let revision = 0;
       let disposed = false;
       let disposal: Promise<void> | undefined;
@@ -415,14 +591,7 @@ export function createPluginUiRnwSemanticSurfaceAdapter(
           const previousContext = currentContext;
           currentContext = nextContext;
           try {
-            await mount.render(renderSemanticSurface({
-              surface,
-              context: nextContext,
-              presentationHost,
-              ...(options.ephemeralSharedScope === undefined
-                ? {}
-                : { ephemeralSharedScope: options.ephemeralSharedScope }),
-            }));
+            await mount.render(renderPage(nextContext));
           } catch (error) {
             currentContext = previousContext;
             throw error;

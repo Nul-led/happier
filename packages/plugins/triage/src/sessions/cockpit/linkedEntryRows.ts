@@ -1,7 +1,10 @@
 import type { PluginCollectionUiQueryErrorV1 } from '@happier-dev/plugin-sdk/collections';
-import type { TriageEntryRefV1 } from '@happier-dev/triage-protocol/v1';
+import type { TriageEntryRefV1, TriageSourceWorkflowSubjectV1 } from '@happier-dev/triage-protocol/v1';
 
 import { CORPUS_SESSION_LINKS_FIELD } from '../../corpus/collections/ids.js';
+import { triageEntryRowKey, type TriageListRowV1 } from '../../projection/listWindow.js';
+import { projectTriageSessionLinkedEntrySummary, type TriageSessionLinkedEntrySummaryV1 } from './linkedEntrySummary.js';
+export type { TriageSessionLinkedEntrySummaryV1 } from './linkedEntrySummary.js';
 
 /**
  * The Session cockpit's presentation projection.
@@ -55,7 +58,7 @@ export type TriageSessionLinkQueryRowV1 = Readonly<{
 
 export type TriageSessionLinkedEntryPresentationV1 =
     | Readonly<{ kind: 'reading' }>
-    | Readonly<{ kind: 'linked'; displayPath: string; entryRef: TriageEntryRefV1 }>
+    | Readonly<{ kind: 'linked'; displayPath: string; entryRef: TriageEntryRefV1; entry: TriageSessionLinkedEntrySummaryV1 | null }>
     | Readonly<{ kind: 'unlinked' }>
     | Readonly<{ kind: 'unreadable' }>;
 
@@ -131,13 +134,15 @@ function readLinkedAtMs(row: TriageSessionLinkQueryRowV1): number {
 function presentationFor(
     row: TriageSessionLinkQueryRowV1,
     hydration: TriageSessionLinkHydrationMapV1,
+    entries: ReadonlyMap<string, TriageSessionLinkedEntrySummaryV1 | null>,
 ): TriageSessionLinkedEntryPresentationV1 {
     const known = hydration.get(row.rowId);
     // A hydration read at an older revision describes a row that has since
     // changed, so it is not presented as this row's current state.
     if (known === undefined || known.revision !== row.revision) return { kind: 'reading' };
     if (known.kind === 'ready') {
-        return { kind: 'linked', displayPath: known.displayPath, entryRef: known.entryRef };
+        return { kind: 'linked', displayPath: known.displayPath, entryRef: known.entryRef,
+            entry: entries.get(triageEntryRowKey(known.entryRef)) ?? null };
     }
     if (known.kind === 'unlinked') return { kind: 'unlinked' };
     return { kind: 'unreadable' };
@@ -162,6 +167,8 @@ function compareRows(
 export function projectTriageSessionLinkedEntries(input: Readonly<{
     query: TriageSessionLinkedEntriesQueryStateV1;
     hydration: TriageSessionLinkHydrationMapV1;
+    entries?: readonly TriageListRowV1[];
+    workflowSubject?: (entryRef: TriageEntryRefV1) => TriageSourceWorkflowSubjectV1 | null;
 }>): TriageSessionLinkedEntriesViewV1 {
     const { query, hydration } = input;
     const failed = query.status === 'unavailable' || query.status === 'error';
@@ -172,11 +179,12 @@ export function projectTriageSessionLinkedEntries(input: Readonly<{
         return query.status === 'ready' ? { kind: 'empty' } : { kind: 'loading' };
     }
 
+    const entries = new Map((input.entries ?? []).map((row) => [triageEntryRowKey(row.entryRef), projectTriageSessionLinkedEntrySummary(row, input.workflowSubject?.(row.entryRef) ?? null)]));
     const ordered = query.rows
         .map((row) => Object.freeze({
             key: row.rowId,
             linkedAtMs: readLinkedAtMs(row),
-            presentation: presentationFor(row, hydration),
+            presentation: presentationFor(row, hydration, entries),
         }))
         .sort(compareRows);
     return Object.freeze({

@@ -58,6 +58,12 @@ const LIFECYCLE_COPY_V1: Readonly<Record<
   unknown: Object.freeze({ key: 'plugins.triage.surface.row.state.unknown', fallback: 'State unknown' }),
 });
 
+/**
+ * `attention` is a required-attention reason (the row's one loud fact);
+ * `suggestion` is a suggested-attention reason, said quietly.
+ */
+export type TriageEntryDetailKindV1 = 'presence' | 'attention' | 'suggestion' | 'summary';
+
 export type TriageEntryDisplayV1 = Readonly<{
   /** Stable list identity across re-reads; injective over the canonical ref. */
   key: string;
@@ -74,6 +80,18 @@ export type TriageEntryDisplayV1 = Readonly<{
   detail: string | null;
   /** Whether the row's presence is a caution rather than ordinary content. */
   tone: 'neutral' | 'warning' | 'danger';
+  /**
+   * What `detail` is: a presence note, an attention reason, or the source's
+   * quiet summary. `null` when there is no detail.
+   */
+  detailKind: TriageEntryDetailKindV1 | null;
+  /** The lifecycle presentation behind `lifecycleLabel`, for the row's mark. */
+  lifecyclePresentation: TriageSourceEntrySnapshotV1['state']['presentation'] | null;
+  /**
+   * The provider's own last-activity moment, when it reports one. It is a
+   * display fact only (the source's clock) and decides nothing.
+   */
+  activityAtMs: number | null;
   /**
    * The source's own kind id for this entry, exactly as the canonical reference
    * carries it. A reader moving row by row hears no section heading and sees no
@@ -131,6 +149,13 @@ export function projectTriageEntryDisplay(
   // "your review is requested" over an entry the source no longer reports would
   // send the reader somewhere that is not there.
   const detail = presence.detail ?? row.attention?.reasonLabel ?? snapshot?.summary ?? null;
+  const detailKind: TriageEntryDetailKindV1 | null = presence.detail !== null
+    ? 'presence'
+    : row.attention != null
+      ? (row.attention.level === 'required' ? 'attention' : 'suggestion')
+      : snapshot?.summary !== undefined && snapshot.summary !== null
+        ? 'summary'
+        : null;
 
   return Object.freeze({
     key: triageEntryRowKey(row.entryRef),
@@ -143,6 +168,9 @@ export function projectTriageEntryDisplay(
     summary: snapshot?.summary ?? null,
     detail,
     tone: presence.tone,
+    detailKind,
+    lifecyclePresentation: snapshot?.state.presentation ?? null,
+    activityAtMs: row.content?.outcome.sourceUpdatedAtMs ?? null,
     kindId: row.entryRef.kindId,
     lifecycleLabel: snapshot === undefined
       ? null
@@ -176,6 +204,8 @@ export type TriageEntryRowAnnouncementFactsV1 = Readonly<{
   stale: boolean;
   /** The same declared source/kind/address context shown in the row. */
   contextDescription?: string;
+  /** The row's visible last-activity age, said in the same place it is shown. */
+  activityLabel?: string;
 }>;
 
 /** Compact scan context for every mounted reader of the canonical display facts. */
@@ -232,6 +262,7 @@ export function readTriageEntryRowAnnouncementV1(
     ? [facts.kindId, facts.scopeLabel]
     : [facts.contextDescription];
   if (facts.lifecycleLabel !== null) parts.push(facts.lifecycleLabel);
+  if (facts.activityLabel !== undefined) parts.push(facts.activityLabel);
   if (facts.detail !== null) parts.push(facts.detail);
   if (facts.stale) {
     // An age is only stated when one is actually known. A row nothing has ever

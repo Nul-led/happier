@@ -69,7 +69,7 @@ pub struct DesktopPetOverlayState(
 
 #[cfg(target_os = "macos")]
 #[derive(Default)]
-struct NativeMousePollController {
+pub(crate) struct NativeMousePollController {
     gate: Mutex<NativeMousePollGateState>,
     condvar: Condvar,
 }
@@ -94,7 +94,7 @@ impl NativeMousePollController {
         true
     }
 
-    fn set_enabled(&self, enabled: bool) {
+    pub(crate) fn set_enabled(&self, enabled: bool) {
         let Ok(mut gate) = self.gate.lock() else {
             return;
         };
@@ -107,7 +107,7 @@ impl NativeMousePollController {
         }
     }
 
-    fn wait_until_enabled(&self) -> bool {
+    pub(crate) fn wait_until_enabled(&self) -> bool {
         let Ok(mut gate) = self.gate.lock() else {
             return false;
         };
@@ -120,7 +120,7 @@ impl NativeMousePollController {
         true
     }
 
-    fn is_enabled(&self) -> bool {
+    pub(crate) fn is_enabled(&self) -> bool {
         self.gate.lock().map(|gate| gate.enabled).unwrap_or(false)
     }
 }
@@ -151,6 +151,21 @@ impl Default for DesktopPetOverlayState {
             Arc::new(NativeMousePollController::default()),
         )
     }
+}
+
+pub(crate) fn release_for_menu_bar(app: &AppHandle) {
+    let Some(state) = app.try_state::<DesktopPetOverlayState>() else {
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    state.1.set_enabled(false);
+    if let Ok(mut guard) = state.0.lock() {
+        guard.last_sync_payload = None;
+        guard.window_state = None;
+        guard.element_metrics = None;
+        guard.active_pointer_id = None;
+        guard.momentum_generation = guard.momentum_generation.wrapping_add(1);
+    };
 }
 
 pub fn register<R: Runtime + 'static>(app: &mut App<R>) -> tauri::Result<()> {
@@ -1693,7 +1708,7 @@ mod tests {
             "core:window:allow-set-badge-label",
             "allow-desktop-install-update",
             "allow-desktop-pick-ssh-identity-file",
-            "allow-desktop-set-autostart-enabled",
+            "allow-desktop-finish-shutdown",
             "allow-start-system-task",
             "allow-cancel-system-task",
             "allow-respond-system-task-prompt",
@@ -1712,8 +1727,8 @@ mod tests {
             "allow-desktop-fetch-update",
             "allow-desktop-install-update",
             "allow-desktop-pick-ssh-identity-file",
-            "allow-desktop-get-autostart-enabled",
-            "allow-desktop-set-autostart-enabled",
+            "allow-desktop-set-tray-state",
+            "allow-desktop-finish-shutdown",
             "allow-desktop-set-tray-state",
             "allow-sync-desktop-pet-overlay-state",
             "allow-desktop-pet-overlay-read-window-state",
@@ -1747,7 +1762,7 @@ mod tests {
             "allow-desktop-fetch-update",
             "allow-desktop-install-update",
             "allow-desktop-pick-ssh-identity-file",
-            "allow-desktop-set-autostart-enabled",
+            "allow-desktop-finish-shutdown",
             "allow-sync-desktop-pet-overlay-state",
             "allow-desktop-pet-overlay-sync-element-metrics",
             "allow-desktop-pet-overlay-apply-momentum-delta",

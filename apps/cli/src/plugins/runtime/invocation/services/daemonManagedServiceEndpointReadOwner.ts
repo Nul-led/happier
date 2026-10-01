@@ -18,12 +18,14 @@ import type {
   AgentExternalSessionsManagedEndpointReadRequest,
   AgentExternalSessionsManagedEndpointReadResponse,
 } from '@happier-dev/plugin-sdk/sessions/external';
+import { pluginSourceCustodyV1Equal } from '@happier-dev/protocol';
 import type {
   AgentExternalSessionsManagedEndpointReadHost,
 } from '@/session/external/agentExternalSessionsInvocation';
 import type {
     ManagedServiceEndpointProjectionV1,
-    ManagedServiceEndpointProjectionResolveQuery,
+  ManagedServiceEndpointProjectionResolveQuery,
+  ManagedServiceSessionClientAccessResolver,
 } from './managedServiceEndpointProjection';
 
 type ResolveProjection = (
@@ -92,6 +94,7 @@ export function createDaemonManagedServiceEndpointReadOwner(input: Readonly<{
     pluginId: string;
   }>): boolean;
   bindHost: AgentExternalSessionsManagedEndpointReadHost;
+  resolveSessionClientAccess: ManagedServiceSessionClientAccessResolver;
   dispose(): Promise<void>;
 }> {
   const pendingClaims = new Map<string, PendingClaim>();
@@ -338,14 +341,11 @@ export function createDaemonManagedServiceEndpointReadOwner(input: Readonly<{
       ) {
         throw new Error('Managed server endpoint read owner is unavailable');
       }
-      const immutableGenerationId =
-        bindingInput.identity.immutableGenerationId
-        ?? bindingInput.identity.generation;
       const currentContributionQuery:
         ManagedServiceEndpointProjectionResolveQuery = Object.freeze({
           pluginId: bindingInput.identity.pluginId,
           contributionId: bindingInput.identity.contributionQualifiedId,
-          immutableGenerationId,
+          sourceCustody: bindingInput.identity.sourceCustody,
           selector: Object.freeze({ kind: 'currentContribution' }),
         });
       const resolveCurrentContribution = async () => {
@@ -360,7 +360,10 @@ export function createDaemonManagedServiceEndpointReadOwner(input: Readonly<{
           || projection.pluginId !== bindingInput.identity.pluginId
           || projection.contributionId
             !== bindingInput.identity.contributionQualifiedId
-          || projection.immutableGenerationId !== immutableGenerationId
+          || !pluginSourceCustodyV1Equal(
+            projection.sourceCustody,
+            bindingInput.identity.sourceCustody,
+          )
         ) {
           throw new Error('Managed server endpoint read owner is unavailable');
         }
@@ -382,8 +385,127 @@ export function createDaemonManagedServiceEndpointReadOwner(input: Readonly<{
       });
     };
 
+  const resolveSessionClientAccess:
+    ManagedServiceSessionClientAccessResolver = async (accessInput) => {
+      if (disposed) return null;
+      const query: ManagedServiceEndpointProjectionResolveQuery = Object.freeze({
+        pluginId: accessInput.pluginId,
+        sessionId: accessInput.sessionId,
+        contributionId: accessInput.contributionId,
+        selector: Object.freeze({
+          kind: 'baseUrl' as const,
+          baseUrl: accessInput.targetBaseUrl,
+        }),
+      });
+      const resolveCurrent = async () => {
+        const projection = await input.resolveProjection(query);
+        return projection
+          && projection.custodyOwner === 'sessionRunner'
+          && projection.sessionId === accessInput.sessionId
+          && projection.pluginId === accessInput.pluginId
+          && projection.contributionId === accessInput.contributionId
+          ? projection
+          : null;
+      };
+      const projection = await resolveCurrent();
+      if (!projection) return null;
+      let rpc: RunnerEndpointReadRpc | null;
+      if (input.resolveRunnerEndpointReadRpc) {
+        rpc = await input.resolveRunnerEndpointReadRpc(projection.sessionId);
+      } else {
+        const transport = await resolveSessionTransportContext({
+          credentials: input.credentials,
+          idOrPrefix: projection.sessionId,
+        });
+        // Unlike authenticated endpoint reads, this acknowledgement contains
+        // a raw child credential. Never expose it to the relay in plain mode.
+        if (transport.ok && transport.mode === 'plain') return null;
+        rpc = transport.ok && transport.sessionId === projection.sessionId
+          ? Object.freeze({
+              sessionId: transport.sessionId,
+              call: async (rpcInput: Readonly<{
+                method: string;
+                request: unknown;
+                timeoutMs: number;
+              }>) => await callResolvedSessionRpc({
+                credentials: input.credentials,
+                transport,
+                ...rpcInput,
+              }),
+            })
+          : null;
+      }
+      if (!rpc || rpc.sessionId !== projection.sessionId || disposed) return null;
+      const requestId = randomUUID();
+      const pending: PendingClaim = { projection, claimed: false };
+      pendingClaims.set(requestId, pending);
+      try {
+        const raw = await rpc.call({
+          method: MANAGED_SERVICE_ENDPOINT_READ_RPC_METHODS.OPEN,
+          timeoutMs: 20_000,
+          request: {
+            v: 1,
+            requestId,
+            route: {
+              kind: 'endpointClientEnvironment',
+              projection,
+              environmentKey: accessInput.environmentKey,
+            },
+          },
+        });
+        const materialized = ManagedServiceEndpointReadOpenResultV1Schema
+          .parse(raw);
+        const environmentKeys = materialized.status === 'clientEnvironment'
+          ? Object.keys(materialized.environment)
+          : [];
+        const current = await resolveCurrent();
+        if (
+          disposed
+          || materialized.status !== 'clientEnvironment'
+          || (
+            environmentKeys.length > 0
+            && (
+              environmentKeys.length !== 1
+              || environmentKeys[0] !== accessInput.environmentKey
+            )
+          )
+          || pendingClaims.get(requestId) !== pending
+          || !pending.claimed
+          || current?.projectionToken !== projection.projectionToken
+        ) return null;
+        return Object.freeze({
+          baseUrl: projection.endpoint.baseUrl,
+          childEnvironment: Object.freeze(materialized.environment),
+          request: async (request) => {
+            const latest = await resolveCurrent();
+            if (latest?.projectionToken !== projection.projectionToken) {
+              throw new Error('Managed server endpoint read owner is unavailable');
+            }
+            const controller = request.signal
+              ? null
+              : new AbortController();
+            return await readProjection({
+              projection,
+              resolveCurrentContribution: async () => {
+                const candidate = await resolveCurrent();
+                if (!candidate) {
+                  throw new Error('Managed server endpoint read owner is unavailable');
+                }
+                return candidate;
+              },
+              request: { pathAndQuery: request.pathAndQuery },
+              signal: request.signal ?? controller!.signal,
+            });
+          },
+        });
+      } finally {
+        pendingClaims.delete(requestId);
+      }
+    };
+
   return Object.freeze({
     bindHost,
+    resolveSessionClientAccess,
     claim(request) {
       if (disposed) return false;
       const pending = pendingClaims.get(request.requestId);

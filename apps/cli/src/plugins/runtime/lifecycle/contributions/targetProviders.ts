@@ -15,11 +15,12 @@ import type {
     ResolvedProviderContribution,
 } from '@/plugins/projection/registry/types';
 import type { PluginCompatibilityDiagnostic } from '@/plugins/validation/diagnostics/types';
+import type { PluginSourceCustody } from '@/plugins/runtime/sourceAuthority';
 import type { ContributionRuntimeRegistration } from '../../api/registrationRightsHost';
 
 type TargetRegistration = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }>;
 
@@ -56,8 +57,7 @@ export function projectTargetProviderRuntimes(input: Readonly<{
     providers: readonly ResolvedProviderContribution[];
     activationTargets?: readonly ResolvedActivationTarget[];
     targetRegistrations: readonly TargetRegistration[];
-    activationGeneration: string;
-    immutableGenerationIdsByPluginId: ReadonlyMap<string, string>;
+    sourceCustodiesByPluginId: ReadonlyMap<string, PluginSourceCustody>;
     isRegistrationCurrent(registration: TargetRegistration): boolean;
 }>): ProjectedTargetProviderRuntimes {
     const providersByKey = new Map(input.providers.map((provider) => [
@@ -94,10 +94,7 @@ export function projectTargetProviderRuntimes(input: Readonly<{
     }
 
     for (const entry of input.targetRegistrations) {
-        if (
-            entry.generation !== input.activationGeneration
-            || entry.registration.family !== 'providers'
-        ) {
+        if (entry.registration.family !== 'providers' || !input.isRegistrationCurrent(entry)) {
             continue;
         }
         const identity = createPluginContributionIdentity({
@@ -125,9 +122,9 @@ export function projectTargetProviderRuntimes(input: Readonly<{
             refuse(key, identity, `Provider runtime registration '${key}' has no matching current activation target declaration`);
             continue;
         }
-        const immutableGenerationId = input.immutableGenerationIdsByPluginId.get(entry.pluginId);
-        if (!immutableGenerationId) {
-            refuse(key, identity, `Provider runtime registration '${key}' has no immutable generation identity`);
+        const sourceCustody = input.sourceCustodiesByPluginId.get(entry.pluginId);
+        if (!sourceCustody) {
+            refuse(key, identity, `Provider runtime registration '${key}' has no source custody`);
             continue;
         }
         const registered = entry.registration.value;
@@ -159,8 +156,8 @@ export function projectTargetProviderRuntimes(input: Readonly<{
             }
             runtimesByKey.set(key, Object.freeze({
                 runtime: registered.managedRuntime,
-                activationGeneration: entry.generation,
-                immutableGenerationId,
+                activationOccurrenceId: entry.occurrenceId,
+                sourceCustody,
                 isCurrent: () => input.isRegistrationCurrent(entry),
             }));
         }
@@ -190,8 +187,8 @@ export function projectTargetProviderRuntimes(input: Readonly<{
             }
             catalogParsersByKey.set(key, Object.freeze({
                 parsersByFormat: registered.catalogParsers!,
-                activationGeneration: entry.generation,
-                immutableGenerationId,
+                activationOccurrenceId: entry.occurrenceId,
+                sourceCustody,
                 isCurrent: () => input.isRegistrationCurrent(entry),
             }));
         }

@@ -1,9 +1,31 @@
 import { z } from 'zod';
 
-import { PluginIdSchema } from '@happier-dev/protocol';
+import {
+    PluginIdSchema,
+    PluginSourceCustodyV1Schema,
+    pluginSourceCustodyV1Equal,
+    type PluginSourceCustodyV1,
+} from '@happier-dev/protocol';
 import { asHostProtocolZod } from '@/plugins/runtime/protocolComposableZodAdapter';
 
 const HostPluginIdSchema = asHostProtocolZod(PluginIdSchema);
+const HostPluginSourceCustodyV1Schema = asHostProtocolZod(
+    PluginSourceCustodyV1Schema,
+);
+
+export function runnerPluginSourceCustodyIdentity(
+    value: PluginSourceCustodyV1,
+): string {
+    if (value.kind === 'managed') {
+        return `managed:${value.installSource}:${value.immutableGenerationId}`;
+    }
+    if (value.kind === 'development') {
+        return `development:${value.registeredRootId}`;
+    }
+    return value.packagedRuntime.kind === 'cli_version_root'
+        ? `bundled_first_party:cli_version_root:${value.packagedRuntime.versionRootId}`
+        : `bundled_first_party:pinned_runner_snapshot:${value.packagedRuntime.snapshotId}`;
+}
 
 const SortedUniqueBoundedStringsSchema = (
     maxEntries: number,
@@ -25,7 +47,7 @@ const SortedUniqueBoundedStringsSchema = (
 
 export const RunnerManagedProviderRetainedAuthorityV1Schema = z.object({
     pluginId: HostPluginIdSchema,
-    immutableGenerationId: z.string().trim().min(1).max(512),
+    sourceCustody: HostPluginSourceCustodyV1Schema,
     manifestAuthority: z.enum(['external', 'bundled_first_party']),
     hardRevocationRevisionAtAdmission:
         z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -38,8 +60,7 @@ export type RunnerManagedProviderRetainedAuthorityV1 = Readonly<z.infer<
 export const RunnerManagedDependencySourceCandidateV1Schema = z.object({
     qualifiedDependencyId:
         z.string().trim().min(1).max(512),
-    immutableGenerationId:
-        z.string().trim().min(1).max(512),
+    sourceCustody: HostPluginSourceCustodyV1Schema,
     manifestAuthority:
         z.enum(['external', 'bundled_first_party']),
 }).strict();
@@ -54,8 +75,8 @@ function compareSourceCandidates(
 ): number {
     return left.qualifiedDependencyId.localeCompare(
         right.qualifiedDependencyId,
-    ) || left.immutableGenerationId.localeCompare(
-        right.immutableGenerationId,
+    ) || runnerPluginSourceCustodyIdentity(left.sourceCustody).localeCompare(
+        runnerPluginSourceCustodyIdentity(right.sourceCustody),
     ) || left.manifestAuthority.localeCompare(
         right.manifestAuthority,
     );
@@ -82,7 +103,7 @@ export function areRunnerManagedProviderRetainedAuthoritiesEqual(
 ): boolean {
     if (!left || !right) return left === right;
     return left.pluginId === right.pluginId
-        && left.immutableGenerationId === right.immutableGenerationId
+        && pluginSourceCustodyV1Equal(left.sourceCustody, right.sourceCustody)
         && left.manifestAuthority === right.manifestAuthority
         && left.hardRevocationRevisionAtAdmission
             === right.hardRevocationRevisionAtAdmission;
@@ -92,8 +113,18 @@ export const RunnerManagedDependencyRetentionV1Schema = z.object({
     v: z.literal(1),
     adoptedManagedProviderAuthority:
         RunnerManagedProviderRetainedAuthorityV1Schema.optional(),
-    sourceGenerationIds:
-        SortedUniqueBoundedStringsSchema(64),
+    sourceCustodies: z.array(HostPluginSourceCustodyV1Schema).max(64)
+        .superRefine((values, context) => {
+            const identities = values.map(runnerPluginSourceCustodyIdentity);
+            if (identities.some((value, index) => (
+                index > 0 && identities[index - 1]! >= value
+            ))) {
+                context.addIssue({
+                    code: 'custom',
+                    message: 'Runner source custodies must be unique and sorted',
+                });
+            }
+        }),
     qualifiedDependencyIds:
         SortedUniqueBoundedStringsSchema(8_192),
     sourceCandidates:
@@ -139,7 +170,7 @@ export function mergeRunnerManagedDependencyRetentionV1(
         for (const sourceCandidate of value.sourceCandidates) {
             const identity = JSON.stringify([
                 sourceCandidate.qualifiedDependencyId,
-                sourceCandidate.immutableGenerationId,
+                runnerPluginSourceCustodyIdentity(sourceCandidate.sourceCustody),
             ]);
             const existing = sourceCandidatesByIdentity.get(identity);
             if (
@@ -167,14 +198,15 @@ export function mergeRunnerManagedDependencyRetentionV1(
                     adoptedManagedProviderAuthority,
                 }
                 : {}),
-            sourceGenerationIds: [
-                ...new Set(
-                    values.flatMap(
-                        (value) =>
-                            value?.sourceGenerationIds ?? [],
-                    ),
-                ),
-            ].sort(),
+            sourceCustodies: [
+                ...new Map(values.flatMap(
+                    (value) => value?.sourceCustodies ?? [],
+                ).map((custody) => [
+                    runnerPluginSourceCustodyIdentity(custody),
+                    custody,
+                ])).values(),
+            ].sort((left, right) => runnerPluginSourceCustodyIdentity(left)
+                .localeCompare(runnerPluginSourceCustodyIdentity(right))),
             qualifiedDependencyIds: [
                 ...new Set(
                     values.flatMap(

@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
     createPluginContributionIdentity,
-    DaemonContributionRegistryProjectionDescribeResponseSchema,
+    DaemonPluginUiTargetedContributionsReadResponseSchema,
+    type DaemonPluginUiTargetedContributionsReadResponse,
     type PluginTargetedContributionV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -27,6 +28,10 @@ import {
     type LoadInstalledPluginsResult,
 } from '@/plugins/discovery/load/installed';
 import { ingestCanonicalPluginManifest } from '@/plugins/manifest/ingest';
+import {
+    createPluginRuntimeOccurrenceId,
+    type PluginRuntimeOccurrenceId,
+} from '@/plugins/runtime/runtimeSlots';
 import { seedCurrentLocalPathPluginFixture } from '@/plugins/store/registry/currentState.testkit';
 import type {
     CurrentCommittedPluginGeneration,
@@ -142,7 +147,6 @@ function fixtureGenerationAuthority(
         commit: null,
         generations: new Map(generations.map((generation) => [generation.pluginId, generation])),
         rejectedGenerations: new Map(),
-        unavailableBundledPackageNames: new Set(),
         isCurrent: async () => true,
     };
 }
@@ -160,8 +164,8 @@ function createProjectionRegistrar() {
 async function readMountedTargetedUiProjection(input: Readonly<{
     runtime: Awaited<ReturnType<typeof resolveExecutablePluginRuntimeRegistry>>;
     generation: number;
-    mountedTarget: Readonly<{ pluginId: string; immutableGenerationId: string }>;
-}>): Promise<ReturnType<typeof DaemonContributionRegistryProjectionDescribeResponseSchema.parse>> {
+    mountedTarget: Readonly<{ pluginId: string; occurrenceId: PluginRuntimeOccurrenceId }>;
+}>): Promise<Extract<DaemonPluginUiTargetedContributionsReadResponse, { status: 'current' }>> {
     const { handlers, registrar } = createProjectionRegistrar();
     const projectionModule = await import('@/rpc/handlers/daemonContributionRegistryProjection');
     projectionModule.invalidateDaemonContributionRegistryProjectionCache();
@@ -173,12 +177,15 @@ async function readMountedTargetedUiProjection(input: Readonly<{
             machineId: 'machine_targeted_semantics',
         }),
     });
-    const handler = handlers.get(RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE);
-    if (!handler) throw new Error('targeted_projection_handler_missing');
-    return DaemonContributionRegistryProjectionDescribeResponseSchema.parse(await handler({
+    const handler = handlers.get(RPC_METHODS.DAEMON_PLUGIN_UI_TARGETED_CONTRIBUTIONS_READ);
+    if (!handler) throw new Error('targeted_contributions_read_handler_missing');
+    const response = DaemonPluginUiTargetedContributionsReadResponseSchema.parse(await handler({
         machineId: 'machine_targeted_semantics',
-        mountedTarget: input.mountedTarget,
+        pluginId: input.mountedTarget.pluginId,
     }));
+    if (response.status !== 'current') throw new Error(`targeted_contributions_read_${response.code}`);
+    expect(response.targetedContributions.target.occurrenceId).toBe(input.mountedTarget.occurrenceId);
+    return response;
 }
 
 function bundledFixtureManifest(pluginId: string) {
@@ -305,7 +312,7 @@ function externalSemanticTargetModuleSource(params: Readonly<{
 }
 
 describe('executable targeted contribution admission', () => {
-    it('publishes a committed cold snapshot without activating either plugin', async () => {
+    it('does not publish a targeted snapshot before either plugin has an admitted occurrence', async () => {
         const contributes = createResolvedContributionRegistry({
             actions: [action()],
             pluginContributionPoints: [{
@@ -338,33 +345,11 @@ describe('executable targeted contribution admission', () => {
         });
         try {
             expect(runtime.activatedPluginIds).toEqual(new Set());
-            expect(runtime.readAdmittedTargetedContributions?.({ targetPluginId, pointId, protocol })).toEqual({
-                target: {
-                    pluginId: targetPluginId,
-                    pointId,
-                    immutableGenerationId: 'target-immutable-a',
-                },
-                contributions: [{
-                    contributor: {
-                        pluginId: contributorPluginId,
-                        contributionId: 'provider-a',
-                        immutableGenerationId: 'contributor-immutable-a',
-                    },
-                    protocol,
-                    operations: [{
-                        role: 'setup',
-                        action: { pluginId: contributorPluginId, localId: 'arbitrary-action' },
-                        contributor: {
-                            pluginId: contributorPluginId,
-                            contributionId: 'provider-a',
-                            immutableGenerationId: 'contributor-immutable-a',
-                        },
-                        targetProtocol: expect.objectContaining({ role: 'setup' }),
-                        selectedActionInput: { kind: 'none' },
-                    }],
-                    surfaces: [],
-                }],
-            });
+            expect(runtime.readAdmittedTargetedContributions?.({
+                targetPluginId,
+                pointId,
+                protocol,
+            })).toBeNull();
         } finally {
             await runtime.dispose();
         }
@@ -475,7 +460,7 @@ describe('executable targeted contribution admission', () => {
             );
             const generationAuthority = await readCurrentCommittedPluginGenerations(
                 resolvePluginStorePaths({ happyHomeDir }),
-                { bundledArtifacts: [] },
+                {},
             );
             if (!generationAuthority) {
                 throw new Error('Expected committed external semantic generation authority');
@@ -498,10 +483,10 @@ describe('executable targeted contribution admission', () => {
             });
             const admittedContribution = admitted?.contributions[0];
             const admittedSurface = admittedContribution?.surfaces[0];
-            const immutableGenerationId = runtime.contributes.immutableGenerationIdsByPluginId?.[
+            const occurrenceId = runtime.contributes.occurrenceIdsByPluginId?.[
                 externalTargetPluginId
             ];
-            if (!admittedContribution || !admittedSurface || !immutableGenerationId) {
+            if (!admittedContribution || !admittedSurface || !occurrenceId) {
                 throw new Error('Expected current external targeted semantic admission');
             }
             expect(admitted?.contributions).toEqual([expect.objectContaining({
@@ -515,7 +500,7 @@ describe('executable targeted contribution admission', () => {
                 generation: 41,
                 mountedTarget: {
                     pluginId: externalTargetPluginId,
-                    immutableGenerationId,
+                    occurrenceId,
                 },
             });
             const projectedContribution = response.targetedContributions
@@ -527,12 +512,18 @@ describe('executable targeted contribution admission', () => {
             // current semantic admission, not a second target decoder.
             expect(response.targetedContributions?.target).toEqual({
                 pluginId: externalTargetPluginId,
-                immutableGenerationId,
+                occurrenceId,
+                sourceCustody: expect.objectContaining({ kind: expect.any(String) }),
             });
             expect(projectedContribution?.descriptor).toEqual(admittedContribution.descriptor);
             expect(projectedSurface).toEqual({
                 point: { pointId: 'providers', protocol },
-                contributor: admittedSurface.contributor,
+                // The projected identity also carries the contributor's
+                // current source custody, which the wire identity requires.
+                contributor: {
+                    ...admittedSurface.contributor,
+                    sourceCustody: expect.objectContaining({ kind: expect.any(String) }),
+                },
                 role: admittedSurface.role,
                 presentation: admittedSurface.presentation,
             });
@@ -561,7 +552,7 @@ describe('executable targeted contribution admission', () => {
         }
     });
 
-    it('projects a bundled target manifest through the same UI response pair', async () => {
+    it('does not admit an arbitrary bundled target without a canonical bundled slot', async () => {
         const bundledTargetPluginId = 'happier.bundled-semantic-target';
         const bundledContributorPluginId = 'happier.bundled-semantic-contributor';
         const target = defineBundledSemanticTarget(bundledTargetPluginId);
@@ -646,62 +637,20 @@ describe('executable targeted contribution admission', () => {
         });
         try {
             expect(runtime.activatedPluginIds).toEqual(new Set());
-            const admitted = runtime.contributes.readAdmittedTargetedContributions?.({
+            expect(runtime.contributes.readAdmittedTargetedContributions?.({
                 targetPluginId: bundledTargetPluginId,
                 pointId: 'providers',
                 protocol,
-            });
-            const admittedContribution = admitted?.contributions[0];
-            const admittedSurface = admittedContribution?.surfaces[0];
-            const immutableGenerationId = runtime.contributes.immutableGenerationIdsByPluginId?.[
+            })).toBeNull();
+            expect(runtime.contributes.occurrenceIdsByPluginId?.[
                 bundledTargetPluginId
-            ];
-            if (!admittedContribution || !admittedSurface || !immutableGenerationId) {
-                throw new Error('Expected current bundled targeted semantic admission');
-            }
-
-            const response = await readMountedTargetedUiProjection({
-                runtime,
-                generation: 42,
-                mountedTarget: {
-                    pluginId: bundledTargetPluginId,
-                    immutableGenerationId,
-                },
-            });
-            const projectedContribution = response.targetedContributions
-                ?.points[0]?.protocols[0]?.contributions[0];
-            const projectedSurface = projectedContribution?.surfaces[0];
-            const projectedMount = response.targetedSurfaceMounts?.[0];
-
-            expect(response.targetedContributions?.target).toEqual({
-                pluginId: bundledTargetPluginId,
-                immutableGenerationId,
-            });
-            expect(projectedContribution?.descriptor).toEqual(admittedContribution.descriptor);
-            expect(projectedSurface).toEqual({
-                point: { pointId: 'providers', protocol },
-                contributor: admittedSurface.contributor,
-                role: admittedSurface.role,
-                presentation: admittedSurface.presentation,
-            });
-            expect(projectedMount).toMatchObject({
-                target: response.targetedContributions?.target,
-                point: projectedSurface?.point,
-                contributor: projectedSurface?.contributor,
-                role: projectedSurface?.role,
-                presentation: projectedSurface?.presentation,
-                inputSchema: admittedSurface.inputSchema,
-            });
-            expect(projectedContribution?.descriptor).not.toHaveProperty('ignoredByTargetParser');
-            expect(projectedSurface).not.toHaveProperty('inputSchema');
-            expect(projectedMount).not.toHaveProperty('descriptor');
-            expect(projectedMount).not.toHaveProperty('semanticPointRefs');
+            ]).toBeUndefined();
         } finally {
             await runtime.dispose();
         }
     });
 
-    it('keeps a committed bundled generation in final policy without an installed-materialization record', async () => {
+    it('does not synthesize final-policy runtime authority from a legacy bundled generation alone', async () => {
         const bundledPluginId = 'examples.cold-bundled';
         const runtime = await resolveExecutablePluginRuntimeRegistry({
             contributes: createResolvedContributionRegistry({
@@ -727,13 +676,8 @@ describe('executable targeted contribution admission', () => {
             ]),
         });
         try {
-            expect(runtime.pluginFinalPolicyCurrentGenerationsById?.get(bundledPluginId)).toEqual({
-                immutableGenerationId: 'bundled-immutable-a',
-                desiredImmutableGenerationId: 'bundled-immutable-a',
-                appliedImmutableGenerationId: null,
-                applied: false,
-                selectedAccess: [],
-            });
+            expect(runtime.pluginFinalPolicyCurrentRuntimesById?.get(bundledPluginId))
+                .toBeUndefined();
         } finally {
             await runtime.dispose();
         }

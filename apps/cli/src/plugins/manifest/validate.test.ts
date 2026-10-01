@@ -43,7 +43,6 @@ describe('validatePluginManifest', () => {
           },
           client: {
             artifactId: 'voice-runtime-web',
-            modulePath: './voiceRuntime',
             exportName: 'activate',
           },
         }],
@@ -74,7 +73,6 @@ describe('validatePluginManifest', () => {
           },
           client: {
             artifactId: 'voice-runtime-web',
-            modulePath: './voiceRuntime',
             exportName: 'activate',
           },
         }],
@@ -295,7 +293,6 @@ describe('validatePluginManifest', () => {
           },
           client: {
             artifactId: 'voice-runtime-web',
-            modulePath: './voiceRuntime',
             exportName: 'activate',
           },
         }],

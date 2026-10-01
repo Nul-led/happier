@@ -1,12 +1,25 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
 import { createAgentSessionRunnerFactoryBinding } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
+import {
+  loadRetainedAgentRuntimeLeaf,
+  verifyRunnerAgentBindingAgainstGeneration,
+} from '@/plugins/runtime/runner/loadRetainedAgentRuntimeLeaf';
+import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
+import { resolvePluginStorePaths } from '@/plugins/store/paths';
+import {
+  currentAgentBindingMatchesRetainedRunner,
+  resolveRetainedBundledPluginRoot,
+} from '@/plugins/runtime/retainedPluginSourceAttestation';
+import { publishPinnedRunnerSnapshotFixture } from '@/testkit/process/spawnHappyCliHarness';
+import { readCliNodeWorkspaceRuntimeIdentityFromRuntimeRoot } from '@happier-dev/cli-common/componentArtifacts/copyCliNodeRuntimePayload';
 import type { TrackedSession } from '@/daemon/types';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 
 import {
   createAgentRuntimeDaemonServiceAuthorityPath,
@@ -22,211 +35,169 @@ const attachRunnerRetainedPluginGenerations = async (
 ) => await input.attach();
 
 describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority', () => {
-  it('publishes a generated bundled direct retained-Agent authority from a configured ACP target\'s exact bootstrap identity', async () => {
-    const happyHomeDir = await mkdtemp(`${tmpdir()}/happier-runner-authority-`);
+  it('accepts the runner own published snapshot when the daemon binding names another published snapshot, but rejects a changed publication', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-spawn-snapshot-custody-'));
+    const snapshotsDir = join(happyHomeDir, '.runner-snapshots');
+    const publishSnapshot = async (label: string) => {
+      const stagingRoot = join(snapshotsDir, `.staging-${label}`);
+      const packageRoot = join(stagingRoot, 'node_modules', '@happier-dev', 'plugins-antigravity');
+      await mkdir(join(stagingRoot, 'package-dist'), { recursive: true });
+      await mkdir(packageRoot, { recursive: true });
+      await writeFile(join(packageRoot, 'agent.mjs'), `export const marker = '${label}';\n`);
+      const factoryExport = label === 'runner-a' ? 'createRunnerA' : 'createDaemonB';
+      await writeFile(join(packageRoot, `agent-${label}.mjs`), [
+        `export function ${factoryExport}() { return {}; }`,
+        // A callable obsolete export makes selecting the wrong export a silent defect.
+        'export function createRuntime() { throw new Error("Obsolete factory selected"); }',
+      ].join('\n'));
+      await mkdir(join(packageRoot, '.happier-plugin'), { recursive: true });
+      await writeFile(join(packageRoot, '.happier-plugin', 'plugin.json'), JSON.stringify(
+        createPluginManifestV2Fixture({
+          id: 'happier.agent.antigravity',
+          version: label === 'runner-a' ? '0.0.0' : '1.0.0',
+          runtime: { apiVersion: 1, agentFactories: [{
+            localAgentId: 'antigravity',
+            locator: { module: `./agent-${label}.mjs`, export: factoryExport, runtimeApiVersion: 1 },
+            normalizedModulePath: `agent-${label}.mjs`,
+            loadMode: 'immutable-js',
+          }] },
+          contributes: { agents: [{
+            id: 'antigravity',
+            title: 'Antigravity',
+            runtime: { kind: 'custom' },
+            primary: 'sessions',
+            capabilities: { sessions: { open: ['create'], delivery: ['newTurn'], cancel: true } },
+          }] },
+        }),
+      ));
+      const workspaceRuntimeIdentity = readCliNodeWorkspaceRuntimeIdentityFromRuntimeRoot({
+        runtimeRoot: stagingRoot,
+        packageNames: ['@happier-dev/plugins-antigravity'],
+      }).fingerprint;
+      const snapshot = publishPinnedRunnerSnapshotFixture({
+        stagingRoot,
+        workspaceRuntimeIdentity,
+        workspaceRuntimePackages: ['@happier-dev/plugins-antigravity'],
+      });
+      return { root: snapshot.snapshotRoot, snapshotId: snapshot.snapshotIdentity, workspaceRuntimeIdentity };
+    };
     try {
-      const bundledArtifact =
-        BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS.find(
-          (artifact) => artifact.record.pluginId === 'happier.agent.antigravity',
-        );
-      if (!bundledArtifact) {
-        throw new Error('Expected generated bundled Antigravity artifact');
-      }
-      const command =
-        '/immutable/runtime/versions/1.2.3/bin/happier codex --existing-session session-a';
-      const commandHash = createHash('sha256').update(command).digest('hex');
-      const authorityFilePath =
-        await createAgentRuntimeDaemonServiceAuthorityPath({
-          happyHomeDir,
-          publicReleaseRing: 'stable',
-        });
-      const tracked: TrackedSession = {
-        startedBy: 'daemon' as const,
-        pid: 4101,
-        sessionRunnerPid: 4102,
-        happySessionId: 'session-a',
-        processCommandHash: commandHash,
-        processStartTimeMs: 12_345,
-        processCommand: command,
-        runnerManagedDependencyRetentionV1: {
-          v: 1,
-          adoptedManagedProviderAuthority: {
-            pluginId: 'happier.provider.fixture',
-            immutableGenerationId: 'provider-generation-p',
-            manifestAuthority: 'external',
-            hardRevocationRevisionAtAdmission: 7,
-          },
-          sourceGenerationIds: ['managed-source-stale'],
-          qualifiedDependencyIds: ['acme.plugin/tool-stale'],
-        },
-        agentRuntimeDaemonServiceAuthorityFilePath: authorityFilePath,
-        runnerAgentBootstrapIdentity: {
-          agentId: 'antigravity',
-          backendId: 'antigravity',
-        },
-        spawnOptions: {
-          directory: '/repo',
-          backendTarget: {
-            kind: 'backend' as const,
-            backendId: 'antigravity' as const,
-            configuredBackendId: 'antigravity' as const,
-            sourceKind: 'configured' as const,
-          },
-          modelSelection: {
-            v: 1 as const,
-            ref: {
-              agentTargetKey: 'backend:antigravity:configured:antigravity',
-              providerConnectionId: null,
-              modelId: 'native',
-            },
-            updatedAt: 1,
-          },
-        },
-      };
-      const binding = createAgentSessionRunnerFactoryBinding({
+      const runnerSnapshot = await publishSnapshot('runner-a');
+      const daemonSnapshot = await publishSnapshot('daemon-b');
+      const command = `node ${join(runnerSnapshot.root, 'package-dist', 'index.mjs')} codex --existing-session session-a`;
+      const processCommandHash = createHash('sha256').update(command).digest('hex');
+      const retainedAgent = createAgentSessionRunnerFactoryBinding({
         v: 1,
         pluginId: 'happier.agent.antigravity',
         pluginVersion: '1.0.0',
         agentId: 'antigravity',
         localAgentId: 'antigravity',
-        immutableGenerationId:
-          bundledArtifact.record.immutableGenerationId,
-        locator: {
-          module: './agent/runtime/factory',
-          export: 'createAntigravityAgentRuntime',
-          runtimeApiVersion: 1,
+        sourceCustody: {
+          kind: 'bundled_first_party',
+          packagedRuntime: { kind: 'pinned_runner_snapshot', snapshotId: daemonSnapshot.snapshotId },
         },
-        normalizedModulePath: 'agent/runtime/factory.mjs',
+        locator: { module: './agent-daemon-b.mjs', export: 'createDaemonB', runtimeApiVersion: 1 },
+        normalizedModulePath: 'agent-daemon-b.mjs',
         loadMode: 'immutable-js',
       });
-      const resolveCurrentRetainedAgent = vi.fn((input: Readonly<{
-        agentId: string;
-      }>) => {
-        if (input.agentId !== 'antigravity') {
-          throw new Error('Unexpected retained Agent id');
-        }
-        return binding;
-      });
-      let persistedRetention: unknown;
-      const persistRunnerManagedDependencyRetention =
-        vi.fn(async (input) => {
-          persistedRetention = input.retention;
-          return true;
-        });
-      let pinnedRunnerAgentImmutableGenerationId: string | undefined;
-      const persistRunnerAgentImmutableGenerationId =
-        vi.fn(async (input: Readonly<{
-          immutableGenerationId: string;
-        }>) => {
-          if (
-            pinnedRunnerAgentImmutableGenerationId !== undefined
-            && pinnedRunnerAgentImmutableGenerationId
-              !== input.immutableGenerationId
-          ) {
-            return false;
-          }
-          pinnedRunnerAgentImmutableGenerationId =
-            input.immutableGenerationId;
-          return true;
-        });
-      const exactCurrentRetention = {
-        v: 1 as const,
-        adoptedManagedProviderAuthority: {
-          pluginId: 'happier.provider.fixture',
-          immutableGenerationId: 'provider-generation-p',
-          manifestAuthority: 'external' as const,
-          hardRevocationRevisionAtAdmission: 7,
-        },
-        sourceGenerationIds: ['managed-source-g'],
-        qualifiedDependencyIds: ['acme.plugin/tool-g'],
+      const authorityPath = await createAgentRuntimeDaemonServiceAuthorityPath({ happyHomeDir, publicReleaseRing: 'stable' });
+      const tracked: TrackedSession = {
+        startedBy: 'daemon', pid: 4201, sessionRunnerPid: 4202,
+        happySessionId: 'session-a', processCommandHash, processStartTimeMs: 12_346,
+        agentRuntimeDaemonServiceAuthorityFilePath: authorityPath,
+        runnerAgentBootstrapIdentity: { agentId: 'antigravity', backendId: 'antigravity' },
       };
-      const reserveManagedDependencyRetention =
-        vi.fn((retainedAgent: typeof binding) => {
-          if (
-            retainedAgent.immutableGenerationId
-              !== bundledArtifact.record.immutableGenerationId
-          ) {
-            throw new Error('Unexpected managed-dependency generation');
-          }
-          return {
-            retention: exactCurrentRetention,
-            release: vi.fn(() => {
-              expect(persistedRetention).toEqual(
-                exactCurrentRetention,
-              );
-            }),
-          };
-        });
-      const readPluginImmutableGenerationIntegrityCurrentness = vi.fn(
-        async (
-          _pluginId: string,
-          _immutableGenerationId: string,
-          _requiredAgentSessionRunnerFactoryLocalAgentId?: string,
-          _retainedManifestAuthority?: 'external' | 'bundled_first_party',
-        ) => true,
-      );
-      const refreshed =
-        await refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority({
-          happyHomeDir,
-          publicReleaseRing: 'stable',
-          httpPort: 3210,
-          sessionId: 'session-a',
-          tracked,
-          resolveCurrentRetainedAgent,
-          reserveManagedDependencyRetention,
-          persistRunnerAgentImmutableGenerationId,
-          persistRunnerManagedDependencyRetention,
-          attachRunnerRetainedPluginGenerations,
-          readPluginHardRevocationRevision: vi.fn(async (pluginId) => (
-            pluginId === 'happier.provider.fixture' ? 7 : 0
-          )),
-          readPluginImmutableGenerationIntegrityCurrentness,
-          readProcessIdentityByPidFn: async (pid) => ({
-            pid,
-            command,
-            processStartTimeMs: 12_345,
-          }),
-        });
-
-      expect(resolveCurrentRetainedAgent).toHaveBeenCalledWith({
-        agentId: 'antigravity',
+      let daemonHttpPort = 3210;
+      const refresh = () => refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority({
+        happyHomeDir, publicReleaseRing: 'stable', httpPort: daemonHttpPort, sessionId: 'session-a', tracked,
+        resolveCurrentRetainedAgent: async () => retainedAgent,
+        readProcessIdentityByPidFn: async (pid) => ({ pid, command, processStartTimeMs: 12_346 }),
+        readPluginHardRevocationRevision: async () => 0,
+        persistRunnerAgentSourceCustody: async () => true,
+        persistRunnerManagedDependencyRetention: async () => true,
+        attachRunnerRetainedPluginGenerations: async ({ attach }) => await attach(),
+        bundledAttestationModuleUrl: pathToFileURL(join(daemonSnapshot.root, 'package-dist', 'daemon.mjs')).href,
       });
-      expect(
-        persistRunnerAgentImmutableGenerationId,
-      ).toHaveBeenCalledWith({
-        pid: 4102,
-        sessionId: 'session-a',
-        processCommandHash: commandHash,
-        processStartTimeMs: 12_345,
-        immutableGenerationId:
-          bundledArtifact.record.immutableGenerationId,
+      const published = await refresh();
+      expect(published.document.retainedAgent.sourceCustody).toEqual({
+        kind: 'bundled_first_party',
+        packagedRuntime: { kind: 'pinned_runner_snapshot', snapshotId: runnerSnapshot.snapshotId },
       });
-      expect(tracked).toMatchObject({
-        agentRuntimeDaemonServiceCapabilityHash:
-          refreshed.capabilityDigest,
-        runnerAgentImmutableGenerationId:
-          bundledArtifact.record.immutableGenerationId,
-        runnerManagedDependencyRetentionV1:
-          exactCurrentRetention,
+      expect(published.document.retainedAgent.pluginVersion).toBe('0.0.0');
+      expect(published.document.retainedAgent).toMatchObject({
+        locator: { module: './agent-runner-a.mjs', export: 'createRunnerA' },
+        normalizedModulePath: 'agent-runner-a.mjs',
       });
-      expect(tracked.runnerAgentBootstrapIdentity).toBeUndefined();
-      expect(
-        readPluginImmutableGenerationIntegrityCurrentness,
-      ).toHaveBeenCalledWith(
-        'happier.provider.fixture',
-        'provider-generation-p',
-        undefined,
-        'external',
-      );
+      await expect(verifyRunnerAgentBindingAgainstGeneration({
+        paths: resolvePluginStorePaths({ happyHomeDir }),
+        binding: published.document.retainedAgent,
+        resolveBundledPluginRoot: (input) => resolveRetainedBundledPluginRoot({
+          ...input,
+          moduleUrl: pathToFileURL(join(daemonSnapshot.root, 'package-dist', 'daemon.mjs')).href,
+        }),
+      })).resolves.toMatchObject({
+        rootPath: join(runnerSnapshot.root, 'node_modules', '@happier-dev', 'plugins-antigravity'),
+      });
+      const leaf = await loadRetainedAgentRuntimeLeaf({
+        paths: resolvePluginStorePaths({ happyHomeDir }),
+        binding: published.document.retainedAgent,
+        resolveBundledPluginRoot: (input) => resolveRetainedBundledPluginRoot({
+          ...input,
+          moduleUrl: pathToFileURL(join(daemonSnapshot.root, 'package-dist', 'daemon.mjs')).href,
+        }),
+      });
+      expect(leaf.factory.name).toBe('createRunnerA');
       await expect(readAgentRuntimeDaemonServiceAuthority({
-        happyHomeDir,
-        publicReleaseRing: 'stable',
-        path: authorityFilePath,
-        sessionId: 'session-a',
-        runner: refreshed.document.runner,
-        retainedAgent: refreshed.document.retainedAgent,
-      })).resolves.toEqual(refreshed.document);
-
+        happyHomeDir, publicReleaseRing: 'stable', path: authorityPath,
+        sessionId: 'session-a', runner: published.document.runner,
+        retainedAgent: published.document.retainedAgent,
+      })).resolves.toEqual(published.document);
+      expect(currentAgentBindingMatchesRetainedRunner({
+        runnerSnapshotIdentity: `snapshot:${runnerSnapshot.snapshotId}`,
+        currentBinding: retainedAgent,
+        retainedBinding: published.document.retainedAgent,
+      })).toBe(true);
+      expect(currentAgentBindingMatchesRetainedRunner({
+        runnerSnapshotIdentity: `snapshot:${runnerSnapshot.snapshotId}`,
+        currentBinding: { ...retainedAgent, pluginVersion: '2.0.0' },
+        retainedBinding: published.document.retainedAgent,
+      })).toBe(true);
+      const oldVersionBinding = {
+        ...published.document.retainedAgent,
+        sourceCustody: {
+          kind: 'bundled_first_party' as const,
+          packagedRuntime: { kind: 'cli_version_root' as const, versionRootId: 'version-a' },
+        },
+      };
+      expect(currentAgentBindingMatchesRetainedRunner({
+        runnerSnapshotIdentity: 'version:version-a',
+        currentBinding: {
+          ...retainedAgent,
+          sourceCustody: {
+            kind: 'bundled_first_party',
+            packagedRuntime: { kind: 'cli_version_root', versionRootId: 'version-b' },
+          },
+        },
+        retainedBinding: oldVersionBinding,
+      })).toBe(true);
+      expect(currentAgentBindingMatchesRetainedRunner({
+        runnerSnapshotIdentity: 'version:version-b',
+        currentBinding: retainedAgent,
+        retainedBinding: oldVersionBinding,
+      })).toBe(false);
+      tracked.reattachedFromDiskMarker = true;
+      daemonHttpPort = 3211;
+      const reattached = await refresh();
+      expect(reattached.document.retainedAgent).toEqual(published.document.retainedAgent);
+      expect(reattached.document.httpPort).toBe(3211);
+      expect(reattached.capabilityDigest).not.toBe(published.capabilityDigest);
+      await expect(readAgentRuntimeDaemonServiceAuthority({
+        happyHomeDir, publicReleaseRing: 'stable', path: authorityPath,
+        sessionId: 'session-a', runner: published.document.runner,
+        retainedAgent: published.document.retainedAgent,
+      })).resolves.toEqual(reattached.document);
+      await writeFile(join(runnerSnapshot.root, '.workspace-runtime-identity'), `${'a'.repeat(64)}\n`);
+      await expect(refresh()).rejects.toThrow();
     } finally {
       await rm(happyHomeDir, { recursive: true, force: true });
     }

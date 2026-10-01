@@ -23,7 +23,7 @@ export const DEV_TARGET_MUTAGEN_IGNORE_PATHS = [
   '.tmp.*',
   '.tmp',
   '.backup.*',
-  '.happier-plugin-ui-build-*',
+  '.happier-plugin-ui-staging',
   // Root-level first-party runtime matrices and lane reports are disposable
   // test outputs. They are Git-ignored and can exceed hundreds of MiB while a
   // test run is active; workers rebuild the exact fixture needed by the test.
@@ -39,15 +39,15 @@ export const DEV_TARGET_MUTAGEN_IGNORE_PATHS = [
   // root and Mutagen cannot represent it. The real brand package beside this
   // redundant link remains synchronized normally.
   'packages/brand/brand',
-  // These files are derived from each replica's ignored plugin `dist` trees.
-  // Remote daemon/Expo preparation publishes them atomically through the same
-  // canonical generator after rebuilding those trees; syncing a local last-green
-  // projection over them can leave the target requiring bytes absent remotely.
-  'apps/cli/src/plugins/projection/registry/sources/generatedBundledPluginArtifacts.ts',
-  'apps/ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.ts',
-  'apps/ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.web.ts',
-  'apps/ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.ios.ts',
-  'apps/ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.android.ts',
+  // First-party installed plugin artifacts and their generated inventory are
+  // derived from each replica's ignored plugin `dist` trees. Remote daemon/Expo
+  // preparation publishes them atomically through the same canonical generator
+  // after rebuilding those trees; syncing a local last-green artifact or
+  // inventory over them can split the target registry from its executable bytes.
+  // Keep this install exclusion narrow so authored SDK examples and test fixtures
+  // with checked-in `.happier-plugin` manifests continue to reach the replica.
+  'packages/plugins/*/.happier-plugin',
+  'apps/ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.js',
   '.project',
   HAPPIER,
   '.happier-stack',
@@ -92,10 +92,19 @@ export const DEV_TARGET_MUTAGEN_IGNORE_PATHS = [
   '*.tsbuildinfo',
   '.cxx',
   'apps/ui/ios/build',
+  // Desktop preparation owns these generated sidecars and their JS runtime companions.
+  // Replicating a local build would replace the target-native executable after Cargo builds it.
+  'apps/ui/src-tauri/binaries',
+  'apps/ui/src-tauri/systemTasks',
+  'apps/ui/src-tauri/ssh',
+  'apps/ui/src-tauri/integrations',
   'apps/ui/android/app/build',
   'apps/ui/android/build',
   'apps/ui/android/.gradle',
   'packages/*/android/build',
+  // CLI runs write target-local logs. Ignoring only *.log leaves the parent
+  // directory visible to Mutagen, causing a deletion conflict on replicas.
+  'apps/cli/logs',
   'apps/cli/tmp',
   'apps/cli/tools/unpacked',
   'apps/cli/*:*',

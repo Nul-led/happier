@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { validatePluginManifest } from '@/plugins/manifest/validate';
 
 import { projectPluginInstallationReview } from './installationReview';
-import { hasReviewSensitivePluginUpdate } from './updateReviewPolicy';
+import { hasPluginAuthorityExpansion } from './updateReviewPolicy';
 
 type RawGrant = Readonly<{
   realm: 'web' | 'ios' | 'android' | 'daemon';
@@ -73,7 +73,6 @@ function createManifest(options: Readonly<{
         },
         client: {
           artifactId: 'raw-voice-client',
-          modulePath: './voiceRuntime',
           exportName: 'activate',
         },
       }],
@@ -83,9 +82,9 @@ function createManifest(options: Readonly<{
   return result.manifest;
 }
 
-describe('hasReviewSensitivePluginUpdate raw credential disclosure', () => {
+describe('hasPluginAuthorityExpansion raw credential disclosure', () => {
   it('admits an update that leaves every disclosed raw credential fact identical', () => {
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       createManifest(),
       createManifest({ version: '1.0.1' }),
       [],
@@ -93,7 +92,7 @@ describe('hasReviewSensitivePluginUpdate raw credential disclosure', () => {
   });
 
   it('requires review when an already-declared contribution adds a raw credential grant', () => {
-    expect(hasReviewSensitivePluginUpdate(
+    expect(hasPluginAuthorityExpansion(
       createManifest(),
       createManifest({
         version: '1.0.1',
@@ -134,7 +133,7 @@ describe('hasReviewSensitivePluginUpdate raw credential disclosure', () => {
     });
 
     for (const candidate of [changedRealm, changedPhase, changedRequest, changedSourceClass]) {
-      expect(hasReviewSensitivePluginUpdate(previous, candidate, [])).toBe(true);
+      expect(hasPluginAuthorityExpansion(previous, candidate, [])).toBe(true);
     }
   });
 
@@ -161,12 +160,12 @@ describe('hasReviewSensitivePluginUpdate raw credential disclosure', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
       },
       uiArtifacts: { verification: 'unavailable', contributionIds: [] },
     }).rawCredentialAccess;
 
     expect(review(candidate)).not.toEqual(review(previous));
-    expect(hasReviewSensitivePluginUpdate(previous, candidate, [])).toBe(true);
+    expect(hasPluginAuthorityExpansion(previous, candidate, [])).toBe(true);
   });
 });

@@ -159,6 +159,11 @@ async function collectPublicExampleFiles(root, prefix = '') {
       || entry.name === '.happier-daemon-outputs.json'
     ) continue;
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (
+      entry.isFile()
+      && entry.name === 'plugin.json'
+      && (prefix === 'public-authoring/.happier-plugin' || prefix === 'session-agent/.happier-plugin')
+    ) continue;
     if (entry.isDirectory()) {
       files.push(...await collectPublicExampleFiles(root, relativePath));
     } else if (entry.isFile()) {
@@ -291,6 +296,51 @@ function packInventory(root) {
   assert.equal(report.length, 1);
   return report[0].files.map((file) => file.path);
 }
+
+test('hosted-static examples pack their authored manifest and static inputs', async () => {
+  const expectedByExample = new Map([
+    ['automation-event-source', [
+      '.happier-plugin/ui/hosted-web/repository-picker/entry.ts',
+      '.happier-plugin/ui/hosted-web/repository-picker/index.html',
+    ]],
+    ['production-hosted-reference', [
+      '.happier-plugin/plugin.json',
+      '.happier-plugin/ui/hosted-web/review-hosted/entry.ts',
+      '.happier-plugin/ui/hosted-web/review-hosted/index.html',
+    ]],
+    ['public-authoring', [
+      '.happier-plugin/ui/hosted-web/review-openable-web/entry.ts',
+      '.happier-plugin/ui/hosted-web/review-openable-web/index.html',
+      '.happier-plugin/ui/hosted-web/review-web/entry.ts',
+      '.happier-plugin/ui/hosted-web/review-web/index.html',
+    ]],
+  ]);
+
+  for (const [exampleName, expectedFiles] of expectedByExample) {
+    const examplePackageJson = JSON.parse(await readFile(
+      join(packageRoot, 'examples', exampleName, 'package.json'),
+      'utf8',
+    ));
+    for (const expectedFile of expectedFiles) {
+      assert.ok(
+        examplePackageJson.files.includes(expectedFile),
+        `${exampleName} package inventory must declare ${expectedFile}`,
+      );
+    }
+    const packedFiles = packInventory(join(packageRoot, 'examples', exampleName));
+    for (const expectedFile of expectedFiles) {
+      assert.ok(
+        packedFiles.includes(expectedFile),
+        `${exampleName} package must contain ${expectedFile}: ${packedFiles.join(', ')}`,
+      );
+    }
+    assert.equal(
+      packedFiles.includes('.happier-plugin/.happier-daemon-outputs.json'),
+      false,
+      `${exampleName} package must exclude daemon-owned output metadata`,
+    );
+  }
+});
 
 test('SDK package selection declares and packs the public authoring inventory as exact positive paths', async () => {
   const packageJson = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));

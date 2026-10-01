@@ -27,6 +27,7 @@ test('server restart preflight delegates runtime validation to the package-manag
       { serverDir, serverEnv: {}, consoleImpl: { log() {} } },
       {
         runImpl: async (...args) => directProcessCalls.push(args),
+        ensureSourceServerWorkspacePackagesBuiltImpl: async () => {},
         pmExecBinImpl: async (input) => packageManagerCalls.push(input),
       },
     );
@@ -47,14 +48,16 @@ test('server restart preflight refreshes provider clients before runtime validat
       },
     }));
     const calls = [];
+    const serverEnv = {};
     const boundary = {
+      ensureSourceServerWorkspacePackagesBuiltImpl: async (input) => calls.push({ workspace: input }),
       pmExecBinImpl: async ({ bin }) => calls.push(bin),
     };
 
     await preflightDevServerRestart(
       {
         serverDir,
-        serverEnv: {},
+        serverEnv,
         reloadMigrationMode: 'skip',
         consoleImpl: { log() {} },
       },
@@ -62,33 +65,84 @@ test('server restart preflight refreshes provider clients before runtime validat
     );
     assert.deepEqual(
       calls,
-      ['generate:providers', 'typecheck:runtime'],
-      'the component owner must make generated provider inputs current before its check-only typecheck',
+      [
+        {
+          workspace: {
+            runtimeBackedStart: false,
+            serverDir,
+            env: serverEnv,
+            quiet: false,
+          },
+        },
+        'generate:providers',
+        'typecheck:runtime',
+      ],
+      'source workspace outputs must be published before generated provider inputs and the check-only typecheck',
     );
 
     calls.length = 0;
     await preflightDevServerRestart(
       {
         serverDir,
-        serverEnv: {},
+        serverEnv,
         reloadMigrationMode: 'apply',
         consoleImpl: { log() {} },
       },
       boundary,
     );
-    assert.deepEqual(calls, ['generate:providers', 'typecheck:runtime']);
+    assert.deepEqual(calls.map((call) => typeof call === 'string' ? call : 'workspace'), [
+      'workspace',
+      'generate:providers',
+      'typecheck:runtime',
+    ]);
 
     calls.length = 0;
     await preflightDevServerRestart(
       {
         serverDir,
-        serverEnv: {},
+        serverEnv,
         reloadMigrationMode: 'apply',
         consoleImpl: { log() {} },
       },
       boundary,
     );
-    assert.deepEqual(calls, ['generate:providers', 'typecheck:runtime']);
+    assert.deepEqual(calls.map((call) => typeof call === 'string' ? call : 'workspace'), [
+      'workspace',
+      'generate:providers',
+      'typecheck:runtime',
+    ]);
+  });
+});
+
+test('server restart preflight stops before generation and validation when source workspace preparation fails', async (t) => {
+  await withTempServerDir(t, async (serverDir) => {
+    await writeFile(join(serverDir, 'package.json'), JSON.stringify({
+      private: true,
+      scripts: {
+        'generate:providers': 'generate-all-provider-clients',
+        'typecheck:runtime': 'runtime-only-typecheck',
+      },
+    }));
+    const workspaceFailure = new Error('protocol output publication failed');
+    const packageManagerCalls = [];
+
+    await assert.rejects(
+      () => preflightDevServerRestart(
+        { serverDir, serverEnv: {}, consoleImpl: { log() {} } },
+        {
+          ensureSourceServerWorkspacePackagesBuiltImpl: async () => {
+            throw workspaceFailure;
+          },
+          pmExecBinImpl: async (input) => packageManagerCalls.push(input),
+        },
+      ),
+      (error) => error === workspaceFailure,
+    );
+    assert.deepEqual(
+      packageManagerCalls,
+      [],
+      'provider generation and runtime validation must not run against stale workspace outputs',
+    );
   });
 });
 
@@ -100,7 +154,10 @@ test('server restart preflight consumes the parent-start marker once before watc
     }));
     const serverEnv = { HAPPIER_STACK_SERVER_RESTART_PREFLIGHT_ALREADY_DONE: '1' };
     const packageManagerCalls = [];
-    const boundary = { pmExecBinImpl: async (input) => packageManagerCalls.push(input) };
+    const boundary = {
+      ensureSourceServerWorkspacePackagesBuiltImpl: async () => {},
+      pmExecBinImpl: async (input) => packageManagerCalls.push(input),
+    };
 
     assert.deepEqual(
       await preflightDevServerRestart({ serverDir, serverEnv, consoleImpl: { log() {} } }, boundary),
@@ -142,7 +199,10 @@ test('stopped-stack restart consumes parent preflight marker before spawn and pr
       scripts: { 'typecheck:runtime': 'runtime-only-typecheck' },
     }));
     const packageManagerCalls = [];
-    const boundary = { pmExecBinImpl: async (input) => packageManagerCalls.push(input) };
+    const boundary = {
+      ensureSourceServerWorkspacePackagesBuiltImpl: async () => {},
+      pmExecBinImpl: async (input) => packageManagerCalls.push(input),
+    };
     let stopped = false;
     let workspaceAdmissions = 0;
     let spawnedEnv;
@@ -336,7 +396,7 @@ test('stopped-stack restart delegates declaration admission once to a running ru
   });
 });
 
-test('watch restart admits existing source declarations before a source preflight can block availability', async (t) => {
+test('watch restart publishes current source declarations before spawning', async (t) => {
   await withTempServerDir(t, async (serverDir) => {
     const calls = [];
     const child = { pid: 2001, exitCode: null };
@@ -365,12 +425,11 @@ test('watch restart admits existing source declarations before a source prefligh
           assert.equal(options.refreshExisting, false);
           assert.equal(options.prepareComponentOutputs, false);
         },
-        ensureSourceServerWorkspacePackagesBuiltImpl: async ({ admitPriorOutputsImmediately }) => {
+        ensureSourceServerWorkspacePackagesBuiltImpl: async () => {
           calls.push('workspace');
-          assert.equal(admitPriorOutputsImmediately, true);
         },
         preflightDevServerRestartImpl: async () => {
-          throw new Error('watch startup must not require a current-source preflight before prior-output admission');
+          throw new Error('watch startup must not run a runtime typecheck after current workspace publication');
         },
         pmSpawnScriptImpl: async () => {
           calls.push('spawn');
@@ -633,13 +692,9 @@ test('startDevServer validates workspace package exports before spawning a serve
           assert.equal(options.refreshExisting, false);
           assert.equal(options.prepareComponentOutputs, false);
         },
-        ensureSourceServerWorkspacePackagesBuiltImpl: async ({
-          serverDir: dir,
-          admitPriorOutputsImmediately,
-        }) => {
+        ensureSourceServerWorkspacePackagesBuiltImpl: async ({ serverDir: dir }) => {
           calls.push('workspace');
           assert.equal(dir, serverDir);
-          assert.equal(admitPriorOutputsImmediately, true);
         },
         pmSpawnScriptImpl: async ({ options }) => {
           calls.push('spawn');
@@ -733,7 +788,7 @@ test('startDevServer boots an admitted prior runtime before source preparation a
   });
 });
 
-test('startDevServer tries existing source outputs before making freshness a recovery gate', async (t) => {
+test('startDevServer keeps prior runtime availability while publishing current source outputs before source fallback', async (t) => {
   await withTempServerDir(t, async (serverDir) => {
     const calls = [];
     const children = [];
@@ -770,8 +825,8 @@ test('startDevServer tries existing source outputs before making freshness a rec
         ensureDepsInstalledImpl: async (_dir, _label, options) => {
           calls.push(options.refreshExisting === false ? 'deps:prior' : 'deps:fresh');
         },
-        ensureSourceServerWorkspacePackagesBuiltImpl: async ({ admitPriorOutputsImmediately }) => {
-          calls.push(admitPriorOutputsImmediately ? 'workspace:prior' : 'workspace:fresh');
+        ensureSourceServerWorkspacePackagesBuiltImpl: async () => {
+          calls.push('workspace:fresh');
         },
         spawnPriorRuntimeServerImpl: async () => {
           calls.push('spawn:runtime');
@@ -799,7 +854,7 @@ test('startDevServer tries existing source outputs before making freshness a rec
       'spawn:runtime',
       'ready:1',
       'deps:prior',
-      'workspace:prior',
+      'workspace:fresh',
       'spawn:source',
       'ready:2',
       'record',
@@ -807,7 +862,7 @@ test('startDevServer tries existing source outputs before making freshness a rec
   });
 });
 
-test('startDevServer refreshes once and retries when an admitted prior generation cannot boot', async (t) => {
+test('startDevServer refreshes current source outputs before retrying a failed admitted generation', async (t) => {
   await withTempServerDir(t, async (serverDir) => {
     const calls = [];
     const children = [];
@@ -838,8 +893,8 @@ test('startDevServer refreshes once and retries when an admitted prior generatio
         ensureDepsInstalledImpl: async (_dir, _label, options) => {
           calls.push(options.refreshExisting === false ? 'deps:prior' : 'deps:fresh');
         },
-        ensureSourceServerWorkspacePackagesBuiltImpl: async ({ admitPriorOutputsImmediately }) => {
-          calls.push(admitPriorOutputsImmediately ? 'workspace:prior' : 'workspace:fresh');
+        ensureSourceServerWorkspacePackagesBuiltImpl: async () => {
+          calls.push('workspace:fresh');
         },
         pmSpawnScriptImpl: async () => {
           spawnCount += 1;
@@ -861,7 +916,7 @@ test('startDevServer refreshes once and retries when an admitted prior generatio
     assert.deepEqual(children, [secondChild]);
     assert.deepEqual(calls, [
       'deps:prior',
-      'workspace:prior',
+      'workspace:fresh',
       'spawn:1',
       'ready:1',
       'deps:fresh',

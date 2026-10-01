@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { collectWorkflowScriptParityReport } from './workflowScriptParity.ts';
+import { resolveRootScriptWorkspaceTargets } from './rootScriptWorkspaceTargets.ts';
 
 const ROOT_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -35,9 +36,8 @@ function createPackageJsonText(): string {
         'test:inventory': 'node --import tsx ./scripts/testing/validateTestInventory.ts',
         'test:migration:inventory': 'node --import tsx ./scripts/testing/migrations/validateMigrationInventory.ts',
         'test:migration:v2-zero:enforce': 'node --experimental-strip-types ./scripts/testing/migrations/validateV2ZeroInventory.ts --enforce',
-        'test:migration:bundled-plugin-projections': 'node apps/cli/scripts/withNodeHeapLimit.mjs node --experimental-strip-types scripts/migrations/extensions/generateBundledPluginEntries.ts --mode check --scope projections',
-        'test:migration:bundled-plugin-runtime-determinism': 'node apps/cli/scripts/withNodeHeapLimit.mjs node --experimental-strip-types scripts/migrations/extensions/generateBundledPluginEntries.ts --mode check --scope all',
-        'test:migration:governance': 'yarn -s test:migration:v2-zero:enforce && yarn -s test:migration:wire-compat && yarn -s test:migration:bundled-plugin-projections && yarn -s test:migration:bundled-plugin-runtime-determinism',
+        'test:migration:bundled-plugin-projections': 'node apps/cli/scripts/withNodeHeapLimit.mjs node --experimental-strip-types apps/cli/scripts/build-owned/generateBundledPluginEntries.ts --mode check --scope projections',
+        'test:migration:governance': 'yarn -s test:migration:v2-zero:enforce && yarn -s test:migration:wire-compat && yarn -s test:migration:bundled-plugin-projections',
       },
     },
     null,
@@ -137,7 +137,7 @@ test('accepts aligned package scripts, workflow commands, docs commands, and fea
     configTexts: createFeatureGatingConfigTexts(),
   });
 
-  assert.equal(report.issues.length, 0);
+  assert.deepEqual(report.issues, []);
 });
 
 test('flags missing governance docs and feature gating drift', () => {
@@ -272,7 +272,6 @@ test('flags governed root script body drift when migration governance no longer 
   assert.match(messages, /Root script test:migration:governance is missing required command body/);
   assert.match(messages, /test:migration:v2-zero:enforce/);
   assert.match(messages, /test:migration:bundled-plugin-projections/);
-  assert.match(messages, /test:migration:bundled-plugin-runtime-determinism/);
 });
 
 test('flags root self-lane drift when migration lib self-tests fall out of test:policy:self', () => {
@@ -336,23 +335,17 @@ test('requires the native desktop e2e root script and docs even though workflow 
 
 test('wires shared SDK packages into the default root validation lanes', () => {
   const packageJson = JSON.parse(readFileSync(join(ROOT_DIR, 'package.json'), 'utf8')) as {
-    scripts?: Record<string, string | undefined>;
+    scripts: Record<string, string>;
   };
   const workflowText = readFileSync(join(ROOT_DIR, '.github/workflows/tests.yml'), 'utf8');
-  const unitLane = packageJson.scripts?.['test:unit:local'] ?? '';
-
-  assert.match(unitLane, /yarn workspace @happier-dev\/voice-modelpacks test/);
-  assert.match(unitLane, /yarn workspace @happier-dev\/terminal-native test/);
-  assert.match(unitLane, /yarn workspace @happier-dev\/sherpa-native test/);
-  assert.match(unitLane, /yarn workspace @happier-dev\/support test/);
-  assert.match(unitLane, /yarn workspace @happier-dev\/peer-mediation test/);
-  assert.match(unitLane, /yarn workspace @happier-dev\/plugin-sdk test/);
-  assert.match(unitLane, /yarn workspace @happier-dev\/plugin-ui test/);
+  const unitTargets = resolveRootScriptWorkspaceTargets(packageJson.scripts, 'test:unit');
+  for (const name of ['voice-modelpacks', 'terminal-native', 'sherpa-native', 'support', 'peer-mediation', 'plugin-sdk', 'plugin-ui', 'channels-protocol']) {
+    assert.ok(unitTargets.some((target) => target.packageName === `@happier-dev/${name}` && target.scriptName === 'test'), `${name} must run through the root unit owner`);
+  }
   // The published Channels protocol package sat outside every ordinary lane while the lane-map
   // unit fixture asserted the opposite from a root command it wrote itself. These two assertions
   // read the real root script and the real workflow, so the fixture can no longer be friendlier
   // than the commands CI actually runs.
-  assert.match(unitLane, /yarn workspace @happier-dev\/channels-protocol test/);
   assert.match(packageJson.scripts?.['typecheck:inner'] ?? '', /turbo run typecheck:source:finite/);
   assert.match(packageJson.scripts?.['typecheck:inner'] ?? '', /--filter=@happier-dev\/terminal-native/);
   assert.match(
@@ -374,21 +367,16 @@ test('wires shared SDK packages into the default root validation lanes', () => {
 
 test('routes the root ordinary integration lane through the Stack executor', () => {
   const packageJson = JSON.parse(readFileSync(join(ROOT_DIR, 'package.json'), 'utf8')) as {
-    scripts?: Record<string, string | undefined>;
+    scripts: Record<string, string>;
   };
 
   assert.equal(
     packageJson.scripts?.['test:integration'],
     'apps/stack/bin/hstack-exec --script=test:integration:local',
   );
-  assert.match(
-    packageJson.scripts?.['test:integration:local'] ?? '',
-    /yarn workspace @happier-dev\/app test:integration/,
-  );
-  assert.match(
-    packageJson.scripts?.['test:integration:local'] ?? '',
-    /yarn --cwd apps\/stack test:integration/,
-  );
+  const targets = resolveRootScriptWorkspaceTargets(packageJson.scripts, 'test:integration');
+  assert.ok(targets.some((target) => target.packageName === '@happier-dev/app' && target.scriptName === 'test:integration'));
+  assert.ok(targets.some((target) => target.workspaceDirectory === 'apps/stack' && target.scriptName === 'test:integration'));
 });
 
 test('runs current-source Plugin Platform contracts without a release representation in CI', () => {

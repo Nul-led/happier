@@ -5,7 +5,7 @@ import {
   type PluginAvailabilityPortableReleaseSourceClassV1,
   type PackageAssetArchiveDescriptorV1,
 } from '@happier-dev/protocol';
-import type { PluginUiArtifactsManifestV1 } from '@happier-dev/protocol/plugins/ui';
+import type { PluginUiArtifactsManifestV2 } from '@happier-dev/protocol/plugins/ui';
 
 import type { CanonicalPluginManifest } from '@/plugins/manifest/types';
 import {
@@ -13,30 +13,61 @@ import {
   type PluginInstallationAvailabilityProjection,
 } from '@/plugins/store/registry/generationStore';
 
-export function resolvePluginUiArtifactAvailabilityPlatform(
-  artifact: PluginUiArtifactsManifestV1['entries'][number],
-): 'web' | 'ios' | 'android' {
-  if (artifact.tier === 'hostedWeb') return 'web';
-  if (
-    artifact.platform === 'web'
-    || artifact.platform === 'ios'
-    || artifact.platform === 'android'
-  ) return artifact.platform;
-  throw new Error('React Native Availability artifacts require web, iOS, or Android platform identity');
+const ALL_EXECUTABLE_UI_PLATFORMS = Object.freeze(['web', 'ios', 'android'] as const);
+
+export function projectVerifiedPluginUiReleaseSlotsV2(input: Readonly<{
+  manifest: CanonicalPluginManifest;
+  generatedUiArtifacts: PluginUiArtifactsManifestV2;
+}>) {
+  const entriesByArtifactId = new Map(input.generatedUiArtifacts.entries.map((entry) => [entry.artifactId, entry]));
+  const declarations: Array<Readonly<{
+    contributionId: string;
+    artifactId: string;
+    platforms: readonly ('web' | 'ios' | 'android')[];
+  }>> = [];
+  for (const renderer of input.manifest.contributes.ui.renderers) {
+    if (renderer.kind === 'reactNative') {
+      declarations.push({ contributionId: renderer.id, artifactId: renderer.artifact, platforms: ALL_EXECUTABLE_UI_PLATFORMS });
+    } else if (renderer.kind === 'hostedWeb' && renderer.source.kind === 'artifact') {
+      declarations.push({ contributionId: renderer.id, artifactId: renderer.source.artifact, platforms: ['web'] });
+    }
+  }
+  for (const provider of input.manifest.contributes.voiceProviders) {
+    if (provider.kind === 'conversation') {
+      declarations.push({ contributionId: provider.id, artifactId: provider.client.artifactId, platforms: provider.platforms });
+    }
+  }
+  for (const action of input.manifest.contributes.actions) {
+    if (action.execution.target === 'client') {
+      declarations.push({ contributionId: action.id, artifactId: action.execution.client.artifactId, platforms: action.execution.platforms });
+    }
+  }
+  return declarations.flatMap((declaration) => {
+    const artifact = entriesByArtifactId.get(declaration.artifactId);
+    if (!artifact) throw new Error(`Generated UI artifact is missing for declaration: ${declaration.artifactId}`);
+    return declaration.platforms.map((platform) => ({
+      contributionId: declaration.contributionId,
+      artifactId: artifact.artifactId,
+      tier: artifact.tier,
+      platform,
+      artifactDigest: artifact.digest,
+      hostUiApiRange: artifact.hostUiApiRange,
+    }));
+  });
 }
 
 /**
  * Projects only facts the existing verified acquisition and canonical manifest
  * owners have already produced. Generated UI artifact manifests carry the
- * portable build compatibility for immutable release slots; current host
- * app/channel/capability compatibility remains a transient Artifact-link fact.
+ * portable Host UI API range for immutable release slots; current host
+ * app/channel/capability metadata is not release or Artifact-link identity.
  */
 export function createVerifiedPortablePluginInstallationAvailability(input: Readonly<{
   sourceClass: PluginAvailabilityPortableReleaseSourceClassV1;
   archiveDigestSha256: `sha256:${string}`;
   manifest: CanonicalPluginManifest;
   /** The canonical generated graph that staging already verified for this archive. */
-  generatedUiArtifacts: PluginUiArtifactsManifestV1;
+  generatedUiArtifacts: PluginUiArtifactsManifestV2;
   /** The only package asset descriptor staging verified from the exact candidate bytes. */
   packageAssetArchive: PackageAssetArchiveDescriptorV1;
 }>): PluginInstallationAvailabilityProjection {
@@ -60,27 +91,10 @@ export function createVerifiedPortablePluginInstallationAvailability(input: Read
     archiveDigestSha256: input.archiveDigestSha256,
     normalizedManifest: input.manifest,
     collectionContracts,
-    uiSlots: input.generatedUiArtifacts.entries.map((artifact) => ({
-      contributionId: artifact.contributionId,
-      tier: artifact.tier,
-      platform: resolvePluginUiArtifactAvailabilityPlatform(artifact),
-      artifactDigest: artifact.digest,
-      compatibility: {
-        hostUiApiVersion: artifact.hostUiApiVersion,
-        ...(artifact.tier === 'reactNative' && artifact.compat.react
-          ? { reactVersion: artifact.compat.react }
-          : {}),
-        ...(artifact.compat.reactNative
-          ? { reactNativeVersion: artifact.compat.reactNative }
-          : {}),
-        ...(artifact.compat.expoRuntime
-          ? { expoRuntimeVersion: artifact.compat.expoRuntime }
-          : {}),
-        ...(artifact.compat.hermes
-          ? { hermesVersion: artifact.compat.hermes }
-          : {}),
-      },
-    })),
+    uiSlots: projectVerifiedPluginUiReleaseSlotsV2({
+      manifest: input.manifest,
+      generatedUiArtifacts: input.generatedUiArtifacts,
+    }),
     packageAssetArchive: input.packageAssetArchive,
   });
   return PluginInstallationAvailabilityProjectionSchema.parse({

@@ -95,6 +95,19 @@ describe('Claude unified terminal prompt submit verification', () => {
     })).toBe(true);
   });
 
+  it('recognizes a staged URL wrapped inside the token', () => {
+    const policy = createClaudePromptSubmitVerificationPolicy();
+    const prompt = `Check https://example.invalid/?q=${'a'.repeat(90)}`;
+
+    expect(policy.verifyBeforeSubmitStaging?.({
+      promptText: prompt,
+      screenText: [
+        `❯ Check https://example.invalid/?q=${'a'.repeat(50)}`,
+        `  ${'a'.repeat(40)}`,
+      ].join('\n'),
+    })).toBe(true);
+  });
+
   it('verifies a direct-rendered prompt with an intentional blank paragraph before submit', () => {
     const policy = createClaudePromptSubmitVerificationPolicy();
     const prompt = [
@@ -116,6 +129,29 @@ describe('Claude unified terminal prompt submit verification', () => {
         '  ⏵⏵ auto mode on (shift+tab to cycle)',
       ].join('\n'),
     })).toBe(true);
+  });
+
+  it('recognizes the short matching tail exposed by a small terminal viewport', () => {
+    // Claude Code 2.1.280, real tmux at 40x15: only the last three composer rows are visible.
+    const promptText = `${'Review the message delivery implementation. '.repeat(10)}
+
+Explain whether the message arrived, and report any remaining issue.`;
+    const screenText = [
+      '─'.repeat(40),
+      '❯ Explain whether the message',
+      '  arrived, and report any remaining',
+      '  issue.',
+      '─'.repeat(40),
+      '  ⏸ plan mode on',
+    ].join('\n');
+    const policy = createClaudePromptSubmitVerificationPolicy();
+
+    expect(policy.verifyBeforeSubmitStaging({ promptText, screenText })).toBe(true);
+    expect(policy.verifyAfterSubmit({ promptText, screenText })).toBe(true);
+    expect(policy.verifyBeforeSubmitStaging({
+      promptText,
+      screenText: screenText.replace('remaining', 'unrelated'),
+    })).toBe(false);
   });
 
   it('accepts a sufficiently long canonical visible composer window before and after submit', () => {
@@ -164,7 +200,7 @@ describe('Claude unified terminal prompt submit verification', () => {
     expect(policy.verifyAfterSubmit({
       promptText: prompt,
       screenText: `❯ ${visibleSuffixWords.slice(-8).join(' ')}`,
-    })).toBe(false);
+    })).toBe(true);
     expect(policy.verifyAfterSubmit({
       promptText: prompt,
       screenText: `❯ ${'unrelated visible composer text '.repeat(12)}`,

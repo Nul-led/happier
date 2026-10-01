@@ -1,6 +1,10 @@
 import { projectAgentCapabilitiesV2FromDefinition } from '@happier-dev/plugin-sdk/agents';
 import { definePlugin } from '@happier-dev/plugin-sdk';
 import type {
+  AgentProviderCliAttachDeclarationV1,
+  AgentProviderCliAttachTargetV1,
+} from '@happier-dev/plugin-sdk/agents/runtime';
+import type {
   McpDiscoveredEndpoint as PluginMcpDiscoveredEndpoint,
 } from '@happier-dev/plugin-sdk/mcp';
 
@@ -32,7 +36,12 @@ import {
 import { openCodeExternalSessionsContribution } from './agent/surfaces/sessions/external/contribution.js';
 import { openCodeExternalSessionObservationContribution } from './agent/surfaces/sessions/external/observation.js';
 import { openCodeExternalSessionTakeoverContribution } from './agent/surfaces/sessions/external/provider.js';
-import { OPEN_CODE_SYSTEM_TOOL_ID } from './agent/systemTool.js';
+import {
+  OPEN_CODE_STABLE_SYSTEM_TOOL_ID,
+  OPEN_CODE_SYSTEM_TOOL_ID,
+  OPEN_CODE_V2_SYSTEM_TOOL_ID,
+  resolveOpenCodeSystemToolId,
+} from './agent/systemTool.js';
 import { OPENCODE_AGENT_SETTINGS_CONTRIBUTION } from './agentSettings/definition.js';
 
 function normalizeOpenCodeMcpServerIdSegment(name: string): string | null {
@@ -85,7 +94,11 @@ export const OPENCODE_PLUGIN = definePlugin({
       capability: 'process',
       reason: 'Run the declared OpenCode CLI executable.',
       scope: {
-        executables: [{ kind: 'systemTool', id: OPEN_CODE_SYSTEM_TOOL_ID }],
+        executables: [
+          { kind: 'systemTool', id: OPEN_CODE_SYSTEM_TOOL_ID },
+          { kind: 'systemTool', id: OPEN_CODE_STABLE_SYSTEM_TOOL_ID },
+          { kind: 'systemTool', id: OPEN_CODE_V2_SYSTEM_TOOL_ID },
+        ],
         envKeys: [
           ...OPENCODE_PROVIDER_OWNED_ENV_KEYS,
           'XDG_CONFIG_HOME',
@@ -120,6 +133,12 @@ export const OPENCODE_PLUGIN = definePlugin({
             recommendationOrder: 40,
             guideUrl: 'https://opencode.ai/docs',
             docsUrl: 'https://opencode.ai',
+            // https://opencode.ai/docs/cli/ (`opencode upgrade`); the official install script uses
+            // INSTALL_DIR=$HOME/.opencode/bin.
+            nativeUpdate: {
+              args: ['upgrade'],
+              installPaths: ['.opencode/bin'],
+            },
           },
           auth: {
             support: 'login_terminal',
@@ -173,7 +192,7 @@ export const OPENCODE_PLUGIN = definePlugin({
             delivery: ['newTurn', 'steer', 'followUp'],
             cancel: true,
             configuration: true,
-            compaction: { events: true, manual: true },
+            compaction: { events: true },
             catalog: { active: ['skills'] },
           },
         }),
@@ -286,11 +305,27 @@ export const OPENCODE_PLUGIN = definePlugin({
         }),
       },
       providerBinding: OPENCODE_PROVIDER_BINDING_ADAPTER_V1,
-      providerCliAttach: {
+      providerCliAttach: ({
+        commandToolIds: [
+          OPEN_CODE_SYSTEM_TOOL_ID,
+          OPEN_CODE_STABLE_SYSTEM_TOOL_ID,
+          OPEN_CODE_V2_SYSTEM_TOOL_ID,
+        ],
+        resolveCommandToolId: ({ accountSettings }: Readonly<{
+          accountSettings: Readonly<Record<string, unknown>> | null;
+        }>) => resolveOpenCodeSystemToolId(
+          accountSettings?.opencodeCliGeneration,
+        ),
+        cliVersionArgs: ['--version'],
+        managedServiceAccess: {
+          credentialEnvironmentKey: 'OPENCODE_SERVER_PASSWORD',
+          credentialEnvironmentAliases: ['OPENCODE_PASSWORD'],
+          resolveTargetBaseUrl: (target: AgentProviderCliAttachTargetV1) => target.baseUrl ?? null,
+        },
         resolveTarget: resolveOpenCodeAttachTarget,
         createArgs: createOpenCodeAttachArgs,
         resolveReachability: resolveOpenCodeAttachReachability,
-      },
+      } as AgentProviderCliAttachDeclarationV1),
       sessionRunnerFactory: {
         module: './agent/runtime/nativeRuntime',
         export: 'createOpenCodeAgentRuntime',
@@ -330,18 +365,18 @@ export const OPENCODE_PLUGIN = definePlugin({
   systemTools: {
     [OPEN_CODE_SYSTEM_TOOL_ID]: {
       title: 'OpenCode CLI',
-      // `opencode2` is the official name of the OpenCode V2 beta executable
-      // (OpenCode `1.18.25`, `packages/opencode/src/config/v2-compat.ts:111`
-      // tells a user with V2-only configuration to "run opencode2"). Listing it
-      // as an alternate lookup name is what makes a beta-only install usable;
-      // the transport dialect is decided separately by probing the reachable
-      // server, not by the executable name.
-      //
-      // Lookup order is first-found, so a machine with both installed keeps
-      // resolving the stable `opencode`. That ceiling is deliberate: the beta
-      // must not silently displace the proven executable, and choosing between
-      // two present installations is a product decision, not a resolver default.
+      // Released OpenCode V2 publishes both `opencode` and `opencode2` aliases
+      // for the same binary. Keep both supported names without inferring an API
+      // generation from the alias alone; the explicit setting remains authoritative.
       executableNames: ['opencode', 'opencode2'],
+    },
+    [OPEN_CODE_STABLE_SYSTEM_TOOL_ID]: {
+      title: 'OpenCode CLI (stable)',
+      executableNames: ['opencode'],
+    },
+    [OPEN_CODE_V2_SYSTEM_TOOL_ID]: {
+      title: 'OpenCode CLI (V2)',
+      executableNames: ['opencode2', 'opencode'],
     },
   },
   settings: {

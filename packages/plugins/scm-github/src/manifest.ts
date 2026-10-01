@@ -101,6 +101,7 @@ import {
   listGithubTimeline,
   readGithubFeedback,
   readGithubChecks,
+  readGithubPullRequestStatus,
 } from './triage/detailOperations.js';
 import {
   GithubIssueAssigneeAddInputV1Schema,
@@ -193,7 +194,7 @@ const sources = TriageSourcesContributionProtocolV1;
 
 /**
  * Every Triage operation materializes the exact configured account through the
- * same purpose-scoped seam, so all five roles carry the same host access.
+ * same purpose-scoped seam, so all read roles carry the same host access.
  */
 const TRIAGE_READ_HOST_ACCESS = ['github-api', GITHUB_CONNECTED_ACCOUNT_PURPOSE];
 
@@ -409,7 +410,7 @@ function createGithubPlugin() {
   version: '0.0.0',
   displayName: 'GitHub SCM hosting provider',
   description: 'Detects GitHub remotes and provides GitHub repository operations.',
-  brand: { iconResourceId: GITHUB_BRAND_RESOURCE_ID },
+  brand: { iconResourceId: GITHUB_BRAND_RESOURCE_ID, monochrome: true },
   engines: { happier: '^0.0.0' }, runtime: { apiVersion: 1 },
   entrypoints: { daemon: './.happier-plugin/daemon.js' },
   hostAccess: {
@@ -516,7 +517,6 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_ACTION_IDS_V1.listInstances]: {
       title: 'Discover GitHub accounts',
       description: 'Lists the GitHub accounts each authorized connection can reach.',
-      scopes: ['global'],
       surfaces: sources.operations.listInstances.declaration.surfaces,
       // Mounted-only placement. `plugin` stays because the Triage daemon
       // consumes it and `ui` because this source's own mounted surfaces hold
@@ -524,7 +524,6 @@ function createGithubPlugin() {
       // Action from global placement discovery — it disables no invocation.
       placementBindings: [],
       dangerLevel: sources.operations.listInstances.declaration.dangerLevel,
-      execution: { target: 'daemon' },
       inputSchema: sources.operations.listInstances.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.listInstances.declaration.resultSchema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -533,10 +532,8 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_ACTION_IDS_V1.scan]: {
       title: 'Scan GitHub pull requests and issues',
       description: 'Reads one bounded page of GitHub pull requests and issues for a configured account.',
-      scopes: ['global'],
       surfaces: sources.operations.scan.declaration.surfaces,
       dangerLevel: sources.operations.scan.declaration.dangerLevel,
-      execution: { target: 'daemon' },
       inputSchema: sources.operations.scan.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.scan.declaration.resultSchema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -546,7 +543,6 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_ACTION_IDS_V1.get]: {
       title: 'Read one GitHub pull request or issue',
       description: 'Authoritatively reads one GitHub pull request or issue for a configured account.',
-      scopes: ['global'],
       surfaces: sources.operations.get.declaration.surfaces,
       // Mounted-only placement. `plugin` stays because the Triage daemon
       // consumes it and `ui` because this source's own mounted surfaces hold
@@ -554,20 +550,29 @@ function createGithubPlugin() {
       // Action from global placement discovery — it disables no invocation.
       placementBindings: [],
       dangerLevel: sources.operations.get.declaration.dangerLevel,
-      execution: { target: 'daemon' },
       inputSchema: sources.operations.get.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.get.declaration.resultSchema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
       connectedAccountPurposeBindings: TRIAGE_INSTANCE_ACCOUNT_BINDINGS,
       run: getGithubTriageEntry,
     },
+    [GITHUB_TRIAGE_ACTION_IDS_V1.readPullRequestStatus]: {
+      title: 'Read GitHub pull-request status',
+      description: 'Reads checks, reviews, mergeability and branches when a pull request is opened.',
+      surfaces: sources.operations.readPullRequestStatus.declaration.surfaces,
+      placementBindings: [],
+      dangerLevel: sources.operations.readPullRequestStatus.declaration.dangerLevel,
+      inputSchema: sources.operations.readPullRequestStatus.declaration.input.schema.jsonSchema,
+      resultSchema: sources.operations.readPullRequestStatus.declaration.resultSchema.jsonSchema,
+      hostAccess: TRIAGE_READ_HOST_ACCESS,
+      connectedAccountPurposeBindings: TRIAGE_INSTANCE_ACCOUNT_BINDINGS,
+      run: readGithubPullRequestStatus,
+    },
     [GITHUB_TRIAGE_ACTION_IDS_V1.prepareReviewWorkspace]: {
       title: 'Prepare a GitHub pull-request review workspace',
       description: 'Rereads one GitHub pull request and prepares its source branch in the selected workspace.',
-      scopes: ['global'],
       surfaces: sources.operations.prepareReviewWorkspace.declaration.surfaces,
       dangerLevel: sources.operations.prepareReviewWorkspace.declaration.dangerLevel,
-      execution: { target: 'daemon' },
       inputSchema: sources.operations.prepareReviewWorkspace.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.prepareReviewWorkspace.declaration.resultSchema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -577,29 +582,21 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_ACTION_IDS_V1.verifyReviewWorkspace]: {
       title: 'Verify a GitHub pull-request review workspace',
       description: 'Rereads one GitHub pull request and verifies the prepared workspace still has its exact head.',
-      scopes: ['global'],
       surfaces: sources.operations.verifyReviewWorkspace.declaration.surfaces,
       dangerLevel: sources.operations.verifyReviewWorkspace.declaration.dangerLevel,
-      execution: { target: 'daemon' },
       inputSchema: sources.operations.verifyReviewWorkspace.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.verifyReviewWorkspace.declaration.resultSchema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
       connectedAccountPurposeBindings: TRIAGE_INSTANCE_ACCOUNT_BINDINGS,
       run: verifyGithubTriageReviewWorkspace,
     },
-    // The seven source-native detail planes. Only this source's own mounted
-    // detail body invokes them, through the mounted Plugin UI host — present
-    // user authority — so they declare `ui` and nothing else, and the explicit
-    // empty placement list keeps global discovery from offering them a
-    // destination while the mounted invocation stays untouched.
+    // Native provider reads are available to the mounted UI and agent-facing
+    // Actions without adding a generic host PR-management owner.
     [GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readCapabilities]: {
       title: 'Read GitHub repository capabilities',
       description: 'Reads authoritative repository write, issue, and merge-method availability.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: [],
-      dangerLevel: 'safe',
-      execution: { target: 'daemon' },
       inputSchema: GithubCapabilitiesInputV1Schema.jsonSchema,
       resultSchema: GithubCapabilitiesResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -609,11 +606,8 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readOverview]: {
       title: 'Refresh the GitHub overview',
       description: 'Reads the current body, people, milestone, and branch facts for one pull request or issue.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: [],
-      dangerLevel: 'safe',
-      execution: { target: 'daemon' },
       inputSchema: GithubOverviewInputV1Schema.jsonSchema,
       resultSchema: GithubOverviewResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -623,11 +617,8 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.listTimeline]: {
       title: 'Read a GitHub timeline page',
       description: 'Reads one bounded page of the event timeline of one pull request or issue.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: [],
-      dangerLevel: 'safe',
-      execution: { target: 'daemon' },
       inputSchema: GithubTimelineInputV1Schema.jsonSchema,
       resultSchema: GithubTimelineResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -638,11 +629,8 @@ function createGithubPlugin() {
       title: 'Read a GitHub changed-file page',
       description: 'Reads one bounded page of the files one pull request changes, with their'
         + ' counts and whether GitHub supplied a patch for each.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: [],
-      dangerLevel: 'safe',
-      execution: { target: 'daemon' },
       inputSchema: GithubChangedFilesInputV1Schema.jsonSchema,
       resultSchema: GithubChangedFilesResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -653,11 +641,8 @@ function createGithubPlugin() {
       title: 'Read one GitHub feedback connection',
       description: 'Reads one independently paged pull-request feedback connection: issue comments,'
         + ' review threads, review bodies, outstanding requests, or one thread\'s earlier replies.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: [],
-      dangerLevel: 'safe',
-      execution: { target: 'daemon' },
       inputSchema: GithubFeedbackInputV1Schema.jsonSchema,
       resultSchema: GithubFeedbackResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -668,34 +653,22 @@ function createGithubPlugin() {
       title: 'Read the GitHub checks of a pull request',
       description: 'Reads the check runs and commit statuses of one pull request at its current'
         + ' head revision.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: [],
-      dangerLevel: 'safe',
-      execution: { target: 'daemon' },
       inputSchema: GithubChecksInputV1Schema.jsonSchema,
       resultSchema: GithubChecksResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
       connectedAccountPurposeBindings: TRIAGE_INSTANCE_ACCOUNT_BINDINGS,
       run: readGithubChecks,
     },
-    // The bound pull-request and issue mutations. Omitting `agent` and `mcp` is
-    // the human gate: it makes them unreachable from an agent at all, which is a
-    // stronger guarantee than flooring a danger level to a prompt.
-    //
-    // `ui` is the only other surface and it is the product's whole reach for
-    // these writes: the daemon ingress derives the invoking surface from the
-    // authenticated mounted-UI provenance, so a mounted Plugin UI press is
-    // admitted as UI authority while direct plugin code — ActionsService —
-    // checks only the `plugin` surface and is refused here. Each declares the
-    // same `github-api` grant and the same connected-account purpose as every
-    // read, and rebinds the exact configured account.
+    // PR writes retain provider-native danger levels and confirmations. The
+    // central Action gate requires live approval on agent/MCP/CLI ingress.
+    // Issue writes remain UI-only; direct plugin/voice writes remain unavailable.
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.pullRequestMerge]: {
       title: 'Merge this pull request',
       description: 'Merges one GitHub pull request at the exact head revision you are looking at,'
         + ' using a merge method this repository allows.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'destructive',
       confirmation: {
@@ -713,7 +686,6 @@ function createGithubPlugin() {
           fallback: 'Merge',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubPullRequestMergeInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestMergeResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -724,8 +696,7 @@ function createGithubPlugin() {
       title: 'Close this pull request',
       description: 'Closes one open GitHub pull request without merging it. Its branch and commits'
         + ' are left untouched.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
       confirmation: {
@@ -742,7 +713,6 @@ function createGithubPlugin() {
           fallback: 'Close',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubPullRequestCloseInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestStateResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -752,8 +722,7 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.pullRequestReopen]: {
       title: 'Reopen this pull request',
       description: 'Reopens one closed, unmerged GitHub pull request.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
       confirmation: {
@@ -770,7 +739,6 @@ function createGithubPlugin() {
           fallback: 'Reopen',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubPullRequestReopenInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestStateResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -785,8 +753,7 @@ function createGithubPlugin() {
       title: 'Mark this pull request ready for review',
       description: 'Takes one GitHub pull request out of draft at the exact head revision you are'
         + ' looking at, which notifies every requested reviewer and starts its checks.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'externalSideEffect',
       confirmation: {
@@ -804,7 +771,6 @@ function createGithubPlugin() {
           fallback: 'Mark ready',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubPullRequestMarkReadyInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestMarkReadyResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -814,8 +780,7 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.pullRequestSubmitReview]: {
       title: 'Submit this pull request review',
       description: 'Publishes one canonical Happier review proposal and its verdict against the exact base and head revisions you are looking at.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'externalSideEffect',
       confirmation: {
@@ -832,7 +797,6 @@ function createGithubPlugin() {
           fallback: 'Submit review',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubPullRequestReviewPublicationInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestReviewPublicationResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -842,8 +806,7 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.pullRequestReviewCommentCreate]: {
       title: 'Publish this pull request review comment',
       description: 'Publishes one canonical Happier review proposal at its exact pinned GitHub diff anchor.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'externalSideEffect',
       confirmation: {
@@ -851,7 +814,6 @@ function createGithubPlugin() {
         body: { key: 'plugins.github.mutations.reviewCommentCreate.confirmation.body', fallback: 'This posts the selected comment on GitHub at the exact pull request comparison you reviewed.' },
         confirmLabel: { key: 'plugins.github.mutations.reviewCommentCreate.confirmation.confirmLabel', fallback: 'Publish comment' },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubPullRequestReviewCommentCreateInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestReviewCommentCreateResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -861,8 +823,7 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.pullRequestThreadReply]: {
       title: 'Reply to this pull request review thread',
       description: 'Publishes one canonical Happier proposal as a reply to the exact GitHub review thread.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
       confirmation: {
@@ -870,7 +831,6 @@ function createGithubPlugin() {
         body: { key: 'plugins.github.mutations.threadReply.confirmation.body', fallback: 'This reply becomes visible in the selected GitHub review conversation.' },
         confirmLabel: { key: 'plugins.github.mutations.threadReply.confirmation.confirmLabel', fallback: 'Post reply' },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubPullRequestThreadReplyInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestThreadReplyResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -880,7 +840,6 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.issueComment]: {
       title: 'Comment on this GitHub issue',
       description: 'Publishes one canonical Happier proposal into the exact GitHub issue conversation.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
@@ -889,7 +848,6 @@ function createGithubPlugin() {
         body: { key: 'plugins.github.mutations.issueComment.confirmation.body', fallback: 'This comment becomes visible in the selected GitHub issue conversation.' },
         confirmLabel: { key: 'plugins.github.mutations.issueComment.confirmation.confirmLabel', fallback: 'Post comment' },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubIssueCommentInputV1Schema.jsonSchema,
       resultSchema: GithubIssueCommentResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -900,8 +858,7 @@ function createGithubPlugin() {
       title: 'Update this branch',
       description: 'Merges the base branch into one GitHub pull request’s branch, guarded by the'
         + ' exact head revision you are looking at.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
       confirmation: {
@@ -920,7 +877,6 @@ function createGithubPlugin() {
           fallback: 'Update branch',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubPullRequestUpdateBranchInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestUpdateBranchResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -931,8 +887,7 @@ function createGithubPlugin() {
       title: 'Request review from people',
       description: 'Asks exactly the named GitHub users and teams to review this pull request,'
         + ' leaving reviewers somebody else requested untouched.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'externalSideEffect',
       confirmation: {
@@ -950,7 +905,6 @@ function createGithubPlugin() {
           fallback: 'Request review',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubPullRequestAddReviewersInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestReviewersResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -961,8 +915,7 @@ function createGithubPlugin() {
       title: 'Withdraw review requests',
       description: 'Stops asking exactly the named GitHub users and teams to review this pull'
         + ' request, leaving every reviewer you did not name untouched.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
       confirmation: {
@@ -980,7 +933,6 @@ function createGithubPlugin() {
           fallback: 'Withdraw',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubPullRequestRemoveReviewersInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestReviewersResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -1003,8 +955,7 @@ function createGithubPlugin() {
       title: 'Resolve or reopen a review conversation',
       description: 'Marks one line-anchored review thread on this GitHub pull request resolved,'
         + ' or reopens one that was resolved.',
-      scopes: ['global'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent', 'mcp', 'cli'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
       confirmation: {
@@ -1023,7 +974,6 @@ function createGithubPlugin() {
           fallback: 'Continue',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubPullRequestThreadResolutionInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestThreadResolutionResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -1037,7 +987,6 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.issueClose]: {
       title: 'Close this issue',
       description: 'Closes one open GitHub issue with the reason you choose, which everyone watching it sees.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
@@ -1055,7 +1004,6 @@ function createGithubPlugin() {
           fallback: 'Close',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubIssueCloseInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestStateResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -1065,7 +1013,6 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.issueReopen]: {
       title: 'Reopen this issue',
       description: 'Reopens one closed GitHub issue.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
@@ -1083,7 +1030,6 @@ function createGithubPlugin() {
           fallback: 'Reopen',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubIssueReopenInputV1Schema.jsonSchema,
       resultSchema: GithubPullRequestStateResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -1093,7 +1039,6 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.issueAssigneeAdd]: {
       title: 'Assign people to this issue',
       description: 'Assigns exactly the named GitHub users to this issue, leaving everyone somebody else assigned untouched.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
@@ -1111,7 +1056,6 @@ function createGithubPlugin() {
           fallback: 'Assign',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubIssueAssigneeAddInputV1Schema.jsonSchema,
       resultSchema: GithubIssueDeltaResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -1121,7 +1065,6 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.issueAssigneeRemove]: {
       title: 'Unassign people from this issue',
       description: 'Unassigns exactly the named GitHub users from this issue, leaving everyone you did not name untouched.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
@@ -1139,7 +1082,6 @@ function createGithubPlugin() {
           fallback: 'Unassign',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubIssueAssigneeRemoveInputV1Schema.jsonSchema,
       resultSchema: GithubIssueDeltaResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -1149,7 +1091,6 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.issueLabelAdd]: {
       title: 'Add labels to this issue',
       description: 'Adds exactly the named labels to this issue, leaving every label somebody else added untouched.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
@@ -1167,7 +1108,6 @@ function createGithubPlugin() {
           fallback: 'Add labels',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubIssueLabelAddInputV1Schema.jsonSchema,
       resultSchema: GithubIssueDeltaResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -1177,7 +1117,6 @@ function createGithubPlugin() {
     [GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.issueLabelRemove]: {
       title: 'Remove a label from this issue',
       description: 'Removes exactly one named label from this issue, leaving every other label untouched.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
       dangerLevel: 'writesRemote',
@@ -1195,7 +1134,6 @@ function createGithubPlugin() {
           fallback: 'Remove label',
         },
       },
-      execution: { target: 'daemon' },
       inputSchema: GithubIssueLabelRemoveInputV1Schema.jsonSchema,
       resultSchema: GithubIssueDeltaResultV1Schema.jsonSchema,
       hostAccess: TRIAGE_READ_HOST_ACCESS,
@@ -1205,10 +1143,7 @@ function createGithubPlugin() {
     [GITHUB_AUTOMATION_REPOSITORY_SOURCE_ATTEMPT_ACTION_ID]: {
       title: 'Run GitHub repository Event source attempt',
       description: 'Runs one GitHub repository Event source attempt.',
-      scopes: ['global'],
       surfaces: ['plugin'],
-      dangerLevel: 'safe',
-      execution: { target: 'daemon' },
       inputSchema: GITHUB_AUTOMATION_REPOSITORY_SOURCE_ATTEMPT_INPUT_SCHEMA,
       resultSchema: GITHUB_AUTOMATION_REPOSITORY_SOURCE_ATTEMPT_RESULT_SCHEMA,
       hostAccess: [
@@ -1225,12 +1160,9 @@ function createGithubPlugin() {
     [GITHUB_WEBHOOK_ACTION_ID]: {
       title: 'Receive GitHub webhook',
       description: 'Receives one GitHub webhook delivery for processing.',
-      scopes: ['global'],
       inputSchema: GITHUB_WEBHOOK_ACTION_INPUT_SCHEMA,
       resultSchema: GITHUB_WEBHOOK_ACTION_RESULT_SCHEMA,
       surfaces: ['plugin'],
-      dangerLevel: 'safe',
-      execution: { target: 'daemon' },
       run: receiveGithubWebhook,
     },
     [GITHUB_CHANNEL_ACTION_IDS.setup]: {
@@ -1245,7 +1177,6 @@ function createGithubPlugin() {
       },
       title: 'Set up GitHub Channels',
       description: 'Verifies the selected GitHub repository for Channels setup.',
-      scopes: ['global'],
       resultSchema: providers.operations.setup.declaration.resultSchema.jsonSchema,
       surfaces: providers.operations.setup.declaration.surfaces,
       inputHints: GITHUB_REPOSITORY_SETUP_INPUT_HINTS,
@@ -1255,13 +1186,11 @@ function createGithubPlugin() {
         purpose: GITHUB_CONNECTED_ACCOUNT_PURPOSE,
       }],
       dangerLevel: providers.operations.setup.declaration.dangerLevel,
-      execution: { target: 'daemon' },
       run: setupGithubChannels,
     },
     [GITHUB_AUTOMATION_REPOSITORY_SETUP_ACTION_ID]: {
       title: 'Set up GitHub repository Event source',
       description: 'Resolves a GitHub repository to immutable source facts for an Automation Event.',
-      scopes: ['global'],
       surfaces: ['plugin'],
       inputSchema: {
         type: 'object',
@@ -1279,14 +1208,11 @@ function createGithubPlugin() {
         path: 'credentialRef',
         purpose: GITHUB_CONNECTED_ACCOUNT_PURPOSE,
       }],
-      dangerLevel: 'safe',
-      execution: { target: 'daemon' },
       run: setupGithubRepositoryEventSource,
     },
     [GITHUB_AUTOMATION_REPOSITORY_BASELINE_RESET_ACTION_ID]: {
       title: 'Start a new GitHub repository Event baseline',
       description: 'Explicitly replaces a GitHub Event history gap with an authenticated current-head baseline. Events in the gap are not replayed.',
-      scopes: ['global'],
       surfaces: ['plugin'],
       confirmation: {
         title: {
@@ -1302,7 +1228,6 @@ function createGithubPlugin() {
       resultSchema: PluginEventAutomationHistoryGapResetActionResultV1JsonSchema,
       hostAccess: ['github-api', GITHUB_CONNECTED_ACCOUNT_PURPOSE, 'automation-event-checkpoint-storage'],
       dangerLevel: 'writesLocal',
-      execution: { target: 'daemon' },
       run: resetGithubRepositoryEventHistoryGap,
     },
     [GITHUB_CHANNEL_ACTION_IDS.connectionTest]: {
@@ -1310,7 +1235,6 @@ function createGithubPlugin() {
       resultSchema: providers.operations.connectionTest.declaration.resultSchema.jsonSchema,
       title: 'Test GitHub Channel connection',
       description: 'Tests the selected GitHub Channel connection.',
-      scopes: ['global'],
       surfaces: providers.operations.connectionTest.declaration.surfaces,
       hostAccess: ['github-api', GITHUB_CONNECTED_ACCOUNT_PURPOSE],
       connectedAccountPurposeBindings: [{
@@ -1318,7 +1242,6 @@ function createGithubPlugin() {
         purpose: GITHUB_CONNECTED_ACCOUNT_PURPOSE,
       }],
       dangerLevel: providers.operations.connectionTest.declaration.dangerLevel,
-      execution: { target: 'daemon' },
       run: testGithubChannelConnection,
     },
     [GITHUB_CHANNEL_ACTION_IDS.endpointResolve]: {
@@ -1326,7 +1249,6 @@ function createGithubPlugin() {
       resultSchema: providers.operations.endpointResolve.declaration.resultSchema.jsonSchema,
       title: 'Resolve GitHub issue or pull request',
       description: 'Resolves a GitHub issue or pull request destination.',
-      scopes: ['global'],
       surfaces: providers.operations.endpointResolve.declaration.surfaces,
       hostAccess: ['github-api', GITHUB_CONNECTED_ACCOUNT_PURPOSE],
       connectedAccountPurposeBindings: [{
@@ -1334,7 +1256,6 @@ function createGithubPlugin() {
         purpose: GITHUB_CONNECTED_ACCOUNT_PURPOSE,
       }],
       dangerLevel: providers.operations.endpointResolve.declaration.dangerLevel,
-      execution: { target: 'daemon' },
       run: resolveGithubChannelEndpoint,
     },
     [GITHUB_CHANNEL_ACTION_IDS.principalResolve]: {
@@ -1342,7 +1263,6 @@ function createGithubPlugin() {
       resultSchema: providers.operations.principalResolve.declaration.resultSchema.jsonSchema,
       title: 'Resolve GitHub principal',
       description: 'Resolves a GitHub principal for the selected repository.',
-      scopes: ['global'],
       surfaces: providers.operations.principalResolve.declaration.surfaces,
       hostAccess: ['github-api', GITHUB_CONNECTED_ACCOUNT_PURPOSE],
       connectedAccountPurposeBindings: [{
@@ -1350,7 +1270,6 @@ function createGithubPlugin() {
         purpose: GITHUB_CONNECTED_ACCOUNT_PURPOSE,
       }],
       dangerLevel: providers.operations.principalResolve.declaration.dangerLevel,
-      execution: { target: 'daemon' },
       run: resolveGithubChannelPrincipal,
     },
     [GITHUB_CHANNEL_ACTION_IDS.observationsPoll]: {
@@ -1358,7 +1277,6 @@ function createGithubPlugin() {
       resultSchema: providers.operations.observationsPoll.declaration.resultSchema.jsonSchema,
       title: 'Poll GitHub issue comments',
       description: 'Polls the selected GitHub issue or pull request for new comments.',
-      scopes: ['global'],
       surfaces: providers.operations.observationsPoll.declaration.surfaces,
       hostAccess: ['github-api', GITHUB_CONNECTED_ACCOUNT_PURPOSE],
       connectedAccountPurposeBindings: [{
@@ -1366,7 +1284,6 @@ function createGithubPlugin() {
         purpose: GITHUB_CONNECTED_ACCOUNT_PURPOSE,
       }],
       dangerLevel: providers.operations.observationsPoll.declaration.dangerLevel,
-      execution: { target: 'daemon' },
       run: pollGithubChannelObservations,
     },
     [GITHUB_CHANNEL_ACTION_IDS.messageDeliver]: {
@@ -1374,7 +1291,6 @@ function createGithubPlugin() {
       resultSchema: providers.operations.messageDeliver.declaration.resultSchema.jsonSchema,
       title: 'Deliver GitHub issue or pull-request comment',
       description: 'Delivers a comment to the selected GitHub issue or pull request.',
-      scopes: ['global'],
       surfaces: providers.operations.messageDeliver.declaration.surfaces,
       hostAccess: ['github-api', GITHUB_CONNECTED_ACCOUNT_PURPOSE],
       connectedAccountPurposeBindings: [{
@@ -1382,7 +1298,6 @@ function createGithubPlugin() {
         purpose: GITHUB_CONNECTED_ACCOUNT_PURPOSE,
       }],
       dangerLevel: providers.operations.messageDeliver.declaration.dangerLevel,
-      execution: { target: 'daemon' },
       run: deliverGithubChannelMessage,
     },
   },
@@ -1494,6 +1409,8 @@ function createGithubPlugin() {
               .bind(GITHUB_TRIAGE_ACTION_IDS_V1.listInstances),
             scan: sources.operations.scan.bind(GITHUB_TRIAGE_ACTION_IDS_V1.scan),
             get: sources.operations.get.bind(GITHUB_TRIAGE_ACTION_IDS_V1.get),
+            readPullRequestStatus: sources.operations.readPullRequestStatus
+              .bind(GITHUB_TRIAGE_ACTION_IDS_V1.readPullRequestStatus),
             prepareReviewWorkspace: sources.operations.prepareReviewWorkspace
               .bind(GITHUB_TRIAGE_ACTION_IDS_V1.prepareReviewWorkspace),
             verifyReviewWorkspace: sources.operations.verifyReviewWorkspace

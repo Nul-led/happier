@@ -20,10 +20,14 @@ function js(value: unknown): string {
  * Builds the existing OpenCode auth interceptor with the canonical request-auth transport injected.
  * Each fetch invocation is one independent upstream attempt and performs exactly one lookup.
  */
-export function buildOpenCodeRequestAuthPluginSource(input: Readonly<{
+type OpenCodeRequestAuthPluginSourceInput = Readonly<{
   provider: OpenCodeRequestAuthProvider;
   purpose: JsonValue;
   requestAuthClientSource: string;
+}>;
+
+function buildOpenCodeRequestAuthPluginRuntimeSource(input: OpenCodeRequestAuthPluginSourceInput & Readonly<{
+  pluginDefinitionSource: string;
 }>): string {
   return `// Happier OpenCode connected-account request-auth plugin (generated).
 import { readFileSync } from "node:fs";
@@ -39,7 +43,10 @@ const ANTHROPIC_BETA = ${js(OPEN_CODE_REQUEST_AUTH_ANTHROPIC_BETA)};
 const ANTHROPIC_SYSTEM_IDENTITY = ${js("You are Claude Code, Anthropic's official CLI for Claude.")};
 
 function rewriteCodexUrl(url) {
-  return String(url).replace("/responses", "/codex/responses");
+  const value = String(url);
+  return value.includes("/codex/responses")
+    ? value
+    : value.replace("/responses", "/codex/responses");
 }
 
 function requireRequestAuthDestination(url) {
@@ -229,7 +236,11 @@ async function requestAuthFetch(requestInput, init) {
   }
 }
 
-const HappierOpenCodeRequestAuthPlugin = async () => ({
+${input.pluginDefinitionSource}
+`;
+}
+
+const OPEN_CODE_REQUEST_AUTH_V1_DEFINITION = `const HappierOpenCodeRequestAuthPlugin = async () => ({
   auth: {
     provider: PROVIDER,
     methods: [],
@@ -247,4 +258,107 @@ const HappierOpenCodeRequestAuthPlugin = async () => ({
 
 export default HappierOpenCodeRequestAuthPlugin;
 `;
+
+const OPEN_CODE_REQUEST_AUTH_V2_DEFINITION = `const requestState = new WeakMap();
+
+async function readRequestBody(request) {
+  try { return await request.clone().text(); } catch { return null; }
+}
+
+async function buildHookRequest(original, lease) {
+  const bodyText = await readRequestBody(original);
+  const rawInit = {
+    method: original.method,
+    headers: original.headers,
+    body: bodyText === null || bodyText.length === 0 ? undefined : bodyText,
+    signal: original.signal,
+  };
+  const shaped = PROVIDER === "openai"
+    ? transformCodexBody(rawInit)
+    : injectAnthropicIdentity(rawInit);
+  const destination = requireRequestAuthDestination(
+    PROVIDER === "openai" ? rewriteCodexUrl(original.url) : original.url,
+  );
+  return {
+    request: new Request(destination, {
+      ...shaped,
+      redirect: "manual",
+      headers: mergeRequiredHeaders(shaped, lease),
+    }),
+    retrySafe: bodyText !== null,
+  };
+}
+
+export default {
+  id: "happier-request-auth-" + PROVIDER,
+  setup: async (ctx) => {
+    await ctx.session.hook("model.request", async (evt) => {
+      if (PROVIDER === "openai") evt.baseURL = CODEX_BASE_URL;
+    }, { providerID: PROVIDER });
+    await ctx.session.hook("http.request", async (evt) => {
+      const lease = await lookupConnectedAccountRequestAuth({
+        purpose: PURPOSE,
+        signal: evt.request.signal,
+      });
+      const prepared = await buildHookRequest(evt.request, lease);
+      requestState.set(prepared.request, {
+        lease,
+        retrySafe: prepared.retrySafe,
+      });
+      evt.request = prepared.request;
+    }, { providerID: PROVIDER });
+    await ctx.session.hook("http.response", async (evt) => {
+      if (isRedirectResponse(evt.response)) {
+        await evt.response.body?.cancel().catch(() => undefined);
+        throw new Error("happier_opencode_request_auth_redirect_rejected");
+      }
+      if (evt.response.status !== 401 && evt.response.status !== 429) return;
+      const state = requestState.get(evt.request);
+      if (!state) return;
+      let outcome = null;
+      try {
+        outcome = await reportExactFailure(evt.response, state.lease, evt.request.signal);
+      } catch {
+        // Preserve the exact upstream rejection if daemon recovery is unavailable.
+      }
+      if (
+        !state.retrySafe
+        || !canRetryAfterOutcome(outcome)
+        || evt.request.signal.aborted
+      ) return;
+      await evt.response.body?.cancel().catch(() => undefined);
+      const freshLease = await lookupConnectedAccountRequestAuth({
+        purpose: PURPOSE,
+        signal: evt.request.signal,
+      });
+      const prepared = await buildHookRequest(evt.request, freshLease);
+      evt.response = await fetch(prepared.request);
+      if (evt.response.status === 401 || evt.response.status === 429) {
+        try {
+          await reportExactFailure(evt.response, freshLease, evt.request.signal);
+        } catch {
+          // The one allowed replay remains the observable upstream response.
+        }
+      }
+    }, { providerID: PROVIDER });
+  },
+};
+`;
+
+export function buildOpenCodeRequestAuthPluginSource(
+  input: OpenCodeRequestAuthPluginSourceInput,
+): string {
+  return buildOpenCodeRequestAuthPluginRuntimeSource({
+    ...input,
+    pluginDefinitionSource: OPEN_CODE_REQUEST_AUTH_V1_DEFINITION,
+  });
+}
+
+export function buildOpenCodeRequestAuthV2PluginSource(
+  input: OpenCodeRequestAuthPluginSourceInput,
+): string {
+  return buildOpenCodeRequestAuthPluginRuntimeSource({
+    ...input,
+    pluginDefinitionSource: OPEN_CODE_REQUEST_AUTH_V2_DEFINITION,
+  });
 }

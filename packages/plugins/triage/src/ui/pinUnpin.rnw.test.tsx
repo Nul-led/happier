@@ -357,8 +357,11 @@ describe('the mounted Pin/Unpin affordance', () => {
         // believes is safe and that no provider can hand back, so the honest
         // answer is that it cannot be changed right now. The source rows are
         // untouched: an unreachable account store is not a failed scan.
-        await expect(shell.getByText('Pins are unavailable'))
-            .resolves.toEqual({ content: 'Pins are unavailable' });
+        // Said once, as the page's calm account notice, not as a separate card.
+        // This harness answers no saved-views read either, so the one notice
+        // names both things the unreachable Account blocks.
+        await expect(shell.getByText('Happier cannot reach your account right now, so pins and saved views cannot be changed.'))
+            .resolves.toEqual({ content: 'Happier cannot reach your account right now, so pins and saved views cannot be changed.' });
         await expect(shell.getByText('Replace the duplicated normalizer'))
             .resolves.toEqual({ content: 'Replace the duplicated normalizer' });
         await expect(shell.getByText('Up to date')).resolves.toEqual({ content: 'Up to date' });
@@ -380,7 +383,7 @@ describe('the mounted Pin/Unpin affordance', () => {
         const shell = await mountShell(harness);
 
         // The initial read SUCCEEDED — that is what makes this the write path.
-        await expect(shell.queryByText('Pins are unavailable')).resolves.toBeUndefined();
+        await expect(shell.queryByText('Happier cannot reach your account right now, so pins and saved views cannot be changed.')).resolves.toBeUndefined();
 
         harness.state.marksUnreachable = true;
         await act(async () => {
@@ -389,8 +392,11 @@ describe('the mounted Pin/Unpin affordance', () => {
             }));
         });
 
-        await expect(shell.getByText('Pins are unavailable'))
-            .resolves.toEqual({ content: 'Pins are unavailable' });
+        // Said once, as the page's calm account notice, not as a separate card.
+        // This harness answers no saved-views read either, so the one notice
+        // names both things the unreachable Account blocks.
+        await expect(shell.getByText('Happier cannot reach your account right now, so pins and saved views cannot be changed.'))
+            .resolves.toEqual({ content: 'Happier cannot reach your account right now, so pins and saved views cannot be changed.' });
         // HONEST LIMIT OF THIS ASSERTION: it proves the write rejection REACHES the
         // unavailable branch, which was previously untested. It does NOT prove the
         // reason is translated — this branch used to render a raw English constant

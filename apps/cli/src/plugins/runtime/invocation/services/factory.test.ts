@@ -34,13 +34,13 @@ const seedMaterialization = createPluginActionCallerMaterializationFixture('acme
 const seed = Object.freeze({
     plugin: Object.freeze({ id: 'acme.alpha', version: '1.2.3' }),
     contribution: Object.freeze({ id: 'run', qualifiedId: 'acme.alpha/actions/run' }),
-    generation: '7',
+    occurrenceId: '7',
     correlationId: 'correlation-host-owned',
     surface: 'cli' as const,
     resolveCurrentPluginMaterializationRef:
         seedMaterialization.resolveCurrentPluginMaterializationRef,
     signal: new AbortController().signal,
-    isGenerationCurrent: () => true,
+    isOccurrenceCurrent: () => true,
 });
 
 describe('unavailable plugin invocation services factory', () => {
@@ -234,11 +234,11 @@ describe('unavailable plugin invocation services factory', () => {
         expect(execute.mock.calls[1]?.[2]).toMatchObject({ bypassActionInterception: true });
     });
 
-    it('rejects stale generation bindings', () => {
+    it('rejects stale occurrenceId bindings', () => {
         const createServices = createUnavailablePluginServicesFactory();
 
         expect(() => createServices(seed, createUnavailablePluginInvocationServiceBinding('8', 'binding')))
-            .toThrow(/generation/i);
+            .toThrow(/occurrenceId/i);
     });
 
     it('keeps the unavailable Sessions service shape-identical to the six-method External Sessions author service', async () => {
@@ -320,7 +320,12 @@ describe('unavailable plugin invocation services factory', () => {
 
     it('binds targeted contribution observation only through its stable host owner', async () => {
         const readCurrent = vi.fn(async () => Object.freeze({
-            generation: 'immutable-target-a',
+            occurrenceId: 'target-occurrence-a',
+            sourceCustody: {
+                kind: 'managed' as const,
+                immutableGenerationId: 'immutable-target-a',
+                installSource: 'localPath' as const,
+            },
             contributions: Object.freeze([]),
         }));
         const observeForSelf = vi.fn(() => Object.freeze({
@@ -351,10 +356,10 @@ describe('unavailable plugin invocation services factory', () => {
         expect(bind).toHaveBeenCalledWith({
             pluginId: 'acme.alpha',
             signal: seed.signal,
-            isCurrent: seed.isGenerationCurrent,
+            isCurrent: seed.isOccurrenceCurrent,
         });
         await expect(observation.readCurrent()).resolves.toEqual({
-            generation: 'immutable-target-a',
+            occurrenceId: 'immutable-target-a',
             contributions: [],
         });
         expect(observeForSelf).toHaveBeenCalledOnce();
@@ -632,7 +637,7 @@ describe('unavailable plugin invocation services factory', () => {
                 activePluginIds: new Set<string>(),
             },
             storagePaths: resolvePluginStorePaths({ happyHomeDir }),
-        })({ ...seed, isGenerationCurrent: () => current }, binding);
+        })({ ...seed, isOccurrenceCurrent: () => current }, binding);
 
         await expect(services.storage.daemon.transaction(async (transaction) => {
             await transaction.set('first', 1);

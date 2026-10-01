@@ -1,3 +1,4 @@
+import { readFile, stat } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProviderConnectionIdSchema } from '@happier-dev/protocol';
 import type { AgentSessionRuntimeEvent } from '@happier-dev/protocol/runtime';
@@ -83,6 +84,29 @@ const RESUME_CHOICE_QUESTION = 'How should Claude resume this session?';
 const SAFEGUARD_CHOICE_QUESTION = 'How should Claude continue?';
 
 describe('createClaudeUnifiedTerminalTurnOperations', () => {
+  it('delivers the startup plan through a private file on native resume and removes it on shutdown', async () => {
+    const terminalHost = createTerminalHostFixture();
+    const instructions = `ROLE\n${'雪 " $ \\'.repeat(8_000)}`;
+    const operations = createClaudeUnifiedTerminalProviderOperations({
+      ctx: createPluginContextFixture(terminalHost.service, createEventsFixture().service),
+      directory: '/tmp/claude-project', happierSessionId: 'happy-native-plan',
+      hostPreference: 'zellij', launchEnv: {}, permissionMode: 'default',
+      startupInstructions: instructions,
+      launchIntent: { kind: 'resume_native', providerSessionId: 'claude-native-plan' },
+      supportsSystemPromptSnapshotOff: true,
+    });
+    let path = '';
+    try {
+      await operations.startProviderSession();
+      const args = readLaunchArgs(terminalHost);
+      expect(args).not.toContain(instructions);
+      expect(args).toEqual(expect.arrayContaining(['--system-prompt-snapshot', 'off', '--resume', 'claude-native-plan']));
+      path = args[args.indexOf('--append-system-prompt-file') + 1];
+      expect(await readFile(path, 'utf8')).toBe(instructions);
+    } finally { await operations.disposeProviderSession(); }
+    await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -136,6 +160,37 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
     return args.filter((arg) => arg === flag).length;
   }
 
+  it('stops an acquired host before its initial readiness probe settles', async () => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service);
+    let releaseProbe!: () => void;
+    let noteProbeStarted!: () => void;
+    const probePending = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const probeStarted = new Promise<void>((resolve) => { noteProbeStarted = resolve; });
+    terminalHost.service.evaluateLiveness = vi.fn(async () => {
+      noteProbeStarted();
+      await probePending;
+      return { paneAlive: false, paneDead: true, observedAt: Date.now() };
+    });
+    const operations = createClaudeUnifiedTerminalProviderOperations({
+      ctx, directory: '/tmp/claude-project', happierSessionId: 'happy-startup-stop',
+      hostPreference: 'zellij', launchEnv: {}, permissionMode: 'default',
+    });
+    const starting = operations.startProviderSession();
+    try {
+      await probeStarted;
+      await operations.disposeProviderSession('session_closed');
+      expect(terminalHost.service.dispose).toHaveBeenCalledWith(terminalHost.handle, {
+        kind: 'destroy_owned_host', reason: 'session_closed',
+      });
+      expect(terminalHost.service.injectUserPrompt).not.toHaveBeenCalled();
+    } finally {
+      releaseProbe();
+      await starting;
+    }
+  });
+
   it('returns the provider operation owner directly without a public runtime envelope', async () => {
     const terminalHost = createTerminalHostFixture();
     const events = createEventsFixture();
@@ -158,6 +213,50 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
     expect('identity' in operations).toBe(false);
 
     await operations.disposeProviderSession();
+  });
+
+  it('retires exact host input custody without reinjection, acceptance, or interrupting accepted work', async () => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service);
+    const operations = createClaudeUnifiedTerminalProviderOperations({
+      ctx, directory: '/tmp/claude-project', happierSessionId: 'retired-custody',
+      hostPreference: 'zellij', launchEnv: {}, permissionMode: 'default',
+    });
+    let binding: { onInputRetired?: (inputId: string) => void } | null = null;
+    const session = createClaudeNativeSessionRuntimeFromOperations(operations, {
+      kind: 'create', sessionId: 'retired-custody', cwd: '/tmp/claude-project',
+    }, {
+      session: { services: {
+        activeInput: { bind: (value: object) => { binding = value; return { dispose() { binding = null; } }; } },
+        models: { bind: () => ({ dispose() {} }) },
+      } },
+    } as unknown as AgentSessionRuntimeContext);
+    const observed: AgentSessionRuntimeEvent[] = [];
+    session.watch((event) => observed.push(event));
+    const retire = (inputId: string) => { binding?.onInputRetired?.(inputId); };
+    try {
+      await session.send({ inputIds: ['retired-input'], input: { text: 'first prompt' },
+        delivery: { kind: 'newTurn', turnId: 'first-turn' } });
+      retire('unrelated-input');
+      expect(terminalHost.service.injectUserPrompt).toHaveBeenCalledTimes(1);
+      retire('retired-input');
+      await session.send({ inputIds: ['next-input'], input: { text: 'next prompt' },
+        delivery: { kind: 'newTurn', turnId: 'next-turn' } });
+      expect(terminalHost.service.injectUserPrompt).toHaveBeenCalledTimes(2);
+      expect(observed.filter((event) => event.kind === 'input-accepted' || event.kind === 'turn-cancelled')).toEqual([]);
+      expect(terminalHost.service.interruptTurn).not.toHaveBeenCalled();
+      await operations.observeTerminalLifecycle({ agentId: 'claude', type: 'prompt_submitted',
+        promptText: 'next prompt', observedAtMs: 100, source: 'hook' });
+      retire('next-input');
+      expect(operations.isTurnInFlight()).toBe(true);
+      expect(observed.filter((event) => event.kind === 'input-accepted')).toEqual([
+        expect.objectContaining({ inputIds: ['next-input'] }),
+      ]);
+    } finally {
+      await session.dispose();
+    }
+    expect(binding).toBeNull();
   });
 
   it('keeps host turn identity through acceptance, completion, follow-up, and cancellation', async () => {
@@ -627,6 +726,29 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
       const launch = terminalHost.service.createOrAttachHost.mock.calls[0]?.[0].launch;
       expect(launch.args).not.toContain('--effort');
       expect(launch.args.join(' ')).not.toContain('ultracode');
+    } finally {
+      await runtime.resetOrDisposeRuntime().catch(() => undefined);
+    }
+  });
+
+  it.each([
+    { launchIntent: { kind: 'new_session' as const }, supported: true },
+    { launchIntent: { kind: 'resume_native' as const, providerSessionId: 'snapshot-resume' }, supported: true },
+    { launchIntent: { kind: 'resume_native' as const, providerSessionId: 'snapshot-legacy' }, supported: false },
+  ])('disables prompt snapshots only on supported terminal launches ($supported, $launchIntent.kind)', async ({ launchIntent, supported }) => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service);
+    const runtime = expectRuntimeEnvelope(createClaudeUnifiedTerminalTurnOperations({
+      ctx, directory: '/tmp/claude-project', happierSessionId: 'snapshot-session',
+      hostPreference: 'zellij', launchEnv: {}, permissionMode: 'default',
+      supportsSystemPromptSnapshotOff: supported, launchIntent,
+    })).operations;
+    try {
+      await runtime.startProviderSession();
+      const args = readLaunchArgs(terminalHost);
+      expect(hasSplitFlagValue(args, '--system-prompt-snapshot', 'off')).toBe(supported);
+      if (!supported) expect(args).not.toContain('--system-prompt-snapshot');
     } finally {
       await runtime.resetOrDisposeRuntime().catch(() => undefined);
     }
@@ -2954,6 +3076,8 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
       observeTerminalLifecycle(observation: unknown): Promise<void>;
     }>;
     let completionSettled = false;
+    const compactionEvents: unknown[] = [];
+    runtime.subscribeRuntimeEvents((event) => { if (event.kind === 'context-compaction') compactionEvents.push(event); });
 
     try {
       await runtime.sendTurnPrompt('long running work');
@@ -2976,6 +3100,7 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
       });
       await Promise.resolve();
       expect(completionSettled).toBe(false);
+      expect(compactionEvents).toContainEqual(expect.objectContaining({ kind: 'context-compaction', phase: 'completed', trigger: 'unknown' }));
 
       await nativeRuntime.observeTerminalLifecycle({
         agentId: 'claude',
@@ -3116,6 +3241,8 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
       }>) => void): void;
     }>;
     const deliveryOutcomes: Array<{ type: string; userMessageSeq: number | null }> = [];
+    const runtimeEvents: ClaudeProviderEvent[] = [];
+    runtime.subscribeRuntimeEvents((event) => runtimeEvents.push(event));
 
     try {
       await runtime.sendTurnPrompt('first prompt');
@@ -3156,6 +3283,14 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
         userMessageSeq: 31,
         userMessageSeqs: [31],
       }]);
+      await nativeRuntime.observeTerminalLifecycle({
+        agentId: 'claude', type: 'prompt_submitted', source: 'hook',
+        promptText: 'be more concise', acceptanceEvidenceId: 'prompt:queued-steer',
+      });
+      expect(deliveryOutcomes).toEqual([{
+        type: 'custody_observed', userMessageSeq: 31, userMessageSeqs: [31],
+      }]);
+      expect(runtimeEvents.filter((event) => event.kind === 'transcript-user-text')).toEqual([]);
       await nativeRuntime.observeTerminalLifecycle({ agentId: 'claude', type: 'completion_candidate' });
       await vi.advanceTimersByTimeAsync(5_000);
       await Promise.resolve();
@@ -5100,6 +5235,40 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
           localId: 'claude-jsonl:main:user:user-echo-1',
           reason: 'host_prompt_echo',
         });
+      } finally {
+        await runtime.resetOrDisposeRuntime().catch(() => undefined);
+      }
+    });
+
+    it('does not cancel automatic continuation to clear an owned leftover during a usage-limit wait', async () => {
+      vi.useFakeTimers();
+      const { terminalHost, runtime, envelope } = createDraftRuntime();
+      const nativeRuntime = envelope.nativeRuntime as unknown as Readonly<{
+        observeTerminalLifecycle(observation: unknown): Promise<void>;
+      }>;
+      try {
+        await runtime.sendTurnPrompt('first prompt');
+        await nativeRuntime.observeTerminalLifecycle({
+          agentId: 'claude', type: 'prompt_submitted', promptText: 'first prompt', observedAtMs: 123, source: 'hook',
+        });
+        await nativeRuntime.observeTerminalLifecycle({ agentId: 'claude', type: 'completion_candidate' });
+        await runtime.waitForTurnCompletion();
+
+        terminalHost.service.captureInputState = vi.fn(async () => ({
+          stable: true,
+          currentInput: [
+            '────────────────────',
+            '❯ first prompt',
+            '────────────────────',
+            '    Continuing automatically at 5:10pm · esc to cancel',
+          ].join('\n'),
+          observedAt: 300,
+        }));
+
+        await runtime.sendTurnPrompt('second prompt');
+
+        expect(terminalHost.service.interruptTurn).not.toHaveBeenCalled();
+        expect(terminalHost.service.injectUserPrompt).toHaveBeenCalledTimes(1);
       } finally {
         await runtime.resetOrDisposeRuntime().catch(() => undefined);
       }

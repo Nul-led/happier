@@ -1,6 +1,12 @@
 /** @moduleRealm daemon */
 import type { Disposable, PluginCancellationOptions } from '../lifecycle.js';
-import type { PluginTargetedContributionSelectionV1 } from '../targetedContributionAuthoring.js';
+import type {
+    PluginTargetedContributionSelectionV1,
+    PluginTargetedContributionSourceCustodyV1,
+} from '../targetedContributionAuthoring.js';
+import {
+    pluginSourceCustodyV1Equal,
+} from '@happier-dev/protocol/plugins/runtime/sourceCustody';
 
 /**
  * One target-owned point declaration used to observe its admitted contributors.
@@ -23,11 +29,11 @@ export type TargetedContributionPointRef<TContribution = unknown> = Readonly<{
 }>;
 
 /**
- * A complete current admitted view of one target-owned point. `generation` is
- * the target's committed immutable generation, including for an empty point.
+ * A complete current admitted view of one target-owned point.
  */
 export interface TargetedContributionSnapshot<TContribution> {
-    readonly generation: string;
+    readonly occurrenceId: string;
+    readonly sourceCustody: PluginTargetedContributionSourceCustodyV1;
     readonly contributions: readonly TContribution[];
 }
 
@@ -56,7 +62,8 @@ export type TargetedContributionAdmittedEntry = Readonly<{
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     protocol: Readonly<{
         id: string;
@@ -66,14 +73,14 @@ export type TargetedContributionAdmittedEntry = Readonly<{
 
 export type TargetedContributionSelectionUnavailableReason =
     | 'selection_invalid'
-    | 'target_generation_stale'
+    | 'target_source_stale'
     | 'contributor_unavailable';
 
 /** The current result of resolving one portable selection through its target owner. */
 export type TargetedContributionSelectionResult<TContribution> =
     | Readonly<{
         kind: 'selected';
-        targetGeneration: string;
+        targetOccurrenceId: string;
         contribution: TContribution;
     }>
     | Readonly<{
@@ -99,7 +106,10 @@ function contributionMatchesSelection(
         && contribution.protocol.version === selection.point.protocol.version
         && contribution.contributor.pluginId === selection.contributor.pluginId
         && contribution.contributor.contributionId === selection.contributor.contributionId
-        && contribution.contributor.immutableGenerationId === selection.contributor.immutableGenerationId;
+        && pluginSourceCustodyV1Equal(
+            contribution.contributor.sourceCustody,
+            selection.contributor.sourceCustody,
+        );
 }
 
 /**
@@ -134,8 +144,8 @@ export async function selectCurrentTargetedContribution<
     const observation = input.service.observeForSelf(input.point, { onInvalidated: () => {} });
     try {
         const snapshot = await observation.readCurrent({ signal: input.signal });
-        if (snapshot.generation !== input.selection.target.immutableGenerationId) {
-            return Object.freeze({ kind: 'unavailable', reason: 'target_generation_stale' });
+        if (!pluginSourceCustodyV1Equal(snapshot.sourceCustody, input.selection.target.sourceCustody)) {
+            return Object.freeze({ kind: 'unavailable', reason: 'target_source_stale' });
         }
 
         const matches = snapshot.contributions.filter((contribution) => (
@@ -147,7 +157,7 @@ export async function selectCurrentTargetedContribution<
 
         return Object.freeze({
             kind: 'selected',
-            targetGeneration: snapshot.generation,
+            targetOccurrenceId: snapshot.occurrenceId,
             contribution: matches[0]!,
         });
     } finally {

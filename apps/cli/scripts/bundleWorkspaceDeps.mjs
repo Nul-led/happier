@@ -16,14 +16,11 @@ import {
 } from './optionalWorkspaceBundleLock.mjs';
 import { readBundledPluginPackageNames } from './build-owned/bundledPluginMembership.ts';
 import {
-  formatBundledPluginArtifactVerification,
-  requireBundledPluginArtifactInventory,
-  verifyBundledPluginArtifactsAgainstInventory,
-} from './verifyBundledPluginArtifacts.mjs';
+  assertBundledPluginPackageCorrespondence,
+} from './build-owned/bundledPluginPackageCorrespondence.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_REPO_ROOT = findRepoRoot(__dirname);
-const PLUGINS_PACKAGE_PREFIX = '@happier-dev/plugins-';
 
 function findRepoRoot(startDir) {
   let dir = startDir;
@@ -62,19 +59,6 @@ function resolveDeclaredBundledPluginWorkspacePackageNames({ repoRoot }) {
   // used to be a second, similar-but-different package list; the guardrails below
   // keep their pack-specific failure messages while discovery is delegated.
   return [...readBundledPluginPackageNames(repoRoot)];
-}
-
-function resolveGeneratorOwnedBundledPluginPackageNames({ repoRoot }) {
-  // Fail closed with the inventory: a missing inventory must not silently re-admit
-  // every generator-owned plugin to the ordinary workspace compiler (which would
-  // replace the staged immutable bundle/chunk trees with compiler-owned reexports
-  // before the exact verification below runs).
-  const artifacts = requireBundledPluginArtifactInventory({ repoRoot }) ?? [];
-  return new Set(
-    artifacts
-      .map((artifact) => String(artifact?.packageName ?? '').trim())
-      .filter((packageName) => packageName.startsWith(PLUGINS_PACKAGE_PREFIX)),
-  );
 }
 
 export async function bundleWorkspaceDeps(opts = {}) {
@@ -164,14 +148,14 @@ export async function bundleWorkspaceDeps(opts = {}) {
       bundles.map((bundle) => String(bundle?.packageName ?? bundle?.name ?? '').trim()).filter(Boolean),
     )];
     const generatorOwnedPluginPackageNames = forceArtifactWorkspaceBuilds
-      ? resolveGeneratorOwnedBundledPluginPackageNames({ repoRoot: targetRepoRoot })
+      ? new Set(discoveredBundledPluginPackageNames)
       : new Set();
     // `build:shared` is the natural prepack builder and owns the full force-build
-    // followed by immutable plugin runtime publication. Once its generated inventory
-    // names a plugin, the pack-time copier must not admit that package to the ordinary
+    // followed by first-party plugin runtime publication. The pack-time copier must
+    // not re-admit those canonical members to the ordinary
     // workspace compiler again: even a non-forced staleness check can replace the
-    // staged bundle/chunk tree with compiler-owned reexports. The exact inventory
-    // verification below is the admission check for those immutable bytes.
+    // staged bundle/chunk tree with compiler-owned reexports. The direct prepared-tree
+    // correspondence check below is the admission check for those bytes.
     const workspacePackageNamesToForceBuild = bundledWorkspacePackageNames.filter(
       (packageName) => !generatorOwnedPluginPackageNames.has(packageName),
     );
@@ -191,33 +175,22 @@ export async function bundleWorkspaceDeps(opts = {}) {
       );
     }
     bundleWorkspacePackagesWithRuntimeDependencies({
-      bundles,
+      bundles: bundles.map((bundle) => (
+        forceArtifactWorkspaceBuilds && generatorOwnedPluginPackageNames.has(bundle.packageName)
+          ? {
+              ...bundle,
+              validatePreparedPackage: ({ packageDir }) => {
+                assertBundledPluginPackageCorrespondence({
+                  packageName: bundle.packageName,
+                  sourceDir: bundle.srcDir,
+                  packageDir,
+                });
+              },
+            }
+          : bundle
+      )),
       publicationMode,
     });
-
-    // Exact artifact publication is the only tree that reaches a tarball. The
-    // build-owned source-integrity inventory (apps/cli/scripts/build-owned/
-    // generatedBundledPluginSourceIntegrities.json) stays beside the publisher as a
-    // build/pack fact: it is not part of the tarball, and the shipped runtime module
-    // deliberately carries structural immutable-artifact records only — it is never a
-    // digest authority. Prove the shipped plugin bytes are the ones the inventory
-    // publishes before the pack step reads this tree. Live source-dev publication
-    // deliberately retains prior generation targets, so it has no exact tree to
-    // compare.
-    if (publicationMode === 'artifact') {
-      const bundledPluginPackageDirs = new Map(
-        bundles.map((bundle) => [String(bundle?.packageName ?? '').trim(), bundle.destDir]),
-      );
-      const verification = verifyBundledPluginArtifactsAgainstInventory({
-        repoRoot: targetRepoRoot,
-        resolvePackageDir: (packageName) => (
-          bundledPluginPackageDirs.get(packageName)
-          ?? resolve(happyCliDir, 'node_modules', ...packageName.split('/'))
-        ),
-      });
-      const failure = formatBundledPluginArtifactVerification(verification);
-      if (failure) throw new Error(failure);
-    }
   }, {
     repoRoot: targetRepoRoot,
     lockPath,

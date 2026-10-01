@@ -36,16 +36,16 @@ async function readChannelsProviderPointRef(): Promise<ChannelsManifestModule['C
 /**
  * One ephemeral observation of the admitted provider selection. Callers may
  * carry this only across one in-flight effect chain; durable rows retain the
- * contributor identity but never a target-generation or Action authority.
+ * contributor identity but never a target occurrence or Action authority.
  */
 export type CurrentProviderContributionWitness = Readonly<{
-  targetGeneration: string;
+  targetOccurrenceId: string;
   contribution: ChannelsProviderContributionV1;
 }>;
 
 type ProviderContributionUnavailableReason =
   | 'selectionInvalid'
-  | 'targetGenerationChanged'
+  | 'targetSourceChanged'
   | 'selectedContributorMissing'
   | 'persistedProviderMissing'
   | 'persistedProviderAmbiguous';
@@ -65,7 +65,7 @@ function unavailableProviderContribution(
 }
 
 function unavailableSelectedProviderContribution(
-  reason: 'selection_invalid' | 'target_generation_stale' | 'contributor_unavailable',
+  reason: 'selection_invalid' | 'target_source_stale' | 'contributor_unavailable',
 ): PluginError {
   switch (reason) {
     case 'selection_invalid':
@@ -73,15 +73,15 @@ function unavailableSelectedProviderContribution(
         'selectionInvalid',
         'Conversation provider selection does not address the Channels provider contribution point.',
       );
-    case 'target_generation_stale':
+    case 'target_source_stale':
       return unavailableProviderContribution(
-        'targetGenerationChanged',
-        'Conversation provider selection was made for a retired Channels target generation.',
+        'targetSourceChanged',
+        'Conversation provider selection was made for a retired Channels target source.',
       );
     case 'contributor_unavailable':
       return unavailableProviderContribution(
         'selectedContributorMissing',
-        'The selected conversation provider contribution is no longer admitted at its selected generation.',
+        'The selected conversation provider contribution is no longer admitted from its selected source.',
       );
   }
 }
@@ -146,8 +146,6 @@ export async function readCurrentProviderContributionWitnessForPersistedSelectio
     && contribution.contributor.pluginId === input.providerPluginId
     && contribution.contributor.contributionId
       === input.providerContributionSelection.contributionId
-    && contribution.contributor.immutableGenerationId
-      === input.providerContributionSelection.immutableGenerationId
   ));
   if (matches.length === 0) {
     throw unavailableProviderContribution(
@@ -162,7 +160,7 @@ export async function readCurrentProviderContributionWitnessForPersistedSelectio
     );
   }
   return {
-    targetGeneration: snapshot.generation,
+    targetOccurrenceId: snapshot.occurrenceId,
     contribution: matches[0]!,
   };
 }

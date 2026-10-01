@@ -105,6 +105,7 @@ export type HostPrivateLateSessionEnvironmentResolver = (
 
 export type PluginHostSessionRuntimeOptions = Readonly<{
     credentials: StoredCredentials;
+    agentSessionStartupInstructionsV1?: AgentSessionStartupInstructionsV1;
     sessionCreationTag?: SessionCreationTagV1;
     sessionCreationCorrespondence?: SessionCreationCorrespondenceV1;
     placementOrigin?: MachinePoolSelectionOriginV1;
@@ -481,6 +482,9 @@ export function buildPluginHostSessionRuntimeOptions(
 ): PluginHostSessionRuntimeOptions {
     return Object.freeze({
         credentials: input.credentials,
+        ...(input.agentSessionStartupInstructionsV1
+            ? { agentSessionStartupInstructionsV1: input.agentSessionStartupInstructionsV1 }
+            : {}),
         ...(input.sessionCreationTag
             ? { sessionCreationTag: input.sessionCreationTag }
             : {}),

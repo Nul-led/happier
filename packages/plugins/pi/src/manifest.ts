@@ -10,9 +10,8 @@ import {
   PI_OPENAI_API_KEY_PURPOSE_ID,
   PI_QUALIFIED_CONNECTED_ACCOUNT_PURPOSES,
 } from './agent/auth/services/qualifiedPurposes.js';
-import { AGENT_DEFINITION } from './agent/definition.js';
+import { AGENT_DEFINITION, AGENT_STATE_SHARING_DESCRIPTOR } from './agent/definition.js';
 import { PI_PREFLIGHT_SESSION_CONTROLS } from './agent/preflight/models.js';
-import { piConnectedServiceStateSharingDescriptor } from './agent/connectedServices/stateSharingDescriptor.js';
 import { createPiConnectedServiceRuntimeAuthAdapter } from './agent/connectedServices/runtimeAuthAdapter.js';
 import { verifyResumeReachablePi } from './agent/connectedServices/reachability.js';
 import { PI_REQUEST_AUTH_USES } from './agent/auth/services/requestAuth/purposes.js';
@@ -110,7 +109,7 @@ export const PI_PLUGIN = definePlugin({
           sessions: {
             open: ['create', 'resume'],
             delivery: ['newTurn', 'steer', 'followUp'],
-            startupInstructions: { versions: [1] },
+            startupInstructions: { versions: [1], revisionChanges: 'resume' },
             cancel: true,
             configuration: true,
             compaction: { events: true, manual: true },
@@ -162,16 +161,7 @@ export const PI_PLUGIN = definePlugin({
           },
         },
         requestAuthUses: PI_REQUEST_AUTH_USES,
-        stateSharingDescriptor: {
-          providerSupportStatus: piConnectedServiceStateSharingDescriptor.providerSupportStatus,
-          config: piConnectedServiceStateSharingDescriptor.config,
-          state: piConnectedServiceStateSharingDescriptor.state,
-          authIsolation: piConnectedServiceStateSharingDescriptor.authIsolation,
-          nativeHome: {
-            environmentKey: 'PI_CODING_AGENT_DIR',
-            defaultRelativePath: '.pi/agent',
-          },
-        },
+        stateSharingDescriptor: AGENT_STATE_SHARING_DESCRIPTOR,
         continuity: {
           runtimeAuthAdapter: createPiConnectedServiceRuntimeAuthAdapter(),
           verifyResumeReachable: verifyResumeReachablePi,

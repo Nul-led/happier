@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -10,7 +10,9 @@ import { defineProtocolObject } from '@happier-dev/plugin-sdk/protocol';
 
 import { BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS } from '../sources/generatedBundledPluginManifests';
 import {
+    loadBundledPluginLocatorResult,
     loadBundledPluginLocators,
+    readCurrentBundledPluginPublicationFailures,
     projectManagedRuntimePublicationManifest,
     type BundledPluginLocator,
 } from './locators';
@@ -51,6 +53,38 @@ function locator(overrides: Partial<BundledPluginLocator> = {}): BundledPluginLo
 }
 
 describe('bundled plugin locators', () => {
+    it('reads ignored publication failures and keeps required host imports fatal during ingest', () => {
+        const root = mkdtempSync(join(tmpdir(), 'happier-bundled-failures-'));
+        const execPathDescriptor = Object.getOwnPropertyDescriptor(process, 'execPath')!;
+        try {
+            Object.defineProperty(process, 'execPath', { ...execPathDescriptor, value: join(root, 'happier') });
+            writeFileSync(join(root, 'package.json'), '{}');
+            expect(() => readCurrentBundledPluginPublicationFailures()).toThrow(/publication state is unknown/);
+            const failurePath = join(root, '.project', 'tmp', 'bundled-plugin-publication', 'failures.json');
+            mkdirSync(dirname(failurePath), { recursive: true });
+            writeFileSync(failurePath, JSON.stringify([{
+                packageName: '@happier-dev/plugins-inspector', pluginId: 'happier.inspector',
+                diagnostic: { code: 'plugin_package_build_failed', message: 'broken optional package' },
+            }]));
+            expect(readCurrentBundledPluginPublicationFailures()).toEqual([
+                expect.objectContaining({ pluginId: 'happier.inspector' }),
+            ]);
+            writeFileSync(failurePath, '[]\n');
+            expect(readCurrentBundledPluginPublicationFailures()).toEqual([
+                expect.objectContaining({ pluginId: 'happier.inspector' }),
+            ]);
+            const badManifest = { ...locator(), manifest: { id: 'invalid' } };
+            expect(loadBundledPluginLocatorResult([badManifest]).pluginFailures).toHaveLength(1);
+            expect(() => loadBundledPluginLocatorResult([{
+                ...badManifest,
+                pluginId: 'happier.agent.codex',
+                sourceSpec: { ...badManifest.sourceSpec, locator: '@happier-dev/plugins-codex' },
+            }])).toThrow(/required by host code/);
+        } finally {
+            Object.defineProperty(process, 'execPath', execPathDescriptor);
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
     it('reads publication metadata beside the native executable and fails closed on invalid metadata', () => {
         const root = mkdtempSync(join(tmpdir(), 'happier-native-plugin-metadata-'));
         const execPathDescriptor = Object.getOwnPropertyDescriptor(process, 'execPath')!;

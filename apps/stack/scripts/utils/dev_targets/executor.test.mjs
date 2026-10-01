@@ -1,14 +1,25 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
   inspectDevTargetSync,
   runDevTargetDependencyBootstrap,
   runDevTargetWorkspacePreparation,
-  runDevTargetCommand,
+  runDevTargetCommand as runDevTargetCommandImpl,
   syncDevTarget,
 } from './executor.mjs';
+
+const emptySourceDir = mkdtempSync(join(tmpdir(), 'happier-explicit-executor-tests-'));
+writeFileSync(join(emptySourceDir, 'package.json'), JSON.stringify({ workspaces: [] }));
+test.after(() => rmSync(emptySourceDir, { recursive: true, force: true }));
+
+function runDevTargetCommand(options, dependencies) {
+  return runDevTargetCommandImpl({ sourceDir: emptySourceDir, ...options }, dependencies);
+}
 
 const target = {
   name: 'linux',
@@ -18,12 +29,32 @@ const target = {
   cliHomeDir: '/home/dev/.happier/linux',
 };
 
-function readyListResult() {
+function readyListResult(sessionName = 'happier-linux') {
   return {
     ok: true,
     exitCode: 0,
     out: JSON.stringify([{
-      name: 'happier-linux', paused: false, status: 'watching', successfulCycles: 3,
+      name: sessionName, paused: false, status: 'watching', successfulCycles: 3,
+      alpha: { connected: true, scanned: true },
+      beta: { connected: true, scanned: true },
+    }]),
+    err: '',
+  };
+}
+
+function transitionProblemListResult() {
+  return {
+    ok: true,
+    exitCode: 0,
+    out: JSON.stringify([{
+      name: 'happier-linux', paused: false, status: 'watching', successfulCycles: 7,
+      alpha: {
+        connected: true,
+        scanned: true,
+        transitionProblems: [{ path: 'src/index.ts', error: 'apply failed' }],
+        excludedTransitionProblems: 0,
+      },
+      beta: { connected: true, scanned: true },
     }]),
     err: '',
   };
@@ -50,6 +81,8 @@ test('dependency bootstrap delegates to the cancellable remote command owner', a
     commandArgs: [
       'node',
       './apps/stack/scripts/utils/dev_targets/remote_dependency_bootstrap.mjs',
+      '--validation-kind=runtime',
+      '--component-relative-dir=.',
     ],
     environment: {
       HAPPIER_STACK_PM_CACHE_BASE_DIR: '/home/dev/.happier/linux/cache',
@@ -84,6 +117,7 @@ test('workspace preparation delegates the component path to the cancellable remo
       'node',
       './apps/stack/scripts/utils/dev_targets/remote_validation_preparation.mjs',
       '--component-relative-dir=apps/cli',
+      '--validation-kind=runtime',
     ],
     environment: {
       HAPPIER_STACK_PM_CACHE_BASE_DIR: '/home/dev/.happier/linux/cache',
@@ -119,18 +153,10 @@ test('explicit remote execution rejects Git commands before sync or SSH', async 
   assert.equal(boundaryCalls, 0);
 });
 
-test('dependency-consuming commands bootstrap a synchronized target before dispatch while raw searches stay bootstrap-free', async () => {
+test('POSIX dependency-consuming commands prepare inside their SSH operation while source-only commands stay bootstrap-free', async () => {
   const calls = [];
   const dependencies = {
     runCaptureResult: async () => readyListResult(),
-    runDependencyBootstrap: async (options) => {
-      calls.push({ kind: 'bootstrap', options });
-      return { code: 0, signal: null };
-    },
-    runWorkspacePreparation: async (options) => {
-      calls.push({ kind: 'prepare', options });
-      return { code: 0, signal: null };
-    },
     spawnProcess: ({ args }) => {
       calls.push({ kind: 'command', args });
       return { completion: Promise.resolve({ code: 0, signal: null }) };
@@ -144,36 +170,98 @@ test('dependency-consuming commands bootstrap a synchronized target before dispa
     env: {},
   }, dependencies);
 
-  assert.equal(calls[0].kind, 'bootstrap');
-  assert.deepEqual(calls[0].options, {
-    target,
-    stackBaseDir: '/tmp/stack',
-    syncAlreadyVerified: true,
-    env: {},
-  });
-  assert.equal(calls[1].kind, 'command', 'root validation scripts own their own preparation');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].args.at(-1), /remote_dependency_bootstrap\.mjs/);
+  assert.doesNotMatch(calls[0].args.at(-1), /remote_validation_preparation\.mjs/, 'root scripts own their preparation');
 
   calls.length = 0;
   await runDevTargetCommand({
     target,
     stackBaseDir: '/tmp/stack',
     cwd: 'apps/cli',
-    commandArgs: ['corepack', 'yarn', '-s', 'typecheck:local'],
+    commandArgs: ['corepack', 'yarn', '-s', 'vitest', 'run', 'owner.test.ts'],
     env: {},
   }, dependencies);
 
-  assert.deepEqual(calls.map((call) => call.kind), ['bootstrap', 'prepare', 'command']);
-  assert.equal(calls[1].options.cwd, 'apps/cli');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].args.at(-1), /remote_dependency_bootstrap\.mjs[\s\S]*remote_validation_preparation\.mjs[\s\S]*--component-relative-dir=apps\/cli/);
+  assert.match(calls[0].args.at(-1), /--validation-kind=source-test/);
 
-  calls.length = 0;
+  for (const commandArgs of [
+    ['node', '-e', 'console.log("source-only")'],
+    ['nodejs', 'source-script.mjs'],
+    ['rg', '-n', 'needle'],
+    ['find', '.', '-name', '*.mjs'],
+  ]) {
+    for (const commandTarget of [target, { ...target, platform: 'windows' }]) {
+      calls.length = 0;
+      await runDevTargetCommand({
+        target: commandTarget,
+        stackBaseDir: '/tmp/stack',
+        commandArgs,
+        env: {},
+      }, dependencies);
+      assert.deepEqual(calls.map((call) => call.kind), ['command'], commandArgs.join(' '));
+    }
+  }
+
+  for (const commandArgs of [
+    ['node', '--test', 'owner.test.mjs'],
+    ['node', '--test', 'packages/plugin-sdk/scripts/generateActionTypeMap.test.mjs'],
+    ['yarn', '-s', 'custom:script'],
+    ['vitest', 'run', 'owner.test.ts'],
+    ['tsc', '--noEmit'],
+    ['node', 'scripts/workspaces/runTypeScriptCli.mjs', '--noEmit'],
+    ['node', 'node_modules/vitest/vitest.mjs', 'run', 'owner.test.ts'],
+    ['nodejs', 'node_modules/vitest/vitest.mjs', 'run', 'owner.test.ts'],
+  ]) {
+    calls.length = 0;
+    await runDevTargetCommand({ target, stackBaseDir: '/tmp/stack', commandArgs, env: {} }, dependencies);
+    assert.equal(calls.length, 1, commandArgs.join(' '));
+    assert.match(calls[0].args.at(-1), /remote_dependency_bootstrap\.mjs/);
+  }
+});
+
+test('JavaScript dispatch admits bootstrap, preparation and command as one target operation', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'happier-executor-whole-operation-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // SSH is the system boundary. Preparations must remain inside the final
+  // cancellable SSH request; an earlier request is the regression.
+  writeFileSync(join(root, 'ssh'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(root, 'ssh'), 0o755);
+  let request = '';
+  await runDevTargetCommand({ target, stackBaseDir: root, cwd: 'apps/ui',
+    commandArgs: ['vitest', 'run', 'arbitrary.test.ts'],
+    env: { ...process.env, PATH: `${root}:${process.env.PATH}` },
+  }, {
+    runCaptureResult: async () => readyListResult(),
+    spawnProcess: ({ args }) => {
+      request = args.at(-1);
+      return { completion: Promise.resolve({ code: 0, signal: null }) };
+    },
+  });
+  assert.match(request, /--heavyweight-admission[\s\S]*remote_dependency_bootstrap\.mjs[\s\S]*remote_validation_preparation\.mjs[\s\S]*vitest/);
+});
+
+test('Windows source-test dispatch preserves its source preparation contract through both existing transports', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'happier-executor-windows-source-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const trace = join(root, 'ssh-requests');
+  // Only SSH is replaced. The executor and both preparation helpers are real.
+  writeFileSync(join(root, 'ssh'), '#!/bin/sh\nfor arg in "$@"; do last=$arg; done\nprintf "%s\\n" "$last" >> "$TRACE"\n');
+  chmodSync(join(root, 'ssh'), 0o755);
   await runDevTargetCommand({
-    target,
-    stackBaseDir: '/tmp/stack',
-    commandArgs: ['rg', '-n', 'needle'],
-    env: {},
-  }, dependencies);
-
-  assert.deepEqual(calls.map((call) => call.kind), ['command']);
+    target: { ...target, platform: 'windows', repoDir: 'C:/repo', cliHomeDir: 'C:/home' },
+    stackBaseDir: root, cwd: 'apps/cli', syncAlreadyVerified: true,
+    commandArgs: ['vitest', 'run', 'arbitrary.test.ts'],
+    env: { ...process.env, TRACE: trace, PATH: `${root}:${process.env.PATH}` },
+  });
+  const requests = readFileSync(trace, 'utf8').trim().split('\n')
+    .map(request => Buffer.from(request.split(' ').at(-1), 'base64').toString('utf16le'));
+  assert.equal(requests.length, 3);
+  assert.match(requests[0], /remote_dependency_bootstrap\.mjs.*--validation-kind=source-test/);
+  assert.match(requests[1], /remote_validation_preparation\.mjs.*--validation-kind=source-test/);
+  assert.doesNotMatch(requests.join('\n'), /--heavyweight-admission/);
 });
 
 test('direct POSIX validation execution enters the target machine admission owner', async () => {
@@ -240,6 +328,7 @@ test('remote exec flushes the live replica after health inspection and before SS
   assert.ok(sshCall.includes('ConnectTimeout=10'));
 });
 
+
 test('explicit remote execution records one schema-safe admitted/completed provenance pair', async () => {
   const records = [];
   const result = await runDevTargetCommand({
@@ -286,7 +375,7 @@ test('explicit remote execution records one schema-safe admitted/completed prove
   assert.equal(JSON.stringify(records).includes('secret'), false);
 });
 
-test('an explicit flush request retains the single pre-launch flush contract', async () => {
+test('a POSIX explicit flush leaves post-flush admission to the native owner', async () => {
   const calls = [];
   await runDevTargetCommand(
     {
@@ -313,8 +402,40 @@ test('an explicit flush request retains the single pre-launch flush contract', a
   assert.match(calls[0][0], /hstack-dev-target-control$/);
   assert.ok(calls[0].includes('list'));
   assert.match(calls[1][0], /hstack-dev-target-control$/);
-  assert.equal(calls[2][0], 'ssh');
   assert.ok(calls[1].includes('flush'));
+  assert.equal(calls[2][0], 'ssh');
+  assert.equal(calls.filter((call) => call.includes('list')).length, 1);
+});
+
+test('the Windows adapter inspects fresh post-flush state and blocks a transition problem', async (t) => {
+  const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { ...originalPlatformDescriptor, value: 'win32' });
+  t.after(() => {
+    if (originalPlatformDescriptor) Object.defineProperty(process, 'platform', originalPlatformDescriptor);
+  });
+  let sshLaunched = false;
+  let listCalls = 0;
+  await assert.rejects(
+    () => runDevTargetCommand(
+      { target, stackBaseDir: '/tmp/stack', commandArgs: ['rg', '-n', 'needle'], env: {} },
+      {
+        runCaptureResult: async ({ args }) => {
+          if (args.includes('list')) {
+            listCalls += 1;
+            return listCalls === 1 ? readyListResult() : transitionProblemListResult();
+          }
+          return { ok: true, exitCode: 0, out: '', err: '' };
+        },
+        spawnProcess: () => {
+          sshLaunched = true;
+          return { completion: Promise.resolve({ code: 0, signal: null }) };
+        },
+      },
+    ),
+    /transition|synchronization is unhealthy/i,
+  );
+  assert.equal(sshLaunched, false, 'no SSH dispatch after a problem-bearing post-flush inspection');
+  assert.equal(listCalls, 2, 'the Windows adapter performs the fresh post-flush inspection');
 });
 
 test('independent remote commands launch concurrently without an executor queue', async () => {
@@ -438,15 +559,18 @@ test('explicit sync waits through an active first synchronization while ordinary
     exitCode: 0,
     out: JSON.stringify([{
       name: 'happier-linux', paused: false, status: 'scanning', successfulCycles: 0,
+      alpha: { connected: true, scanned: false },
+      beta: { connected: true, scanned: false },
     }]),
     err: '',
   };
+  let listCalls = 0;
   const deps = {
     runCaptureResult: async ({ args }) => {
       calls.push(args);
-      return args.includes('list')
-        ? synchronizingResult
-        : { ok: true, exitCode: 0, out: '', err: '' };
+      if (!args.includes('list')) return { ok: true, exitCode: 0, out: '', err: '' };
+      listCalls += 1;
+      return listCalls === 1 ? synchronizingResult : readyListResult();
     },
   };
 
@@ -455,7 +579,10 @@ test('explicit sync waits through an active first synchronization while ordinary
   await assert.rejects(
     () => runDevTargetCommand(
       { target, stackBaseDir: '/tmp/stack', commandArgs: ['pwd'], env: {} },
-      { ...deps, spawnProcess: () => { throw new Error('must not launch'); } },
+      {
+        runCaptureResult: async () => synchronizingResult,
+        spawnProcess: () => { throw new Error('must not launch'); },
+      },
     ),
     /synchronizing/i,
   );
@@ -496,7 +623,8 @@ test('remote exec refuses paused, unhealthy, and missing synchronization session
   );
 });
 
-test('remote exec cancels the exact remote process tree before stopping SSH and removes signal listeners', async () => {
+for (const signal of ['SIGINT', 'SIGHUP']) {
+test(`remote exec ${signal} cancels the exact remote process tree before stopping SSH and removes signal listeners`, async () => {
   const signalSource = new EventEmitter();
   let releaseCompletion;
   let stopped = null;
@@ -526,20 +654,24 @@ test('remote exec cancels the exact remote process tree before stopping SSH and 
   );
 
   await new Promise((resolve) => setImmediate(resolve));
-  signalSource.emit('SIGINT');
-  assert.equal(signalSource.listenerCount('SIGINT'), 1, 'repeated interrupts stay owned during cleanup');
-  signalSource.emit('SIGINT');
+  assert.equal(signalSource.listenerCount(signal), 1, 'cancellation must be owned before a signal arrives');
+  signalSource.emit(signal);
+  assert.equal(signalSource.listenerCount(signal), 1, 'repeated interrupts stay owned during cleanup');
+  signalSource.emit(signal);
   const result = await execution;
-  assert.deepEqual(stopped, { ownedChild: child, signal: 'SIGINT' });
+  assert.deepEqual(stopped, { ownedChild: child, signal });
   assert.match(calls[0][0], /hstack-dev-target-control$/);
   assert.ok(calls[0].includes('list'));
   assert.match(calls[1][0], /hstack-dev-target-control$/);
+  assert.ok(calls[1].includes('flush'));
   assert.deepEqual(calls.slice(2).map((call) => call[0]), ['ssh', 'stop-local-ssh']);
   assert.match(calls[2].at(-1), /018f0f52-5fe8-7a9f-8ef5-f81f20572791/);
-  assert.equal(result.signal, 'SIGINT');
+  assert.equal(result.signal, signal);
   assert.equal(signalSource.listenerCount('SIGINT'), 0);
   assert.equal(signalSource.listenerCount('SIGTERM'), 0);
+  assert.equal(signalSource.listenerCount('SIGHUP'), 0);
 });
+}
 
 test('remote cancellation failure still stops local SSH and reports unconfirmed cleanup', async () => {
   const signalSource = new EventEmitter();

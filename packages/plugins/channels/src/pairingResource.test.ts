@@ -41,7 +41,6 @@ const authority = {
   providerPluginId: materialization.pluginId,
   providerContributionSelection: {
     contributionId: 'pairing-resource-provider',
-    immutableGenerationId: 'pairing-resource-generation',
   },
   providerSetupInput: { source: 'pairing-resource-test' },
   credentialRef: null,

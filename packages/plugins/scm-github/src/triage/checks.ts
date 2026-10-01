@@ -11,6 +11,7 @@ import {
 import { buildGithubApiUrl, type GithubRepositoryRouteV1 } from './locator.js';
 import type { GithubChecksRowStateV1 } from './mapping/facts.js';
 import { readValidatedGithubFollowUpPage } from './scan/link.js';
+import { readGithubCheckOutcomeV1 } from './checkOutcome.js';
 import {
   GITHUB_MAX_PAGE_SIZE_V1,
   GITHUB_SEARCH_RESULT_CEILING_V1,
@@ -81,18 +82,6 @@ export type GithubChecksDependenciesV1 = Readonly<{
   now: () => number;
   signal: AbortSignal;
 }>;
-
-const FAILING_CONCLUSIONS = new Set([
-  'failure',
-  'timed_out',
-  'action_required',
-  'startup_failure',
-]);
-const NEUTRAL_CONCLUSIONS = new Set(['neutral', 'skipped', 'cancelled', 'stale']);
-
-export function isGithubFailingCheckConclusion(value: string | undefined | null): boolean {
-  return value !== undefined && value !== null && FAILING_CONCLUSIONS.has(value);
-}
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -369,16 +358,22 @@ export function projectGithubChecksSurface(input: Readonly<{
   let failing = 0;
   let running = 0;
   let passing = 0;
+  let unknown = false;
   for (const observation of observations) {
-    if (observation.status !== 'completed') {
+    const outcome = readGithubCheckOutcomeV1(observation);
+    if (outcome === 'pending') {
       running += 1;
       continue;
     }
-    if (isGithubFailingCheckConclusion(observation.conclusion)) {
+    if (outcome === 'failed') {
       failing += 1;
       continue;
     }
-    if (observation.conclusion !== null && NEUTRAL_CONCLUSIONS.has(observation.conclusion)) continue;
+    if (outcome === 'neutral') continue;
+    if (outcome === 'unknown') {
+      unknown = true;
+      continue;
+    }
     passing += 1;
   }
 
@@ -394,11 +389,11 @@ export function projectGithubChecksSurface(input: Readonly<{
       ? Object.freeze({ kind: 'failing', failingCount: failing })
       : running > 0
         ? Object.freeze({ kind: 'running' })
-        : passing > 0 && !knownIncomplete ? Object.freeze({ kind: 'allPassing' }) : null;
+        : passing > 0 && !knownIncomplete && !unknown ? Object.freeze({ kind: 'allPassing' }) : null;
 
-  const countsUnavailable = observations.length === 0 || knownIncomplete;
+  const countsUnavailable = observations.length === 0 || knownIncomplete || unknown;
   return Object.freeze({
-    state,
+    state: unknown ? 'unknown' : state,
     observations,
     failingCount: countsUnavailable ? null : failing,
     runningCount: countsUnavailable ? null : running,

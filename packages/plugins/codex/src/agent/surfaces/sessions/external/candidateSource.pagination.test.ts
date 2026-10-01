@@ -15,6 +15,8 @@ const appServerProbe = vi.hoisted(() => ({
   }>>(),
   calls: [] as Array<Readonly<{ archived: boolean; cursor: string | null }>>,
   failCursor: null as string | null,
+  loadedIds: new Set<string>(),
+  transports: [] as unknown[],
 }));
 
 const rolloutFsProbe = vi.hoisted(() => ({
@@ -28,11 +30,16 @@ vi.mock('../../../runtime/appServer/client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../runtime/appServer/client.js')>();
   return {
     ...actual,
-    createCodexNativeAppServerClient: async () => ({
+    createCodexNativeAppServerClient: async (params: Readonly<{ transport?: unknown }>) => {
+      appServerProbe.transports.push(params.transport);
+      return ({
       launchFeatures: {
         realtimeConversationAdvertised: false,
       },
       request: async (method: string, params?: unknown) => {
+        if (method === 'thread/loaded/list') {
+          return { data: [...appServerProbe.loadedIds].map((id) => ({ id })) };
+        }
         if (method !== 'thread/list') return {};
         const request = params as { archived?: boolean; cursor?: string } | undefined;
         const archived = Boolean(request?.archived);
@@ -52,7 +59,8 @@ vi.mock('../../../runtime/appServer/client.js', async (importOriginal) => {
       registerNotificationHandler: () => () => {},
       onExit: () => () => {},
       dispose: async () => {},
-    }),
+      });
+    },
   };
 });
 
@@ -82,6 +90,8 @@ afterEach(() => {
   appServerProbe.pages.clear();
   appServerProbe.calls = [];
   appServerProbe.failCursor = null;
+  appServerProbe.loadedIds.clear();
+  appServerProbe.transports = [];
   rolloutFsProbe.statPaths = [];
 });
 
@@ -118,6 +128,7 @@ describe('Codex external-session candidate pagination', () => {
         { id: 'app-server-newest', updatedAt: Date.parse('2026-07-23T13:00:00.000Z') / 1000, cwd: '/repo' },
         { id: 'app-server-oldest', updatedAt: Date.parse('2026-07-23T11:00:00.000Z') / 1000, cwd: '/repo' },
       ];
+      appServerProbe.loadedIds.add('app-server-newest');
 
       const request = {
         source: { kind: 'codexHome', home: 'user' },
@@ -134,6 +145,7 @@ describe('Codex external-session candidate pagination', () => {
       } as const;
 
       const drained: string[] = [];
+      let daemonDescriptor: unknown;
       const cursors: (string | null)[] = [];
       let cursor: string | undefined;
       for (let page = 0; page < 12; page += 1) {
@@ -142,6 +154,9 @@ describe('Codex external-session candidate pagination', () => {
           ...(cursor ? { cursor } : {}),
         });
         drained.push(...result.candidates.map((candidate) => candidate.remoteSessionId));
+        daemonDescriptor ??= result.candidates.find(
+          (candidate) => candidate.remoteSessionId === 'app-server-newest',
+        )?.details?.runtimeDescriptorV1;
         cursors.push(result.nextCursor);
         if (!result.nextCursor) break;
         // A cursor that repeats itself is an infinite page loop, not progress.
@@ -154,6 +169,10 @@ describe('Codex external-session candidate pagination', () => {
       expect([...drained].sort()).toEqual(
         [...rolloutIds, 'app-server-newest', 'app-server-oldest'].sort(),
       );
+      expect(appServerProbe.transports[0]).toEqual({ kind: 'daemonProxy' });
+      expect(daemonDescriptor).toMatchObject({
+        agent: { appServerTransport: 'daemonProxy' },
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

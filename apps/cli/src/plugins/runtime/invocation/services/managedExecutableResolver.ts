@@ -27,7 +27,7 @@ export type ManagedProviderRuntimeExecutableResolutionContext = Readonly<{
     pluginId: string;
     providerLocalId: string;
     contributionQualifiedId: string;
-    generation: string;
+    occurrenceId: string;
     isCurrent(): boolean;
 }>;
 
@@ -54,7 +54,7 @@ function isManagedProviderRuntimeResolutionContext(
         && typeof candidate.pluginId === 'string'
         && typeof candidate.providerLocalId === 'string'
         && typeof candidate.contributionQualifiedId === 'string'
-        && typeof candidate.generation === 'string'
+        && typeof candidate.occurrenceId === 'string'
         && typeof candidate.isCurrent === 'function';
 }
 
@@ -101,8 +101,8 @@ export function createStableManagedExecutableResolver(params: Readonly<{
                 || context.providerLocalId !== context.providerLocalId.trim()
                 || context.contributionQualifiedId
                     !== `${context.pluginId}/providers/${context.providerLocalId}`
-                || context.generation.length === 0
-                || context.generation !== context.generation.trim()
+                || context.occurrenceId.length === 0
+                || context.occurrenceId !== context.occurrenceId.trim()
                 || !context.isCurrent()
                 || !params.resolvePackagedRuntimeBinary
             ) {

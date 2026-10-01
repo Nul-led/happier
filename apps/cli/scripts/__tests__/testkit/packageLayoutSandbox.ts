@@ -128,19 +128,13 @@ export function writeBundledPluginSourceInputs(options: {
     return packageDir;
 }
 
-/**
- * Materializes `verifyBundledPluginArtifacts.mjs` into a synthetic repository
- * together with the build-owned module closure it imports. The verifier stopped
- * being a self-contained file when canonical bundled membership moved to
- * `build-owned/bundledPluginMembership.ts`; copying the entrypoint alone leaves
- * a child process that cannot even load it.
- */
-export function materializeBundledPluginArtifactVerifier(options: {
+/** Materializes the build-owned package-correspondence helper in a sandbox. */
+export function materializeBundledPluginPackageCorrespondence(options: {
     sourceCliScriptsDir: string;
     targetCliScriptsDir: string;
 }): void {
     ensureDirectorySync(resolve(options.targetCliScriptsDir, 'build-owned'));
-    for (const relativePath of ['verifyBundledPluginArtifacts.mjs', 'build-owned/bundledPluginMembership.ts']) {
+    for (const relativePath of ['build-owned/bundledPluginPackageCorrespondence.mjs']) {
         cpSync(
             resolve(options.sourceCliScriptsDir, relativePath),
             resolve(options.targetCliScriptsDir, relativePath),

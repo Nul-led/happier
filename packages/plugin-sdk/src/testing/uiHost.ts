@@ -45,6 +45,11 @@ import {
     pluginUiTargetedContributionOperationKey,
     PluginUiSubPathV1Schema,
     PluginUiWatchComposerRequestV1Schema,
+    PluginUiReadSessionRequestV1Schema,
+    PluginUiReadSessionResultV1Schema,
+    PluginUiRespondToSessionPermissionRequestV1Schema,
+    PluginUiRespondToSessionPermissionResultV1Schema,
+    PluginUiWatchSessionRequestV1Schema,
     type PluginUiHostApiWireEnvelopeV1,
 } from '@happier-dev/protocol/plugins/ui';
 import {
@@ -54,6 +59,7 @@ import {
     OpenableContentRefV1Schema,
     readDaemonPluginUiTargetedSurfaceMountV1,
     pluginJsonValuesEqual,
+    type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import { rehydrateCanonicalProtocolComposableSchema } from '@happier-dev/protocol/plugins/actions/protocol-composable-schema';
 import {
@@ -98,6 +104,9 @@ import type {
     EphemeralInputSettlement,
     OpenConnectedAccountsRequest,
     OpenNewSessionRequest,
+    SessionPermissionResponseRequestV1,
+    SessionPermissionResponseV1,
+    SessionStateV1,
 } from '../ui/hostApi.js';
 import {
     ComposerRefV1Schema,
@@ -129,6 +138,10 @@ const PLUGIN_UI_SEMANTIC_ROLES = [
     'link',
     'list',
     'listitem',
+    'menu',
+    'menuitem',
+    'menuitemcheckbox',
+    'menuitemradio',
     'option',
     'progressbar',
     'radio',
@@ -294,12 +307,14 @@ export type PluginUiTestkitTargetedSurfaceAdmission = Readonly<{
     key: string;
     target: Readonly<{
         pluginId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustodyV1;
     }>;
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustodyV1;
     }>;
     point: Readonly<{
         pointId: string;
@@ -322,7 +337,11 @@ export type PluginUiTestkitTargetedSurfaceAdmission = Readonly<{
  */
 export function readPluginUiTestkitTargetedSurfaceAdmission(input: Readonly<{
     mounts: unknown;
-    target: Readonly<{ pluginId: string; immutableGenerationId: string }>;
+    target: Readonly<{
+        pluginId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustodyV1;
+    }>;
     surface: unknown;
     launchInput: unknown;
     /** The actual public manifest exported by the admitted contributor package. */
@@ -386,12 +405,14 @@ export function readPluginUiTestkitTargetedSurfaceAdmission(input: Readonly<{
     });
     const target = Object.freeze({
         pluginId: mount.target.pluginId,
-        immutableGenerationId: mount.target.immutableGenerationId,
+        occurrenceId: mount.target.occurrenceId,
+        sourceCustody: mount.target.sourceCustody,
     });
     const contributor = Object.freeze({
         pluginId: mount.contributor.pluginId,
         contributionId: mount.contributor.contributionId,
-        immutableGenerationId: mount.contributor.immutableGenerationId,
+        occurrenceId: mount.contributor.occurrenceId,
+        sourceCustody: mount.contributor.sourceCustody,
     });
     const point = Object.freeze({
         pointId: mount.point.pointId,
@@ -405,8 +426,8 @@ export function readPluginUiTestkitTargetedSurfaceAdmission(input: Readonly<{
         // semantic adapter key adds both lifecycle fences so React retires an
         // old physical child instead of updating it across replacement.
         key: JSON.stringify([
-            mount.target.immutableGenerationId,
-            mount.contributor.immutableGenerationId,
+            mount.target.occurrenceId,
+            mount.contributor.occurrenceId,
             instanceKey,
         ]),
         target,
@@ -556,6 +577,17 @@ export type PluginUiTestkitSettleEphemeralInputInput = Readonly<{
     signal: AbortSignal;
 }>;
 
+/** One Session read or watch establishment at the fixture host boundary. */
+export type PluginUiTestkitSessionInput = Readonly<{
+    sessionId: string;
+    signal: AbortSignal;
+}>;
+
+export type PluginUiTestkitRespondToSessionPermissionInput = Readonly<{
+    request: SessionPermissionResponseRequestV1;
+    signal: AbortSignal;
+}>;
+
 export type PluginUiTestkitHostHandlers = Readonly<{
     publishCurrentUiContext?: (
         input: Readonly<{ enrichment: PluginUiContextEnrichmentV1 | null; signal: AbortSignal }>,
@@ -621,6 +653,16 @@ export type PluginUiTestkitHostHandlers = Readonly<{
     releaseComposerContent?: (
         input: PluginUiTestkitReleaseComposerContentInput,
     ) => void | Promise<void>;
+    /** Presence advertises `readSession`; `null` is a Session the fixture Account cannot reach. */
+    readSession?: (input: PluginUiTestkitSessionInput) => SessionStateV1 | null | Promise<SessionStateV1 | null>;
+    /**
+     * Establish one Session watch. Invalidations are emitted through the
+     * fixture's `invalidateSession`, never through this handler.
+     */
+    watchSession?: (input: PluginUiTestkitSessionInput) => void | Promise<void>;
+    respondToSessionPermission?: (
+        input: PluginUiTestkitRespondToSessionPermissionInput,
+    ) => SessionPermissionResponseV1 | Promise<SessionPermissionResponseV1>;
     openSurface?: (input: PluginUiTestkitOpenSurfaceInput) => void | Promise<void>;
     replacePageLocation?: (
         input: PluginUiTestkitReplacePageLocationInput,
@@ -671,6 +713,9 @@ const hostMethodPolicies = {
     pickComposerMedia: 'pickComposerMedia',
     inspectComposerContent: 'inspectComposerContent',
     releaseComposerContent: 'releaseComposerContent',
+    readSession: 'readSession',
+    watchSession: 'watchSession',
+    respondToSessionPermission: 'respondToSessionPermission',
 } as const satisfies Readonly<Record<(typeof PLUGIN_UI_HOST_METHODS_V1)[number], PluginUiTestkitHostMethodPolicy>>;
 
 function isHostMethodAvailable(
@@ -738,6 +783,8 @@ export interface PluginUiTestkit {
     updatePageLocation(subPath: string): Promise<void>;
     /** Emit only the canonical invalidation signal; consumers re-read through `hostApi.readResource`. */
     invalidateResource(resource: PluginReference, digest: string): void;
+    /** Emit the canonical invalidation signal to every watch of this Session; consumers re-read through `hostApi.readSession`. */
+    invalidateSession(sessionId: string, digest: string): void;
     /** Emit one schema-checked observation through exact active Composer watches. */
     emitComposerSnapshot(ref: ComposerRefV1, snapshot: ComposerSnapshotV1): void;
     getByRole(role: PluginUiSemanticRole, options?: PluginUiSemanticQueryOptions): Promise<PluginUiSemanticTarget>;
@@ -1023,6 +1070,7 @@ async function createPluginUiTestkitInternal<TSurface>(
     const activeRequests = new Map<string, ActiveRequest>();
     const contextSubscriptions = new Set<string>();
     const resourceSubscriptions = new Map<string, ResourceSubscription>();
+    const sessionSubscriptions = new Map<string, string>();
     const composerHostResources = new Map<string, ComposerHostResource>();
     const selectedInputByOperation = new Map<string, Readonly<{
         carrier: PluginUiSelectedActionInputCarrierV1;
@@ -1093,8 +1141,7 @@ async function createPluginUiTestkitInternal<TSurface>(
 
     function sendFailure(
         message: Extract<PluginUiHostApiWireEnvelopeV1, { kind: 'request' | 'subscribe' }>,
-        code: string,
-        failureMessage: string,
+        failure: PluginError,
     ): void {
         if (!active) return;
         emit({
@@ -1103,7 +1150,14 @@ async function createPluginUiTestkitInternal<TSurface>(
             identity,
             requestId: message.requestId,
             method: message.method,
-            error: { name: 'PluginError', code, message: failureMessage },
+            // A handler's own classification travels like the real host's
+            // does: whether a retry can succeed is part of the answer.
+            error: {
+                name: 'PluginError',
+                code: failure.code,
+                message: failure.message,
+                ...(failure.retryable ? { retryable: true } : {}),
+            },
         });
     }
 
@@ -1145,6 +1199,7 @@ async function createPluginUiTestkitInternal<TSurface>(
         activeRequests.clear();
         contextSubscriptions.clear();
         resourceSubscriptions.clear();
+        sessionSubscriptions.clear();
         selectedInputByOperation.clear();
         selectedOperationKeyByRequest.clear();
         const composerResources = [...composerHostResources.values()];
@@ -1474,6 +1529,24 @@ async function createPluginUiTestkitInternal<TSurface>(
                 });
                 return undefined;
             }
+            case 'readSession': {
+                if (!handlers.readSession) throw fixtureError('unsupported_method', 'readSession is not installed.');
+                const payload = PluginUiReadSessionRequestV1Schema.safeParse(message.payload);
+                if (!payload.success) throw fixtureError('invalid_payload', 'readSession payload is invalid.');
+                const state = await handlers.readSession({ sessionId: payload.data.sessionId, signal });
+                return PluginUiReadSessionResultV1Schema.parse(state) as JsonValue;
+            }
+            case 'respondToSessionPermission': {
+                if (!handlers.respondToSessionPermission) {
+                    throw fixtureError('unsupported_method', 'respondToSessionPermission is not installed.');
+                }
+                const payload = PluginUiRespondToSessionPermissionRequestV1Schema.safeParse(message.payload);
+                if (!payload.success) {
+                    throw fixtureError('invalid_payload', 'respondToSessionPermission payload is invalid.');
+                }
+                const response = await handlers.respondToSessionPermission({ request: payload.data, signal });
+                return PluginUiRespondToSessionPermissionResultV1Schema.parse(response);
+            }
             case 'openConnectedAccounts': {
                 if (!handlers.openConnectedAccounts) {
                     throw fixtureError('unsupported_method', 'openConnectedAccounts is not installed.');
@@ -1560,6 +1633,7 @@ async function createPluginUiTestkitInternal<TSurface>(
             case 'watchResource':
             case 'watchComposer':
             case 'acquireComposerInputLock':
+            case 'watchSession':
                 throw fixtureError('unsupported_method', `${message.method} must be established as a subscription.`);
             default:
                 return unreachableSurfaceHostMethod(message.method);
@@ -1575,7 +1649,7 @@ async function createPluginUiTestkitInternal<TSurface>(
         } catch (error) {
             if (!controller.signal.aborted) {
                 const failure = readFixtureHostFailure(error, 'A plugin UI test host handler failed.');
-                sendFailure(message, failure.code, failure.message);
+                sendFailure(message, failure);
             }
         } finally {
             activeRequests.delete(message.requestId);
@@ -1630,6 +1704,17 @@ async function createPluginUiTestkitInternal<TSurface>(
                     composerHostResources.set(message.subscriptionId, Object.freeze(resource));
                     break;
                 }
+                case 'watchSession': {
+                    if (!handlers.watchSession) {
+                        throw fixtureError('unsupported_method', 'watchSession is not installed.');
+                    }
+                    const payload = PluginUiWatchSessionRequestV1Schema.safeParse(message.payload);
+                    if (!payload.success) throw fixtureError('invalid_payload', 'watchSession payload is invalid.');
+                    await handlers.watchSession({ sessionId: payload.data.sessionId, signal: controller.signal });
+                    if (controller.signal.aborted) return;
+                    sessionSubscriptions.set(message.subscriptionId, payload.data.sessionId);
+                    break;
+                }
                 case 'acquireComposerInputLock': {
                     if (!handlers.acquireComposerInputLock) {
                         throw fixtureError('unsupported_method', 'acquireComposerInputLock is not installed.');
@@ -1663,7 +1748,7 @@ async function createPluginUiTestkitInternal<TSurface>(
         } catch (error) {
             if (!controller.signal.aborted) {
                 const failure = readFixtureHostFailure(error, 'A plugin UI test host subscription failed.');
-                sendFailure(message, failure.code, failure.message);
+                sendFailure(message, failure);
             }
         } finally {
             activeRequests.delete(message.requestId);
@@ -1725,6 +1810,7 @@ async function createPluginUiTestkitInternal<TSurface>(
         if (message.kind === 'disposeHostResource') {
             contextSubscriptions.delete(message.subscriptionId);
             resourceSubscriptions.delete(message.subscriptionId);
+            sessionSubscriptions.delete(message.subscriptionId);
             void disposeComposerHostResource(message.subscriptionId, 'disposed').catch(() => undefined);
         }
     }
@@ -1869,6 +1955,20 @@ async function createPluginUiTestkitInternal<TSurface>(
             const canonicalDigest = PluginUiArtifactDigestV1Schema.parse(digest);
             for (const [subscriptionId, subscription] of resourceSubscriptions) {
                 if (!sameReference(subscription.resource, canonicalResource, options.authorPlugin.id)) continue;
+                emit({
+                    wireVersion: PLUGIN_UI_HOST_API_WIRE_VERSION_V1,
+                    kind: 'subscription',
+                    identity,
+                    subscriptionId,
+                    event: { version: 1, subscriptionId, kind: 'invalidated', digest: canonicalDigest },
+                });
+            }
+        },
+        invalidateSession(sessionId: string, digest: string) {
+            assertActive();
+            const canonicalDigest = PluginUiArtifactDigestV1Schema.parse(digest);
+            for (const [subscriptionId, watchedSessionId] of sessionSubscriptions) {
+                if (watchedSessionId !== sessionId) continue;
                 emit({
                     wireVersion: PLUGIN_UI_HOST_API_WIRE_VERSION_V1,
                     kind: 'subscription',

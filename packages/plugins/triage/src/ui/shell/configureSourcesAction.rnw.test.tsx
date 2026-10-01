@@ -22,6 +22,7 @@ import { TRIAGE_LIST_PINNED_ENTRIES_ACTION_LOCAL_ID_V1 } from '../../actions/use
 import { renderSurface as renderShellSurface } from '../surface.js';
 import { refreshTriageListWindow } from '../window/mountedWindow.js';
 import { createTriageEphemeralSharedScopeFixture } from '../window/ephemeralSharedScope.test-support.js';
+import { pressToolbarMenuItem, toolbarMenuItem } from './toolbarMenus.test-support.js';
 
 /**
  * A reader who has nothing configured, and whether this page can do anything
@@ -47,9 +48,38 @@ function descriptor(settingsPageId: string | undefined): JsonValue {
     } as unknown as JsonValue;
 }
 
-function targetedContributions(settingsPageId: string | undefined) {
+const SECOND_SOURCE_PLUGIN_ID = 'happier.example-tracker';
+
+function contribution(
+    pluginId: string,
+    contributionId: string,
+    displayName: string,
+    settingsPageId: string | undefined,
+) {
     return {
-        target: { pluginId: 'happier.triage', immutableGenerationId: 'target-generation-a' },
+        contributor: {
+            pluginId,
+            contributionId,
+            occurrenceId: `${contributionId}-occurrence`,
+            sourceCustody: { kind: 'development', registeredRootId: `${contributionId}-root` },
+        },
+        protocol: {
+            id: TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_ID_V1,
+            version: TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_VERSION_V1,
+        },
+        descriptor: { ...(descriptor(settingsPageId) as Record<string, JsonValue>), displayName },
+        operations: [],
+        surfaces: [],
+    };
+}
+
+function targetedContributions(settingsPageId: string | undefined, secondSource = false) {
+    return {
+        target: {
+            pluginId: 'happier.triage',
+            occurrenceId: 'target-occurrence-a',
+            sourceCustody: { kind: 'development', registeredRootId: 'target-root' },
+        },
         points: [{
             pointId: TRIAGE_SOURCES_CONTRIBUTION_POINT_ID_V1,
             protocols: [{
@@ -61,7 +91,8 @@ function targetedContributions(settingsPageId: string | undefined) {
                     contributor: {
                         pluginId: SOURCE_PLUGIN_ID,
                         contributionId: 'example-forge',
-                        immutableGenerationId: 'contributor-generation-a',
+                        occurrenceId: 'contributor-occurrence-a',
+                        sourceCustody: { kind: 'development', registeredRootId: 'contributor-root' },
                     },
                     protocol: {
                         id: TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_ID_V1,
@@ -70,7 +101,9 @@ function targetedContributions(settingsPageId: string | undefined) {
                     descriptor: descriptor(settingsPageId),
                     operations: [],
                     surfaces: [],
-                }],
+                }, ...(secondSource
+                    ? [contribution(SECOND_SOURCE_PLUGIN_ID, 'example-tracker', 'Example Tracker', 'tracker-settings')]
+                    : [])],
             }],
         }],
     };
@@ -123,11 +156,22 @@ function configuredListResult(): TriageListEntriesResultV1 {
     });
 }
 
+const durableReads = { pins: 0, views: 0 };
+
 async function executeAction(
     action: string,
     exposeDurableState: boolean,
     configured: boolean,
+    durableUnreachable = false,
 ): Promise<JsonValue> {
+    if (durableUnreachable && action === TRIAGE_LIST_PINNED_ENTRIES_ACTION_LOCAL_ID_V1) {
+        durableReads.pins += 1;
+        throw new Error('account unreachable');
+    }
+    if (durableUnreachable && action === TRIAGE_READ_SAVED_VIEWS_ACTION_LOCAL_ID_V1) {
+        durableReads.views += 1;
+        throw new Error('account unreachable');
+    }
     if (action === TRIAGE_LIST_ENTRIES_ACTION_LOCAL_ID_V1) {
         return (configured ? configuredListResult() : emptyListResult()) as unknown as JsonValue;
     }
@@ -164,6 +208,10 @@ async function mountShell(options: Readonly<{
     exposeDurableState?: boolean;
     /** Answer the pass with a configured connection: the ordinary list state. */
     configured?: boolean;
+    /** Admit a second source that names its own Settings page. */
+    secondSource?: boolean;
+    /** The reader's pins and saved views cannot be read: the Account is unreachable. */
+    durableUnreachable?: boolean;
 }> = {}): Promise<PluginUiTestkit> {
     opened = [];
     const ephemeralSharedScope = createTriageEphemeralSharedScopeFixture();
@@ -181,15 +229,17 @@ async function mountShell(options: Readonly<{
                 },
                 targetedContributions: targetedContributions(
                     options.settingsPageId,
+                    options.secondSource === true,
                 ) as unknown as ReturnType<typeof createSurfaceContextFixture>['targetedContributions'],
             }),
-            adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope }),
+            adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope, overlays: true }),
             handlers: {
                 publishCurrentUiContext: () => undefined,
                 executeAction: async ({ action }) => await executeAction(
                     action,
                     options.exposeDurableState === true,
                     options.configured === true,
+                    options.durableUnreachable === true,
                 ),
                 replacePageLocation: ({ subPath }) => subPath,
                 ...(options.canOpenSurface === false ? {} : {
@@ -221,11 +271,11 @@ describe('the unconfigured PRs & Issues screen', () => {
 
         await expect(shell.getByText('Pinned after the final source was removed'))
             .resolves.toBeDefined();
-        await expect(shell.getByRole('button', { name: 'Save as new view' }))
+        await expect(toolbarMenuItem(shell, 'Views', 'menuitem', { name: 'Save as new view' }))
             .resolves.toBeDefined();
         await expect(shell.getByRole('button', { name: 'Configure Example Forge' }))
             .resolves.toBeDefined();
-        await expect(shell.getByRole('button', { name: 'Manage sources' }))
+        await expect(toolbarMenuItem(shell, 'More', 'menuitem', { name: 'Manage sources' }))
             .resolves.toBeDefined();
     });
 
@@ -245,6 +295,60 @@ describe('the unconfigured PRs & Issues screen', () => {
         expect(opened[0]?.view).toEqual({ pluginId: SOURCE_PLUGIN_ID, localId: 'triage-sources' });
         expect(opened[0]?.input).toBeUndefined();
         expect(opened[0]?.subPath).toBeUndefined();
+    });
+
+    it('offers every source behind one primary Add a source menu', async () => {
+        // Six equal "Configure X" buttons made the first-run screen a wall of
+        // choices with no primary action. One primary action opens the choice;
+        // every source stays one press away.
+        const shell = await mountShell({ settingsPageId: 'triage-sources', secondSource: true });
+
+        await expect(shell.getByText('No sources are configured')).resolves.toBeDefined();
+        await expect(shell.queryByRole('button', { name: 'Configure Example Forge' }))
+            .resolves.toBeUndefined();
+        await expect(shell.queryByRole('button', { name: 'Configure Example Tracker' }))
+            .resolves.toBeUndefined();
+
+        await expect(toolbarMenuItem(shell, 'Add a source', 'menuitem', { name: 'Example Forge' }))
+            .resolves.toBeDefined();
+        await act(async () => {
+            await pressToolbarMenuItem(shell, 'Add a source', 'menuitem', 'Example Tracker');
+        });
+        await act(async () => { await Promise.resolve(); });
+
+        expect(opened).toHaveLength(1);
+        expect(opened[0]?.view).toEqual({ pluginId: SECOND_SOURCE_PLUGIN_ID, localId: 'tracker-settings' });
+    });
+
+    it('says an unreachable Account once, calmly, with one Retry for everything it blocks', async () => {
+        // Pins and saved views are both Account state. Two notices saying the
+        // same cause twice — one of them a heavy card — became one sentence.
+        durableReads.pins = 0;
+        durableReads.views = 0;
+        const shell = await mountShell({ settingsPageId: 'triage-sources', durableUnreachable: true });
+
+        await expect(shell.getByText(
+            'Happier cannot reach your account right now, so pins and saved views cannot be changed.',
+        )).resolves.toBeDefined();
+        await expect(shell.queryByText('Pins are unavailable')).resolves.toBeUndefined();
+        const retries = (await shell.getAllByRole('button')).filter((button) => button.name === 'Retry');
+        expect(retries).toHaveLength(1);
+
+        const pinsBefore = durableReads.pins;
+        const viewsBefore = durableReads.views;
+        await act(async () => { await shell.press(retries[0]!); });
+        await act(async () => { await Promise.resolve(); });
+        expect(durableReads.pins).toBeGreaterThan(pinsBefore);
+        expect(durableReads.views).toBeGreaterThan(viewsBefore);
+    });
+
+    it('shows no search box while there is nothing to search', async () => {
+        const shell = await mountShell({ settingsPageId: 'triage-sources' });
+        await expect(shell.getByText('No sources are configured')).resolves.toBeDefined();
+        await expect(shell.queryByRole('textbox', { name: 'Search PRs & Issues' })).resolves.toBeUndefined();
+
+        const configured = await mountShell({ settingsPageId: 'triage-sources', configured: true });
+        await expect(configured.getByRole('textbox', { name: 'Search PRs & Issues' })).resolves.toBeDefined();
     });
 
     it('renders no control for a source that named no page', async () => {
@@ -301,7 +405,7 @@ describe('Manage sources on the ordinary list screen', () => {
             .resolves.toBeUndefined();
 
         await act(async () => {
-            await shell.press(await shell.getByRole('button', { name: 'Manage sources' }));
+            await pressToolbarMenuItem(shell, 'More', 'menuitem', 'Manage sources');
         });
 
         const configure = await shell.getByRole('button', { name: 'Configure Example Forge' });
@@ -324,7 +428,7 @@ describe('Manage sources on the ordinary list screen', () => {
         });
 
         await act(async () => {
-            await shell.press(await shell.getByRole('button', { name: 'Manage sources' }));
+            await pressToolbarMenuItem(shell, 'More', 'menuitem', 'Manage sources');
         });
         await act(async () => {
             await shell.press(await shell.getByRole('button', { name: 'Configure Example Forge' }));
@@ -339,7 +443,7 @@ describe('Manage sources on the ordinary list screen', () => {
         const shell = await mountShell({ configured: true });
 
         await act(async () => {
-            await shell.press(await shell.getByRole('button', { name: 'Manage sources' }));
+            await pressToolbarMenuItem(shell, 'More', 'menuitem', 'Manage sources');
         });
 
         await expect(shell.queryByRole('button', { name: 'Configure Example Forge' }))

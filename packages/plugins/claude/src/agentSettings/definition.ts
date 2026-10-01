@@ -6,7 +6,7 @@ export type ClaudeSettingSourceV2 = (typeof CLAUDE_SETTING_SOURCES_V2)[number];
 export const CLAUDE_REMOTE_DEBUG_CATEGORIES = ['api', 'mcp', 'hooks', 'file', '1p'] as const;
 export type ClaudeRemoteDebugCategory = (typeof CLAUDE_REMOTE_DEBUG_CATEGORIES)[number];
 
-export const CLAUDE_UNIFIED_TERMINAL_HOSTS = ['auto', 'tmux', 'zellij'] as const;
+export const CLAUDE_UNIFIED_TERMINAL_HOSTS = ['auto', 'tmux', 'zellij', 'herdr'] as const;
 export type ClaudeUnifiedTerminalHost = (typeof CLAUDE_UNIFIED_TERMINAL_HOSTS)[number];
 
 export const CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICES = [
@@ -94,11 +94,23 @@ function option(
 
 const CLAUDE_AGENT_SETTINGS_FIELDS = [
   {
+    id: 'claudeDynamicModelProbeEnabled',
+    title: fieldTitle('claudeDynamicModelProbeEnabled', 'Discover models dynamically'),
+    description: fieldDescription(
+      'claudeDynamicModelProbeEnabled',
+      'Query Anthropic for the models available to the selected connected account or native Claude Code login.',
+    ),
+    schema: { type: 'boolean', description: 'Enable dynamic Claude model discovery' },
+    default: true,
+    analytics: BOOLEAN_ANALYTICS,
+    presentation: { control: 'switch' },
+  },
+  {
     id: 'claudeRemoteAgentSdkEnabled',
     title: fieldTitle('claudeRemoteAgentSdkEnabled', 'Use Agent SDK (remote)'),
     description: fieldDescription(
       'claudeRemoteAgentSdkEnabled',
-      'Use the official @anthropic-ai/claude-agent-sdk for remote mode.',
+      'Use the Claude Agent SDK runtime for remote mode.',
     ),
     schema: { type: 'boolean', description: 'Use Claude Agent SDK in remote mode' },
     default: true,
@@ -134,7 +146,7 @@ const CLAUDE_AGENT_SETTINGS_FIELDS = [
     title: fieldTitle('claudeUnifiedTerminalHost', 'Terminal host'),
     description: fieldDescription(
       'claudeUnifiedTerminalHost',
-      'Choose which terminal multiplexer Happier uses for unified Claude sessions.',
+      'Choose which terminal host Happier uses for unified Claude sessions.',
     ),
     schema: {
       type: 'string',
@@ -149,6 +161,7 @@ const CLAUDE_AGENT_SETTINGS_FIELDS = [
         option('claudeUnifiedTerminalHost', 'auto', 'Auto', 'Prefer the best supported host on this machine.'),
         option('claudeUnifiedTerminalHost', 'tmux', 'tmux', 'Use tmux when it is available.'),
         option('claudeUnifiedTerminalHost', 'zellij', 'Zellij', 'Use Zellij when it is available and supported.'),
+        option('claudeUnifiedTerminalHost', 'herdr', 'Herdr', 'Use Herdr for terminal sessions on this machine.'),
       ],
     },
   },
@@ -470,6 +483,7 @@ export const CLAUDE_AGENT_SETTINGS_CONTRIBUTION = {
           fallback: 'Remote mode runs Claude on your machine, but controlled from the Happier UI. Local mode is the Claude Code TUI in your terminal. These settings affect remote mode only.',
         },
         fields: [
+          'claudeDynamicModelProbeEnabled',
           'claudeRemoteAgentSdkEnabled',
           'claudeRemoteDebugEnabled',
           'claudeRemoteVerboseEnabled',
@@ -507,6 +521,7 @@ export const CLAUDE_AGENT_SETTINGS_CONTRIBUTION = {
 } satisfies PluginSettingsContribution;
 
 type ClaudeSettingsDefaults = {
+  claudeDynamicModelProbeEnabled: boolean;
   claudeRemoteAgentSdkEnabled: boolean;
   claudeCodeExperimentalAgentTeamsEnabled: boolean;
   claudeUnifiedTerminalEnabled: boolean;

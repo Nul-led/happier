@@ -26,7 +26,7 @@ describe('provider-binding launch materialization handoff', () => {
         runtimeBindingBasis: {
             v: 1 as const,
             deployment: { kind: 'external' as const },
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             connectionId: ProviderConnectionIdSchema.parse('pc_work'),
             contributionKey: 'plugin.openrouter/openrouter',
             endpoint: {

@@ -45,7 +45,7 @@ function stateRevision(generationId: string): PluginInstallationStateRevision {
           approvedAtMs: 1,
         },
         source: { distribution: { kind: 'localPath', canonicalPath: '/tmp/acme-plugin' } },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         optionalAccess: [],
       },
     },
@@ -95,7 +95,7 @@ async function seedInstalledGeneration(): Promise<Readonly<{
     transactionId: 'tx-a',
     baseRevision: null,
     installationState,
-    pluginGenerations: { [PLUGIN_ID]: prepared.reference },
+    pluginOccurrenceIds: { [PLUGIN_ID]: prepared.reference },
     createdAtMs: 1,
     creator: { pid: 42, instanceId: 'daemon-a' },
   };

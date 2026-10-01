@@ -1,4 +1,4 @@
-import type { ReactElement, ReactNode } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
 import { View } from 'react-native';
 
 import {
@@ -17,16 +17,26 @@ import {
   HappierFormActions,
   HappierSelect,
   HappierTextField,
+  type HappierTextFieldProps,
   HappierToggle,
   HappierValidationMessage,
+  planHappierSelectOptions,
   useHappierFormSubmission,
+  useHappierIsWithinField,
 } from '../presentation/form/Fields.js';
 import {
   readHappierActionInputPath,
   resolveHappierActionFieldPresentation,
   writeHappierActionInputPath,
 } from '../presentation/form/actionInputFields.js';
+import { HappierSegmentedChoice } from '../presentation/form/SegmentedChoice.js';
+import {
+  resolveHappierFieldKeyboardType,
+  useHappierFieldValueDraft,
+  type HappierFieldValueKind,
+} from '../presentation/form/fieldValueDraft.js';
 import type { HappierTextSelection } from '../presentation/portableTypes.js';
+import { resolveHappierUiPalette, useOptionalHappierUiPalette } from '../environment/context.js';
 import { Button } from './Button.js';
 import { Heading } from './Foundation.js';
 import {
@@ -37,6 +47,8 @@ import { usePluginTheme, usePluginTranslation } from './PluginUiProvider.js';
 import { resolveAuthorText } from './resolveAuthorText.js';
 import { Stack } from './Layout.js';
 import { Text } from './Text.js';
+import { Dropdown, type MenuItem } from './Overlay.js';
+import { OverlayFieldTriggerContext } from './overlayFieldTrigger.js';
 
 const FORM_SUBMIT_TRANSLATION_KEY = 'happier.plugin-ui.form.submit';
 const FORM_CANCEL_TRANSLATION_KEY = 'happier.plugin-ui.form.cancel';
@@ -116,21 +128,124 @@ export type TextFieldProps = Readonly<{
   onEscape?: () => boolean;
   /** Logical focus target transferred by the mounted host after author state changes. */
   focusTarget?: PluginUiFocusTarget;
+  /**
+   * `form` (default): a form field with its visible label. `field`: the
+   * configuration page's bordered field box, placed as an `Item` row's
+   * `accessory` — the row's title names it, so `label` is its accessible name
+   * only — exactly like Happier's own page text fields.
+   */
+  presentation?: 'form' | 'field';
+  /**
+   * `field` only: typed in place and saved on leaving. The field keeps a local
+   * draft (reported through `onChange`) and calls this once when focus leaves
+   * or on submit, only when the draft differs from `value`. Return the text to
+   * show afterwards (a clamped number, the saved value when refused), or
+   * nothing to keep the draft.
+   */
+  onCommit?: (draft: string) => string | void;
+  /** `field` with `onCommit`: `integer` and `decimal` keep the draft to digits and open a number keyboard. */
+  kind?: 'text' | 'integer' | 'decimal';
+  /** A number that may be left empty ("not set"); otherwise an emptied number returns to `value`. */
+  allowEmpty?: boolean;
+  /** `field` only: the field's refusal, shown beneath the box and announced. */
+  error?: string;
   testID?: string;
 }>;
 
 export function TextField(props: TextFieldProps): ReactElement {
-  const { onChange, focusTarget, label, labelKey, placeholder, placeholderKey, ...rest } = props;
+  const {
+    onChange,
+    focusTarget,
+    label,
+    labelKey,
+    placeholder,
+    placeholderKey,
+    presentation = 'form',
+    onCommit,
+    kind,
+    allowEmpty,
+    error,
+    ...rest
+  } = props;
   const translate = usePluginTranslation();
   const focusBinding = usePluginUiFocusTargetBindingInternal(focusTarget);
+  const theme = usePluginTheme();
+  const palette = useOptionalHappierUiPalette(theme);
+  const resolvedLabel = resolveAuthorText(translate, label, labelKey) ?? label;
+  const resolvedPlaceholder = resolveAuthorText(translate, placeholder, placeholderKey);
+  if (presentation === 'field' && palette !== null) {
+    const fieldColors = {
+      borderColor: palette.controlBorder,
+      backgroundColor: palette.fieldBackground,
+      valueColor: theme.colors.text,
+      placeholderColor: palette.placeholder,
+      errorColor: theme.colors.danger,
+    };
+    if (onCommit !== undefined) {
+      return (
+        <CommittingFieldTextField
+          {...rest}
+          label={resolvedLabel}
+          placeholder={resolvedPlaceholder}
+          onChange={onChange}
+          onCommit={onCommit}
+          kind={kind ?? 'text'}
+          allowEmpty={allowEmpty}
+          error={error}
+          fieldColors={fieldColors}
+          controlRef={focusBinding}
+        />
+      );
+    }
+    return (
+      <HappierTextField
+        {...rest}
+        appearance="field"
+        fieldColors={fieldColors}
+        error={error}
+        label={resolvedLabel}
+        placeholder={resolvedPlaceholder}
+        onChangeText={onChange}
+        controlRef={focusBinding}
+        theme={theme}
+      />
+    );
+  }
   return (
     <HappierTextField
       {...rest}
-      label={resolveAuthorText(translate, label, labelKey) ?? label}
-      placeholder={resolveAuthorText(translate, placeholder, placeholderKey)}
+      label={resolvedLabel}
+      placeholder={resolvedPlaceholder}
       onChangeText={onChange}
       controlRef={focusBinding}
-      theme={usePluginTheme()}
+      theme={theme}
+    />
+  );
+}
+
+/** A page field that keeps a local draft and saves it on leaving, through the shared draft owner. */
+function CommittingFieldTextField(props: Omit<TextFieldProps, 'labelKey' | 'placeholderKey' | 'focusTarget' | 'presentation'> & Readonly<{
+  onCommit: (draft: string) => string | void;
+  kind: HappierFieldValueKind;
+  fieldColors: NonNullable<HappierTextFieldProps['fieldColors']>;
+  controlRef: HappierTextFieldProps['controlRef'];
+}>): ReactElement {
+  const { value, onChange, onCommit, kind, allowEmpty, error, fieldColors, controlRef, onSubmitEditing, ...rest } = props;
+  const theme = usePluginTheme();
+  const field = useHappierFieldValueDraft({ value, onCommit, onDraftChange: onChange, kind, allowEmpty });
+  return (
+    <HappierTextField
+      {...rest}
+      appearance="field"
+      fieldColors={fieldColors}
+      error={error}
+      value={field.draft}
+      onChangeText={field.change}
+      onBlur={field.commit}
+      onSubmitEditing={() => { field.commit(); onSubmitEditing?.(); }}
+      keyboardType={resolveHappierFieldKeyboardType(kind) ?? rest.keyboardType}
+      controlRef={controlRef}
+      theme={theme}
     />
   );
 }
@@ -158,22 +273,161 @@ export type SelectProps = Readonly<{
   required?: boolean;
   onChange: (value: FormOptionValue | readonly FormOptionValue[]) => void;
   disabled?: boolean;
+  /**
+   * `inline` (the default) lays every option out as its own control — right
+   * for a form where comparing a few described choices is the task. `menu`
+   * shows one compact trigger naming the field and its current choice, and
+   * opens the options in the shared menu — right for toolbar pickers such as
+   * a view, a sort order or a filter facet. `field` is a settings-page row's
+   * select: a field box showing the chosen option (or asking for one) that
+   * opens the same menu; the row's title names the field, so `label` is only
+   * its accessible name. `segmented` is a settings-page row's two-to-four-way
+   * choice of short labels on one track; it chooses exactly one value and
+   * rejects `multiple`. Every presentation applies the same selection rules.
+   */
+  presentation?: 'inline' | 'menu' | 'field' | 'segmented';
   /** Logical focus target transferred to the first enabled option in this field. */
   focusTarget?: PluginUiFocusTarget;
   testID?: string;
 }>;
 
 export function Select(props: SelectProps): ReactElement {
-  const { focusTarget, ...rest } = props;
+  const { focusTarget, presentation = 'inline', ...rest } = props;
   const focusBinding = usePluginUiFocusTargetBindingInternal(focusTarget);
-  return <HappierSelect
-    {...rest}
-    value={props.value}
-    controlRef={focusBinding}
-    theme={usePluginTheme()}
-    isEqual={isSameActionInputOptionValue}
-    keyForOption={(option) => actionInputOptionValueKey(option.value)}
-  />;
+  const theme = usePluginTheme();
+  const withinField = useHappierIsWithinField();
+  if (presentation === 'menu' || presentation === 'field') {
+    return <SelectMenu {...props} appearance={presentation} />;
+  }
+  if (presentation === 'segmented') return <SelectSegmented {...props} />;
+  const control = (
+    <HappierSelect
+      {...rest}
+      value={props.value}
+      controlRef={focusBinding}
+      theme={theme}
+      isEqual={isSameActionInputOptionValue}
+      keyForOption={(option) => actionInputOptionValueKey(option.value)}
+    />
+  );
+  // Inside a Field the Field draws the name; standalone, the Select must, or
+  // its options read as unlabeled tiles.
+  if (withinField) return control;
+  return (
+    <HappierField label={props.label} required={props.required} disabled={props.disabled} theme={theme}>
+      {control}
+    </HappierField>
+  );
+}
+
+/** Joins a field name to its current choice on a compact trigger. */
+const SELECT_MENU_SEPARATOR = ' · ';
+
+const SELECT_FIELD_PLACEHOLDER_TRANSLATION_KEY = 'happier.plugin-ui.select.choose';
+
+function planFormSelect(props: SelectProps) {
+  return planHappierSelectOptions({
+    options: props.options,
+    value: props.value,
+    ...(props.multiple === undefined ? {} : { multiple: props.multiple }),
+    ...(props.maxSelections === undefined ? {} : { maxSelections: props.maxSelections }),
+    ...(props.minimumSelections === undefined ? {} : { minimumSelections: props.minimumSelections }),
+    ...(props.required === undefined ? {} : { required: props.required }),
+    isEqual: isSameActionInputOptionValue,
+    keyForOption: (option) => actionInputOptionValueKey(option.value),
+  });
+}
+
+function SelectMenu(props: SelectProps & Readonly<{ appearance: 'menu' | 'field' }>): ReactElement {
+  const [open, setOpen] = useState(false);
+  const translate = usePluginTranslation();
+  const plan = planFormSelect(props);
+  const chosen = plan.options.filter((entry) => entry.selected);
+  // One choice is named; several are counted, so the trigger stays compact.
+  const summary = chosen.length === 0
+    ? null
+    : chosen.length === 1 ? chosen[0]!.option.label : String(chosen.length);
+  const placeholder = translate(SELECT_FIELD_PLACEHOLDER_TRANSLATION_KEY, 'Choose…');
+  const trigger = props.appearance === 'field'
+    ? summary ?? placeholder
+    : summary === null ? props.label : `${props.label}${SELECT_MENU_SEPARATOR}${summary}`;
+  const accessibilityLabel = chosen.length === 0
+    ? props.label
+    : `${props.label}: ${chosen.map((entry) => entry.option.label).join(', ')}`;
+  const radioGroupId = 'select';
+  const items: MenuItem[] = plan.options.map((entry) => (props.multiple
+    ? { id: entry.key, label: entry.option.label, kind: 'checkbox', checked: entry.selected, disabled: entry.disabled }
+    : { id: entry.key, label: entry.option.label, kind: 'radio', radioGroupId, disabled: entry.disabled }));
+  const dropdown = (
+    <Dropdown
+      open={open}
+      onOpenChange={setOpen}
+      trigger={trigger}
+      triggerAppearance="control"
+      triggerAccessibilityLabel={accessibilityLabel}
+      disabled={props.disabled}
+      {...(props.testID === undefined ? {} : { testID: props.testID })}
+      items={items}
+      {...(props.multiple
+        ? {}
+        : {
+            radioGroups: [{
+              id: radioGroupId,
+              accessibilityLabel: props.label,
+              selectedId: chosen[0]?.key ?? null,
+            }],
+          })}
+      onSelect={(id) => {
+        const entry = plan.options.find((candidate) => candidate.key === id);
+        if (entry === undefined || entry.disabled) return;
+        props.onChange(entry.nextValue());
+      }}
+    />
+  );
+  return props.appearance === 'field'
+    ? (
+      <OverlayFieldTriggerContext.Provider value={{ value: summary, placeholder }}>
+        {dropdown}
+      </OverlayFieldTriggerContext.Provider>
+    )
+    : dropdown;
+}
+
+/** A single choice among a few short labels, drawn as a segmented control. */
+function SelectSegmented(props: SelectProps): ReactElement {
+  if (props.multiple) {
+    throw new Error('Select presentation="segmented" chooses exactly one value; use "inline" or "menu" for a multiple Select.');
+  }
+  const theme = usePluginTheme();
+  const palette = useOptionalHappierUiPalette(theme) ?? resolveHappierUiPalette(theme);
+  const plan = planFormSelect(props);
+  return (
+    <HappierSegmentedChoice
+      accessibilityLabel={props.label}
+      segments={plan.options.map((entry) => ({
+        key: entry.key,
+        label: entry.option.label,
+        selected: entry.selected,
+        disabled: entry.disabled,
+        ...(entry.option.accessibilityLabel === undefined ? {} : { accessibilityLabel: entry.option.accessibilityLabel }),
+        ...(entry.option.testID === undefined ? {} : { testID: entry.option.testID }),
+      }))}
+      onSelect={(index) => {
+        const entry = plan.options[index];
+        if (entry === undefined || entry.disabled || entry.selected) return;
+        props.onChange(entry.nextValue());
+      }}
+      disabled={props.disabled}
+      colors={{
+        track: palette.segmentTrack,
+        thumb: palette.segmentThumb,
+        label: theme.colors.secondaryText,
+        activeLabel: theme.colors.text,
+        focusRing: theme.colors.focus,
+      }}
+      {...(props.testID === undefined ? {} : { testID: props.testID })}
+    />
+  );
 }
 
 export type ValidationMessageProps = Readonly<{ message: string; testID?: string }>;

@@ -33,7 +33,7 @@ describe('OpenCode attach descriptor', () => {
       },
     });
     if (!target.ok) throw new Error('expected attach target');
-    expect(createOpenCodeAttachArgs(target.value)).toEqual([
+    expect(createOpenCodeAttachArgs(target.value, { cliVersion: '1.18.25' })).toEqual([
       'attach',
       'http://127.0.0.1:49196/',
       '--dir',
@@ -41,9 +41,26 @@ describe('OpenCode attach descriptor', () => {
       '--session',
       'oc-session-1',
     ]);
-    expect(resolveOpenCodeAttachReachability(target.value)).toEqual({
+    expect(resolveOpenCodeAttachReachability(target.value, { cliVersion: '1.18.25' })).toEqual({
       kind: 'http',
       url: 'http://127.0.0.1:49196/global/health',
+    });
+  });
+
+  it('uses the released OpenCode 2 root-command contract and info route', () => {
+    const target = resolveOpenCodeAttachTarget({ metadata });
+    if (!target.ok) throw new Error('expected attach target');
+
+    expect(createOpenCodeAttachArgs(target.value, { cliVersion: '2.0.15' })).toEqual([
+      '--server',
+      'http://127.0.0.1:49196/',
+      '--session',
+      'oc-session-1',
+      '/repo',
+    ]);
+    expect(resolveOpenCodeAttachReachability(target.value, { cliVersion: '2.0.15' })).toEqual({
+      kind: 'http',
+      url: 'http://127.0.0.1:49196/api/info',
     });
   });
 

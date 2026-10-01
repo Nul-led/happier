@@ -23,17 +23,26 @@ import {
   EmptyState,
   ErrorState,
   Form,
+  FreshnessLine,
   Heading,
+  Icon,
+  IconButton,
+  Item,
   ItemGroup,
   Link,
   List,
   LoadingState,
+  Menu,
   Metadata,
+  PaneHeaderContent,
+  PageHeader,
   QRCode,
+  Row,
   Screen,
   ScrollArea,
   Stack,
   Status,
+  Step,
   type ListSectionData,
   Text,
   Tabs,
@@ -48,13 +57,14 @@ import {
   usePluginTheme,
   usePluginTranslation,
   usePluginUiFocusTarget,
+  useSessionState,
   useSurfaceContext,
   type PluginUiResourceSnapshot,
 } from '@happier-dev/plugin-ui';
 import {
   usePluginUiDataClient,
   type PluginUiAccountCollectionForDefinition,
-} from '@happier-dev/plugin-ui/data';
+} from '@happier-dev/plugin-ui';
 import {
   CONVERSATION_MANAGEMENT_ACTION_IDS_V1,
   CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1,
@@ -99,6 +109,8 @@ import {
   type ConversationConnectionEndpointRequiredResultV1,
   type ConversationConnectionWebhookEndpointSetupRequiredResultV1,
   type ConversationPairingResourceV1,
+  ConversationSessionLastDeliveryV1Schema,
+  type ConversationSessionLastDeliveryV1,
 } from '@happier-dev/channels-protocol/v1';
 
 import {
@@ -132,6 +144,7 @@ import {
   type ConversationOutwardDeliveryResolutionRow,
 } from '../outwardDelivery.js';
 import {
+  CHANNELS_PAGE_VIEW_ID,
   CHANNELS_SESSION_CONVERSATIONS_RESOURCE_ID,
   CHANNELS_SESSION_CONVERSATIONS_VIEW_ID,
   CHANNELS_SETTINGS_PAGE_ID,
@@ -142,20 +155,51 @@ import {
   type ConversationSessionBindingAttentionV1,
 } from '../sessionBindingAttention.js';
 import {
+  type BindingDeliveryMode,
+  type BindingEndpointAudience,
+  type BindingInputMode,
+  type BindingSessionDeliveryMode,
+  type BindingTargetKind,
+  CHANNELS_BINDINGS_RESOURCE,
+  CHANNELS_CONNECTIONS_RESOURCE,
+  type ChannelDeliveriesCollection,
+  type ChannelStateCollection,
+  type ChannelsBinding,
+  type ChannelsConnection,
+  type ConnectionHistoryGapReason,
+  type ConnectionProviderReadiness,
+  type ConnectionTransport,
+  type ParsedBindings,
+  type ParsedConnections,
+  type ResourcePresentation,
+  type Translate,
+  bindingEndpointLabel,
+  bindingRowLabel,
+  connectionLabel,
+  connectionStatus,
+  isBindingInputMode,
+  isHostMethodCurrentlyUnavailable,
+  isNonEmptyString,
+  isNonNegativeSafeInteger,
+  isRecord,
+  isValidObservationAge,
+  parseBindingsResource,
+  parseBindingsValue,
+  parseConnectionsResource,
+  providerReadinessLabel,
+  shortRowIdentity,
+  useAccountLocalBindingRows,
+  useAccountLocalConnectionRows,
+  useReplacedAccountCollectionScope,
+  buildChannelsConversationIndex,
+  readChannelsPageLocation,
+} from './conversationRows.js';
+import {
   bindingPermissionIntentLabel,
   bindingPermissionIntentOptions,
   parseBindingPermissionIntent,
 } from './permissionIntentOptions.js';
 
-const CHANNELS_CONNECTIONS_RESOURCE = {
-  pluginId: CONVERSATION_CORE_PLUGIN_ID_V1,
-  localId: 'connections-v1',
-} as const;
-
-const CHANNELS_BINDINGS_RESOURCE = {
-  pluginId: CONVERSATION_CORE_PLUGIN_ID_V1,
-  localId: 'bindings-v1',
-} as const;
 
 const CHANNELS_PAIRING_RESOURCE = {
   pluginId: CONVERSATION_CORE_PLUGIN_ID_V1,
@@ -181,83 +225,32 @@ const OBSERVATION_AGE_PRESETS_MS = Object.freeze([
 ]);
 const INBOUND_GROUPING_PRESETS_MS = Object.freeze([0, 250, 500, 750, 1_000, 2_000, 5_000]);
 
-type ConnectionTransport = ConversationConnectionManagementRow['selectedTransport'];
-type ConnectionDeletionState = ConversationConnectionManagementRow['deletionState'];
-type ConnectionHistoryGapReason = NonNullable<
-  ConversationConnectionManagementRow['attention']['historyGap']
->['reason'];
-type ConnectionProviderReadiness = ConversationConnectionManagementRow['attention']['providerReadiness'];
-type ConnectionIngressConflict = ConversationConnectionManagementRow['attention']['ingressConflict'];
-type ConnectionPollFailure = ConversationConnectionPollFailureAttentionV1;
-type ConnectionOutwardDeliveryAttention = Readonly<{
-  retryDue: boolean;
-  notDelivered: boolean;
-  partial: boolean;
-  outcomeUnknown: boolean;
-  archiveRecovery: boolean;
-}>;
-
-type ChannelsConnection = Readonly<
-  Omit<ConversationConnectionManagementRow, 'attention'>
-  & Readonly<{
-    attention: ConversationConnectionManagementRow['attention'] & Readonly<{
-      outwardDelivery: ConnectionOutwardDeliveryAttention;
-    }>;
-  }>
->;
-
-type BindingEndpointAudience = ConversationBindingManagementRow['endpoint']['audience'];
-type BindingTargetKind = ConversationBindingManagementRow['target']['kind'];
-type BindingInputMode = ConversationBindingManagementRow['inputMode'];
-type BindingDeliveryMode = ConversationBindingManagementRow['deliveryMode'];
-/** The delivery modes a Session target can actually carry, as the target contract declares them. */
-type BindingSessionDeliveryMode = ReturnType<typeof conversationSessionBindingDeliveryModeForOmittedFieldV1>;
-type BindingDeletionState = ConversationBindingManagementRow['deletionState'];
-type BindingApproval = ConversationBindingManagementRow['approval'];
-
-type ChannelsBinding = ConversationBindingManagementRow;
-
-type ParsedConnections =
-  | Readonly<{ kind: 'ready'; connections: readonly ChannelsConnection[] }>
-  | Readonly<{
-    kind: 'invalid';
-    reason: 'contentType' | 'invalidJson' | 'shape' | 'connection';
-  }>;
-
-type ParsedBindings =
-  | Readonly<{ kind: 'ready'; bindings: readonly ChannelsBinding[] }>
-  | Readonly<{
-    kind: 'invalid';
-    reason: 'contentType' | 'invalidJson' | 'shape' | 'binding';
-  }>;
 
 /** One decoded Session-conversation Resource, consumed by both visible rows and attention. */
 type ParsedSessionConversations = Readonly<{
   bindings: ParsedBindings;
   attention: readonly ConversationSessionBindingAttentionV1[];
+  /** The newest outward delivery custody row per binding (optional sibling; absent from older daemons). */
+  lastDeliveries: ReadonlyMap<string, ConversationSessionLastDeliveryV1>;
 }>;
+
+const NO_LAST_DELIVERIES: ReadonlyMap<string, ConversationSessionLastDeliveryV1> = new Map();
+
+/** Each entry is validated on its own and a malformed one is omitted, as attention entries are. */
+function parseSessionLastDeliveries(decoded: unknown): ReadonlyMap<string, ConversationSessionLastDeliveryV1> {
+  if (!isRecord(decoded) || !Array.isArray(decoded.lastDeliveries)) return NO_LAST_DELIVERIES;
+  const entries = new Map<string, ConversationSessionLastDeliveryV1>();
+  for (const candidate of decoded.lastDeliveries) {
+    const parsed = ConversationSessionLastDeliveryV1Schema.safeParse(candidate);
+    if (parsed.success) entries.set(parsed.data.bindingId, parsed.data);
+  }
+  return entries;
+}
 
 type ParsedPairing =
   | Readonly<{ kind: 'ready'; pairing: ConversationPairingResourceV1 }>
   | Readonly<{ kind: 'invalid'; reason: 'contentType' | 'invalidJson' | 'shape' }>;
 
-/**
- * The mounted host's resolver, narrowed to the two arguments this surface
- * always supplies plus the canonical interpolation values. Unit words, order
- * and spacing therefore stay inside the translated message instead of being
- * concatenated here.
- */
-type Translate = (
-  key: string,
-  fallback: string,
-  values?: Readonly<Record<string, string | number>>,
-) => string;
-type ResourcePresentation = Readonly<{
-  pending: 'idle' | 'initial' | 'refresh';
-  freshness: 'unknown' | 'fresh' | 'stale';
-  subscription: 'unsupported' | 'establishing' | 'live' | 'reconnecting' | 'ended';
-  error?: Readonly<{ message: string }>;
-}>;
 
 type ProviderTargetedOperation = Extract<SelectActionInputRequest, Readonly<{ operation: unknown }>>['operation'];
 type ProviderSetupOperation = ProviderTargetedOperation;
@@ -344,7 +337,7 @@ function isSameProviderContributionOperation(
     && left.point.protocol.version === right.point.protocol.version
     && left.contributor.pluginId === right.contributor.pluginId
     && left.contributor.contributionId === right.contributor.contributionId
-    && left.contributor.immutableGenerationId === right.contributor.immutableGenerationId;
+    && left.contributor.occurrenceId === right.contributor.occurrenceId;
 }
 
 function currentProviderOperationsForRole(
@@ -368,7 +361,7 @@ function currentProviderOperationsForRole(
     return contribution.operations.filter((operation) => (
       operation.contributor.pluginId === contribution.contributor.pluginId
       && operation.contributor.contributionId === contribution.contributor.contributionId
-      && operation.contributor.immutableGenerationId === contribution.contributor.immutableGenerationId
+      && operation.contributor.occurrenceId === contribution.contributor.occurrenceId
       && operation.role === role
       && operation.point.pointId === CONVERSATION_PROVIDERS_CONTRIBUTION_POINT_ID_V1
       && operation.point.protocol.id === CONVERSATION_PROVIDERS_CONTRIBUTION_PROTOCOL_ID_V1
@@ -406,10 +399,6 @@ function currentProviderSetupRemediationOperations(
   );
 }
 
-type ChannelStateCollection = PluginUiAccountCollectionForDefinition<typeof CHANNEL_STATE_COLLECTION>;
-type ChannelDeliveriesCollection = PluginUiAccountCollectionForDefinition<
-  typeof CHANNEL_DELIVERIES_COLLECTION
->;
 type BindingEnablementInput = Readonly<{
   bindingId: string;
   expectedRevision: number;
@@ -473,14 +462,6 @@ type DeliveryResolveOperation = Readonly<{
   execute(input: DeliveryResolveInput): Promise<PluginActionExecution>;
   reset(): void;
 }>;
-type AccountLocalBindingReadState = Readonly<{
-  bindings?: readonly ChannelsBinding[];
-  resource: ResourcePresentation;
-}>;
-type AccountLocalConnectionReadState = Readonly<{
-  connections?: readonly ChannelsConnection[];
-  resource: ResourcePresentation;
-}>;
 type DeliveryResolutionReadState = Readonly<{
   rows?: readonly ConversationOutwardDeliveryResolutionRow[];
   nextCursor?: string;
@@ -495,22 +476,6 @@ type IngressAttentionReadState = Readonly<{
 function ingressAttentionRowId(row: ConversationIngressAttentionRow): string {
   return row.kind === 'occurrenceConflict' ? row.censusId : row.obligationId;
 }
-
-const ACCOUNT_LOCAL_BINDING_INITIAL_STATE: AccountLocalBindingReadState = Object.freeze({
-  resource: Object.freeze({
-    pending: 'initial',
-    freshness: 'unknown',
-    subscription: 'unsupported',
-  }),
-});
-
-const ACCOUNT_LOCAL_CONNECTION_INITIAL_STATE: AccountLocalConnectionReadState = Object.freeze({
-  resource: Object.freeze({
-    pending: 'initial',
-    freshness: 'unknown',
-    subscription: 'unsupported',
-  }),
-});
 
 const DELIVERY_RESOLUTION_INITIAL_STATE: DeliveryResolutionReadState = Object.freeze({
   resource: Object.freeze({
@@ -528,333 +493,6 @@ const INGRESS_ATTENTION_INITIAL_STATE: IngressAttentionReadState = Object.freeze
   }),
 });
 
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim() !== '';
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isValidObservationAge(value: unknown): value is number {
-  return typeof value === 'number'
-    && Number.isSafeInteger(value)
-    && value >= MIN_CONVERSATION_OBSERVATION_AGE_MS
-    && value <= MAX_CONVERSATION_OBSERVATION_AGE_MS;
-}
-
-function isConnectionTransport(value: unknown): value is ConnectionTransport {
-  return value === 'checkpointedPull' || value === 'socket' || value === 'durablePush';
-}
-
-function isConnectionDeletionState(value: unknown): value is ConnectionDeletionState {
-  return value === 'none' || value === 'pendingStopReconciliation' || value === 'finalizingDelete';
-}
-
-function isHistoryGapReason(value: unknown): value is ConnectionHistoryGapReason {
-  return value === 'providerHistoryUnavailable' || value === 'applicationAdmissionLost';
-}
-
-function parseHistoryGap(value: unknown): ChannelsConnection['attention']['historyGap'] | undefined {
-  if (value === null) return null;
-  if (!isRecord(value)) return undefined;
-  const reportedAt = value.reportedAt;
-  const reason = value.reason;
-  if (!isPositiveSafeInteger(reportedAt) || !isHistoryGapReason(reason)) return undefined;
-  return { reportedAt, reason };
-}
-
-function parseProviderReadiness(value: unknown): ConnectionProviderReadiness | undefined {
-  // Older retained connection Resources predate this generic attention field.
-  if (value === undefined || value === null) return null;
-  if (!isRecord(value)) return undefined;
-  const code = value.code;
-  const diagnostic = value.diagnostic;
-  if ((code !== 'providerPermissionMissing'
-    && code !== 'providerConfigurationInvalid'
-    && code !== 'providerCredentialInvalid')
-    || (diagnostic !== undefined && !isNonEmptyString(diagnostic))) {
-    return undefined;
-  }
-  return {
-    code,
-    ...(diagnostic === undefined ? {} : { diagnostic }),
-  };
-}
-
-function parseIngressConflict(value: unknown): ConnectionIngressConflict | undefined {
-  // Older Resources cannot derive this V2 census fact, so absence carries no
-  // conflict rather than making the whole settings projection unusable.
-  if (value === undefined || value === null) return null;
-  if (!isRecord(value) || value.kind !== 'occurrenceEvidenceMismatch' || Object.keys(value).length !== 1) {
-    return undefined;
-  }
-  return { kind: 'occurrenceEvidenceMismatch' };
-}
-
-/** The Resource emits this derived custody field for every connection row. */
-function parseOutwardDeliveryAttention(value: unknown): ConnectionOutwardDeliveryAttention | undefined {
-  if (!isRecord(value)
-    || typeof value.retryDue !== 'boolean'
-    || typeof value.notDelivered !== 'boolean'
-    || typeof value.partial !== 'boolean'
-    || typeof value.outcomeUnknown !== 'boolean') {
-    return undefined;
-  }
-  return {
-    retryDue: value.retryDue,
-    notDelivered: value.notDelivered,
-    partial: value.partial,
-    outcomeUnknown: value.outcomeUnknown,
-    // Tolerated as absent: a Resource produced before archive recovery was
-    // surfaced simply offers no recoverable delivery.
-    archiveRecovery: value.archiveRecovery === true,
-  };
-}
-
-/**
- * The provider-authenticated shared-endpoint delivery truth, as projected.
- * `undefined` means the provider declared no restriction; an unrecognized
- * value fails the connection closed rather than silently widening the offer.
- */
-function parseSharedEndpointInputModes(
-  value: unknown,
-): readonly BindingInputMode[] | undefined | 'invalid' {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length === 0) return 'invalid';
-  if (!value.every(isBindingInputMode)) return 'invalid';
-  return value;
-}
-
-function parseConnection(value: unknown): ChannelsConnection | undefined {
-  if (!isRecord(value) || !isRecord(value.attention)) return undefined;
-  const historyGap = parseHistoryGap(value.attention.historyGap);
-  const providerReadiness = parseProviderReadiness(value.attention.providerReadiness);
-  const ingressConflict = parseIngressConflict(value.attention.ingressConflict);
-  const pollFailure = readConversationConnectionPollFailureAttention(value.attention.pollFailure);
-  const outwardDelivery = parseOutwardDeliveryAttention(value.attention.outwardDelivery);
-  const connectionId = value.connectionId;
-  const revision = value.revision;
-  const authorityEpoch = value.authorityEpoch;
-  const providerPluginId = value.providerPluginId;
-  const selectedMachineId = value.selectedMachineId;
-  const selectedTransport = value.selectedTransport;
-  const integrationPrincipalLabel = value.integrationPrincipalLabel;
-  const enabled = value.enabled;
-  const deletionState = value.deletionState;
-  const maximumObservationAgeMs = value.maximumObservationAgeMs;
-  const sharedEndpointInputModes = parseSharedEndpointInputModes(value.sharedEndpointInputModes);
-  const bestEffortBeforeDurableAdmission = value.attention.bestEffortBeforeDurableAdmission;
-  const oldTransportStopUnconfirmed = value.attention.oldTransportStopUnconfirmed;
-  const endpointRetargetOwed = value.attention.endpointRetargetOwed;
-  const acceptedPossibleLoss = value.attention.acceptedPossibleLoss;
-  if (historyGap === undefined
-    || providerReadiness === undefined
-    || ingressConflict === undefined
-    || pollFailure === undefined
-    || outwardDelivery === undefined
-    || !isNonEmptyString(connectionId)
-    || !isPositiveSafeInteger(revision)
-    || !isPositiveSafeInteger(authorityEpoch)
-    || !isNonEmptyString(providerPluginId)
-    || !isNonEmptyString(selectedMachineId)
-    || !isConnectionTransport(selectedTransport)
-    || !isConnectionDeletionState(deletionState)
-    || !isValidObservationAge(maximumObservationAgeMs)
-    || typeof enabled !== 'boolean'
-    || typeof bestEffortBeforeDurableAdmission !== 'boolean'
-    || typeof oldTransportStopUnconfirmed !== 'boolean'
-    || typeof endpointRetargetOwed !== 'boolean'
-    || typeof acceptedPossibleLoss !== 'boolean'
-    || (acceptedPossibleLoss && !oldTransportStopUnconfirmed)
-    || (endpointRetargetOwed && !oldTransportStopUnconfirmed)
-    || sharedEndpointInputModes === 'invalid'
-    || (integrationPrincipalLabel !== undefined && !isNonEmptyString(integrationPrincipalLabel))) {
-    return undefined;
-  }
-  return {
-    connectionId,
-    revision,
-    authorityEpoch,
-    providerPluginId,
-    selectedMachineId,
-    selectedTransport,
-    ...(integrationPrincipalLabel === undefined ? {} : { integrationPrincipalLabel }),
-    ...(sharedEndpointInputModes === undefined ? {} : { sharedEndpointInputModes }),
-    enabled,
-    deletionState,
-    maximumObservationAgeMs,
-    attention: {
-      historyGap,
-      providerReadiness,
-      ingressConflict,
-      pollFailure,
-      bestEffortBeforeDurableAdmission,
-      oldTransportStopUnconfirmed,
-      endpointRetargetOwed,
-      acceptedPossibleLoss,
-      outwardDelivery,
-    },
-  };
-}
-
-/** The Resource producer owns its row schema; this is a fail-closed UI boundary parser. */
-function parseConnectionsResource(resource: ResourceContent): ParsedConnections {
-  if (resource.contentType !== 'application/json') {
-    return { kind: 'invalid', reason: 'contentType' };
-  }
-
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(new TextDecoder().decode(resource.bytes));
-  } catch {
-    return { kind: 'invalid', reason: 'invalidJson' };
-  }
-  if (!isRecord(decoded) || !Array.isArray(decoded.connections)) {
-    return { kind: 'invalid', reason: 'shape' };
-  }
-
-  const connections: ChannelsConnection[] = [];
-  for (const candidate of decoded.connections) {
-    const connection = parseConnection(candidate);
-    if (connection === undefined) return { kind: 'invalid', reason: 'connection' };
-    connections.push(connection);
-  }
-  return { kind: 'ready', connections };
-}
-
-function isBindingEndpointAudience(value: unknown): value is BindingEndpointAudience {
-  return value === 'direct' || value === 'shared';
-}
-
-function isBindingTargetKind(value: unknown): value is BindingTargetKind {
-  return value === 'session' || value === 'automation';
-}
-
-function isBindingInputMode(value: unknown): value is BindingInputMode {
-  return value === 'directMentionsOnly' || value === 'addressedMessages' || value === 'allAllowedMessages';
-}
-
-function isBindingDeliveryMode(value: unknown): value is BindingDeliveryMode {
-  return value === 'repliesOnly'
-    || value === 'mirrorSession'
-    || value === 'finalResult'
-    || value === 'none';
-}
-
-function isBindingDeletionState(value: unknown): value is BindingDeletionState {
-  return value === 'none' || value === 'finalizingDelete';
-}
-
-function deliveryModeMatchesTarget(
-  targetKind: BindingTargetKind,
-  deliveryMode: BindingDeliveryMode,
-): boolean {
-  return targetKind === 'session'
-    ? deliveryMode === 'repliesOnly' || deliveryMode === 'mirrorSession'
-    : deliveryMode === 'finalResult' || deliveryMode === 'none';
-}
-
-function parseBindingApproval(
-  value: unknown,
-  targetKind: BindingTargetKind,
-): BindingApproval | undefined {
-  if (!isRecord(value)) return undefined;
-  if (targetKind === 'automation') {
-    return value.kind === 'notApplicable' ? { kind: 'notApplicable' } : undefined;
-  }
-  if (value.kind === 'off') return { kind: 'off' };
-  if (value.kind === 'enabled'
-    && (value.maximumScope === 'request' || value.maximumScope === 'session')) {
-    return { kind: 'enabled', maximumScope: value.maximumScope };
-  }
-  return undefined;
-}
-
-function parseBinding(value: unknown): ChannelsBinding | undefined {
-  if (!isRecord(value) || !isRecord(value.endpoint) || !isRecord(value.target)) return undefined;
-  const bindingId = value.bindingId;
-  const revision = value.revision;
-  const connectionId = value.connectionId;
-  const audience = value.endpoint.audience;
-  const endpointLabel = value.endpoint.label;
-  const targetKind = value.target.kind;
-  const targetSummary = value.target.summary;
-  const inputMode = value.inputMode;
-  const deliveryMode = value.deliveryMode;
-  const deletionState = value.deletionState;
-  if (!isNonEmptyString(bindingId)
-    || !isPositiveSafeInteger(revision)
-    || !isNonEmptyString(connectionId)
-    || !isBindingEndpointAudience(audience)
-    || (endpointLabel !== undefined && typeof endpointLabel !== 'string')
-    || !isBindingTargetKind(targetKind)
-    || !isNonEmptyString(targetSummary)
-    || !isBindingInputMode(inputMode)
-    || !isBindingDeliveryMode(deliveryMode)
-    || !isBindingDeletionState(deletionState)
-    || !deliveryModeMatchesTarget(targetKind, deliveryMode)) {
-    return undefined;
-  }
-  const approval = parseBindingApproval(value.approval, targetKind);
-  const enabled = value.enabled;
-  if (approval === undefined || typeof enabled !== 'boolean') return undefined;
-  return {
-    bindingId,
-    revision,
-    connectionId,
-    endpoint: {
-      audience,
-      ...(endpointLabel === undefined ? {} : { label: endpointLabel }),
-    },
-    target: { kind: targetKind, summary: targetSummary },
-    inputMode,
-    deliveryMode,
-    approval,
-    enabled,
-    deletionState,
-  };
-}
-
-function parseBindingsValue(decoded: unknown): ParsedBindings {
-  if (!isRecord(decoded) || !Array.isArray(decoded.bindings)) {
-    return { kind: 'invalid', reason: 'shape' };
-  }
-  if (decoded.bindings.length > MAX_CONVERSATION_BINDINGS_PER_ACCOUNT) {
-    return { kind: 'invalid', reason: 'binding' };
-  }
-
-  const bindings: ChannelsBinding[] = [];
-  for (const candidate of decoded.bindings) {
-    const binding = parseBinding(candidate);
-    if (binding === undefined) return { kind: 'invalid', reason: 'binding' };
-    bindings.push(binding);
-  }
-  return { kind: 'ready', bindings };
-}
-
-/** The Resource producer owns its row schema; this is a fail-closed UI boundary parser. */
-function parseBindingsResource(resource: ResourceContent): ParsedBindings {
-  if (resource.contentType !== 'application/json') {
-    return { kind: 'invalid', reason: 'contentType' };
-  }
-
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(new TextDecoder().decode(resource.bytes));
-  } catch {
-    return { kind: 'invalid', reason: 'invalidJson' };
-  }
-  return parseBindingsValue(decoded);
-}
 
 function parseSessionConversationAttention(
   decoded: unknown,
@@ -896,17 +534,18 @@ function parseSessionConversationAttention(
  */
 function parseSessionConversationsResource(resource: ResourceContent): ParsedSessionConversations {
   if (resource.contentType !== 'application/json') {
-    return { bindings: { kind: 'invalid', reason: 'contentType' }, attention: [] };
+    return { bindings: { kind: 'invalid', reason: 'contentType' }, attention: [], lastDeliveries: NO_LAST_DELIVERIES };
   }
   let decoded: unknown;
   try {
     decoded = JSON.parse(new TextDecoder().decode(resource.bytes));
   } catch {
-    return { bindings: { kind: 'invalid', reason: 'invalidJson' }, attention: [] };
+    return { bindings: { kind: 'invalid', reason: 'invalidJson' }, attention: [], lastDeliveries: NO_LAST_DELIVERIES };
   }
   return {
     bindings: parseBindingsValue(decoded),
     attention: parseSessionConversationAttention(decoded),
+    lastDeliveries: parseSessionLastDeliveries(decoded),
   };
 }
 
@@ -925,193 +564,6 @@ function parsePairingResource(resource: ResourceContent): ParsedPairing {
   return parsed.success
     ? { kind: 'ready', pairing: parsed.data }
     : { kind: 'invalid', reason: 'shape' };
-}
-
-/**
- * Report that the exact Account Collection handles a direct reader is bound to
- * have been replaced.
- *
- * The host rebuilds this surface's Data client — and with it every Collection
- * handle — when its Account lifetime is replaced, so a replacement handle names
- * a different Account scope. Last-known-good rows, cursors, and freshness
- * belong to the handle they were read from and must be dropped synchronously
- * during render rather than presented as the successor's stale answer while its
- * first read is pending or failing.
- *
- * This is a render-phase reset of state the readers already own. It is not a
- * second Collection reader, cache, epoch, or Account authority: the Data client
- * remains the sole owner of admission, Account lifetime, and cancellation.
- */
-function useReplacedAccountCollectionScope(scope: readonly object[]): boolean {
-  const [boundScope, setBoundScope] = React.useState(scope);
-  const replaced = boundScope.length !== scope.length
-    || boundScope.some((handle, index) => handle !== scope[index]);
-  if (replaced) setBoundScope(scope);
-  return replaced;
-}
-
-/**
- * The direct Account client retains collection admission, Account lifetime,
- * cancellation, and the authenticated transport. This surface retains only
- * presentation-local last-known-good rows while a requested reread is in
- * flight; it never becomes a second Collection query/cache owner.
- */
-function useAccountLocalBindingRows(
-  collection: ChannelStateCollection,
-  signal: AbortSignal,
-): Readonly<AccountLocalBindingReadState & { refresh: () => void }> {
-  const [refreshRevision, setRefreshRevision] = React.useState(0);
-  const [state, setState] = React.useState<AccountLocalBindingReadState>(
-    ACCOUNT_LOCAL_BINDING_INITIAL_STATE,
-  );
-  if (useReplacedAccountCollectionScope([collection])) {
-    setState(ACCOUNT_LOCAL_BINDING_INITIAL_STATE);
-  }
-
-  React.useEffect(() => {
-    let retired = false;
-    setState((previous) => {
-      const hasLastKnownGood = previous.bindings !== undefined;
-      return {
-        ...(hasLastKnownGood ? { bindings: previous.bindings } : {}),
-        resource: {
-          pending: hasLastKnownGood ? 'refresh' : 'initial',
-          freshness: hasLastKnownGood ? 'stale' : 'unknown',
-          subscription: 'unsupported',
-        },
-      };
-    });
-
-    void readConversationBindingManagementRows({ collection, signal }).then(
-      (result) => {
-        if (retired || signal.aborted) return;
-        setState({
-          bindings: result.bindings,
-          resource: {
-            pending: 'idle',
-            freshness: 'fresh',
-            subscription: 'unsupported',
-          },
-        });
-      },
-      () => {
-        if (retired || signal.aborted) return;
-        setState((previous) => {
-          const hasLastKnownGood = previous.bindings !== undefined;
-          return {
-            ...(hasLastKnownGood ? { bindings: previous.bindings } : {}),
-            resource: {
-              pending: 'idle',
-              freshness: hasLastKnownGood ? 'stale' : 'unknown',
-              subscription: 'unsupported',
-              // The underlying Data diagnostic can include transport facts.
-              // This consumer exposes only its stable user-facing state.
-              error: { message: 'Account-local binding policy could not be read.' },
-            },
-          };
-        });
-      },
-    );
-
-    return () => {
-      retired = true;
-    };
-  }, [collection, refreshRevision, signal]);
-
-  const refresh = React.useCallback(() => {
-    setRefreshRevision((current) => current + 1);
-  }, []);
-  return React.useMemo(() => ({ ...state, refresh }), [refresh, state]);
-}
-
-/**
- * The offline surface retains only its presentation-local last known good
- * projection. The canonical Collection reader and delivery-custody reader
- * retain all data authority; no Resource, cache, or summary row is invented.
- */
-function useAccountLocalConnectionRows(input: Readonly<{
-  stateCollection: ChannelStateCollection;
-  deliveriesCollection: ChannelDeliveriesCollection;
-  signal: AbortSignal;
-}>): Readonly<AccountLocalConnectionReadState & { refresh: () => void }> {
-  const [refreshRevision, setRefreshRevision] = React.useState(0);
-  const [state, setState] = React.useState<AccountLocalConnectionReadState>(
-    ACCOUNT_LOCAL_CONNECTION_INITIAL_STATE,
-  );
-  if (useReplacedAccountCollectionScope([input.stateCollection, input.deliveriesCollection])) {
-    setState(ACCOUNT_LOCAL_CONNECTION_INITIAL_STATE);
-  }
-
-  React.useEffect(() => {
-    let retired = false;
-    setState((previous) => {
-      const hasLastKnownGood = previous.connections !== undefined;
-      return {
-        ...(hasLastKnownGood ? { connections: previous.connections } : {}),
-        resource: {
-          pending: hasLastKnownGood ? 'refresh' : 'initial',
-          freshness: hasLastKnownGood ? 'stale' : 'unknown',
-          subscription: 'unsupported',
-        },
-      };
-    });
-
-    void readConversationConnectionManagementRows({
-      collection: input.stateCollection,
-      signal: input.signal,
-    }).then(async (result) => {
-      if (retired || input.signal.aborted) return;
-      const deliveryAttention = await readConversationOutwardDeliveryConnectionAttention({
-        deliveriesCollection: input.deliveriesCollection,
-        connectionIds: result.connections.map((connection) => connection.connectionId),
-        signal: input.signal,
-      });
-      if (retired || input.signal.aborted) return;
-      if (deliveryAttention.kind !== 'ready') throw new Error('Connection delivery attention is unavailable.');
-      const connections: ChannelsConnection[] = result.connections.map((connection) => {
-        const outwardDelivery = deliveryAttention.attentionByConnection.get(connection.connectionId);
-        if (outwardDelivery === undefined) throw new Error('Connection delivery attention is incomplete.');
-        return {
-          ...connection,
-          attention: {
-            ...connection.attention,
-            outwardDelivery,
-          },
-        };
-      });
-      setState({
-        connections,
-        resource: {
-          pending: 'idle',
-          freshness: 'fresh',
-          subscription: 'unsupported',
-        },
-      });
-    }).catch(() => {
-      if (retired || input.signal.aborted) return;
-      setState((previous) => {
-        const hasLastKnownGood = previous.connections !== undefined;
-        return {
-          ...(hasLastKnownGood ? { connections: previous.connections } : {}),
-          resource: {
-            pending: 'idle',
-            freshness: hasLastKnownGood ? 'stale' : 'unknown',
-            subscription: 'unsupported',
-            error: { message: 'Account-local connection policy could not be read.' },
-          },
-        };
-      });
-    });
-
-    return () => {
-      retired = true;
-    };
-  }, [input.deliveriesCollection, input.signal, input.stateCollection, refreshRevision]);
-
-  const refresh = React.useCallback(() => {
-    setRefreshRevision((current) => current + 1);
-  }, []);
-  return React.useMemo(() => ({ ...state, refresh }), [refresh, state]);
 }
 
 type DeliveryResolutionPageRequest = Readonly<{
@@ -1720,31 +1172,7 @@ function parseResourceErrorMessage(
   return t('plugins.channels.surface.resourceConnectionInvalid', 'The connection Resource contains an invalid connection.');
 }
 
-/**
- * The collapsed connection row's name: the integration account label when the
- * provider supplies one, otherwise the connection's short identity instead of
- * repeating the provider name that the subtitle already states (two unlabeled
- * connections of one provider would otherwise be indistinguishable).
- */
-function connectionLabel(connection: ChannelsConnection): string {
-  const principalLabel = connection.integrationPrincipalLabel?.trim();
-  return principalLabel !== undefined && principalLabel !== ''
-    ? principalLabel
-    : shortRowIdentity(connection.connectionId);
-}
 
-function providerReadinessLabel(
-  providerReadiness: NonNullable<ConnectionProviderReadiness>,
-  t: Translate,
-): string {
-  if (providerReadiness.code === 'providerPermissionMissing') {
-    return t('plugins.channels.surface.providerPermissionMissing', 'Provider permission needs attention');
-  }
-  if (providerReadiness.code === 'providerCredentialInvalid') {
-    return t('plugins.channels.surface.providerCredentialInvalid', 'Connected Account credential needs attention');
-  }
-  return t('plugins.channels.surface.providerConfigurationInvalid', 'Provider configuration needs attention');
-}
 
 /**
  * The saved enablement policy, stated on its own.
@@ -1783,62 +1211,6 @@ function connectionMachinePlacementLabel(connection: ChannelsConnection, t: Tran
     : t('plugins.channels.surface.machinePlacementPausedAssigned', 'Assigned to your selected machine');
 }
 
-function connectionStatus(connection: ChannelsConnection, t: Translate) {
-  if (connection.deletionState === 'pendingStopReconciliation') {
-    return { tone: 'warning' as const, label: t('plugins.channels.surface.stopPending', 'Stop reconciliation pending') };
-  }
-  if (connection.deletionState === 'finalizingDelete') {
-    return { tone: 'warning' as const, label: t('plugins.channels.surface.deleteFinalizing', 'Deletion cleanup in progress') };
-  }
-  if (connection.attention.historyGap !== null) {
-    return { tone: 'danger' as const, label: t('plugins.channels.surface.historyGap', 'History gap needs attention') };
-  }
-  if (connection.attention.ingressConflict !== null) {
-    return { tone: 'danger' as const, label: t('plugins.channels.surface.ingressOccurrenceConflict', 'Incoming occurrence conflict needs attention') };
-  }
-  if (connection.attention.providerReadiness !== null) {
-    return { tone: 'warning' as const, label: providerReadinessLabel(connection.attention.providerReadiness, t) };
-  }
-  if (connection.attention.endpointRetargetOwed) {
-    return { tone: 'warning' as const, label: t('plugins.channels.surface.endpointRetargetOwed', 'Delivery target needs repair') };
-  }
-  if (connection.attention.oldTransportStopUnconfirmed) {
-    return { tone: 'warning' as const, label: t('plugins.channels.surface.oldTransportStopUnconfirmed', 'Old transport stop is unconfirmed') };
-  }
-  if (connection.attention.pollFailure?.phase === 'blocked') {
-    return { tone: 'warning' as const, label: t('plugins.channels.surface.pollBlocked', 'Polling needs attention') };
-  }
-  if (connection.attention.pollFailure?.phase === 'retryDue') {
-    return { tone: 'warning' as const, label: t('plugins.channels.surface.pollRetryDue', 'Polling will retry') };
-  }
-  if (connection.attention.outwardDelivery.outcomeUnknown) {
-    return { tone: 'danger' as const, label: t('plugins.channels.surface.deliveryOutcomeUnknown', 'Delivery outcome needs attention') };
-  }
-  if (connection.attention.outwardDelivery.partial) {
-    return { tone: 'danger' as const, label: t('plugins.channels.surface.deliveryPartial', 'Delivery was only partly sent') };
-  }
-  if (connection.attention.outwardDelivery.notDelivered) {
-    return { tone: 'warning' as const, label: t('plugins.channels.surface.deliveryNotDelivered', 'Delivery was not sent') };
-  }
-  if (connection.attention.outwardDelivery.retryDue) {
-    return { tone: 'warning' as const, label: t('plugins.channels.surface.deliveryRetryDue', 'Delivery is waiting to retry') };
-  }
-  // A paused connection is not delivering, so the live-admission disclosure
-  // below has nothing to warn about; the pause itself is reported as policy.
-  if (!connection.enabled) {
-    return {
-      tone: 'neutral' as const,
-      label: t('plugins.channels.surface.connectionNoAttention', 'Nothing needs attention'),
-    };
-  }
-  if (connection.attention.bestEffortBeforeDurableAdmission) {
-    return { tone: 'warning' as const, label: t('plugins.channels.surface.bestEffort', 'Best effort before durable admission') };
-  }
-  return {
-    tone: 'success' as const,
-    label: t('plugins.channels.surface.connectionNoAttention', 'Nothing needs attention'),
-  };
-}
 
 /**
  * The Resource retains canonical storage order. The settings index uses the
@@ -1870,40 +1242,6 @@ type BindingPresentation = Readonly<{
   binding: ChannelsBinding;
   connection?: ChannelsConnection;
 }>;
-
-type BindingProviderFilter = Readonly<{
-  providerPluginId: string;
-}>;
-
-function bindingEndpointLabel(binding: ChannelsBinding, t: Translate): string {
-  const label = binding.endpoint.label?.trim();
-  return label === undefined || label === ''
-    ? t('plugins.channels.surface.bindingEndpointFallback', 'External conversation')
-    : label;
-}
-
-/**
- * A collapsed row without any provider-derived human label still names itself:
- * the stable row identity is shortened to its discriminating head so two
- * unlabeled rows stay distinguishable in text and to a screen reader. This is
- * a presentation shortening only; every mutation keeps using the full id.
- */
-function shortRowIdentity(id: string): string {
-  const tail = id.slice(id.lastIndexOf('-') + 1);
-  return tail.length <= 8 ? tail : tail.slice(0, 8);
-}
-
-/**
- * The collapsed binding row's name: the provider endpoint label when one
- * exists, otherwise the binding's short identity instead of a generic word
- * that would read identically on every unlabeled row.
- */
-function bindingRowLabel(binding: ChannelsBinding): string {
-  const label = binding.endpoint.label?.trim();
-  return label === undefined || label === ''
-    ? shortRowIdentity(binding.bindingId)
-    : label;
-}
 
 /**
  * The connection (integration account) a binding delivers through, as its own
@@ -2063,19 +1401,6 @@ function buildBindingPresentations(
       ? {}
       : { connection: connectionById.get(binding.connectionId) }),
   })), t);
-}
-
-/** Provider IDs choose the filter, but never become a brand or display heuristic. */
-function bindingProviderFilters(
-  presentations: readonly BindingPresentation[],
-): readonly BindingProviderFilter[] {
-  const providerIds = new Set<string>();
-  for (const presentation of presentations) {
-    const connection = presentation.connection;
-    if (connection !== undefined) providerIds.add(connection.providerPluginId);
-  }
-  if (providerIds.size < 2) return [];
-  return [...providerIds].sort().map((providerPluginId) => ({ providerPluginId }));
 }
 
 function bestEffortBeforeDurableAdmissionDescription(t: Translate): string {
@@ -2458,8 +1783,9 @@ function validObservationAge(value: string): number | undefined {
  * disclose.
  */
 function resourceFreshnessNoticeApplies(resource: ResourcePresentation): boolean {
-  return resource.pending === 'refresh'
-    || resource.freshness === 'stale'
+  // A requested reread marks retained values stale while pending; that alone
+  // is ordinary refresh work, not a degraded-content notice.
+  return (resource.freshness === 'stale' && resource.pending !== 'refresh')
     || resource.error !== undefined
     || resource.subscription === 'ended';
 }
@@ -2476,69 +1802,25 @@ function ResourceFreshnessNotice(props: Readonly<{
   const testIDPrefix = props.testIDPrefix ?? 'channels-resource';
   const bindingSubject = subject === 'binding';
   const stale = props.resource.freshness === 'stale' || props.resource.error !== undefined;
-  if (props.resource.pending === 'refresh') {
-    return (
-      <Status
-        testID={`${testIDPrefix}-refreshing`}
-        tone="info"
-        label={bindingSubject
-          ? props.t('plugins.channels.surface.bindingsRefreshing', 'Refreshing binding details')
-          : props.t('plugins.channels.surface.refreshing', 'Refreshing connection details')}
-        pulsing
-      />
-    );
-  }
-  if (stale) {
-    return (
-      <Banner
-        testID={`${testIDPrefix}-stale`}
-        tone="warning"
-        title={bindingSubject
-          ? props.t('plugins.channels.surface.bindingsStaleTitle', 'Showing last known binding details')
-          : props.t('plugins.channels.surface.staleTitle', 'Showing last known connection details')}
-        description={bindingSubject
-          ? props.t('plugins.channels.surface.bindingsStaleDescription', 'Live binding updates are temporarily unavailable.')
-          : props.t(
-            'plugins.channels.surface.staleDescription',
-            'Live connection updates are temporarily unavailable.',
-          )}
-        action={(
-          <Action.Refresh
-            testID={`${testIDPrefix}-retry`}
-            title={props.t('plugins.channels.surface.tryAgain', 'Try again')}
-            onRefresh={props.onRefresh}
-          />
-        )}
-      />
-    );
-  }
-  if (props.resource.subscription === 'ended') {
-    return (
-      <Banner
-        testID={`${testIDPrefix}-live-updates-ended`}
-        tone="warning"
-        title={bindingSubject
-          ? props.t('plugins.channels.surface.bindingsLiveUpdatesEndedTitle', 'Live binding updates are unavailable')
-          : props.t('plugins.channels.surface.liveUpdatesEndedTitle', 'Live updates are unavailable')}
-        description={bindingSubject
-          ? props.t(
-            'plugins.channels.surface.bindingsLiveUpdatesEndedDescription',
-            'Refresh to read the current Account binding policy again.',
-          )
-          : props.t(
-            'plugins.channels.surface.liveUpdatesEndedDescription',
-            'Refresh to read the current Account connection policy again.',
-          )}
-        action={(
-          <Action.Refresh
-            title={props.t('plugins.channels.surface.refresh', 'Refresh')}
-            onRefresh={props.onRefresh}
-          />
-        )}
-      />
-    );
-  }
-  return null;
+  const refreshing = props.resource.pending === 'refresh';
+  const reason = refreshing
+    ? bindingSubject
+      ? props.t('plugins.channels.surface.bindingsRefreshing', 'Refreshing binding details')
+      : props.t('plugins.channels.surface.refreshing', 'Refreshing connection details')
+    : stale
+      ? bindingSubject
+        ? props.t('plugins.channels.surface.bindingsStaleTitle', 'Showing last known binding details')
+        : props.t('plugins.channels.surface.staleTitle', 'Showing last known connection details')
+      : bindingSubject
+        ? props.t('plugins.channels.surface.bindingsLiveUpdatesEndedTitle', 'Live binding updates are unavailable')
+        : props.t('plugins.channels.surface.liveUpdatesEndedTitle', 'Live updates are unavailable');
+  return <FreshnessLine
+    testID={`${testIDPrefix}-${refreshing ? 'refreshing' : stale ? 'stale' : 'live-updates-ended'}`}
+    reason={reason}
+    busy={refreshing}
+    tone="warning"
+    action={refreshing ? undefined : { label: props.t('plugins.channels.surface.tryAgain', 'Try again'), onPress: props.onRefresh }}
+  />;
 }
 
 /**
@@ -2655,7 +1937,165 @@ function useDestructiveConfirmation(): DestructiveConfirmation {
   }), [close, confirmationFocusTarget, dismiss, open, openerFocusTarget, request]);
 }
 
-function BindingRow(props: Readonly<{
+/**
+ * The Channels page's navigation: every move goes through the host's
+ * destination owner. Opening a conversation pushes, so Back returns to where
+ * the reader was (the list on a phone, the previous conversation beside the
+ * column); a page-internal step replaces the location instead.
+ */
+function useChannelsPageNavigation(): Readonly<{
+  openConversation: (bindingId: string) => void;
+  openRoot: () => void;
+  openLink: () => void;
+  showConversation: (bindingId: string) => void;
+  openSettings: () => void;
+  openSession?: (sessionId: string) => Promise<boolean>;
+}> {
+  const hostApi = usePluginHostApi();
+  const methods = hostApi.version().methods;
+  const canReplace = methods.includes('replacePageLocation');
+  const canExecute = methods.includes('executeAction');
+  return React.useMemo(() => ({
+    openConversation: (bindingId: string) => {
+      void hostApi.openSurface(CHANNELS_PAGE_VIEW_ID, undefined, { subPath: bindingId }).catch(() => undefined);
+    },
+    openRoot: () => {
+      void hostApi.openSurface(CHANNELS_PAGE_VIEW_ID, undefined, { subPath: '' }).catch(() => undefined);
+    },
+    openLink: () => {
+      void hostApi.openSurface(CHANNELS_PAGE_VIEW_ID, undefined, { subPath: 'link' }).catch(() => undefined);
+    },
+    // A conversation the page itself just produced (a finished link or pairing)
+    // replaces the page-internal step, so Back does not return to a finished flow.
+    showConversation: (bindingId: string) => {
+      if (canReplace) {
+        void hostApi.replacePageLocation(bindingId).catch(() => undefined);
+        return;
+      }
+      void hostApi.openSurface(CHANNELS_PAGE_VIEW_ID, undefined, { subPath: bindingId }).catch(() => undefined);
+    },
+    openSettings: () => {
+      void hostApi.openSurface(CHANNELS_SETTINGS_PAGE_ID).catch(() => undefined);
+    },
+    // Channels adds no Session-open API: it asks the incumbent `session.open`
+    // Action for the exact Session id the binding targets.
+    ...(canExecute ? {
+      openSession: async (sessionId: string) => {
+        try {
+          await hostApi.executeAction('session.open', { sessionId });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    } : {}),
+  }), [canExecute, canReplace, hostApi]);
+}
+
+function bindingApprovalSummary(binding: ChannelsBinding, t: Translate): string | undefined {
+  if (binding.approval.kind === 'notApplicable') return undefined;
+  if (binding.approval.kind === 'off') return t('plugins.channels.page.approvalsOff', 'Off');
+  return binding.approval.maximumScope === 'request'
+    ? t('plugins.channels.page.approvalsRequest', 'One request at a time')
+    : t('plugins.channels.page.approvalsSession', 'Up to the whole session');
+}
+
+/** Where this conversation's messages go and what comes back, in one line. */
+function conversationNote(binding: ChannelsBinding, t: Translate): string {
+  if (binding.target.kind === 'automation') {
+    return binding.deliveryMode === 'finalResult'
+      ? t('plugins.channels.page.noteAutomationResult', 'Messages from this conversation start a run of the automation; its final result comes back here.')
+      : t('plugins.channels.page.noteAutomation', 'Messages from this conversation start a run of the automation; nothing is sent back.');
+  }
+  if (binding.deliveryMode === 'mirrorSession') {
+    return t('plugins.channels.page.noteMirror', 'Messages from this conversation appear in the session’s transcript, and the session’s messages are mirrored back here.');
+  }
+  if (binding.deliveryMode === 'none') {
+    return t('plugins.channels.page.noteNone', 'Messages from this conversation appear in the session’s transcript; nothing is sent back.');
+  }
+  return t('plugins.channels.page.noteReplies', 'Messages from this conversation appear in the session’s transcript; the agent’s replies go back here.');
+}
+
+/**
+ * What the conversation talks to (lab C1 "Talks to"). A Session's title is the
+ * canonical Session read; the raw target id stands in only while no title is
+ * readable.
+ */
+function ConversationTargetSection(props: Readonly<{
+  binding: ChannelsBinding;
+  mutationLocked: boolean;
+  onLinkAnother?: () => void;
+  openSession?: (sessionId: string) => Promise<boolean>;
+  t: Translate;
+}>): React.ReactElement {
+  const { binding, t } = props;
+  const isSession = binding.target.kind === 'session';
+  const session = useSessionState(isSession ? binding.target.summary : null);
+  const [openFailed, setOpenFailed] = React.useState(false);
+  const [opening, setOpening] = React.useState(false);
+  const title = isSession
+    ? session.state?.title ?? binding.target.summary
+    : binding.target.summary;
+  const openSession = props.openSession;
+  return (
+    <ItemGroup
+      testID="channels-page-target"
+      title={isSession
+        ? t('plugins.channels.page.talksTo', 'Talks to')
+        : t('plugins.channels.page.startsRunOf', 'Starts a run of')}
+    >
+      <Item
+        title={title}
+        titleNumberOfLines={1}
+        subtitle={openFailed
+          ? t('plugins.channels.page.sessionOpenFailed', 'This session could not be opened.')
+          : bindingTargetKindLabel(binding.target.kind, t)}
+        {...(openFailed ? { detailTone: 'warning' as const } : {})}
+        accessoryOutsidePressable
+        accessoryWraps
+        accessory={(
+          <Row gap="small">
+            {isSession && props.onLinkAnother !== undefined ? (
+              <Button
+                testID="channels-page-link-another"
+                variant="plain"
+                title={t('plugins.channels.page.linkAnotherSession', 'Link another session')}
+                disabled={props.mutationLocked}
+                onPress={props.onLinkAnother}
+              />
+            ) : null}
+            {isSession && openSession !== undefined ? (
+              <Button
+                testID="channels-page-open-session"
+                variant="secondary"
+                title={t('plugins.channels.page.openSession', 'Open session')}
+                busy={opening}
+                disabled={opening}
+                onPress={() => {
+                  setOpening(true);
+                  setOpenFailed(false);
+                  void openSession(binding.target.summary).then((opened) => {
+                    setOpening(false);
+                    setOpenFailed(!opened);
+                  });
+                }}
+              />
+            ) : null}
+          </Row>
+        )}
+      />
+    </ItemGroup>
+  );
+}
+
+/**
+ * One linked conversation (lab C1): identity, what it talks to, the one cause
+ * that needs the reader, where its messages go, its settings as a summary with
+ * Edit, its bot, and Pause / Unlink last. Every mutation here is the page's
+ * own enablement and delete operation; editing is the incumbent draft → review
+ * → save journey, never inline switches that would bypass review.
+ */
+function ConversationDetail(props: Readonly<{
   presentation: BindingPresentation;
   execution: PluginActionExecution;
   deleteOperation?: BindingDeleteOperation;
@@ -2666,15 +2106,19 @@ function BindingRow(props: Readonly<{
   enablementFailure?: BindingEnablementFailure;
   onSetEnabled: (binding: ChannelsBinding, enabled: boolean) => Promise<void>;
   onDelete?: (binding: ChannelsBinding) => Promise<void>;
-  onEdit?: (binding: ChannelsBinding, focusTarget: PluginUiFocusTarget) => void;
+  onEdit?: (binding: ChannelsBinding, focusTarget: PluginUiFocusTarget, intent?: 'target') => void;
+  editContent?: React.ReactElement;
   onUnknownOutcomeRefresh: () => void;
   onUnknownDeleteOutcomeRefresh: () => void;
+  connectionTest?: Readonly<{ resource: ResourcePresentation; onRefresh: () => void }>;
   t: Translate;
 }>): React.ReactElement {
-  const { binding } = props.presentation;
-  const providerPluginId = props.presentation.connection?.providerPluginId;
+  const { binding, connection } = props.presentation;
+  const t = props.t;
+  const navigation = useChannelsPageNavigation();
+  const providerPluginId = connection?.providerPluginId;
   const providerDisplayName = usePluginBrandDisplayName(providerPluginId)
-    ?? props.t('plugins.channels.surface.providerFallback', 'Integration provider');
+    ?? t('plugins.channels.surface.providerFallback', 'Integration provider');
   const editFocusTarget = usePluginUiFocusTarget();
   const deleteConfirmation = useDestructiveConfirmation();
   const enablementFailure = props.enablementFailure?.bindingId === binding.bindingId
@@ -2695,180 +2139,504 @@ function BindingRow(props: Readonly<{
     || enablementOutcomeUnknown
     || deleteExecution?.status === 'pending'
     || deleteOutcomeUnknown;
-  const enablementUnavailable = binding.deletionState !== 'none' || mutationLocked;
-  const deleteUnavailable = binding.deletionState !== 'none' || mutationLocked;
+  const deleting = binding.deletionState !== 'none';
+  const enablementUnavailable = deleting || mutationLocked;
+  const deleteUnavailable = deleting || mutationLocked;
   const needsUnknownEnablementRefresh = enablementOutcomeUnknown
     && props.outcomeUnknownBindingId === binding.bindingId;
   const needsUnknownDeleteRefresh = deleteOutcomeUnknown
     && props.outcomeUnknownDeletedBindingId === binding.bindingId;
-  const status = bindingStatus(props.presentation, props.t);
-  const detail = bindingDetail(props.presentation, props.t);
-  const connectionAccountSummary = bindingConnectionAccountSummary(props.presentation.connection, props.t);
-  const unknownEnablementDescription = props.t(
+  const botStatus = connection === undefined ? undefined : connectionStatus(connection, t);
+  const botNeedsYou = botStatus !== undefined && (botStatus.tone === 'warning' || botStatus.tone === 'danger');
+  const approvalSummary = bindingApprovalSummary(binding, t);
+  const unknownEnablementDescription = t(
     'plugins.channels.surface.bindingSaveUnknownDescription',
     'The change may already be saved. Refresh binding details before changing it again.',
   );
-  const unknownDeleteDescription = props.t(
+  const unknownDeleteDescription = t(
     'plugins.channels.surface.bindingDeleteUnknownDescription',
     'The deletion request may already be saved. Refresh binding details before deciding what to do next.',
   );
+  const editing = props.editContent !== undefined;
 
   return (
-    <List.Item
-      testID={`channels-binding-${binding.bindingId}`}
-      title={bindingRowLabel(binding)}
-      subtitle={bindingTargetSummary(binding, props.t)}
-      detail={[
-        detail,
-        ...(connectionAccountSummary === undefined ? [] : [connectionAccountSummary]),
-        ...(needsUnknownEnablementRefresh ? [unknownEnablementDescription] : []),
-        ...(needsUnknownDeleteRefresh ? [unknownDeleteDescription] : []),
-      ].join(' · ')}
-      tone={status.tone}
-      icon={providerPluginId === undefined ? (
-        <Badge testID={`channels-binding-target-mark-${binding.bindingId}`}>
-          <Text value={binding.target.kind === 'session' ? 'S' : 'A'} />
-        </Badge>
-      ) : (
-        <BrandMark
-          pluginId={providerPluginId}
-          size="small"
-          externallyLabelled
-          testID={`channels-provider-brand-binding-${binding.bindingId}`}
+    <Stack gap="large" testID={`channels-binding-${binding.bindingId}`}>
+      <PageHeader
+        title={bindingEndpointLabel(binding, t)}
+        leading={providerPluginId === undefined ? undefined : (
+          <BrandMark
+            pluginId={providerPluginId}
+            size="medium"
+            externallyLabelled
+            testID={`channels-provider-brand-binding-${binding.bindingId}`}
+          />
+        )}
+        meta={[
+          ...(providerPluginId === undefined ? [] : [{ key: 'provider', text: providerDisplayName }]),
+          ...(connection === undefined ? [] : [{ key: 'bot', text: connectionLabel(connection) }]),
+          { key: 'audience', text: binding.endpoint.audience === 'direct'
+            ? t('plugins.channels.page.onlyYou', 'Only you')
+            : t('plugins.channels.page.sharedConversation', 'Shared conversation') },
+        ]}
+      />
+
+      <ConversationTargetSection
+        binding={binding}
+        mutationLocked={mutationLocked || deleting}
+        {...(props.onEdit === undefined || deleting || editing ? {} : {
+          onLinkAnother: () => props.onEdit?.(binding, editFocusTarget, 'target'),
+        })}
+        {...(navigation.openSession === undefined ? {} : { openSession: navigation.openSession })}
+        t={t}
+      />
+
+      {deleting ? (
+        <Banner
+          testID={`channels-binding-deleting-${binding.bindingId}`}
+          tone="warning"
+          title={t('plugins.channels.surface.deleteFinalizing', 'Deletion cleanup in progress')}
+          description={t('plugins.channels.page.deletingDescription', 'This conversation is being unlinked. The bot stays connected.')}
         />
-      )}
-      accessoryWraps
-      accessoryOutsidePressable
-      accessory={(
-        <Stack gap="small">
-          {props.onEdit === undefined || binding.deletionState !== 'none' ? null : (
+      ) : botNeedsYou && botStatus !== undefined ? (
+        <Banner
+          testID={`channels-binding-bot-attention-${binding.bindingId}`}
+          tone="warning"
+          title={botStatus.label}
+          description={t(
+            'plugins.channels.page.botAttentionDescription',
+            'This is about the bot, so it affects every conversation it serves. Fix it in the bot’s settings.',
+          )}
+          action={(
             <Button
-              title={props.t('plugins.channels.surface.bindingEdit', 'Edit binding')}
               variant="secondary"
+              title={t('plugins.channels.page.manageBot', 'Manage bot')}
+              onPress={navigation.openSettings}
+            />
+          )}
+        />
+      ) : !binding.enabled ? (
+        <Banner
+          testID={`channels-binding-paused-${binding.bindingId}`}
+          tone="neutral"
+          title={t('plugins.channels.column.paused', 'Paused')}
+          description={t(
+            'plugins.channels.page.pausedDescription',
+            'Nothing comes in and nothing is sent back. A newly linked conversation starts paused: check who can talk to it and what it sends back, then turn it on.',
+          )}
+          action={(
+            <Button
+              testID={`channels-binding-turn-on-${binding.bindingId}`}
+              variant="primary"
+              title={t('plugins.channels.page.turnOn', 'Turn on')}
+              busy={enablementBusy}
+              disabled={enablementUnavailable}
+              onPress={() => { void props.onSetEnabled(binding, true); }}
+            />
+          )}
+        />
+      ) : null}
+
+      <Row gap="small" align="center">
+        <Icon name="conversations" size="small" tone="muted" />
+        <Text testID="channels-page-note" tone="secondary" value={conversationNote(binding, t)} />
+      </Row>
+
+      {editing ? props.editContent : (
+        <ItemGroup
+          testID="channels-page-conversation"
+          title={t('plugins.channels.page.conversation', 'Conversation')}
+          action={props.onEdit === undefined || deleting ? undefined : (
+            <Button
+              testID={`channels-binding-edit-${binding.bindingId}`}
+              variant="plain"
+              title={t('plugins.channels.page.edit', 'Edit')}
+              accessibilityLabel={t('plugins.channels.surface.bindingEdit', 'Edit binding')}
               focusTarget={editFocusTarget}
               disabled={mutationLocked}
               onPress={() => props.onEdit?.(binding, editFocusTarget)}
             />
           )}
-          <Form.Toggle
-            testID={`channels-binding-enabled-${binding.bindingId}`}
-            label={props.t('plugins.channels.surface.bindingEnabled', 'Binding enabled')}
-            value={binding.enabled}
-            onChange={(enabled) => { void props.onSetEnabled(binding, enabled); }}
-            disabled={enablementUnavailable}
+        >
+          <Item title={t('plugins.channels.page.listensTo', 'Listens to')} detail={bindingInputModeLabel(binding.inputMode, t)} />
+          <Item title={t('plugins.channels.page.sendsBack', 'Sends back')} detail={bindingDeliveryModeLabel(binding.deliveryMode, t)} />
+          {approvalSummary === undefined ? null : (
+            <Item title={t('plugins.channels.page.approvals', 'Approvals from this conversation')} detail={approvalSummary} />
+          )}
+        </ItemGroup>
+      )}
+
+      <ConversationBotSection
+        {...(connection === undefined ? {} : { connection })}
+        {...(props.connectionTest === undefined ? {} : { connectionTest: props.connectionTest })}
+        onManage={navigation.openSettings}
+        t={t}
+      />
+
+      <ItemGroup
+        testID="channels-page-stop"
+        title={binding.enabled
+          ? t('plugins.channels.page.pauseOrUnlink', 'Pause or unlink')
+          : t('plugins.channels.page.unlinkSection', 'Unlink')}
+      >
+        {binding.enabled ? (
+          <Item
+            title={t('plugins.channels.page.pause', 'Pause')}
+            subtitle={t('plugins.channels.page.pauseDescription', 'Stop taking messages in and sending replies. Nothing is deleted.')}
+            accessoryOutsidePressable
+            accessory={(
+              <Button
+                testID={`channels-binding-pause-${binding.bindingId}`}
+                variant="secondary"
+                title={enablementBusy ? t('plugins.channels.surface.saving', 'Saving…') : t('plugins.channels.page.pause', 'Pause')}
+                busy={enablementBusy}
+                disabled={enablementUnavailable}
+                onPress={() => { void props.onSetEnabled(binding, false); }}
+              />
+            )}
           />
-         {props.onDelete === undefined ? null : (
-            deleteConfirmation.open ? (
-              <Stack gap="small" testID={`channels-binding-delete-confirmation-${binding.bindingId}`}>
-                <Banner
-                  tone="danger"
-                  title={props.t(
-                    'plugins.channels.surface.bindingDeleteConfirmTitle',
-                    'Delete this binding?',
-                  )}
-                  description={props.t(
-                    'plugins.channels.surface.bindingDeleteConfirmDescription',
-                    'This starts binding deletion and cleanup. The connection remains managed until its lifecycle confirms the change.',
-                  )}
-                />
-                <Button
-                  testID={`channels-binding-delete-confirm-${binding.bindingId}`}
-                  title={props.t('plugins.channels.surface.bindingDeleteConfirm', 'Confirm deletion')}
-                  disabled={deleteBusy || deleteOutcomeUnknown}
-                  focusTarget={deleteConfirmation.confirmationFocusTarget}
-                  onPress={() => {
-                    deleteConfirmation.dismiss();
-                    void props.onDelete?.(binding);
-                  }}
-                />
-                <Button
-                  title={props.t('plugins.channels.surface.cancel', 'Cancel')}
-                  variant="plain"
-                  disabled={deleteBusy || deleteOutcomeUnknown}
-                  onPress={deleteConfirmation.dismiss}
-                />
-              </Stack>
-            ) : (
+        ) : null}
+        {props.onDelete === undefined ? null : (
+          <Item
+            title={t('plugins.channels.page.unlink', 'Unlink')}
+            tone="danger"
+            subtitle={binding.target.kind === 'automation'
+              ? t('plugins.channels.page.unlinkAutomationDescription', 'The automation stops hearing from this conversation. The bot stays connected.')
+              : t('plugins.channels.page.unlinkSessionDescription', 'The session stops hearing from this conversation. The bot stays connected.')}
+            accessoryOutsidePressable
+            accessory={deleteConfirmation.open ? undefined : (
               <Button
                 testID={`channels-binding-delete-${binding.bindingId}`}
+                variant="secondary"
                 title={deleteBusy
-                  ? props.t('plugins.channels.surface.deleting', 'Deleting…')
-                  : props.t('plugins.channels.surface.bindingDelete', 'Delete binding')}
+                  ? t('plugins.channels.page.unlinking', 'Unlinking…')
+                  : t('plugins.channels.page.unlinkAction', 'Unlink…')}
                 busy={deleteBusy}
                 disabled={deleteUnavailable}
                 focusTarget={deleteConfirmation.openerFocusTarget}
                 onPress={deleteConfirmation.request}
               />
-            )
-         )}
-          {needsUnknownEnablementRefresh ? (
+            )}
+          />
+        )}
+      </ItemGroup>
+
+      {deleteConfirmation.open ? (
+        <Stack gap="small" testID={`channels-binding-delete-confirmation-${binding.bindingId}`}>
+          <Banner
+            tone="danger"
+            title={t('plugins.channels.page.unlinkConfirmTitle', 'Unlink this conversation?')}
+            description={t(
+              'plugins.channels.page.unlinkConfirmDescription',
+              'Messages from it stop reaching the session, and its settings are removed. The bot stays connected, and you can link the conversation again later.',
+            )}
+          />
+          <Row gap="small">
+            <Button
+              testID={`channels-binding-delete-confirm-${binding.bindingId}`}
+              variant="primary"
+              title={t('plugins.channels.page.unlinkConfirm', 'Unlink')}
+              disabled={deleteBusy || deleteOutcomeUnknown}
+              focusTarget={deleteConfirmation.confirmationFocusTarget}
+              onPress={() => {
+                deleteConfirmation.dismiss();
+                void props.onDelete?.(binding);
+              }}
+            />
+            <Button
+              title={t('plugins.channels.surface.cancel', 'Cancel')}
+              variant="plain"
+              disabled={deleteBusy || deleteOutcomeUnknown}
+              onPress={deleteConfirmation.dismiss}
+            />
+          </Row>
+        </Stack>
+      ) : null}
+
+      {needsUnknownEnablementRefresh ? (
+        <Banner
+          testID={`channels-binding-outcome-unknown-${binding.bindingId}`}
+          tone="warning"
+          title={t('plugins.channels.surface.bindingSaveUnknownTitle', 'Could not confirm the binding change')}
+          description={unknownEnablementDescription}
+          action={(
             <Action.Refresh
               testID={`channels-binding-outcome-unknown-reconcile-${binding.bindingId}`}
-              title={props.t('plugins.channels.surface.refresh', 'Refresh')}
+              title={t('plugins.channels.surface.refresh', 'Refresh')}
               onRefresh={props.onUnknownOutcomeRefresh}
             />
-          ) : null}
-         {needsUnknownDeleteRefresh ? (
-           <Banner
-             testID={`channels-binding-delete-outcome-unknown-${binding.bindingId}`}
-              tone="warning"
-              title={props.t('plugins.channels.surface.bindingDeleteUnknownTitle', 'Could not confirm binding deletion')}
-              description={unknownDeleteDescription}
-              action={(
-                <Action.Refresh
-                  testID={`channels-binding-delete-outcome-unknown-reconcile-${binding.bindingId}`}
-                  title={props.t('plugins.channels.surface.refresh', 'Refresh')}
-                  onRefresh={props.onUnknownDeleteOutcomeRefresh}
-                />
-             )}
-           />
-         ) : null}
-          {enablementFailure === undefined ? null : (
-            <BindingEnablementFailureNotice
-              failure={enablementFailure}
-              t={props.t}
-              testID={`channels-binding-enable-error-${binding.bindingId}`}
+          )}
+        />
+      ) : null}
+      {needsUnknownDeleteRefresh ? (
+        <Banner
+          testID={`channels-binding-delete-outcome-unknown-${binding.bindingId}`}
+          tone="warning"
+          title={t('plugins.channels.surface.bindingDeleteUnknownTitle', 'Could not confirm binding deletion')}
+          description={unknownDeleteDescription}
+          action={(
+            <Action.Refresh
+              testID={`channels-binding-delete-outcome-unknown-reconcile-${binding.bindingId}`}
+              title={t('plugins.channels.surface.refresh', 'Refresh')}
+              onRefresh={props.onUnknownDeleteOutcomeRefresh}
             />
           )}
-         {enablementBusy ? (
-            <Status
-              testID={`channels-binding-saving-${binding.bindingId}`}
-              tone="info"
-              label={props.t('plugins.channels.surface.saving', 'Saving…')}
-              pulsing
-            />
-          ) : null}
-          {props.activeDeletedBindingId === binding.bindingId && deleteExecution?.status === 'error' ? (
-            <Banner
-              testID={`channels-binding-delete-error-${binding.bindingId}`}
-              tone="danger"
-              title={props.t('plugins.channels.surface.bindingDeleteFailedTitle', 'Could not start binding deletion')}
-              description={props.t(
-                'plugins.channels.surface.bindingDeleteFailedDescription',
-                'Refresh binding details before trying again.',
-              )}
-              action={(
-                <Action.Refresh
-                  title={props.t('plugins.channels.surface.refresh', 'Refresh')}
-                  onRefresh={props.onUnknownDeleteOutcomeRefresh}
-                />
-              )}
-            />
-          ) : null}
-        </Stack>
+        />
+      ) : null}
+      {enablementFailure === undefined ? null : (
+        <BindingEnablementFailureNotice
+          failure={enablementFailure}
+          t={t}
+          testID={`channels-binding-enable-error-${binding.bindingId}`}
+        />
       )}
-      accessibilityLabel={[
-        `${bindingRowLabel(binding)}.`,
-        ...(providerPluginId === undefined
-          ? []
-          : [`${props.t('plugins.channels.surface.provider', 'Provider')}: ${providerDisplayName}.`]),
-        ...(connectionAccountSummary === undefined ? [] : [`${connectionAccountSummary}.`]),
-        `${bindingTargetSummary(binding, props.t)}.`,
-        `${detail}.`,
-        ...(needsUnknownEnablementRefresh ? [unknownEnablementDescription] : []),
-        ...(needsUnknownDeleteRefresh ? [unknownDeleteDescription] : []),
-      ].join(' ')}
+      {props.activeDeletedBindingId === binding.bindingId && deleteExecution?.status === 'error' ? (
+        <Banner
+          testID={`channels-binding-delete-error-${binding.bindingId}`}
+          tone="danger"
+          title={t('plugins.channels.page.unlinkFailedTitle', 'Could not unlink this conversation')}
+          description={t(
+            'plugins.channels.surface.bindingDeleteFailedDescription',
+            'Refresh binding details before trying again.',
+          )}
+          action={(
+            <Action.Refresh
+              title={t('plugins.channels.surface.refresh', 'Refresh')}
+              onRefresh={props.onUnknownDeleteOutcomeRefresh}
+            />
+          )}
+        />
+      ) : null}
+    </Stack>
+  );
+}
+
+/** The conversation's bot: its state in words, Test, and the way to its settings. */
+function ConversationBotSection(props: Readonly<{
+  connection?: ChannelsConnection;
+  connectionTest?: Readonly<{ resource: ResourcePresentation; onRefresh: () => void }>;
+  onManage: () => void;
+  t: Translate;
+}>): React.ReactElement {
+  return props.connection !== undefined && props.connectionTest !== undefined ? (
+    <TestableConversationBotSection
+      connection={props.connection}
+      connectionTest={props.connectionTest}
+      onManage={props.onManage}
+      t={props.t}
     />
+  ) : (
+    <ConversationBotGroup {...props} />
+  );
+}
+
+function TestableConversationBotSection(props: Readonly<{
+  connection: ChannelsConnection;
+  connectionTest: Readonly<{ resource: ResourcePresentation; onRefresh: () => void }>;
+  onManage: () => void;
+  t: Translate;
+}>): React.ReactElement {
+  const retest = useConnectionRetest({
+    connection: props.connection,
+    resource: props.connectionTest.resource,
+    onRefresh: props.connectionTest.onRefresh,
+    t: props.t,
+  });
+  return (
+    <>
+      <ConversationBotGroup
+        connection={props.connection}
+        onManage={props.onManage}
+        t={props.t}
+        {...(retest.retestable ? {
+          test: (
+            <Button
+              testID="channels-page-bot-test"
+              variant="secondary"
+              title={retest.busy
+                ? props.t('plugins.channels.surface.connectionRetesting', 'Testing connection…')
+                : props.t('plugins.channels.page.test', 'Test')}
+              accessibilityLabel={props.t('plugins.channels.surface.connectionRetest', 'Test connection')}
+              busy={retest.busy}
+              disabled={retest.busy || retest.outcomeUnknown}
+              onPress={retest.retest}
+            />
+          ),
+        } : {})}
+      />
+      {retest.retestable ? retest.feedback : null}
+    </>
+  );
+}
+
+function ConversationBotGroup(props: Readonly<{
+  connection?: ChannelsConnection;
+  test?: React.ReactElement;
+  onManage: () => void;
+  t: Translate;
+}>): React.ReactElement {
+  const { connection, t } = props;
+  const status = connection === undefined ? undefined : connectionStatus(connection, t);
+  const needsYou = status !== undefined && (status.tone === 'warning' || status.tone === 'danger');
+  return (
+    <ItemGroup testID="channels-page-bot" title={t('plugins.channels.page.bot', 'Bot')}>
+      <Item
+        title={connection === undefined
+          ? t('plugins.channels.surface.bindingConnectionUnavailable', 'Connection details are unavailable')
+          : connectionLabel(connection)}
+        {...(connection === undefined || status === undefined ? {} : {
+          subtitle: `${status.label} · ${connectionMachinePlacementLabel(connection, t)}`,
+        })}
+        {...(needsYou ? { tone: 'warning' as const } : {})}
+        {...(connection === undefined ? {} : {
+          icon: <BrandMark pluginId={connection.providerPluginId} size="small" externallyLabelled />,
+        })}
+        {...(props.test === undefined ? {} : { accessory: props.test, accessoryOutsidePressable: true })}
+      />
+      <Item
+        testID="channels-page-manage-bot"
+        title={t('plugins.channels.page.manageBot', 'Manage bot')}
+        subtitle={t('plugins.channels.page.manageBotDescription', 'Credential, machine, transfer and delete, in Settings.')}
+        onPress={props.onManage}
+      />
+    </ItemGroup>
+  );
+}
+
+/**
+ * The page with nothing linked yet: no bot at all (lab E1), or a bot and no
+ * conversation (lab E2). Each says what Channels is for and offers the one
+ * next step.
+ */
+function ConversationsEmptyPage(props: Readonly<{
+  connections: readonly ChannelsConnection[];
+  onConnectBot: () => void;
+  onLink: () => void;
+  t: Translate;
+}>): React.ReactElement {
+  const { t } = props;
+  const bots = props.connections.filter((connection) => connection.deletionState === 'none');
+  if (bots.length === 0) {
+    return (
+      <EmptyState
+        testID="channels-page-no-bots"
+        layout="page"
+        icon="conversations"
+        title={t('plugins.channels.page.noBotsTitle', 'Talk to your sessions from Telegram, Discord or GitHub')}
+        description={t(
+          'plugins.channels.page.noBotsDescription',
+          'Link a chat, a channel or an issue to a session. People there can ask the agent for help and get its replies, without installing Happier. You’ll need a bot token or a GitHub account.',
+        )}
+        action={(
+          <Button
+            testID="channels-page-connect-bot"
+            variant="primary"
+            title={t('plugins.channels.page.connectBot', 'Connect a bot')}
+            onPress={props.onConnectBot}
+          />
+        )}
+      />
+    );
+  }
+  return (
+    <Stack gap="large" testID="channels-page-no-conversations">
+      <EmptyState
+        layout="page"
+        icon="conversations"
+        title={t('plugins.channels.page.noConversationsTitle', 'Link a conversation to a session')}
+        description={bots.length === 1
+          ? t('plugins.channels.page.noConversationsOneBot', '{bot} is connected. Choose a chat and the session it should talk to.', {
+            bot: connectionLabel(bots[0]!),
+          })
+          : t('plugins.channels.page.noConversationsDescription', 'Your bots are connected. Choose a chat and the session it should talk to.')}
+        action={(
+          <Button
+            testID="channels-page-link"
+            variant="primary"
+            title={t('plugins.channels.column.link', 'Link a conversation')}
+            onPress={props.onLink}
+          />
+        )}
+      />
+      <Stack gap="small">
+        <Step marker={{ kind: 'number', value: 1 }} title={t('plugins.channels.page.linkStepConversation', 'Choose the conversation and who may talk in it.')} />
+        <Step marker={{ kind: 'number', value: 2 }} title={t('plugins.channels.page.linkStepPairing', 'Send the pairing code to the bot in a private message, to prove it’s you.')} />
+        <Step marker={{ kind: 'number', value: 3 }} title={t('plugins.channels.page.linkStepTarget', 'Choose the session, review, and turn it on.')} />
+      </Stack>
+    </Stack>
+  );
+}
+
+/**
+ * The page's own list of conversations — what a phone shows at the page root,
+ * where no column stands beside the page. It reads the same index the column
+ * reads.
+ */
+function ConversationsIndexPage(props: Readonly<{
+  presentations: readonly BindingPresentation[];
+  connections: readonly ChannelsConnection[];
+  onOpen: (bindingId: string) => void;
+  onLink?: () => void;
+  t: Translate;
+}>): React.ReactElement {
+  const { t } = props;
+  const resolveProviderName = usePluginBrandDisplayNameResolver();
+  const providerName = React.useCallback(
+    (providerPluginId: string) => resolveProviderName(providerPluginId)
+      ?? t('plugins.channels.surface.providerFallback', 'Integration provider'),
+    [resolveProviderName, t],
+  );
+  const groups = React.useMemo(() => buildChannelsConversationIndex({
+    bindings: props.presentations.map((presentation) => presentation.binding),
+    connections: props.connections,
+    providerName,
+    t,
+  }), [props.connections, props.presentations, providerName, t]);
+  return (
+    <Stack gap="large" testID="channels-page-index">
+      <PageHeader
+        title={t('plugins.channels.page.title', 'Channels')}
+        description={t('plugins.channels.page.description', 'Conversations in Telegram, Discord and GitHub that talk to your sessions.')}
+        {...(props.onLink === undefined ? {} : {
+          actions: (
+            <Button
+              testID="channels-page-link"
+              variant="secondary"
+              title={t('plugins.channels.column.link', 'Link a conversation')}
+              onPress={props.onLink}
+            />
+          ),
+        })}
+      />
+      {groups.map((group) => (
+        <ItemGroup
+          key={group.key}
+          title={group.connection !== undefined
+            ? connectionLabel(group.connection)
+            : group.providerPluginId !== undefined
+              ? providerName(group.providerPluginId)
+              : t('plugins.channels.column.otherGroup', 'Other conversations')}
+          {...(group.botAttention === undefined ? {} : { description: group.botAttention.label })}
+        >
+          {group.rows.map((row) => (
+            <Item
+              key={row.binding.bindingId}
+              testID={`channels-page-row-${row.binding.bindingId}`}
+              title={row.title}
+              titleNumberOfLines={1}
+              subtitle={bindingTargetKindLabel(row.binding.target.kind, t)}
+              {...(row.status?.kind === 'paused' ? { detail: t('plugins.channels.column.paused', 'Paused') } : {})}
+              {...(row.status?.kind === 'deleting' ? {
+                detail: t('plugins.channels.surface.deleteFinalizing', 'Deletion cleanup in progress'),
+              } : {})}
+              {...(row.connection === undefined ? {} : {
+                icon: <BrandMark pluginId={row.connection.providerPluginId} size="small" externallyLabelled />,
+              })}
+              onPress={() => props.onOpen(row.binding.bindingId)}
+            />
+          ))}
+        </ItemGroup>
+      ))}
+    </Stack>
   );
 }
 
@@ -2899,7 +2667,7 @@ type BindingCreatePrincipalSelection = ReturnType<
  * the only authority over these facts.
  */
 type BindingCreateAutomationExecution = Readonly<{
-  targetType: 'new_session' | 'existing_session' | 'execution_run';
+  targetType: 'new_session' | 'existing_session' | 'execution_run' | null;
   enabled: boolean;
 }>;
 type BindingCreateStage = 'closed' | 'endpoint' | 'principal' | 'target' | 'policies' | 'review';
@@ -3608,7 +3376,8 @@ function parseBindingCreateSessionPage(value: unknown): BindingCreateSessionPage
 
 function parseBindingCreateAutomationExecution(value: unknown): BindingCreateAutomationExecution | undefined {
   if (!isRecord(value) || typeof value.enabled !== 'boolean') return undefined;
-  if (value.targetType !== 'new_session'
+  if (value.targetType !== null
+    && value.targetType !== 'new_session'
     && value.targetType !== 'existing_session'
     && value.targetType !== 'execution_run') {
     return undefined;
@@ -3620,6 +3389,12 @@ function bindingCreateAutomationEffectLabel(
   execution: BindingCreateAutomationExecution,
   t: Translate,
 ): string {
+  if (execution.targetType === null) {
+    return t(
+      'plugins.channels.surface.bindingCreateAutomationEffectWorkflow',
+      'A message from the allowed sender starts this Automation, which runs its configured workflow.',
+    );
+  }
   if (execution.targetType === 'new_session') {
     return t(
       'plugins.channels.surface.bindingCreateAutomationEffectNewSession',
@@ -4349,10 +4124,15 @@ function BindingCreateJourney(props: Readonly<{
   /** One request to open this journey with a just-created connection selected. */
   openRequest?: Readonly<{ connectionId: string; requestId: number }>;
   onOpenConsumed?: () => void;
+  /** Invoked with the new binding id when a link completes without pairing. */
+  onCreated?: (bindingId: string) => void;
+  /** Offers the new conversation's page beside the "created" confirmation. */
+  onOpenCreated?: (bindingId: string) => void;
   t: Translate;
 }>): React.ReactElement {
   const hostApi = usePluginHostApi();
   const surface = useSurfaceContext();
+  const [createdBindingId, setCreatedBindingId] = React.useState<string | undefined>();
   const resolveAction = useExecutePluginAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingResolve);
   const createAction = useExecutePluginAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingCreate);
   const pairingAction = useExecutePluginAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPairingCreate);
@@ -4845,7 +4625,9 @@ function BindingCreateJourney(props: Readonly<{
     } else {
       // The Resource remains the only bindings-list projection owner.
       setFeedback('created');
+      setCreatedBindingId(result.data.binding.id);
       props.onRefresh();
+      props.onCreated?.(result.data.binding.id);
     }
   }, [
     actionLocked,
@@ -4953,7 +4735,20 @@ function BindingCreateJourney(props: Readonly<{
       );
     }
     if (feedback === 'created') {
-      return <Status tone="success" label={props.t('plugins.channels.surface.bindingCreateCreated', 'Binding created')} />;
+      const openCreated = props.onOpenCreated;
+      return (
+        <Stack gap="small">
+          <Status tone="success" label={props.t('plugins.channels.surface.bindingCreateCreated', 'Binding created')} />
+          {openCreated === undefined || createdBindingId === undefined ? null : (
+            <Button
+              testID="channels-binding-create-open-in-channels"
+              variant="secondary"
+              title={props.t('plugins.channels.surface.openInChannels', 'Open in Channels')}
+              onPress={() => openCreated(createdBindingId)}
+            />
+          )}
+        </Stack>
+      );
     }
     if (feedback === undefined) return null;
     const copy: Readonly<Record<Exclude<BindingCreateFeedback, 'created'>, readonly [string, string]>> = {
@@ -5727,6 +5522,8 @@ function BindingEditJourney(props: Readonly<{
   onRefresh: () => void;
   onRefreshConnection: () => void;
   onClose: (restoreOriginFocus: boolean) => void;
+  /** Open on the target step instead of the policy summary. */
+  initialStage?: 'target';
   t: Translate;
 }>): React.ReactElement {
   const hostApi = usePluginHostApi();
@@ -6129,6 +5926,17 @@ function BindingEditJourney(props: Readonly<{
     });
     setSessionNextCursor(page.nextCursor);
   }, [actionLocked, props.signal, sessionsAction]);
+
+  // "Link another session" opens the editor on its target step, once its
+  // detail has been read and while a target change is possible at all.
+  const initialStageAppliedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (props.initialStage !== 'target' || initialStageAppliedRef.current || detail === undefined) return;
+    initialStageAppliedRef.current = true;
+    if (!providerControlsAvailable || finalizingDelete) return;
+    setStage('target');
+    void loadSessions();
+  }, [detail, finalizingDelete, loadSessions, props.initialStage, providerControlsAvailable]);
 
   const loadAutomationTargets = React.useCallback(async (cursor?: string) => {
     if (actionLocked || props.signal.aborted) return;
@@ -6769,10 +6577,17 @@ type BindingsContentProps = Readonly<{
   onRefresh: () => void;
   operation: BindingEnablementOperation;
   deleteOperation?: BindingDeleteOperation;
+  /** Where the page is: its root, the link flow, or one conversation. */
+  location: ReturnType<typeof readChannelsPageLocation>;
+  /** The Account's bots, for the conversation's Bot section and the empty states. */
+  connections: readonly ChannelsConnection[];
+  connectionsState: 'loading' | 'error' | 'ready';
+  /** Present when this mount can run the connection test (the daemon serves it). */
+  connectionTest?: Readonly<{ resource: ResourcePresentation; onRefresh: () => void }>;
   bindingCreateContent?: React.ReactElement;
-  bindingEditContent?: React.ReactElement;
-  onEdit?: (binding: ChannelsBinding, focusTarget: PluginUiFocusTarget) => void;
-  connectionsContent?: React.ReactElement;
+  /** The editor for the binding the page is editing, rendered in place of its summary. */
+  bindingEditContent?: Readonly<{ bindingId: string; content: React.ReactElement }>;
+  onEdit?: (binding: ChannelsBinding, focusTarget: PluginUiFocusTarget, intent?: 'target') => void;
   savedPendingMachineReconciliation?: boolean;
   sectionState?: BindingsSectionState;
   t: Translate;
@@ -6780,7 +6595,7 @@ type BindingsContentProps = Readonly<{
 
 function BindingsContent(props: BindingsContentProps): React.ReactElement {
   const theme = usePluginTheme();
-  const resolveProviderDisplayName = usePluginBrandDisplayNameResolver();
+  const surface = useSurfaceContext();
   const { execution, execute, reset } = props.operation;
   const [activeBindingId, setActiveBindingId] = React.useState<string | undefined>();
   const [enablementFailure, setEnablementFailure] = React.useState<BindingEnablementFailure | undefined>();
@@ -6791,31 +6606,16 @@ function BindingsContent(props: BindingsContentProps): React.ReactElement {
     'waitingForExistingRead' | 'waitingForRequestedRead' | undefined
   >();
   const sawOutcomeUnknownReconciliationRefresh = React.useRef(false);
-  const providerFilters = React.useMemo(
-    () => bindingProviderFilters(props.presentations),
-    [props.presentations],
-  );
-  const [providerFilter, setProviderFilter] = React.useState('all');
-  const activeProviderFilter = providerFilters.some((filter) => filter.providerPluginId === providerFilter)
-    ? providerFilter
-    : 'all';
-  const visiblePresentations = React.useMemo(() => (
-    activeProviderFilter === 'all'
-      ? props.presentations
-      : props.presentations.filter((presentation) => (
-        presentation.connection?.providerPluginId === activeProviderFilter
-      ))
-  ), [activeProviderFilter, props.presentations]);
   const sectionState = props.sectionState ?? BINDINGS_SECTION_READY;
   const sectionAvailable = sectionState.kind === 'ready';
-  const outcomeUnknownBindingIsVisible = outcomeUnknownBindingId !== undefined
-    && visiblePresentations.some((presentation) => (
-      presentation.binding.bindingId === outcomeUnknownBindingId
-    ));
-  const enablementFailureIsVisible = enablementFailure !== undefined
-    && visiblePresentations.some((presentation) => (
-      presentation.binding.bindingId === enablementFailure.bindingId
-    ));
+  // A notice about one conversation speaks on that conversation's page; the
+  // page-level copy is for a conversation the reader is not looking at.
+  const shownBindingId = props.location.step === undefined ? props.location.bindingId : undefined;
+  const isShown = (bindingId: string | undefined) => bindingId !== undefined
+    && bindingId === shownBindingId
+    && props.presentations.some((presentation) => presentation.binding.bindingId === bindingId);
+  const outcomeUnknownBindingIsVisible = isShown(outcomeUnknownBindingId);
+  const enablementFailureIsVisible = isShown(enablementFailure?.bindingId);
 
   const onSetEnabled = React.useCallback(async (binding: ChannelsBinding, enabled: boolean) => {
     if (binding.deletionState !== 'none'
@@ -6924,191 +6724,181 @@ function BindingsContent(props: BindingsContentProps): React.ReactElement {
     onReconciled: onDeleteOutcomeReconciled,
   });
 
-  const renderItem = React.useCallback((item: BindingPresentation) => (
-    <BindingRow
-      presentation={item}
-      execution={execution}
-      deleteOperation={props.deleteOperation}
-      activeBindingId={activeBindingId}
-      activeDeletedBindingId={activeDeletedBindingId}
-      outcomeUnknownBindingId={outcomeUnknownBindingId}
-      outcomeUnknownDeletedBindingId={outcomeUnknownDeletedBindingId}
-      enablementFailure={enablementFailure}
-      onSetEnabled={onSetEnabled}
-      onDelete={props.deleteOperation === undefined ? undefined : onDelete}
-      onEdit={props.onEdit}
-      onUnknownOutcomeRefresh={requestOutcomeUnknownRefresh}
-      onUnknownDeleteOutcomeRefresh={requestUnknownDeleteOutcomeRefresh}
-      t={props.t}
-    />
-  ), [
-    activeBindingId,
-    activeDeletedBindingId,
-    enablementFailure,
-    execution,
-    onDelete,
-    outcomeUnknownBindingId,
-    outcomeUnknownDeletedBindingId,
-    onSetEnabled,
-    props.deleteOperation,
-    props.onEdit,
-    props.t,
-    requestUnknownDeleteOutcomeRefresh,
-    requestOutcomeUnknownRefresh,
-  ]);
+  const navigation = useChannelsPageNavigation();
+  const selectedPresentation = props.location.bindingId === undefined
+    ? undefined
+    : props.presentations.find((presentation) => presentation.binding.bindingId === props.location.bindingId);
+  const liveBots = props.connections.some((connection) => connection.deletionState === 'none');
+
+  const body = (() => {
+    if (props.location.step === 'link') {
+      return (
+        <Stack gap="large" testID="channels-page-link-flow">
+          <PageHeader
+            title={props.t('plugins.channels.column.link', 'Link a conversation')}
+            description={props.t('plugins.channels.page.linkDescription', 'Choose a chat and the session it should talk to.')}
+          />
+          {sectionAvailable ? props.bindingCreateContent : null}
+        </Stack>
+      );
+    }
+    if (sectionState.kind === 'loading') {
+      return (
+        <LoadingState
+          testID="channels-bindings-loading"
+          title={props.t('plugins.channels.page.loadingTitle', 'Loading conversations')}
+          description={props.t(
+            'plugins.channels.surface.bindingsLoadingDescription',
+            'Reading the current binding policy from your Account.',
+          )}
+        />
+      );
+    }
+    if (sectionState.kind === 'error') {
+      return (
+        <ErrorState
+          testID="channels-bindings-error"
+          title={props.t('plugins.channels.page.errorTitle', 'Conversations are unavailable')}
+          description={sectionState.description}
+          action={(
+            <Action.Refresh
+              testID="channels-bindings-retry"
+              title={props.t('plugins.channels.surface.tryAgain', 'Try again')}
+              onRefresh={props.onRefresh}
+            />
+          )}
+        />
+      );
+    }
+    if (props.location.bindingId !== undefined) {
+      if (selectedPresentation === undefined) {
+        return (
+          <EmptyState
+            testID="channels-page-not-found"
+            layout="page"
+            title={props.t('plugins.channels.page.notFoundTitle', 'This conversation is no longer linked')}
+            description={props.t('plugins.channels.page.notFoundDescription', 'It was unlinked, or it belongs to another account.')}
+            action={(
+              <Button
+                variant="secondary"
+                title={props.t('plugins.channels.page.showAll', 'Show all conversations')}
+                onPress={navigation.openRoot}
+              />
+            )}
+          />
+        );
+      }
+      const editContent = props.bindingEditContent?.bindingId === selectedPresentation.binding.bindingId
+        ? props.bindingEditContent.content
+        : undefined;
+      return (
+        <ConversationDetail
+          presentation={selectedPresentation}
+          execution={execution}
+          {...(props.deleteOperation === undefined ? {} : { deleteOperation: props.deleteOperation, onDelete })}
+          activeBindingId={activeBindingId}
+          activeDeletedBindingId={activeDeletedBindingId}
+          outcomeUnknownBindingId={outcomeUnknownBindingId}
+          outcomeUnknownDeletedBindingId={outcomeUnknownDeletedBindingId}
+          {...(enablementFailure === undefined ? {} : { enablementFailure })}
+          onSetEnabled={onSetEnabled}
+          {...(props.onEdit === undefined ? {} : { onEdit: props.onEdit })}
+          {...(editContent === undefined ? {} : { editContent })}
+          onUnknownOutcomeRefresh={requestOutcomeUnknownRefresh}
+          onUnknownDeleteOutcomeRefresh={requestUnknownDeleteOutcomeRefresh}
+          {...(props.connectionTest === undefined ? {} : { connectionTest: props.connectionTest })}
+          t={props.t}
+        />
+      );
+    }
+    if (props.presentations.length === 0) {
+      if (props.connectionsState === 'loading') {
+        return <LoadingState testID="channels-bindings-loading" title={props.t('plugins.channels.page.loadingTitle', 'Loading conversations')} />;
+      }
+      return (
+        <ConversationsEmptyPage
+          connections={props.connections}
+          onConnectBot={navigation.openSettings}
+          onLink={navigation.openLink}
+          t={props.t}
+        />
+      );
+    }
+    if (surface.page?.columnVisible === true) {
+      return (
+        <EmptyState
+          testID="channels-page-no-selection"
+          layout="page"
+          title={props.t('plugins.channels.surface.bindingCreateEndpoint', 'Choose a conversation')}
+          description={props.t('plugins.channels.page.description', 'Conversations in Telegram, Discord and GitHub that talk to your sessions.')}
+        />
+      );
+    }
+    return (
+      <ConversationsIndexPage
+        presentations={props.presentations}
+        connections={props.connections}
+        onOpen={navigation.openConversation}
+        {...(liveBots && props.bindingCreateContent !== undefined ? { onLink: navigation.openLink } : {})}
+        t={props.t}
+      />
+    );
+  })();
 
   return (
     <Screen testID="channels-surface" safeArea>
-      <List
-        items={visiblePresentations}
-        keyForItem={bindingPresentationKey}
-        renderItem={renderItem}
-        accessibilityLabel={props.t('plugins.channels.surface.bindings', 'Conversation bindings')}
-        testID="channels-bindings-list"
-        style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: theme.spacing.large }}
-        header={(
-          <Stack gap="large" testID="channels-bindings-content" style={{ padding: theme.spacing.large }}>
-            <Stack gap="small">
-              <Heading level={1} value={props.t('plugins.channels.surface.title', 'Conversation Channels')} />
-              <Text
-                value={props.t(
-                  'plugins.channels.surface.description',
-                  'Manage the Account policy for each external conversation integration.',
-                )}
-              />
-            </Stack>
-            <Stack gap="small">
-              <Heading level={2} value={props.t('plugins.channels.surface.bindings', 'Conversation bindings')} />
-              <Text
-                value={props.t(
-                  'plugins.channels.surface.bindingsDescription',
-                  'Manage where each external conversation sends eligible messages.',
-                )}
-              />
-              <Action.Refresh
-                testID="channels-bindings-resource-refresh"
-                title={props.t('plugins.channels.surface.refresh', 'Refresh')}
-                onRefresh={props.onRefresh}
-              />
-              <ResourceFreshnessNotice
-                resource={props.resource}
-                onRefresh={props.onRefresh}
-                subject="binding"
-                testIDPrefix="channels-bindings-resource"
-                t={props.t}
-              />
-              {props.savedPendingMachineReconciliation ? (
-                <Status
-                  testID="channels-binding-saved-pending-machine-reconciliation"
-                  tone="info"
-                  label={props.t(
-                    'plugins.channels.surface.savedPendingMachineReconciliation',
-                    'Saved to your Account. The selected machine will reconcile this policy when it is available.',
-                  )}
-                />
-              ) : null}
-              {enablementFailure === undefined || enablementFailureIsVisible ? null : (
-                <BindingEnablementFailureNotice
-                  failure={enablementFailure}
-                  t={props.t}
-                  testID="channels-binding-enable-error"
+      <ScrollArea contentContainerStyle={{ padding: theme.spacing.large, paddingBottom: theme.spacing.large * 2 }}>
+        <Stack gap="large" testID="channels-bindings-content">
+          {resourceFreshnessNoticeApplies(props.resource) ? (
+            <ResourceFreshnessNotice
+              resource={props.resource}
+              onRefresh={props.onRefresh}
+              subject="binding"
+              testIDPrefix="channels-bindings-resource"
+              t={props.t}
+            />
+          ) : null}
+          {props.savedPendingMachineReconciliation ? (
+            <Status
+              testID="channels-binding-saved-pending-machine-reconciliation"
+              tone="info"
+              label={props.t(
+                'plugins.channels.surface.savedPendingMachineReconciliation',
+                'Saved to your Account. The selected machine will reconcile this policy when it is available.',
+              )}
+            />
+          ) : null}
+          {enablementFailure === undefined || enablementFailureIsVisible ? null : (
+            <BindingEnablementFailureNotice
+              failure={enablementFailure}
+              t={props.t}
+              testID="channels-binding-enable-error"
+            />
+          )}
+          {execution.status === 'outcomeUnknown' && !outcomeUnknownBindingIsVisible ? (
+            <Banner
+              testID="channels-binding-outcome-unknown"
+              tone="warning"
+              title={props.t(
+                'plugins.channels.surface.bindingSaveUnknownTitle',
+                'Could not confirm the binding change',
+              )}
+              description={props.t(
+                'plugins.channels.surface.bindingSaveUnknownDescription',
+                'The change may already be saved. Refresh binding details before changing another binding.',
+              )}
+              action={(
+                <Action.Refresh
+                  testID="channels-binding-outcome-unknown-reconcile"
+                  title={props.t('plugins.channels.surface.refresh', 'Refresh')}
+                  onRefresh={requestOutcomeUnknownRefresh}
                 />
               )}
-              {sectionAvailable ? props.bindingCreateContent : null}
-              {sectionAvailable ? props.bindingEditContent : null}
-              {execution.status === 'outcomeUnknown' && !outcomeUnknownBindingIsVisible ? (
-                <Banner
-                  testID="channels-binding-outcome-unknown"
-                  tone="warning"
-                  title={props.t(
-                    'plugins.channels.surface.bindingSaveUnknownTitle',
-                    'Could not confirm the binding change',
-                  )}
-                  description={props.t(
-                    'plugins.channels.surface.bindingSaveUnknownDescription',
-                    'The change may already be saved. Refresh binding details before changing another binding.',
-                  )}
-                  action={(
-                    <Action.Refresh
-                      testID="channels-binding-outcome-unknown-reconcile"
-                      title={props.t('plugins.channels.surface.refresh', 'Refresh')}
-                      onRefresh={requestOutcomeUnknownRefresh}
-                    />
-                  )}
-                />
-              ) : null}
-            </Stack>
-            {props.presentations.length > 0 && providerFilters.length >= 2 ? (
-              <Tabs
-                testID="channels-binding-provider-filters"
-                value={activeProviderFilter}
-                onValueChange={setProviderFilter}
-                ariaLabel={props.t('plugins.channels.surface.bindingProviderFilters', 'Filter conversation bindings by integration')}
-              >
-                <Tabs.Item value="all" title={props.t('plugins.channels.surface.bindingProviderFilterAll', 'All')} />
-                {providerFilters.map((filter) => (
-                  <Tabs.Item
-                    key={filter.providerPluginId}
-                    value={filter.providerPluginId}
-                    title={resolveProviderDisplayName(filter.providerPluginId)
-                      ?? props.t('plugins.channels.surface.providerFallback', 'Integration provider')}
-                    icon={(
-                      <BrandMark
-                        pluginId={filter.providerPluginId}
-                        size="small"
-                        externallyLabelled
-                        testID={`channels-provider-brand-filter-${filter.providerPluginId}`}
-                      />
-                    )}
-                  />
-                ))}
-              </Tabs>
-            ) : null}
-          </Stack>
-        )}
-        empty={sectionState.kind === 'loading' ? (
-          <LoadingState
-            testID="channels-bindings-loading"
-            title={props.t('plugins.channels.surface.bindingsLoadingTitle', 'Loading conversation bindings')}
-            description={props.t(
-              'plugins.channels.surface.bindingsLoadingDescription',
-              'Reading the current binding policy from your Account.',
-            )}
-          />
-        ) : sectionState.kind === 'error' ? (
-          <ErrorState
-            testID="channels-bindings-error"
-            title={props.t('plugins.channels.surface.bindingsErrorTitle', 'Binding details are unavailable')}
-            description={sectionState.description}
-            action={(
-              <Action.Refresh
-                testID="channels-bindings-retry"
-                title={props.t('plugins.channels.surface.tryAgain', 'Try again')}
-                onRefresh={props.onRefresh}
-              />
-            )}
-          />
-        ) : (
-          <EmptyState
-            testID="channels-bindings-empty"
-            title={props.t('plugins.channels.surface.bindingsEmptyTitle', 'No conversation bindings yet')}
-            description={props.t(
-              'plugins.channels.surface.bindingsEmptyDescription',
-              'Bindings created for this Account will appear here.',
-            )}
-          />
-        )}
-        // Connections are a full second half of this page, not an action bar.
-        // As the List's fixed footer they sat outside the scroller and were
-        // unreachable below the flexed binding list; as end content they scroll
-        // with the bindings in the one scroller this page has.
-        endContent={props.connectionsContent === undefined ? undefined : (
-          <Stack gap="large" style={{ padding: theme.spacing.large }}>
-            {props.connectionsContent}
-          </Stack>
-        )}
-      />
+            />
+          ) : null}
+          {body}
+        </Stack>
+      </ScrollArea>
     </Screen>
   );
 }
@@ -7116,22 +6906,84 @@ function BindingsContent(props: BindingsContentProps): React.ReactElement {
 /** The daemon-backed branch keeps Resources and Actions optional-but-real. */
 type OnlineBindingsContentProps = Omit<
   BindingsContentProps,
-  'operation' | 'bindingCreateContent' | 'bindingEditContent' | 'onEdit'
+  'operation' | 'bindingCreateContent' | 'bindingEditContent' | 'onEdit' | 'connectionTest'
 > & Readonly<{
-  connections: readonly ChannelsConnection[];
   signal: AbortSignal;
+  connectionsResource: ResourcePresentation;
   onRefreshConnections: () => void;
-  /** One open request for the create journey, aimed at a just-created connection. */
-  bindingCreateRequest?: Readonly<{ connectionId: string; requestId: number }>;
-  onBindingCreateOpened?: () => void;
 }>;
 
+/**
+ * Which binding the page is editing, and how the editor was asked for. The
+ * editor itself stays the incumbent draft → review → save journey.
+ */
+type BindingEditRequest = Readonly<{
+  bindingId: string;
+  originFocusTarget: PluginUiFocusTarget;
+  /** Open the editor on its target step ("Link another session"). */
+  intent?: 'target';
+}>;
+
+/**
+ * The editing state of the Channels page, shared by its online and offline
+ * branches: one request at a time, opened from the conversation or from the
+ * page location (`<bindingId>/edit`, how a finished pairing in Settings hands
+ * its new binding over for review), with focus returned to its opener.
+ */
+function usePageBindingEditor(location: BindingsContentProps['location']): Readonly<{
+  editing: BindingEditRequest | undefined;
+  openEditor: (binding: ChannelsBinding, originFocusTarget: PluginUiFocusTarget, intent?: 'target') => void;
+  openEditorFor: (bindingId: string) => void;
+  closeEditor: (restoreOriginFocus: boolean) => void;
+}> {
+  const [editing, setEditing] = React.useState<BindingEditRequest | undefined>();
+  const restoreEditFocusRef = React.useRef<PluginUiFocusTarget | undefined>(undefined);
+  // A finished pairing hands its binding over for review. The editor moves
+  // focus itself once its detail read settles, so this origin target is a
+  // placeholder whose restoration is a deliberate no-op.
+  const handoffFocusTarget = usePluginUiFocusTarget();
+  const consumedLocationRef = React.useRef<string | undefined>(undefined);
+  React.useEffect(() => {
+    if (location.step !== 'edit' || location.bindingId === undefined) return;
+    const key = `${location.bindingId}/edit`;
+    if (consumedLocationRef.current === key) return;
+    consumedLocationRef.current = key;
+    setEditing({ bindingId: location.bindingId, originFocusTarget: handoffFocusTarget });
+  }, [handoffFocusTarget, location.bindingId, location.step]);
+  // Moving to another conversation abandons an editor aimed at the previous one.
+  if (editing !== undefined && location.bindingId !== undefined && location.bindingId !== editing.bindingId) {
+    setEditing(undefined);
+  }
+  const openEditor = React.useCallback((
+    binding: ChannelsBinding,
+    originFocusTarget: PluginUiFocusTarget,
+    intent?: 'target',
+  ) => {
+    if (binding.deletionState !== 'none') return;
+    setEditing({ bindingId: binding.bindingId, originFocusTarget, ...(intent === undefined ? {} : { intent }) });
+  }, []);
+  const openEditorFor = React.useCallback((bindingId: string) => {
+    setEditing({ bindingId, originFocusTarget: handoffFocusTarget });
+  }, [handoffFocusTarget]);
+  const closeEditor = React.useCallback((restoreOriginFocus: boolean) => {
+    setEditing((current) => {
+      if (restoreOriginFocus) restoreEditFocusRef.current = current?.originFocusTarget;
+      return undefined;
+    });
+  }, []);
+  React.useEffect(() => {
+    if (editing !== undefined || restoreEditFocusRef.current === undefined) return;
+    const target = restoreEditFocusRef.current;
+    restoreEditFocusRef.current = undefined;
+    target.focus();
+  }, [editing]);
+  return { editing, openEditor, openEditorFor, closeEditor };
+}
+
 function OnlineBindingsContent({
-  connections,
   signal,
+  connectionsResource,
   onRefreshConnections,
-  bindingCreateRequest,
-  onBindingCreateOpened,
   ...bindingsProps
 }: OnlineBindingsContentProps): React.ReactElement {
   const action = useExecutePluginAction(
@@ -7140,11 +6992,8 @@ function OnlineBindingsContent({
   const deleteAction = useExecutePluginAction(
     CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingDelete,
   );
-  const [editingBinding, setEditingBinding] = React.useState<Readonly<{
-    bindingId: string;
-    originFocusTarget: PluginUiFocusTarget;
-  }> | undefined>();
-  const restoreEditFocusRef = React.useRef<PluginUiFocusTarget | undefined>(undefined);
+  const navigation = useChannelsPageNavigation();
+  const editor = usePageBindingEditor(bindingsProps.location);
   const operation = React.useMemo<BindingEnablementOperation>(() => ({
     execution: action.execution,
     execute: async (input) => await action.execute({
@@ -7162,69 +7011,78 @@ function OnlineBindingsContent({
     }),
     reset: deleteAction.reset,
   }), [deleteAction.execute, deleteAction.execution, deleteAction.reset]);
-  const openEditor = React.useCallback((binding: ChannelsBinding, originFocusTarget: PluginUiFocusTarget) => {
-    if (binding.deletionState !== 'none') return;
-    setEditingBinding({ bindingId: binding.bindingId, originFocusTarget });
-  }, []);
-  // A completed pairing hands back the created binding id. Review continues in
-  // the existing binding editor — the single owner of reviewing and enabling a
-  // saved binding — rather than just closing the pairing view. The editor moves
-  // focus itself once its detail read settles, so the origin target here is a
-  // placeholder whose restoration is a deliberate no-op.
-  const pairingReviewFocusTarget = usePluginUiFocusTarget();
+  const { openEditorFor } = editor;
+  const showConversation = navigation.showConversation;
+  // The link flow ends on the conversation it made: a pairing continues into
+  // review (the editor is the one owner of reviewing and turning on a saved
+  // binding), a direct link simply shows its page.
   const onPairingCompleted = React.useCallback((bindingId: string) => {
-    setEditingBinding({ bindingId, originFocusTarget: pairingReviewFocusTarget });
-  }, [pairingReviewFocusTarget]);
-  const closeEditor = React.useCallback((restoreOriginFocus: boolean) => {
-    if (restoreOriginFocus) restoreEditFocusRef.current = editingBinding?.originFocusTarget;
-    setEditingBinding(undefined);
-  }, [editingBinding]);
-  React.useEffect(() => {
-    if (editingBinding !== undefined || restoreEditFocusRef.current === undefined) return;
-    const target = restoreEditFocusRef.current;
-    restoreEditFocusRef.current = undefined;
-    target.focus();
-  }, [editingBinding]);
-  const editingPresentation = editingBinding === undefined
+    openEditorFor(bindingId);
+    showConversation(bindingId);
+  }, [openEditorFor, showConversation]);
+  // The link step opens the journey at once: on the bot the location names (a session tab's "+"), else on the
+  // first bot that can link.
+  const linkableConnections = bindingsProps.connections.filter((connection) => connection.deletionState === 'none');
+  const linkConnectionId = linkableConnections.find((connection) => (
+    connection.connectionId === bindingsProps.location.connectionId
+  ))?.connectionId ?? linkableConnections[0]?.connectionId;
+  const linkRequest = React.useMemo(
+    () => (bindingsProps.location.step === 'link' && linkConnectionId !== undefined
+      ? { connectionId: linkConnectionId, requestId: 1 }
+      : undefined),
+    [bindingsProps.location.step, linkConnectionId],
+  );
+  const editingPresentation = editor.editing === undefined
     ? undefined
     : bindingsProps.presentations.find((presentation) => (
-      presentation.binding.bindingId === editingBinding.bindingId
+      presentation.binding.bindingId === editor.editing?.bindingId
     ));
+  const connectionTest = React.useMemo(
+    () => ({ resource: connectionsResource, onRefresh: onRefreshConnections }),
+    [connectionsResource, onRefreshConnections],
+  );
   return (
     <BindingsContent
       {...bindingsProps}
       operation={operation}
       deleteOperation={deleteOperation}
+      connectionTest={connectionTest}
       bindingCreateContent={(
         <BindingCreateJourney
-          connections={connections}
+          connections={bindingsProps.connections}
           resource={bindingsProps.resource}
           signal={signal}
           onRefresh={bindingsProps.onRefresh}
           onPairingCompleted={onPairingCompleted}
-          openRequest={bindingCreateRequest}
-          onOpenConsumed={onBindingCreateOpened}
+          onCreated={showConversation}
+          {...(linkRequest === undefined ? {} : { openRequest: linkRequest })}
           t={bindingsProps.t}
         />
       )}
-      bindingEditContent={editingBinding === undefined ? undefined : (
-        <BindingEditJourney
-          // The editor reads its detail exactly once per opened binding. A
-          // different binding is a different read, so it must be a different
-          // editor rather than a retained draft aimed at the new row.
-          key={editingBinding.bindingId}
-          bindingId={editingBinding.bindingId}
-          presentation={editingPresentation}
-          connections={connections}
-          resource={bindingsProps.resource}
-          signal={signal}
-          onRefresh={bindingsProps.onRefresh}
-          onRefreshConnection={onRefreshConnections}
-          onClose={closeEditor}
-          t={bindingsProps.t}
-        />
-      )}
-      onEdit={openEditor}
+      {...(editor.editing === undefined ? {} : {
+        bindingEditContent: {
+          bindingId: editor.editing.bindingId,
+          content: (
+            <BindingEditJourney
+              // The editor reads its detail exactly once per opened binding. A
+              // different binding is a different read, so it must be a different
+              // editor rather than a retained draft aimed at the new row.
+              key={`${editor.editing.bindingId}:${editor.editing.intent ?? 'policies'}`}
+              bindingId={editor.editing.bindingId}
+              presentation={editingPresentation}
+              connections={bindingsProps.connections}
+              resource={bindingsProps.resource}
+              signal={signal}
+              onRefresh={bindingsProps.onRefresh}
+              onRefreshConnection={onRefreshConnections}
+              onClose={editor.closeEditor}
+              {...(editor.editing.intent === undefined ? {} : { initialStage: editor.editing.intent })}
+              t={bindingsProps.t}
+            />
+          ),
+        },
+      })}
+      onEdit={editor.openEditor}
     />
   );
 }
@@ -7788,11 +7646,12 @@ function AccountLocalBindingPolicyEditor(props: Readonly<{
  * parser/transition/CAS owner, so provider runtime availability cannot become
  * accidental authority over a saved Account policy.
  */
-function AccountLocalBindingsSurface(props: Readonly<{
-  signal: AbortSignal;
-}>): React.ReactElement {
-  const t = usePluginTranslation();
-  const theme = usePluginTheme();
+/**
+ * The direct Account reading both Channels destinations use while the daemon
+ * cannot serve them: the canonical Collection readers, with presentation-local
+ * last-known-good rows only.
+ */
+function useAccountLocalChannels(signal: AbortSignal, t: Translate) {
   const dataClient = usePluginUiDataClient();
   const collection = React.useMemo(
     () => dataClient.collection(CHANNEL_STATE_COLLECTION),
@@ -7802,31 +7661,52 @@ function AccountLocalBindingsSurface(props: Readonly<{
     () => dataClient.collection(CHANNEL_DELIVERIES_COLLECTION),
     [dataClient],
   );
-  const { bindings, resource, refresh } = useAccountLocalBindingRows(collection, props.signal);
-  const {
-    connections,
-    resource: connectionResource,
-    refresh: refreshConnections,
-  } = useAccountLocalConnectionRows({
+  const bindingsRead = useAccountLocalBindingRows(collection, signal);
+  const connectionsRead = useAccountLocalConnectionRows({
     stateCollection: collection,
     deliveriesCollection,
-    signal: props.signal,
+    signal,
   });
-  const [expandedConnectionId, setExpandedConnectionId] = React.useState<string | undefined>();
+  const sortedConnections = React.useMemo(
+    () => sortConnectionsForDisplay(connectionsRead.connections ?? [], t),
+    [connectionsRead.connections, t],
+  );
+  const presentations = React.useMemo(
+    () => buildBindingPresentations(bindingsRead.bindings ?? [], sortedConnections, t),
+    [bindingsRead.bindings, sortedConnections, t],
+  );
+  const connectionState: 'loading' | 'error' | 'ready' = connectionsRead.connections === undefined
+    ? connectionsRead.resource.pending === 'initial' ? 'loading' : 'error'
+    : 'ready';
+  return {
+    collection,
+    deliveriesCollection,
+    bindingsRead,
+    connectionsRead,
+    sortedConnections,
+    presentations,
+    connectionState,
+  };
+}
+
+/** The Channels page while the daemon is unreachable: Account-local policy only. */
+function AccountLocalChannelsPageSurface(props: Readonly<{
+  signal: AbortSignal;
+  subPath: string | undefined;
+}>): React.ReactElement {
+  const t = usePluginTranslation();
+  const channels = useAccountLocalChannels(props.signal, t);
+  const { collection, deliveriesCollection } = channels;
+  const { bindings, resource, refresh } = channels.bindingsRead;
+  const location = React.useMemo(() => readChannelsPageLocation(props.subPath), [props.subPath]);
+  const editor = usePageBindingEditor(location);
   const [savedPendingMachineReconciliation, setSavedPendingMachineReconciliation] = React.useState(false);
-  const [editingBinding, setEditingBinding] = React.useState<Readonly<{
-    bindingId: string;
-    originFocusTarget: PluginUiFocusTarget;
-  }> | undefined>();
-  const restoreEditFocusRef = React.useRef<PluginUiFocusTarget | undefined>(undefined);
   if (useReplacedAccountCollectionScope([collection, deliveriesCollection])) {
-    // An open editor, an expanded row, and a pending-reconciliation notice all
-    // name rows in the replaced Collection. Equal row IDs in the successor
-    // would otherwise aim a retained draft at a different Account's policy.
-    setEditingBinding(undefined);
-    setExpandedConnectionId(undefined);
+    // An open editor and a pending-reconciliation notice both name rows in the
+    // replaced Collection. Equal row IDs in the successor would otherwise aim
+    // a retained draft at a different Account's policy.
+    editor.closeEditor(false);
     setSavedPendingMachineReconciliation(false);
-    restoreEditFocusRef.current = undefined;
   }
   const onCommitted = React.useCallback(() => {
     setSavedPendingMachineReconciliation(true);
@@ -7836,120 +7716,109 @@ function AccountLocalBindingsSurface(props: Readonly<{
     signal: props.signal,
     onCommitted,
   });
-  const openEditor = React.useCallback((binding: ChannelsBinding, originFocusTarget: PluginUiFocusTarget) => {
-    if (binding.deletionState !== 'none') return;
-    setEditingBinding({ bindingId: binding.bindingId, originFocusTarget });
-  }, []);
-  const closeEditor = React.useCallback((restoreOriginFocus: boolean) => {
-    if (restoreOriginFocus) restoreEditFocusRef.current = editingBinding?.originFocusTarget;
-    setEditingBinding(undefined);
-  }, [editingBinding]);
-  React.useEffect(() => {
-    if (editingBinding !== undefined || restoreEditFocusRef.current === undefined) return;
-    const target = restoreEditFocusRef.current;
-    restoreEditFocusRef.current = undefined;
-    target.focus();
-  }, [editingBinding]);
-  const refreshConnectionPolicy = React.useCallback(() => {
-    refreshConnections();
-    refresh();
-  }, [refresh, refreshConnections]);
-  const sortedConnections = React.useMemo(
-    () => sortConnectionsForDisplay(connections ?? [], t),
-    [connections, t],
-  );
-  const presentations = React.useMemo(
-    () => buildBindingPresentations(bindings ?? [], sortedConnections, t),
-    [bindings, sortedConnections, t],
-  );
-  const editingPresentation = editingBinding === undefined
+  const editingPresentation = editor.editing === undefined
     ? undefined
-    : presentations.find((presentation) => (
-      presentation.binding.bindingId === editingBinding.bindingId
+    : channels.presentations.find((presentation) => (
+      presentation.binding.bindingId === editor.editing?.bindingId
     ));
-
-  if (bindings === undefined) {
-    return (
-      <Screen testID="channels-surface">
-        <ScrollArea safeArea contentContainerStyle={{ flexGrow: 1 }}>
-          <Stack gap="large" style={{ padding: theme.spacing.large }}>
-            {resource.pending === 'initial' ? null : (
-              <IngressAttentionControls
-                signal={props.signal}
-                recoveryActionsAvailable={false}
-                t={t}
-              />
-            )}
-            {resource.pending === 'initial' ? (
-              <LoadingState
-                testID="channels-bindings-loading"
-                title={t('plugins.channels.surface.bindingsLoadingTitle', 'Loading conversation bindings')}
-                description={t(
-                  'plugins.channels.surface.bindingsLoadingDescription',
-                  'Reading the current binding policy from your Account.',
-                )}
-              />
-            ) : (
-              <ErrorState
-                testID="channels-bindings-error"
-                title={t('plugins.channels.surface.bindingsErrorTitle', 'Binding details are unavailable')}
-                description={t(
-                  'plugins.channels.surface.bindingsErrorDescription',
-                  'Refresh to try reading the current Account binding policy again.',
-                )}
-                action={(
-                  <Action.Refresh
-                    testID="channels-bindings-retry"
-                    title={t('plugins.channels.surface.tryAgain', 'Try again')}
-                    onRefresh={refresh}
-                  />
-                )}
-              />
-            )}
-          </Stack>
-        </ScrollArea>
-      </Screen>
-    );
-  }
+  const sectionState: BindingsSectionState = bindings !== undefined
+    ? BINDINGS_SECTION_READY
+    : resource.pending === 'initial'
+      ? { kind: 'loading' }
+      : {
+        kind: 'error',
+        description: t(
+          'plugins.channels.surface.bindingsErrorDescription',
+          'Refresh to try reading the current Account binding policy again.',
+        ),
+      };
 
   return (
     <BindingsContent
-      presentations={presentations}
+      presentations={channels.presentations}
       resource={resource}
       onRefresh={refresh}
       operation={operation}
+      location={location}
+      connections={channels.sortedConnections}
+      connectionsState={channels.connectionState}
+      sectionState={sectionState}
       savedPendingMachineReconciliation={savedPendingMachineReconciliation}
-      onEdit={openEditor}
-      bindingEditContent={editingBinding === undefined ? undefined : (
-        <AccountLocalBindingPolicyEditor
-          // The editor reads its detail exactly once per opened binding. A
-          // different binding is a different read, so it must be a different
-          // editor rather than a retained draft aimed at the new row.
-          key={editingBinding.bindingId}
-          collection={collection}
-          bindingId={editingBinding.bindingId}
-          presentation={editingPresentation}
-          signal={props.signal}
-          onCommitted={onCommitted}
-          onRefresh={refresh}
-          onClose={closeEditor}
-          t={t}
-        />
-      )}
-      connectionsContent={(
-        <>
+      onEdit={editor.openEditor}
+      {...(editor.editing === undefined ? {} : {
+        bindingEditContent: {
+          bindingId: editor.editing.bindingId,
+          content: (
+            <AccountLocalBindingPolicyEditor
+              // The editor reads its detail exactly once per opened binding. A
+              // different binding is a different read, so it must be a different
+              // editor rather than a retained draft aimed at the new row.
+              key={editor.editing.bindingId}
+              collection={collection}
+              bindingId={editor.editing.bindingId}
+              presentation={editingPresentation}
+              signal={props.signal}
+              onCommitted={onCommitted}
+              onRefresh={refresh}
+              onClose={editor.closeEditor}
+              t={t}
+            />
+          ),
+        },
+      })}
+      t={t}
+    />
+  );
+}
+
+/** Settings → Connections while the daemon is unreachable: the bots' Account-local policy. */
+function AccountLocalBindingsSurface(props: Readonly<{
+  signal: AbortSignal;
+}>): React.ReactElement {
+  const t = usePluginTranslation();
+  const theme = usePluginTheme();
+  const channels = useAccountLocalChannels(props.signal, t);
+  const { collection, deliveriesCollection } = channels;
+  const refreshBindings = channels.bindingsRead.refresh;
+  const refreshConnections = channels.connectionsRead.refresh;
+  const [expandedConnectionId, setExpandedConnectionId] = React.useState<string | undefined>();
+  const [savedPendingMachineReconciliation, setSavedPendingMachineReconciliation] = React.useState(false);
+  if (useReplacedAccountCollectionScope([collection, deliveriesCollection])) {
+    setExpandedConnectionId(undefined);
+    setSavedPendingMachineReconciliation(false);
+  }
+  const onCommitted = React.useCallback(() => {
+    setSavedPendingMachineReconciliation(true);
+  }, []);
+  const refreshConnectionPolicy = React.useCallback(() => {
+    refreshConnections();
+    refreshBindings();
+  }, [refreshBindings, refreshConnections]);
+
+  return (
+    <Screen testID="channels-surface">
+      <ScrollArea safeArea contentContainerStyle={{ flexGrow: 1 }}>
+        <Stack gap="large" style={{ padding: theme.spacing.large }}>
+          {savedPendingMachineReconciliation ? (
+            <Status
+              testID="channels-binding-saved-pending-machine-reconciliation"
+              tone="info"
+              label={t(
+                'plugins.channels.surface.savedPendingMachineReconciliation',
+                'Saved to your Account. The selected machine will reconcile this policy when it is available.',
+              )}
+            />
+          ) : null}
           <IngressAttentionControls
             signal={props.signal}
             recoveryActionsAvailable={false}
             t={t}
           />
           <ConnectionsContent
-            connections={sortedConnections}
-            connectionState={connections === undefined
-              ? connectionResource.pending === 'initial' ? 'loading' : 'error'
-              : 'ready'}
+            connections={channels.sortedConnections}
+            connectionState={channels.connectionState}
             signal={props.signal}
-            resource={connectionResource}
+            resource={channels.connectionsRead.resource}
             accountLocalPolicy={{ collection, deliveriesCollection, onCommitted }}
             expandedConnectionId={expandedConnectionId}
             onExpand={(connectionId) => {
@@ -7959,10 +7828,9 @@ function AccountLocalBindingsSurface(props: Readonly<{
             onRefresh={refreshConnectionPolicy}
             t={t}
           />
-        </>
-      )}
-      t={t}
-    />
+        </Stack>
+      </ScrollArea>
+    </Screen>
   );
 }
 
@@ -9838,12 +9706,25 @@ function ConnectionPollRetryControls(props: Readonly<{
  * readiness settlement all belong to that Action; this surface adds no second
  * health state of its own.
  */
-function ConnectionRetestControls(props: Readonly<{
+type ConnectionRetestProps = Readonly<{
   connection: ChannelsConnection;
   resource: ResourcePresentation;
   onRefresh: () => void;
   t: Translate;
-}>): React.ReactElement | null {
+}>;
+
+/**
+ * The one connection test: its Action, its verdict and its reconciliation. The
+ * Settings connection row and the Channels page's Bot section place its
+ * control differently; both run exactly this.
+ */
+function useConnectionRetest(props: ConnectionRetestProps): Readonly<{
+  retestable: boolean;
+  busy: boolean;
+  outcomeUnknown: boolean;
+  retest: () => Promise<void>;
+  feedback: React.ReactElement;
+}> {
   const retestAction = useExecutePluginAction(
     CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionRetest,
   );
@@ -9898,9 +9779,76 @@ function ConnectionRetestControls(props: Readonly<{
     retestAction,
   ]);
 
-  if (!retestable) return null;
-
   const busy = retestAction.execution.status === 'pending';
+  return {
+    retestable,
+    busy,
+    outcomeUnknown,
+    retest,
+    feedback: (
+      <>
+        {verdict?.kind === 'ready' ? (
+          <Banner
+            testID="channels-connection-retest-ready"
+            tone="success"
+            title={props.t('plugins.channels.surface.connectionRetestReadyTitle', 'The connection is working')}
+            description={props.t(
+              'plugins.channels.surface.connectionRetestReadyDescription',
+              'The integration provider answered this connection successfully.',
+            )}
+          />
+        ) : null}
+        {verdict?.kind === 'notReady' ? (
+          <Banner
+            testID="channels-connection-retest-not-ready"
+            tone="warning"
+            title={props.t('plugins.channels.surface.connectionRetestNotReadyTitle', 'The connection is still not working')}
+            description={verdict.diagnostic ?? providerFailureReasonDescription(verdict.reason, props.t)}
+          />
+        ) : null}
+        {retestAction.execution.status === 'error' ? (
+          <Banner
+            testID="channels-connection-retest-error"
+            tone="warning"
+            title={props.t('plugins.channels.surface.connectionRetestFailedTitle', 'Could not test the connection')}
+            description={props.t(
+              'plugins.channels.surface.connectionRetestFailedDescription',
+              'The saved connection may have changed. Refresh connection details before trying again.',
+            )}
+            action={(
+              <Action.Refresh
+                title={props.t('plugins.channels.surface.refresh', 'Refresh')}
+                onRefresh={props.onRefresh}
+              />
+            )}
+          />
+        ) : null}
+        {outcomeUnknown ? (
+          <Banner
+            testID="channels-connection-retest-outcome-unknown"
+            tone="warning"
+            title={props.t('plugins.channels.surface.connectionRetestUnknownTitle', 'Could not confirm the connection test')}
+            description={props.t(
+              'plugins.channels.surface.connectionRetestUnknownDescription',
+              'The test may already have run. Refresh connection details before trying again.',
+            )}
+            action={(
+              <Action.Refresh
+                testID="channels-connection-retest-outcome-unknown-reconcile"
+                title={props.t('plugins.channels.surface.refresh', 'Refresh')}
+                onRefresh={requestRefresh}
+              />
+            )}
+          />
+        ) : null}
+      </>
+    ),
+  };
+}
+
+function ConnectionRetestControls(props: ConnectionRetestProps): React.ReactElement | null {
+  const { retestable, busy, outcomeUnknown, retest, feedback } = useConnectionRetest(props);
+  if (!retestable) return null;
   return (
     <Stack testID="channels-connection-retest-controls" gap="small">
       <Button
@@ -9913,60 +9861,7 @@ function ConnectionRetestControls(props: Readonly<{
         disabled={busy || outcomeUnknown}
         onPress={retest}
       />
-      {verdict?.kind === 'ready' ? (
-        <Banner
-          testID="channels-connection-retest-ready"
-          tone="success"
-          title={props.t('plugins.channels.surface.connectionRetestReadyTitle', 'The connection is working')}
-          description={props.t(
-            'plugins.channels.surface.connectionRetestReadyDescription',
-            'The integration provider answered this connection successfully.',
-          )}
-        />
-      ) : null}
-      {verdict?.kind === 'notReady' ? (
-        <Banner
-          testID="channels-connection-retest-not-ready"
-          tone="warning"
-          title={props.t('plugins.channels.surface.connectionRetestNotReadyTitle', 'The connection is still not working')}
-          description={verdict.diagnostic ?? providerFailureReasonDescription(verdict.reason, props.t)}
-        />
-      ) : null}
-      {retestAction.execution.status === 'error' ? (
-        <Banner
-          testID="channels-connection-retest-error"
-          tone="warning"
-          title={props.t('plugins.channels.surface.connectionRetestFailedTitle', 'Could not test the connection')}
-          description={props.t(
-            'plugins.channels.surface.connectionRetestFailedDescription',
-            'The saved connection may have changed. Refresh connection details before trying again.',
-          )}
-          action={(
-            <Action.Refresh
-              title={props.t('plugins.channels.surface.refresh', 'Refresh')}
-              onRefresh={props.onRefresh}
-            />
-          )}
-        />
-      ) : null}
-      {outcomeUnknown ? (
-        <Banner
-          testID="channels-connection-retest-outcome-unknown"
-          tone="warning"
-          title={props.t('plugins.channels.surface.connectionRetestUnknownTitle', 'Could not confirm the connection test')}
-          description={props.t(
-            'plugins.channels.surface.connectionRetestUnknownDescription',
-            'The test may already have run. Refresh connection details before trying again.',
-          )}
-          action={(
-            <Action.Refresh
-              testID="channels-connection-retest-outcome-unknown-reconcile"
-              title={props.t('plugins.channels.surface.refresh', 'Refresh')}
-              onRefresh={requestRefresh}
-            />
-          )}
-        />
-      ) : null}
+      {feedback}
     </Stack>
   );
 }
@@ -11927,18 +11822,13 @@ function ConnectionsContent(props: Readonly<{
   );
 }
 
-function DaemonChannelsSurface(props: Readonly<{
-  signal: AbortSignal;
-  targetPluginId: string;
-}>): React.ReactElement {
-  const t = usePluginTranslation();
+/**
+ * The daemon-served reading both Channels destinations share: the two live
+ * Account Resources, parsed once, with each section's own availability.
+ */
+function useDaemonChannelsResources(t: Translate) {
   const { resource: bindingsResource, refresh: refreshBindings } = useLivePluginResource(CHANNELS_BINDINGS_RESOURCE);
   const { resource, refresh } = useLivePluginResource(CHANNELS_CONNECTIONS_RESOURCE);
-  const [expandedConnectionId, setExpandedConnectionId] = React.useState<string | undefined>();
-  const [pendingBindingConnectionId, setPendingBindingConnectionId] = React.useState<string | undefined>();
-  const [bindingCreateRequest, setBindingCreateRequest] = React.useState<
-    Readonly<{ connectionId: string; requestId: number }> | undefined
-  >();
   const parsedBindings = React.useMemo(
     () => (bindingsResource.value === undefined ? undefined : parseBindingsResource(bindingsResource.value)),
     [bindingsResource.value],
@@ -11951,6 +11841,76 @@ function DaemonChannelsSurface(props: Readonly<{
     () => sortConnectionsForDisplay(parsedConnections?.kind === 'ready' ? parsedConnections.connections : [], t),
     [parsedConnections, t],
   );
+  const presentations = React.useMemo(
+    () => buildBindingPresentations(
+      parsedBindings?.kind === 'ready' ? parsedBindings.bindings : [],
+      connections,
+      t,
+    ),
+    [connections, parsedBindings, t],
+  );
+  const connectionsResource = React.useMemo<ResourcePresentation>(() => ({
+    pending: resource.pending,
+    freshness: resource.freshness,
+    subscription: resource.subscription,
+    ...(resource.error === undefined ? {} : { error: resource.error }),
+  }), [resource.error, resource.freshness, resource.pending, resource.subscription]);
+  const bindingsResourcePresentation = React.useMemo<ResourcePresentation>(() => ({
+    pending: bindingsResource.pending,
+    freshness: bindingsResource.freshness,
+    subscription: bindingsResource.subscription,
+    ...(bindingsResource.error === undefined ? {} : { error: bindingsResource.error }),
+  }), [bindingsResource.error, bindingsResource.freshness, bindingsResource.pending, bindingsResource.subscription]);
+  const connectionState: 'loading' | 'error' | 'ready' = resource.value === undefined || parsedConnections?.kind === 'invalid'
+    ? resource.pending === 'initial' ? 'loading' : 'error'
+    : 'ready';
+  // Each section owns its own availability. A binding Resource failure leaves
+  // connection management, provider setup, and ingress recovery reachable.
+  const bindingsSectionState: BindingsSectionState = parsedBindings?.kind === 'invalid'
+    ? { kind: 'error', description: parseResourceErrorMessage(parsedBindings.reason, t, 'binding') }
+    : bindingsResource.value !== undefined
+      ? BINDINGS_SECTION_READY
+      : bindingsResource.pending === 'initial'
+        ? { kind: 'loading' }
+        : {
+          kind: 'error',
+          description: t(
+            'plugins.channels.surface.bindingsErrorDescription',
+            'Refresh to try reading the current Account binding policy again.',
+          ),
+        };
+  return {
+    connections,
+    presentations,
+    connectionsResource,
+    bindingsResource: bindingsResourcePresentation,
+    connectionState,
+    bindingsSectionState,
+    refreshBindings,
+    refreshConnections: refresh,
+  };
+}
+
+/**
+ * Settings → Conversation Channels → Connections: the Account's bots. It keeps
+ * connecting and managing a bot, connection-level recovery, and linking a
+ * conversation (with its pairing step). Each linked conversation is managed on
+ * the Channels page, which a finished link opens.
+ */
+function DaemonChannelsSurface(props: Readonly<{
+  signal: AbortSignal;
+  targetPluginId: string;
+}>): React.ReactElement {
+  const t = usePluginTranslation();
+  const theme = usePluginTheme();
+  const hostApi = usePluginHostApi();
+  const channels = useDaemonChannelsResources(t);
+  const refresh = channels.refreshConnections;
+  const [expandedConnectionId, setExpandedConnectionId] = React.useState<string | undefined>();
+  const [pendingBindingConnectionId, setPendingBindingConnectionId] = React.useState<string | undefined>();
+  const [bindingCreateRequest, setBindingCreateRequest] = React.useState<
+    Readonly<{ connectionId: string; requestId: number }> | undefined
+  >();
   const onConnectionCreated = React.useCallback((connectionId: string) => {
     setExpandedConnectionId(connectionId);
     setPendingBindingConnectionId(connectionId);
@@ -11969,70 +11929,70 @@ function DaemonChannelsSurface(props: Readonly<{
     setBindingCreateRequest(undefined);
     setPendingBindingConnectionId(undefined);
   }, []);
-  const bindings = React.useMemo(
-    () => buildBindingPresentations(
-      parsedBindings?.kind === 'ready' ? parsedBindings.bindings : [],
-      connections,
-      t,
-    ),
-    [connections, parsedBindings, t],
-  );
-
-  const resourcePresentation: ResourcePresentation = {
-    pending: resource.pending,
-    freshness: resource.freshness,
-    subscription: resource.subscription,
-    ...(resource.error === undefined ? {} : { error: resource.error }),
-  };
-  const bindingsResourcePresentation: ResourcePresentation = {
-    pending: bindingsResource.pending,
-    freshness: bindingsResource.freshness,
-    subscription: bindingsResource.subscription,
-    ...(bindingsResource.error === undefined ? {} : { error: bindingsResource.error }),
-  };
-  const connectionState = resource.value === undefined || parsedConnections?.kind === 'invalid'
-    ? resource.pending === 'initial' ? 'loading' : 'error'
-    : 'ready';
-  // Each section owns its own availability. A binding Resource failure leaves
-  // connection management, provider setup, and ingress recovery reachable.
-  const bindingsSectionState: BindingsSectionState = parsedBindings?.kind === 'invalid'
-    ? { kind: 'error', description: parseResourceErrorMessage(parsedBindings.reason, t, 'binding') }
-    : bindingsResource.value !== undefined
-      ? BINDINGS_SECTION_READY
-      : bindingsResource.pending === 'initial'
-        ? { kind: 'loading' }
-        : {
-          kind: 'error',
-          description: t(
-            'plugins.channels.surface.bindingsErrorDescription',
-            'Refresh to try reading the current Account binding policy again.',
-          ),
-        };
+  const openConversation = React.useCallback((subPath: string) => {
+    void hostApi.openSurface(CHANNELS_PAGE_VIEW_ID, undefined, { subPath }).catch(() => undefined);
+  }, [hostApi]);
+  // A finished pairing continues into review on the conversation's page, the
+  // one owner of reviewing and turning on a saved binding.
+  const onPairingCompleted = React.useCallback((bindingId: string) => {
+    openConversation(`${bindingId}/edit`);
+  }, [openConversation]);
+  const bindingCount = channels.presentations.length;
 
   return (
-    <OnlineBindingsContent
-      presentations={bindings}
-      resource={bindingsResourcePresentation}
-      sectionState={bindingsSectionState}
-      onRefresh={refreshBindings}
-      onRefreshConnections={refresh}
-      connections={connections}
-      signal={props.signal}
-      bindingCreateRequest={bindingCreateRequest}
-      onBindingCreateOpened={onBindingCreateOpened}
-      connectionsContent={(
-        <>
+    <Screen testID="channels-surface" safeArea>
+      <ScrollArea contentContainerStyle={{ padding: theme.spacing.large, paddingBottom: theme.spacing.large * 2 }}>
+        <Stack gap="large" testID="channels-settings-content">
+          <Stack gap="small">
+            <Heading level={1} value={t('plugins.channels.surface.title', 'Conversation Channels')} />
+            <Text
+              value={t(
+                'plugins.channels.settings.description',
+                'Each connection is one bot, used by every conversation linked through it. Linked conversations are managed in Channels.',
+              )}
+            />
+          </Stack>
+          <ItemGroup
+            testID="channels-settings-conversations"
+            surface="none"
+            title={t('plugins.channels.settings.conversations', 'Linked conversations')}
+            description={bindingCount === 0
+              ? t('plugins.channels.settings.conversationsNone', 'No conversation is linked yet.')
+              : t('plugins.channels.settings.conversationsCount', '{count} linked conversations. Pause, edit or unlink them in Channels.', { count: bindingCount })}
+            action={(
+              <Button
+                testID="channels-settings-open-channels"
+                variant="secondary"
+                title={t('plugins.channels.settings.openChannels', 'Open Channels')}
+                onPress={() => openConversation('')}
+              />
+            )}
+          >
+            {channels.bindingsSectionState.kind === 'ready' ? (
+              <BindingCreateJourney
+                connections={channels.connections}
+                resource={channels.bindingsResource}
+                signal={props.signal}
+                onRefresh={channels.refreshBindings}
+                onPairingCompleted={onPairingCompleted}
+                onOpenCreated={openConversation}
+                openRequest={bindingCreateRequest}
+                onOpenConsumed={onBindingCreateOpened}
+                t={t}
+              />
+            ) : null}
+          </ItemGroup>
           <IngressAttentionControls
             signal={props.signal}
             recoveryActionsAvailable
             t={t}
           />
           <ConnectionsContent
-            connections={connections}
-            connectionState={connectionState}
+            connections={channels.connections}
+            connectionState={channels.connectionState}
             signal={props.signal}
             targetPluginId={props.targetPluginId}
-            resource={resourcePresentation}
+            resource={channels.connectionsResource}
             expandedConnectionId={expandedConnectionId}
             onExpand={(connectionId) => {
               setExpandedConnectionId((current) => current === connectionId ? undefined : connectionId);
@@ -12043,8 +12003,32 @@ function DaemonChannelsSurface(props: Readonly<{
             onRefresh={refresh}
             t={t}
           />
-        </>
-      )}
+        </Stack>
+      </ScrollArea>
+    </Screen>
+  );
+}
+
+/** The Channels page served by the daemon: every conversation, and its editing. */
+function DaemonChannelsPageSurface(props: Readonly<{
+  signal: AbortSignal;
+  subPath: string | undefined;
+}>): React.ReactElement {
+  const t = usePluginTranslation();
+  const channels = useDaemonChannelsResources(t);
+  const location = React.useMemo(() => readChannelsPageLocation(props.subPath), [props.subPath]);
+  return (
+    <OnlineBindingsContent
+      presentations={channels.presentations}
+      resource={channels.bindingsResource}
+      sectionState={channels.bindingsSectionState}
+      onRefresh={channels.refreshBindings}
+      location={location}
+      connections={channels.connections}
+      connectionsState={channels.connectionState}
+      connectionsResource={channels.connectionsResource}
+      onRefreshConnections={channels.refreshConnections}
+      signal={props.signal}
       t={t}
     />
   );
@@ -12099,37 +12083,60 @@ function sessionBindingAttentionTitle(
 }
 
 /**
- * The one exit from Session attention. Recovery controls have exactly one
- * owner — the Channels Settings page — so this routes to that destination
- * through the host's Surface Registry instead of making the read-only Session
- * list a second writer of the same Account rows.
+ * The session tab's ways into the Channels page, the one owner of the link journey and of everything a
+ * conversation can be set to: this conversation (`subPath: bindingId`), or the link journey, optionally on
+ * one bot (`link/<connectionId>`).
  */
-function SessionConversationsRecoveryAction(props: Readonly<{
+function useOpenChannelsPage(): Readonly<{
+  open: (subPath: string) => Promise<boolean>;
+}> {
+  const hostApi = usePluginHostApi();
+  return React.useMemo(() => ({
+    open: async (subPath: string) => {
+      try {
+        await hostApi.openSurface({
+          pluginId: CONVERSATION_CORE_PLUGIN_ID_V1,
+          localId: CHANNELS_PAGE_VIEW_ID,
+        }, undefined, { subPath });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  }), [hostApi]);
+}
+
+/**
+ * The Session tab's exit to this conversation on the Channels page, where its policy is edited.
+ * Pause, Resume and Unlink are the page's own actions and sit beside it in the open row.
+ */
+function OpenInChannelsAction(props: Readonly<{
+  bindingId: string;
+  variant?: 'secondary' | 'plain';
+  testID?: string;
   t: Translate;
 }>): React.ReactElement {
-  const hostApi = usePluginHostApi();
+  const page = useOpenChannelsPage();
   const [unavailable, setUnavailable] = React.useState(false);
   const open = React.useCallback(() => {
     setUnavailable(false);
-    void hostApi.openSurface({
-      pluginId: CONVERSATION_CORE_PLUGIN_ID_V1,
-      localId: CHANNELS_SETTINGS_PAGE_ID,
-    }).catch(() => { setUnavailable(true); });
-  }, [hostApi]);
+    void page.open(props.bindingId).then((opened) => { if (!opened) setUnavailable(true); });
+  }, [page, props.bindingId]);
   return (
     <Stack gap="small">
       <Button
-        testID="channels-session-conversations-manage"
-        title={props.t('plugins.channels.session.manage', 'Manage in Settings')}
+        testID={props.testID ?? `channels-session-conversation-open:${props.bindingId}`}
+        variant={props.variant ?? 'plain'}
+        title={props.t('plugins.channels.session.openInChannels', 'Open in Channels')}
         onPress={open}
       />
       {unavailable ? (
         <Status
-          testID="channels-session-conversations-manage-unavailable"
+          testID={`channels-session-conversation-open-unavailable:${props.bindingId}`}
           tone="warning"
           label={props.t(
-            'plugins.channels.session.manageUnavailable',
-            'Conversation settings could not be opened here. Open Settings to review this conversation.',
+            'plugins.channels.session.openInChannelsUnavailable',
+            'Channels could not be opened here. Open Channels from the sidebar to review this conversation.',
           )}
         />
       ) : null}
@@ -12162,9 +12169,10 @@ function SessionProjectionGapRecoveryAction(props: Readonly<{
     <Stack gap="small">
       <Button
         testID={`channels-session-transcript-baseline-accept:${props.attention.bindingId}`}
+        variant="secondary"
         title={busy
           ? props.t('plugins.channels.session.transcriptBaselineAccepting', 'Accepting baseline…')
-          : props.t('plugins.channels.session.transcriptBaselineAccept', 'Continue from current transcript')}
+          : props.t('plugins.channels.session.continueFromHere', 'Continue from here')}
         accessibilityLabel={props.t(
           'plugins.channels.session.transcriptBaselineAccept',
           'Continue from current transcript',
@@ -12174,15 +12182,11 @@ function SessionProjectionGapRecoveryAction(props: Readonly<{
         onPress={() => { void accept(); }}
       />
       {action.execution.status === 'error' || action.execution.status === 'outcomeUnknown' ? (
-        <Banner
+        <Status
           tone="warning"
-          title={props.t(
+          label={props.t(
             'plugins.channels.session.transcriptBaselineUnconfirmed',
             'Could not confirm the new transcript baseline',
-          )}
-          description={props.t(
-            'plugins.channels.session.transcriptBaselineUnconfirmedDescription',
-            'Refresh this conversation before trying again.',
           )}
           action={<Action.Refresh title={props.t('plugins.channels.surface.refresh', 'Refresh')} onRefresh={props.onRefresh} />}
         />
@@ -12191,23 +12195,465 @@ function SessionProjectionGapRecoveryAction(props: Readonly<{
   );
 }
 
-/**
- * The Session destination: a read-only list of the external conversations bound
- * to THIS Session.
+/*
+ * The Session tab (plugin tabs round 2, lab `plugin-tabs` X1 / XP / XL / XE / ST).
  *
- * It is deliberately read-only. Binding creation, editing, enablement, delete
- * and custody resolution stay with the Settings surface, which is their single
- * owner; duplicating them here would put a second mutation path on the same
- * Account rows. Navigation into this list is contributed through the generic
- * Session-header catalog and the two Composer chips, not through a Channels
- * navigation of its own.
+ * The conversations bound to THIS Session, grouped by what they are doing — Needs you, Live, Paused, the
+ * Agents roster's grammar — so the state is said once per group and the rows carry identity only: the
+ * provider's mark, the conversation, and "Provider · bot". Only a needs-you row speaks: its cause and its
+ * one recovery. Pressing a row opens it in place with what it hears and gets, and the page's own actions
+ * (Pause / Resume, Open in Channels, Unlink): the same writers the Channels page calls with the same
+ * revision, so there is no second mutation path. The header "+" opens Channels' link journey on a bot.
  */
+
+type SessionConversationGroup = 'need' | 'live' | 'paused';
+
+type SessionConversationRowModel = Readonly<{
+  presentation: BindingPresentation;
+  attention?: ConversationSessionBindingAttentionV1;
+  lastDelivery?: ConversationSessionLastDeliveryV1;
+  group: SessionConversationGroup;
+}>;
+
+/** A reply time as the pane says it: the time today, the weekday this week, else the date. */
+function formatSessionReplyTime(atMs: number, locale: string, nowMs = Date.now()): string {
+  const at = new Date(atMs);
+  const now = new Date(nowMs);
+  if (at.toDateString() === now.toDateString()) {
+    return new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(at);
+  }
+  if (nowMs - atMs < 6 * 86_400_000 && nowMs >= atMs) {
+    return new Intl.DateTimeFormat(locale, { weekday: 'short' }).format(at);
+  }
+  return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }).format(at);
+}
+
+/** A deliberately paused binding is Paused, never Needs you; every other attention reason needs the person. */
+function sessionConversationGroup(
+  binding: ChannelsBinding,
+  attention: ConversationSessionBindingAttentionV1 | undefined,
+): SessionConversationGroup {
+  if (attention !== undefined && attention.reason !== 'bindingDisabled') return 'need';
+  return binding.enabled && attention?.reason !== 'bindingDisabled' ? 'live' : 'paused';
+}
+
+function buildSessionConversationSections(
+  presentations: readonly BindingPresentation[],
+  attentionByBindingId: ReadonlyMap<string, ConversationSessionBindingAttentionV1>,
+  lastDeliveries: ReadonlyMap<string, ConversationSessionLastDeliveryV1>,
+  t: Translate,
+): readonly ListSectionData<SessionConversationRowModel>[] {
+  const groups: Record<SessionConversationGroup, SessionConversationRowModel[]> = { need: [], live: [], paused: [] };
+  for (const presentation of presentations) {
+    const attention = attentionByBindingId.get(presentation.binding.bindingId);
+    const lastDelivery = lastDeliveries.get(presentation.binding.bindingId);
+    const group = sessionConversationGroup(presentation.binding, attention);
+    groups[group].push({
+      presentation,
+      group,
+      ...(attention === undefined ? {} : { attention }),
+      ...(lastDelivery === undefined ? {} : { lastDelivery }),
+    });
+  }
+  const titles: Record<SessionConversationGroup, string> = {
+    need: t('plugins.channels.session.groupNeedsYou', 'Needs you'),
+    live: t('plugins.channels.session.groupLive', 'Live'),
+    paused: t('plugins.channels.session.groupPaused', 'Paused'),
+  };
+  return (['need', 'live', 'paused'] as const)
+    .filter((group) => groups[group].length > 0)
+    .map((group) => ({ key: group, title: titles[group], count: groups[group].length, data: groups[group] }));
+}
+
+function sessionConversationRowKey(row: SessionConversationRowModel): string {
+  return row.presentation.binding.bindingId;
+}
+
+/** Pause / Resume and Unlink: the Channels page's own writers, at the revision the tab already holds. */
+function SessionConversationActions(props: Readonly<{
+  row: SessionConversationRowModel;
+  onRefresh: () => void;
+  t: Translate;
+}>): React.ReactElement {
+  const { t } = props;
+  const { binding } = props.row.presentation;
+  const title = bindingEndpointLabel(binding, t);
+  const setEnabled = useExecutePluginAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingSetEnabled);
+  const remove = useExecutePluginAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingDelete);
+  const [confirmingUnlink, setConfirmingUnlink] = React.useState(false);
+  const paused = props.row.group === 'paused';
+  const toggle = React.useCallback(async () => {
+    const settled = await setEnabled.execute({
+      bindingId: binding.bindingId,
+      expectedRevision: binding.revision,
+      enabled: paused,
+    });
+    if (settled.status === 'success') props.onRefresh();
+  }, [binding.bindingId, binding.revision, paused, props, setEnabled]);
+  const unlink = React.useCallback(async () => {
+    const settled = await remove.execute({ bindingId: binding.bindingId, expectedRevision: binding.revision });
+    if (settled.status === 'success') props.onRefresh();
+  }, [binding.bindingId, binding.revision, props, remove]);
+  const failed = setEnabled.execution.status === 'error' || setEnabled.execution.status === 'outcomeUnknown'
+    || remove.execution.status === 'error' || remove.execution.status === 'outcomeUnknown';
+
+  if (confirmingUnlink) {
+    return (
+      <Stack gap="small" testID={`channels-session-conversation-unlink-confirm:${binding.bindingId}`}>
+        <Text
+          variant="caption"
+          tone="secondary"
+          value={t(
+            'plugins.channels.session.unlinkConfirm',
+            '{name} stops talking to this session. The chat itself is not changed.',
+            { name: title },
+          )}
+        />
+        <Row gap="small" align="center">
+          <Button
+            variant="destructive"
+            title={t('plugins.channels.session.unlink', 'Unlink')}
+            busy={remove.execution.status === 'pending'}
+            onPress={() => unlink()}
+          />
+          <Button
+            variant="plain"
+            title={t('plugins.channels.session.cancel', 'Cancel')}
+            onPress={() => { setConfirmingUnlink(false); }}
+          />
+        </Row>
+      </Stack>
+    );
+  }
+  return (
+    <Stack gap="small">
+      <Row gap="small" align="center">
+        <Button
+          testID={`channels-session-conversation-${paused ? 'resume' : 'pause'}:${binding.bindingId}`}
+          variant={paused ? 'primary' : 'secondary'}
+          title={paused
+            ? t('plugins.channels.session.resume', 'Resume')
+            : t('plugins.channels.session.pause', 'Pause')}
+          busy={setEnabled.execution.status === 'pending'}
+          onPress={() => toggle()}
+        />
+        <OpenInChannelsAction
+          bindingId={binding.bindingId}
+          testID={`channels-session-conversation-peek-open:${binding.bindingId}`}
+          t={t}
+        />
+        <Stack style={{ flex: 1 }} />
+        <Button
+          testID={`channels-session-conversation-unlink:${binding.bindingId}`}
+          variant="plain"
+          title={t('plugins.channels.session.unlink', 'Unlink')}
+          accessibilityLabel={t('plugins.channels.session.unlinkNamed', 'Unlink {name}', { name: title })}
+          onPress={() => { setConfirmingUnlink(true); }}
+        />
+      </Row>
+      {failed ? (
+        <Status
+          tone="warning"
+          label={t(
+            'plugins.channels.session.actionFailed',
+            'That didn’t go through. Refresh and try again, or change it in Channels.',
+          )}
+          action={<Action.Refresh title={t('plugins.channels.surface.refresh', 'Refresh')} onRefresh={props.onRefresh} />}
+        />
+      ) : null}
+    </Stack>
+  );
+}
+
+/** What the conversation is to this session, in words: calm label/value pairs, then its actions. */
+function SessionConversationPeek(props: Readonly<{
+  row: SessionConversationRowModel;
+  offline: boolean;
+  onRefresh: () => void;
+  t: Translate;
+}>): React.ReactElement {
+  const { t } = props;
+  const { binding, connection } = props.row.presentation;
+  const { locale } = useSurfaceContext();
+  const approvals = bindingApprovalSummary(binding, t);
+  const lastDelivery = props.row.lastDelivery;
+  const entries = [
+    { label: t('plugins.channels.session.hears', 'Hears'), value: bindingInputModeLabel(binding.inputMode, t) },
+    { label: t('plugins.channels.session.gets', 'Gets'), value: bindingDeliveryModeLabel(binding.deliveryMode, t) },
+    ...(approvals === undefined ? [] : [{ label: t('plugins.channels.session.approvals', 'Approvals'), value: approvals }]),
+    ...(connection === undefined ? [] : [{
+      label: t('plugins.channels.session.bot', 'Bot'),
+      value: `${connectionLabel(connection)} · ${connectionStatus(connection, t).label}`,
+      ...(connectionStatus(connection, t).tone === 'success' ? {} : { tone: 'warning' as const }),
+    }]),
+    ...(lastDelivery === undefined ? [] : [{
+      label: t('plugins.channels.session.lastReply', 'Last reply'),
+      value: lastDelivery.outcome === 'notDelivered'
+        ? t('plugins.channels.session.lastReplyNotDelivered', 'Not delivered · {time}', { time: formatSessionReplyTime(lastDelivery.atMs, locale) })
+        : lastDelivery.outcome === 'pending'
+          ? t('plugins.channels.session.lastReplySending', 'Sending · {time}', { time: formatSessionReplyTime(lastDelivery.atMs, locale) })
+          : formatSessionReplyTime(lastDelivery.atMs, locale),
+      ...(lastDelivery.outcome === 'notDelivered' ? { tone: 'warning' as const } : {}),
+    }]),
+  ];
+  return (
+    <Stack gap="medium" testID={`channels-session-conversation-peek:${binding.bindingId}`}>
+      <Metadata entries={entries} />
+      {props.offline ? (
+        <OpenInChannelsAction bindingId={binding.bindingId} variant="secondary" testID={`channels-session-conversation-peek-open:${binding.bindingId}`} t={t} />
+      ) : (
+        <SessionConversationActions row={props.row} onRefresh={props.onRefresh} t={t} />
+      )}
+    </Stack>
+  );
+}
+
+function SessionConversationRow(props: Readonly<{
+  row: SessionConversationRowModel;
+  expanded: boolean;
+  offline: boolean;
+  onToggle: (bindingId: string) => void;
+  onRefresh: () => void;
+  t: Translate;
+}>): React.ReactElement {
+  const { t, row } = props;
+  const { binding, connection } = row.presentation;
+  const resolveProviderDisplayName = usePluginBrandDisplayNameResolver();
+  const title = bindingEndpointLabel(binding, t);
+  const subtitle = connection === undefined
+    ? bindingAudienceLabel(binding.endpoint.audience, t)
+    : `${resolveProviderDisplayName(connection.providerPluginId) ?? t('plugins.channels.surface.providerFallback', 'Integration provider')} · ${connectionLabel(connection)}`;
+  const attention = row.group === 'need' ? row.attention : undefined;
+  const { locale } = useSurfaceContext();
+  // The trailing time is the latest reply sent (lab XA); a paused conversation shows none.
+  const lastReply = row.group === 'paused' || row.lastDelivery === undefined
+    ? undefined
+    : formatSessionReplyTime(row.lastDelivery.atMs, locale);
+  return (
+    <List.Item
+      testID={`channels-session-conversation:${binding.bindingId}`}
+      {...(lastReply === undefined ? {} : { detail: lastReply })}
+      title={title}
+      titleNumberOfLines={1}
+      subtitle={subtitle}
+      subtitleNumberOfLines={1}
+      accessibilityLabel={title}
+      accessibilityHint={attention === undefined ? subtitle : `${subtitle}. ${sessionBindingAttentionTitle(attention.reason, t)}`}
+      icon={connection === undefined
+        ? <Icon name="conversations" size="small" tone="secondary" />
+        : <BrandMark pluginId={connection.providerPluginId} size="small" externallyLabelled />}
+      onPress={() => { props.onToggle(binding.bindingId); }}
+      expanded={props.expanded}
+      expandedContent={<SessionConversationPeek row={row} offline={props.offline} onRefresh={props.onRefresh} t={t} />}
+    >
+      {attention === undefined ? null : (
+        <Stack gap="small" testID={`channels-session-conversation-attention:${binding.bindingId}`}>
+          <Row gap="xsmall" align="center">
+            <Icon name="warning" size="small" tone="warning" />
+            <Text variant="caption" tone="warning" value={sessionBindingAttentionTitle(attention.reason, t)} />
+          </Row>
+          {attention.reason === 'transcriptHistoryGap'
+            ? <SessionProjectionGapRecoveryAction attention={attention} onRefresh={props.onRefresh} t={t} />
+            : <OpenInChannelsAction bindingId={binding.bindingId} variant="secondary" t={t} />}
+        </Stack>
+      )}
+    </List.Item>
+  );
+}
+
+/** The header "+": Channels' own link journey, on the bot the person picks (skipped when there is one). */
+function SessionConversationLinkControl(props: Readonly<{
+  connections: readonly ChannelsConnection[] | null;
+  t: Translate;
+}>): React.ReactElement {
+  const { t } = props;
+  const page = useOpenChannelsPage();
+  const [open, setOpen] = React.useState(false);
+  const resolveProviderDisplayName = usePluginBrandDisplayNameResolver();
+  const bots = (props.connections ?? []).filter((connection) => connection.deletionState === 'none');
+  const label = t('plugins.channels.session.link', 'Link a conversation');
+  if (props.connections === null || bots.length <= 1) {
+    const subPath = bots.length === 1 ? `link/${bots[0]!.connectionId}` : 'link';
+    return (
+      <IconButton
+        testID="channels-session-conversations-link"
+        accessibilityLabel={label}
+        icon={<Icon name="add" size="medium" tone="neutral" />}
+        onPress={() => { void page.open(subPath); }}
+      />
+    );
+  }
+  return (
+    <Menu
+      testID="channels-session-conversations-link"
+      open={open}
+      onOpenChange={setOpen}
+      trigger={label}
+      triggerIcon="add"
+      triggerAccessibilityLabel={label}
+      items={[
+        ...bots.map((connection) => ({
+          id: `bot:${connection.connectionId}`,
+          label: connectionLabel(connection),
+          subtitle: resolveProviderDisplayName(connection.providerPluginId) ?? t('plugins.channels.surface.providerFallback', 'Integration provider'),
+        })),
+        { id: 'open-channels', label: t('plugins.channels.session.openChannels', 'Open Channels') },
+      ]}
+      onSelect={(id) => {
+        setOpen(false);
+        void page.open(id.startsWith('bot:') ? `link/${id.slice('bot:'.length)}` : '');
+      }}
+    />
+  );
+}
+
+/** Retained rows at full strength under one freshness line (pane-states), never a banner over them. */
+function SessionConversationsFreshness(props: Readonly<{
+  resource: ResourcePresentation;
+  offline: boolean;
+  onRefresh: () => void;
+  t: Translate;
+}>): React.ReactElement | null {
+  const { t, resource } = props;
+  const prefix = 'channels-session-conversations-resource';
+  if (props.offline) {
+    return (
+      <FreshnessLine
+        testID={`${prefix}-offline`}
+        tone="warning"
+        reason={t(
+          'plugins.channels.session.offlineReason',
+          'Channels isn’t reachable. Names and pauses are from your account; bots and actions come back with it.',
+        )}
+        action={{ label: t('plugins.channels.surface.tryAgain', 'Try again'), onPress: props.onRefresh }}
+      />
+    );
+  }
+  if (!resourceFreshnessNoticeApplies(resource)) return null;
+  if (resource.pending === 'refresh') {
+    return (
+      <FreshnessLine
+        testID={`${prefix}-refreshing`}
+        busy
+        reason={t('plugins.channels.session.refreshing', 'Refreshing…')}
+      />
+    );
+  }
+  const stale = resource.freshness === 'stale' || resource.error !== undefined;
+  return (
+    <FreshnessLine
+      testID={stale ? `${prefix}-stale` : `${prefix}-live-updates-ended`}
+      tone="warning"
+      reason={stale
+        ? t('plugins.channels.session.staleReason', 'Showing the last known conversations')
+        : t('plugins.channels.session.liveUpdatesEndedReason', 'Live updates stopped')}
+      action={{
+        label: stale ? t('plugins.channels.surface.tryAgain', 'Try again') : t('plugins.channels.surface.refresh', 'Refresh'),
+        onPress: props.onRefresh,
+      }}
+    />
+  );
+}
+
+function SessionConversationsEmpty(props: Readonly<{
+  connections: readonly ChannelsConnection[] | null;
+  t: Translate;
+}>): React.ReactElement {
+  const { t } = props;
+  const page = useOpenChannelsPage();
+  const bots = (props.connections ?? []).filter((connection) => connection.deletionState === 'none');
+  return (
+    <EmptyState
+      testID="channels-session-conversations-empty"
+      icon="conversations"
+      title={t('plugins.channels.session.emptyInviteTitle', 'Talk to this session from your chats')}
+      description={t(
+        'plugins.channels.session.emptyInviteDescription',
+        'Link a Telegram, Discord or GitHub conversation to this session. Messages arrive here, and replies go back.',
+      )}
+      action={(
+        <Button
+          testID="channels-session-conversations-empty-link"
+          variant="primary"
+          title={t('plugins.channels.session.link', 'Link a conversation')}
+          onPress={() => { void page.open(bots.length === 1 ? `link/${bots[0]!.connectionId}` : 'link'); }}
+        />
+      )}
+    />
+  );
+}
+
+/** The tab itself: one composition for the daemon read and the Account-local read. */
+function SessionConversationsTab(props: Readonly<{
+  presentations: readonly BindingPresentation[];
+  attentionByBindingId: ReadonlyMap<string, ConversationSessionBindingAttentionV1>;
+  lastDeliveries: ReadonlyMap<string, ConversationSessionLastDeliveryV1>;
+  /** `null` while the bots are not known (the Account-local read). */
+  connections: readonly ChannelsConnection[] | null;
+  resource: ResourcePresentation;
+  offline: boolean;
+  onRefresh: () => void;
+}>): React.ReactElement {
+  const t = usePluginTranslation();
+  const { presentations, attentionByBindingId } = props;
+  const [expandedId, setExpandedId] = React.useState<string | null>(null);
+  const onToggle = React.useCallback((bindingId: string) => {
+    setExpandedId((current) => (current === bindingId ? null : bindingId));
+  }, []);
+  const sections = React.useMemo(
+    () => buildSessionConversationSections(presentations, attentionByBindingId, props.lastDeliveries, t),
+    [attentionByBindingId, presentations, props.lastDeliveries, t],
+  );
+  const needsYou = sections.find((section) => section.key === 'need')?.count ?? 0;
+  const headerActions = React.useMemo(
+    () => <SessionConversationLinkControl connections={props.connections} t={t} />,
+    [props.connections, t],
+  );
+  const header = (
+    <PaneHeaderContent
+      line={needsYou > 0 ? [{ text: t('plugins.channels.session.needsYouCount', '{count} needs you', { count: needsYou }), attention: true }] : []}
+      actions={headerActions}
+    />
+  );
+  if (presentations.length === 0) {
+    return (
+      <Screen testID="channels-session-conversations" safeArea>
+        {header}
+        <SessionConversationsEmpty connections={props.connections} t={t} />
+      </Screen>
+    );
+  }
+  return (
+    <Screen testID="channels-session-conversations" safeArea>
+      {header}
+      <List<SessionConversationRowModel>
+        sections={sections}
+        keyForItem={sessionConversationRowKey}
+        accessibilityLabel={t('plugins.channels.session.title', 'External conversations')}
+        testID="channels-session-conversations-list"
+        style={{ flex: 1 }}
+        header={<SessionConversationsFreshness resource={props.resource} offline={props.offline} onRefresh={props.onRefresh} t={t} />}
+        renderItem={(row) => (
+          <SessionConversationRow
+            row={row}
+            expanded={expandedId === row.presentation.binding.bindingId}
+            offline={props.offline}
+            onToggle={onToggle}
+            onRefresh={props.onRefresh}
+            t={t}
+          />
+        )}
+      />
+    </Screen>
+  );
+}
+
+const NO_ATTENTION: ReadonlyMap<string, ConversationSessionBindingAttentionV1> = new Map();
+
 function SessionConversationsSurface(props: Readonly<{
   sessionId: string;
 }>): React.ReactElement {
   const t = usePluginTranslation();
-  const theme = usePluginTheme();
-  const resolveProviderDisplayName = usePluginBrandDisplayNameResolver();
   const { resource, refresh } = useLivePluginResource(CHANNELS_SESSION_CONVERSATIONS_RESOURCE);
   const { resource: connectionsResource } = useLivePluginResource(CHANNELS_CONNECTIONS_RESOURCE);
   const sessionConversations = React.useMemo(
@@ -12221,11 +12667,12 @@ function SessionConversationsSurface(props: Readonly<{
       : parseConnectionsResource(connectionsResource.value)),
     [connectionsResource.value],
   );
+  const connections = parsedConnections?.kind === 'ready' ? parsedConnections.connections : null;
   const presentations = React.useMemo(() => buildBindingPresentations(
     parsed?.kind === 'ready' ? parsed.bindings : [],
-    parsedConnections?.kind === 'ready' ? parsedConnections.connections : [],
+    connections ?? [],
     t,
-  ), [parsed, parsedConnections, t]);
+  ), [connections, parsed, t]);
   const attentionByBindingId = React.useMemo(() => new Map(
     (sessionConversations?.attention ?? []).map((entry) => [entry.bindingId, entry] as const),
   ), [sessionConversations]);
@@ -12234,6 +12681,7 @@ function SessionConversationsSurface(props: Readonly<{
     return (
       <LoadingState
         testID="channels-session-conversations-loading"
+        rows={3}
         title={t('plugins.channels.session.loadingTitle', 'Loading external conversations')}
       />
     );
@@ -12242,6 +12690,7 @@ function SessionConversationsSurface(props: Readonly<{
     return (
       <ErrorState
         testID="channels-session-conversations-error"
+        kind="unavailable"
         title={t('plugins.channels.session.errorTitle', 'External conversations are unavailable')}
         description={parsed === undefined
           ? undefined
@@ -12255,119 +12704,70 @@ function SessionConversationsSurface(props: Readonly<{
       />
     );
   }
-
   return (
-    <Screen testID="channels-session-conversations" safeArea>
-      <List
-        items={presentations}
-        keyForItem={bindingPresentationKey}
-        accessibilityLabel={t('plugins.channels.session.title', 'External conversations')}
-        testID="channels-session-conversations-list"
-        style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: theme.spacing.large }}
-        // A hydrated list is authoritative until it is replaced. Refresh work,
-        // staleness, a failed read and a retired subscription are disclosed
-        // above the retained rows instead of replacing them.
-        header={resourceFreshnessNoticeApplies(resource) ? (
-          <Stack
-            gap="small"
-            style={{ paddingHorizontal: theme.spacing.large, paddingTop: theme.spacing.small }}
-          >
-            <ResourceFreshnessNotice
-              resource={resource}
-              onRefresh={refresh}
-              subject="binding"
-              testIDPrefix="channels-session-conversations-resource"
-              t={t}
-            />
-          </Stack>
-        ) : null}
-        renderItem={(presentation) => (
-          <Stack
-            gap="small"
-            testID={`channels-session-conversation:${presentation.binding.bindingId}`}
-            style={{ paddingHorizontal: theme.spacing.large, paddingVertical: theme.spacing.small }}
-          >
-            {(() => {
-              const attention = attentionByBindingId.get(presentation.binding.bindingId);
-              return attention === undefined ? null : (
-                <Stack gap="small" testID={`channels-session-conversation-attention:${presentation.binding.bindingId}`}>
-                  <Banner
-                    tone="danger"
-                    title={sessionBindingAttentionTitle(attention.reason, t)}
-                    description={t(
-                      'plugins.channels.session.attentionDescription',
-                      'Messages for this conversation will not be delivered until it is repaired in conversation settings.',
-                    )}
-                  />
-                  {attention.reason === 'transcriptHistoryGap' ? (
-                    <SessionProjectionGapRecoveryAction attention={attention} onRefresh={refresh} t={t} />
-                  ) : (
-                    <SessionConversationsRecoveryAction t={t} />
-                  )}
-                </Stack>
-              );
-            })()}
-            <Metadata
-              title={bindingEndpointLabel(presentation.binding, t)}
-              entries={[
-                {
-                  label: t('plugins.channels.surface.provider', 'Integration'),
-                  value: resolveProviderDisplayName(presentation.connection?.providerPluginId)
-                    ?? t('plugins.channels.surface.providerFallback', 'Integration provider'),
-                },
-                {
-                  label: t('plugins.channels.surface.bindingCreateConversation', 'Conversation'),
-                  value: bindingAudienceLabel(presentation.binding.endpoint.audience, t),
-                },
-                {
-                  label: t('plugins.channels.surface.bindingCreateDeliveryMode', 'Session delivery'),
-                  value: bindingDeliveryModeLabel(presentation.binding.deliveryMode, t),
-                },
-                {
-                  label: t('plugins.channels.surface.bindingCreateInputMode', 'Incoming messages'),
-                  value: bindingInputModeLabel(presentation.binding.inputMode, t),
-                },
-              ]}
-            />
-          </Stack>
-        )}
-        empty={(
-          <EmptyState
-            testID="channels-session-conversations-empty"
-            title={t('plugins.channels.session.emptyTitle', 'No external conversations')}
-            description={t(
-              'plugins.channels.session.emptyDescription',
-              'Conversations bound to this Session will appear here.',
-            )}
-          />
-        )}
-      />
-    </Screen>
+    <SessionConversationsTab
+      presentations={presentations}
+      attentionByBindingId={attentionByBindingId}
+      lastDeliveries={sessionConversations?.lastDeliveries ?? NO_LAST_DELIVERIES}
+      connections={connections}
+      resource={resource}
+      offline={false}
+      onRefresh={refresh}
+    />
   );
 }
 
 /**
- * The host refuses a structurally installed but currently unreachable method
- * with this exact diagnostic (`hostApi.ts` `assertInstalled`). It is the ONE
- * current-availability fact a plugin can observe: `version().methods` is the
- * mount's stable structural contract by design, so a daemon that goes away
- * after mount is only ever reported per call.
- *
- * A generic `unavailable` is deliberately NOT enough. The same public code also
- * carries an undeclared Resource and other daemon-side refusals, and treating
- * those as an outage would silently demote a reachable mount to the offline
- * editor instead of reporting the real failure.
+ * The same tab from the Account-local rows while the daemon Resource is unreachable: names, audience and
+ * pause stay; bots, causes and actions wait for Channels (lab ST, machine offline).
  */
-const HOST_METHOD_UNAVAILABLE_DIAGNOSTIC_PREFIX = 'host_api_method_unavailable:';
+function AccountLocalSessionConversationsSurface(props: Readonly<{
+  sessionId: string;
+  signal: AbortSignal;
+}>): React.ReactElement {
+  const t = usePluginTranslation();
+  const dataClient = usePluginUiDataClient();
+  const collection = React.useMemo(() => dataClient.collection(CHANNEL_STATE_COLLECTION), [dataClient]);
+  const { bindings, resource, refresh } = useAccountLocalBindingRows(collection, props.signal, props.sessionId);
+  const presentations = React.useMemo(
+    () => buildBindingPresentations(bindings ?? [], [], t),
+    [bindings, t],
+  );
 
-function isHostMethodCurrentlyUnavailable(
-  error: PluginUiResourceSnapshot['error'],
-): boolean {
-  return error?.diagnostics?.some((diagnostic) => (
-    diagnostic.startsWith(HOST_METHOD_UNAVAILABLE_DIAGNOSTIC_PREFIX)
-  )) === true;
+  if (bindings === undefined && resource.pending === 'initial') {
+    return <LoadingState testID="channels-session-conversations-loading" rows={3} title={t('plugins.channels.session.loadingTitle', 'Loading external conversations')} />;
+  }
+  if (bindings === undefined) {
+    return <ErrorState
+      testID="channels-session-conversations-error"
+      kind="unavailable"
+      title={t('plugins.channels.session.errorTitle', 'External conversations are unavailable')}
+      action={<Action.Refresh title={t('plugins.channels.surface.tryAgain', 'Try again')} onRefresh={refresh} />}
+    />;
+  }
+  return (
+    <SessionConversationsTab
+      presentations={presentations}
+      attentionByBindingId={NO_ATTENTION}
+      lastDeliveries={NO_LAST_DELIVERIES}
+      connections={null}
+      resource={resource}
+      offline
+      onRefresh={refresh}
+    />
+  );
 }
+
+function SessionConversationsAvailabilitySurface(props: Readonly<{
+  sessionId: string;
+  signal: AbortSignal;
+}>): React.ReactElement {
+  const { resource } = useLivePluginResource(CHANNELS_SESSION_CONVERSATIONS_RESOURCE);
+  return isHostMethodCurrentlyUnavailable(resource.error)
+    ? <AccountLocalSessionConversationsSurface sessionId={props.sessionId} signal={props.signal} />
+    : <SessionConversationsSurface sessionId={props.sessionId} />;
+}
+
 
 /**
  * Settings presentation for a mount that CAN serve daemon Resources.
@@ -12404,17 +12804,38 @@ function ChannelsAccountSettingsSurface(props: Readonly<{
  * the Settings page are two destinations of one artifact, and the Account-local
  * settings vertical is not a truthful fallback for a Session mount.
  */
+/** The Channels page's own outage demotion, the same one Settings uses. */
+function ChannelsPageAvailabilitySurface(props: Readonly<{
+  signal: AbortSignal;
+  subPath: string | undefined;
+}>): React.ReactElement {
+  const { resource } = useLivePluginResource(CHANNELS_BINDINGS_RESOURCE);
+  return isHostMethodCurrentlyUnavailable(resource.error)
+    ? <AccountLocalChannelsPageSurface signal={props.signal} subPath={props.subPath} />
+    : <DaemonChannelsPageSurface signal={props.signal} subPath={props.subPath} />;
+}
+
 export function ChannelsSurface(context: RenderContext): React.ReactElement {
   const target = context.surface.target;
+  if (
+    context.surface.mount.kind === 'destination'
+    && context.surface.mount.destination.localId === CHANNELS_PAGE_VIEW_ID
+  ) {
+    return context.hostApi.version().methods.includes('readResource')
+      ? <ChannelsPageAvailabilitySurface signal={context.signal} subPath={context.subPath} />
+      : <AccountLocalChannelsPageSurface signal={context.signal} subPath={context.subPath} />;
+  }
   const isSessionConversationsMount = context.surface.mount.kind === 'destination'
     ? context.surface.mount.destination.localId === CHANNELS_SESSION_CONVERSATIONS_VIEW_ID
     : context.surface.mount.kind === 'embedded'
-      && context.surface.mount.role === 'sessionWidget';
+      && context.surface.mount.role === 'widget';
   if (
     isSessionConversationsMount
     && target.kind === 'session'
   ) {
-    return <SessionConversationsSurface sessionId={target.sessionId} />;
+    return context.hostApi.version().methods.includes('readResource')
+      ? <SessionConversationsAvailabilitySurface sessionId={target.sessionId} signal={context.signal} />
+      : <AccountLocalSessionConversationsSurface sessionId={target.sessionId} signal={context.signal} />;
   }
   if (!context.hostApi.version().methods.includes('readResource')) {
     return <AccountLocalBindingsSurface signal={context.signal} />;

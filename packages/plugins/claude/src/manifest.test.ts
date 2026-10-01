@@ -5,6 +5,18 @@ import { CLAUDE_PLUGIN, PLUGIN_MANIFEST } from './manifest.js';
 import { CLAUDE_AGENT_SETTINGS_CONTRIBUTION } from './agentSettings/definition.js';
 
 describe('Claude plugin manifest', () => {
+  it('makes both native team launch Actions callable by agents with their strict input schemas', () => {
+    const admitted = ingestPluginManifestV2(PLUGIN_MANIFEST);
+    expect(admitted).toMatchObject({ ok: true });
+    for (const id of ['subagent-team-launch', 'subagent-member-launch'] as const) {
+      const action = PLUGIN_MANIFEST.contributes.actions.find((entry) => entry.id === id);
+      expect(action).toMatchObject({
+        surfaces: expect.arrayContaining(['ui', 'agent']),
+        inputSchema: { type: 'object', additionalProperties: false },
+      });
+    }
+  });
+
   it('declares the truthful detached execution context facet', () => {
     expect(PLUGIN_MANIFEST.contributes.agents[0]?.capabilities.sessions.executionRunContext)
       .toEqual({ versions: [1] });

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { BUNDLED_PLUGIN_PUBLICATION_DIAGNOSTIC_CODES } from '@happier-dev/cli-common/bundledPluginPublicationPolicy';
 import {
   PluginContributionIdentityV1Schema,
   PluginDiagnosticStageV1Schema,
@@ -15,7 +16,7 @@ export const PluginDiagnosticCodeSchema = z.enum([
   'plugin_source_missing',
   'plugin_source_kind_unsupported',
   'plugin_manifest_missing',
-  'plugin_manifest_invalid',
+  ...BUNDLED_PLUGIN_PUBLICATION_DIAGNOSTIC_CODES,
   'plugin_manifest_duplicate_id',
   'plugin_manifest_semantic_invalid',
   'plugin_trust_approval_required',
@@ -76,6 +77,10 @@ export const PluginDiagnosticCodeSchema = z.enum([
   'plugin_manifest_engine_range_invalid',
   'plugin_compatibility_projection_invalid',
   'plugin_compatibility_projection_missing',
+  // The packed distributable package violates the public Plugin SDK runtime
+  // dependency contract (absent, forbidden form, unsupported specifier, or
+  // unresolvable from the isolated pack environment).
+  'plugin_pack_sdk_dependency_invalid',
   'target_absent',
   'point_absent',
   'protocol_unsupported',
@@ -101,6 +106,20 @@ export const PluginDiagnosticCodeSchema = z.enum([
   'surface_semantic_invalid',
 ]);
 export type PluginDiagnosticCode = z.infer<typeof PluginDiagnosticCodeSchema>;
+
+/**
+ * One optional bundled plugin that publication excluded, carried from the
+ * build-time producer (`scripts/workspaces/bundledPluginPublicationFailure.mjs`,
+ * whose `.d.mts` mirrors this shape) into the generated manifests and catalog.
+ */
+export type BundledPluginPublicationFailure = Readonly<{
+  packageName: string;
+  pluginId: string;
+  diagnostic: Readonly<{
+    code: Extract<PluginDiagnosticCode, 'plugin_package_build_failed' | 'plugin_manifest_invalid' | 'plugin_ui_artifact_invalid'>;
+    message: string;
+  }>;
+}>;
 
 /**
  * An author-actionable source location, always relative to the plugin's local

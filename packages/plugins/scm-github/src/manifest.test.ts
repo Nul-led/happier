@@ -158,10 +158,9 @@ describe('GitHub SCM manifest', () => {
       ]);
       expect(action.dangerLevel).toBe('safe');
       // They carry no Triage operation role: the aggregate never invokes them.
-      // Only this source's own mounted detail body reaches them, through the
-      // mounted Plugin UI host — present-user authority — so `ui` is the only
-      // declared surface and direct plugin code is refused.
-      expect(action.surfaces).toEqual(['ui']);
+      // Native reads also reach agent-facing Actions; direct plugin code is
+      // still refused and no generic host PR-management vocabulary is added.
+      expect(action.surfaces).toEqual(['ui', 'agent', 'mcp', 'cli']);
       // The explicit empty list is the canonical mounted-only placement
       // decision: global placement discovery reads no destination from it.
       expect(action.placementBindings).toEqual([]);
@@ -256,7 +255,7 @@ describe('GitHub SCM manifest', () => {
     });
   });
 
-  it('declares the pull-request mutations as confirmation-gated UI-only writes', () => {
+  it('declares pull-request mutations with centrally approved automation surfaces', () => {
     const actions = new Map(
       (PLUGIN_MANIFEST.contributes.actions ?? []).map((action) => [action.id, action]),
     );
@@ -268,21 +267,11 @@ describe('GitHub SCM manifest', () => {
       const action = actions.get(id);
       if (!action) throw new Error(`the mutation '${id}' must be declared`);
 
-      // The human gate is the ABSENCE of `agent` and `mcp`: the write is not
-      // agent-reachable at all — no prompt to bypass, no tool, no exposure. A
-      // `danger` level with `agent: true` would only FLOOR the action to an
-      // approval prompt, which is a different and weaker guarantee. That
-      // absence is asserted directly, so the intent survives any future
-      // addition to this array.
-      expect(action.surfaces).not.toContain('agent');
-      expect(action.surfaces).not.toContain('mcp');
-      // `ui` is the write's whole product reach. The daemon derives the
-      // invoking surface from the authenticated mounted-UI provenance, so a
-      // mounted Plugin UI press is admitted as UI authority while direct
-      // plugin code — ActionsService — checks only the `plugin` surface and
-      // is refused here. Host confirmation is unaffected because it keys off
-      // the same invoking surface.
-      expect(action.surfaces).toEqual(['ui']);
+      // PR writes require central live approval on agent/MCP/CLI ingress;
+      // issue writes retain their UI-only reachability contract. Neither
+      // admits direct plugin or voice writes.
+      expect(action.surfaces).toEqual(id.startsWith('github/pull-request/')
+        ? ['ui', 'agent', 'mcp', 'cli'] : ['ui']);
       // The one placement is the details panel the write lives in; global
       // placement discovery is offered no other destination.
       expect(action.placementBindings).toEqual(['detailsPanel']);

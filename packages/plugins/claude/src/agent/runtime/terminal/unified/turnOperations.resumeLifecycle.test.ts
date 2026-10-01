@@ -74,6 +74,7 @@ describe('Claude unified native-resume lifecycle integration', () => {
     const events = createEventsFixture();
     const ctx = createPluginContextFixture(terminalHost.service, events.service, {
       transcripts: {
+        followSource: vi.fn(async () => ({ dispose: async () => undefined })),
         append: vi.fn(async () => undefined),
         defineSource: vi.fn(async (definition: Readonly<{ id: string }>) => ({
           id: definition.id,
@@ -144,6 +145,11 @@ describe('Claude unified native-resume lifecycle integration', () => {
     const terminalHost = createTerminalHostFixture();
     const events = createEventsFixture();
     const ctx = createPluginContextFixture(terminalHost.service, events.service);
+    vi.mocked(ctx.agentRuntime.transcripts.fileFollow.follow).mockResolvedValue({
+      id: 'resume-identity-file',
+      drainNow: async () => undefined,
+      close: async () => undefined,
+    });
     const envelope = expectRuntimeEnvelope(createClaudeUnifiedTerminalTurnOperations({
       ctx,
       directory: '/tmp/claude-project',
@@ -169,11 +175,91 @@ describe('Claude unified native-resume lifecycle integration', () => {
         session_id: 'claude-resume-prompt-gate',
         source: 'resume',
       });
+      expect(terminalHost.service.injectUserPrompt).not.toHaveBeenCalled();
+      await hookRequest.onSessionHook('claude-resume-prompt-gate', {
+        hook_event_name: 'SessionStart',
+        session_id: 'claude-resume-prompt-gate',
+        source: 'resume',
+        transcript_path: '/tmp/claude-resume-prompt-gate.jsonl',
+      });
       expect(envelope.operations.readSessionIdentity()).toEqual({ sessionId: 'claude-resume-prompt-gate' });
       await vi.waitFor(() => {
         expect(terminalHost.service.injectUserPrompt).toHaveBeenCalledTimes(1);
       });
     } finally {
+      await envelope.operations.resetOrDisposeRuntime().catch(() => undefined);
+    }
+  });
+
+  it.each(['writable', 'unavailable', 'replacement'] as const)('holds resumed Pending input through source admission with %s screen capture', async (capture) => {
+    vi.useFakeTimers();
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service);
+    let releaseAdmission!: () => void;
+    const admission = new Promise<void>((resolve) => { releaseAdmission = resolve; });
+    vi.mocked(ctx.agentRuntime.transcripts.fileFollow.follow).mockResolvedValue({
+      id: 'resume-admission-file',
+      drainNow: async () => undefined,
+      close: async () => undefined,
+    });
+    vi.mocked(ctx.agentRuntime.transcripts.followSource).mockImplementation(async () => {
+      await admission;
+      return { dispose: async () => undefined };
+    });
+    if (capture === 'unavailable') {
+      vi.mocked(terminalHost.service.captureInputState).mockRejectedValue(new Error('capture unavailable'));
+    }
+    const envelope = expectRuntimeEnvelope(createClaudeUnifiedTerminalTurnOperations({
+      ctx,
+      directory: '/tmp/claude-project',
+      happierSessionId: 'happy-resume-admission',
+      hostPreference: 'zellij',
+      launchEnv: {},
+      permissionMode: 'default',
+      knownProviderSession: {
+        providerSessionId: 'claude-resume-admission',
+        transcriptPath: '/tmp/claude-resume-admission.jsonl',
+      },
+      launchIntent: { kind: 'resume_native', providerSessionId: 'claude-resume-admission' },
+    }));
+    let hook: Promise<void> | undefined;
+    try {
+      await envelope.operations.startProviderSession();
+      const hookRequest = vi.mocked(ctx.agentRuntime.sessionHooks.startServer).mock.calls[0]?.[0];
+      if (!hookRequest?.onSessionHook) throw new Error('session hook server was not started');
+      if (capture === 'replacement') {
+        vi.mocked(ctx.agentRuntime.transcripts.followSource).mockResolvedValueOnce({ dispose: async () => undefined });
+        await hookRequest.onSessionHook('claude-resume-admission', {
+          hook_event_name: 'SessionStart',
+          session_id: 'claude-resume-admission',
+          transcript_path: '/tmp/claude-resume-admission.jsonl',
+          source: 'resume',
+        });
+      } else {
+        await envelope.operations.sendTurnPrompt('queued resumed prompt', { localId: 'pending-resume' });
+        expect(terminalHost.service.injectUserPrompt).not.toHaveBeenCalled();
+      }
+      hook = hookRequest.onSessionHook('claude-resume-admission', {
+        hook_event_name: 'SessionStart',
+        session_id: 'claude-resume-admission',
+        transcript_path: capture === 'replacement' ? '/tmp/claude-resume-replaced.jsonl' : '/tmp/claude-resume-admission.jsonl',
+        source: 'resume',
+      });
+      if (capture === 'replacement') {
+        await vi.advanceTimersByTimeAsync(0);
+        await envelope.operations.sendTurnPrompt('queued resumed prompt', { localId: 'pending-resume' });
+      }
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(ctx.agentRuntime.transcripts.followSource).toHaveBeenCalled();
+      expect(terminalHost.service.injectUserPrompt).not.toHaveBeenCalled();
+      releaseAdmission();
+      await hook;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(terminalHost.service.injectUserPrompt).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseAdmission();
+      await hook;
       await envelope.operations.resetOrDisposeRuntime().catch(() => undefined);
     }
   });
@@ -239,6 +325,7 @@ describe('Claude unified native-resume lifecycle integration', () => {
     }));
     const ctx = createPluginContextFixture(terminalHost.service, events.service, {
       transcripts: {
+        followSource: vi.fn(async () => ({ dispose: async () => undefined })),
         append: vi.fn(async () => undefined),
         defineSource: vi.fn(async (definition: Readonly<{ id: string }>) => ({
           id: definition.id,
@@ -348,6 +435,7 @@ describe('Claude unified native-resume lifecycle integration', () => {
     }>) => void | Promise<void>;
     let transcriptLineHandler: TranscriptLineHandler | null = null;
     const transcripts = {
+      followSource: vi.fn(async () => ({ dispose: async () => undefined })),
       append: vi.fn(async () => undefined),
       defineSource: vi.fn(async (definition: Readonly<{ id: string }>) => ({
         id: definition.id,

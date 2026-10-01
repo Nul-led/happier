@@ -25,6 +25,8 @@ import { createTargetActionHostBindingResolver } from '../hostAccess/resolve';
 import {
     createUnavailablePluginServicesFactory,
 } from './services/factory';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
+import { createManagedPluginSourceCustody } from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
 import { createProductionPluginInvocationServiceOwners } from './services/production';
 import {
     createPluginInvocationLogger,
@@ -40,7 +42,9 @@ function action(overrides: Record<string, unknown> = {}) {
     return {
         pluginId: 'acme.alpha',
         pluginVersion: '1.2.3',
-        generation: '7',
+        occurrenceId: '7' as PluginRuntimeOccurrenceId,
+        // Target Actions resolve only with host-stamped source custody.
+        sourceCustody: createManagedPluginSourceCustody('acme-alpha-generation-1'),
         localId: 'run',
         definition: {
             id: 'run',
@@ -71,9 +75,9 @@ function createRegistry(
     return createTargetActionInvocationRegistry({
         resolveAuthorizationFacts: (resolvedAction) => ({
             generation: {
-                targetGeneration: resolvedAction.generation,
-                desiredGeneration: resolvedAction.generation,
-                appliedGeneration: resolvedAction.generation,
+                targetGeneration: resolvedAction.occurrenceId,
+                desiredGeneration: resolvedAction.occurrenceId,
+                appliedGeneration: resolvedAction.occurrenceId,
             },
             resourceSelections: [],
             scopedGrants: [],
@@ -81,6 +85,11 @@ function createRegistry(
         }),
         createServices: createUnavailablePluginServicesFactory(),
         resolveHostBinding: createTargetActionHostBindingResolver(),
+        readCurrentPluginOccurrenceId: (pluginId) => (
+            (params.readActions?.() ?? params.actions)
+                .find((candidate) => candidate.pluginId === pluginId)?.occurrenceId
+            ?? null
+        ),
         ...params,
     });
 }
@@ -381,18 +390,15 @@ describe('target action invocation registry', () => {
         expect(operationInput?.isCurrent()).toBe(false);
     });
 
-    it('rechecks an admitted target generation after async pre-handler operation binding', async () => {
-        let currentTargetGeneration = 'target-generation-g';
+    it('refuses an admitted target occurrence that retired before the handler check', async () => {
         const handler = vi.fn(async () => ({ echoed: 'should-not-run' }));
         const registry = createRegistry({
             actions: [{ ...action(), handler }],
-            resolveCurrentPluginImmutableGenerationId: async (pluginId) => (
-                pluginId === 'acme.target' ? currentTargetGeneration : null
+            readCurrentPluginOccurrenceId: (pluginId) => (
+                pluginId === 'acme.target'
+                    ? 'target-occurrence-h'
+                    : pluginId === 'acme.alpha' ? '7' : null
             ),
-            bindConnectedAccountActionOperation: async () => {
-                currentTargetGeneration = 'target-generation-h';
-                return null;
-            },
         });
 
         await expect(registry.invoke({
@@ -407,19 +413,24 @@ describe('target action invocation registry', () => {
                     id: 'request',
                     qualifiedId: 'acme.target/actions/request',
                 },
-                immutableGenerationId: 'acme-target-generation-1',
+                occurrenceId: 'acme-target-generation-1',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'acme-target-generation-1',
+                    installSource: 'archive',
+                },
                 materialization: {
                     pluginId: 'acme.target',
                     machineId: 'machine-target',
                     materializationId: 'target-materialization-g',
                 },
             },
-            expectedAdmittedTargetGeneration: {
+            expectedAdmittedTargetOccurrence: {
                 pluginId: 'acme.target',
-                immutableGenerationId: 'target-generation-g',
+                occurrenceId: 'target-occurrence-g',
             },
         })).resolves.toMatchObject({
-            status: 'failed',
+            status: 'unavailable',
             code: 'plugin_action_generation_retired',
             actionHandlerInvocation: 'notStarted',
         });
@@ -484,7 +495,7 @@ describe('target action invocation registry', () => {
             contributionId: 'run',
             runtimeId: 'run',
             sessionId: 'session-1',
-            generationId: '7',
+            occurrenceId: 'occurrence-7',
             presentation,
         });
         const registry = createRegistry({
@@ -493,7 +504,12 @@ describe('target action invocation registry', () => {
                 : null,
             actions: [{
                 ...action(),
-                immutableGenerationId: 'immutable-generation-alpha',
+                occurrenceId: 'occurrence-alpha' as PluginRuntimeOccurrenceId,
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'immutable-generation-alpha',
+                    installSource: 'archive',
+                },
                 handler: async (_input, context) => {
                     if (!context.ui) throw new Error('expected current-session UI');
                     await context.ui.status.set('progress', 'Running');
@@ -541,7 +557,7 @@ describe('target action invocation registry', () => {
             contributionId: 'run',
             runtimeId: 'run',
             sessionId: 'session-1',
-            generationId: '7',
+            occurrenceId: 'occurrence-7',
             interactionDeadlineMs: 1_000,
             isCurrent: () => true,
             signal: new AbortController().signal,
@@ -583,14 +599,14 @@ describe('target action invocation registry', () => {
         await serviceOwners.dispose();
     });
 
-    it('fails closed when late-bound generation currentness no longer matches the registered action', async () => {
+    it('fails closed when late-bound occurrence currentness no longer matches the registered action', async () => {
         const handler = vi.fn(async () => ({ echoed: 'should-not-run' }));
         const registry = createRegistry({
             resolveAuthorizationFacts: (resolvedAction) => ({
                 generation: {
-                    targetGeneration: resolvedAction.generation,
+                    targetGeneration: resolvedAction.occurrenceId,
                     desiredGeneration: null,
-                    appliedGeneration: resolvedAction.generation,
+                    appliedGeneration: resolvedAction.occurrenceId,
                 },
                 resourceSelections: [],
                 scopedGrants: [],
@@ -818,12 +834,12 @@ describe('target action invocation registry', () => {
             expect.objectContaining({
                 plugin: { id: 'acme.alpha', version: '1.2.3' },
                 contribution: { id: 'run', qualifiedId: 'acme.alpha/actions/run' },
-                generation: '7',
+                occurrenceId: '7',
                 correlationId: expect.any(String),
                 surface: 'cli',
-                isGenerationCurrent: expect.any(Function),
+                isOccurrenceCurrent: expect.any(Function),
             }),
-            expect.objectContaining({ generation: '7' }),
+            expect.objectContaining({ occurrenceId: '7' }),
         );
         expect(Object.isFrozen(captured)).toBe(true);
     });
@@ -922,14 +938,14 @@ describe('target action invocation registry', () => {
         const lateLoggers: ReturnType<typeof createPluginInvocationLogger>[] = [];
         const completedScopes: Array<Readonly<{
             pluginId: string;
-            generation: string;
+            occurrenceId: string;
             correlationId: string;
         }>> = [];
         const registry = createRegistry({
             createServices(seed, binding) {
                 const scope = {
                     pluginId: seed.plugin.id,
-                    generation: seed.generation,
+                    occurrenceId: seed.occurrenceId,
                     correlationId: seed.correlationId,
                 };
                 secretRedactor.beginInvocation(
@@ -1183,7 +1199,7 @@ describe('target action invocation registry', () => {
         const result = await registry.invoke({
             pluginId: 'acme.alpha', localId: 'run', input: { value: 'x' }, surface: 'cli',
             requestCurrentIntent: async ({ fingerprint }) => {
-                actions = [{ ...action({ dangerLevel: 'writesRemote' }), generation: '8', handler: newHandler }];
+                actions = [{ ...action({ dangerLevel: 'writesRemote' }), occurrenceId: '8' as PluginRuntimeOccurrenceId, handler: newHandler }];
                 registry.refresh();
                 return { status: 'approved', fingerprint };
             },
@@ -1261,11 +1277,11 @@ describe('target action invocation registry', () => {
         })).resolves.toEqual({ status: 'executed', value: { echoed: 'lazy' } });
     });
 
-    it('does not recompile an unchanged action generation when the index is refreshed', async () => {
-        // Compiling an Action's JSON Schema is the expensive part of building the index: it
-        // constructs an AJV instance and generates a validator. A schema whose `properties` is a
-        // getter counts how many times the compiler actually read it, so this asserts the work
-        // itself is bounded rather than asserting on any call wiring.
+    it('compiles an action schema on first invoke and not again when the index is refreshed', async () => {
+        // Compiling an Action's JSON Schema is the expensive part: it constructs an AJV instance
+        // and generates a validator. Building the index must not compile every Action (that
+        // blocked the daemon for minutes); the first invoke compiles, and a refresh that keeps the
+        // same generation reuses it. A counting schema asserts the work itself, not call wiring.
         let schemaReads = 0;
         const countingInputSchema = new Proxy({
             type: 'object',
@@ -1283,33 +1299,36 @@ describe('target action invocation registry', () => {
         const base = action();
         const registration = {
             ...base,
-            immutableGenerationId: 'bytes-7',
+            occurrenceId: 'bytes-7',
             definition: { ...base.definition, inputSchema: countingInputSchema, resultSchema: undefined },
             handler: vi.fn(async () => ({ echoed: 'kept' })),
         } as unknown as Parameters<typeof createTargetActionInvocationRegistry>[0]['actions'][number];
         let actions = [registration];
         const registry = createRegistry({ actions, readActions: () => actions });
+        const invokeRun = () => registry.invoke({
+            pluginId: 'acme.alpha', localId: 'run', input: { value: 'x' }, surface: 'cli',
+        });
 
+        expect(schemaReads).toBe(0);
+        await expect(invokeRun()).resolves.toEqual({ status: 'executed', value: { echoed: 'kept' } });
         expect(schemaReads).toBeGreaterThan(0);
         const compiledOnce = schemaReads;
 
         registry.refresh();
         registry.refresh();
 
+        // The reused invocation must still be the live one that dispatches, without recompiling.
+        await expect(invokeRun()).resolves.toEqual({ status: 'executed', value: { echoed: 'kept' } });
         expect(schemaReads).toBe(compiledOnce);
-        // The reused invocation must still be the live one that dispatches.
-        await expect(registry.invoke({
-            pluginId: 'acme.alpha', localId: 'run', input: { value: 'x' }, surface: 'cli',
-        })).resolves.toEqual({ status: 'executed', value: { echoed: 'kept' } });
 
         // A genuinely new generation of the same Action must be recompiled, so this cannot be
         // satisfied by never recompiling.
         actions = [{
             ...registration,
-            generation: '8',
-            immutableGenerationId: 'bytes-8',
+            occurrenceId: 'bytes-8',
         } as typeof registration];
         registry.refresh();
+        await invokeRun();
         expect(schemaReads).toBeGreaterThan(compiledOnce);
     });
 

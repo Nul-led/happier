@@ -49,11 +49,11 @@ function createActionSeed(provider: ChannelProviderPurpose): PluginInvocationSer
             id: provider.actionId,
             qualifiedId: `${provider.pluginId}/actions/${provider.actionId}`,
         }),
-        generation: 'channel-provider-generation',
+        occurrenceId: 'channel-provider-occurrenceId',
         correlationId: `channel-provider:${provider.actionId}`,
         surface: 'plugin',
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
     });
 }
 

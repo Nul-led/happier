@@ -27,6 +27,7 @@ import { readOrCreateDeviceLocalSecretStorage } from '@/daemon/deviceLocalSecret
 import {
     createAgentSessionRunnerFactoryBinding,
 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import {
     createDaemonPluginSecretCustodyRouter,
 } from '@/plugins/runtime/context/secrets';
@@ -45,6 +46,11 @@ import {
     resolveRunnerManagedServiceDeclaredSecret,
 } from './runnerManagedServiceDeclaredSecretAuthority';
 import type { PluginInvocationServicesSeed } from './types';
+
+const EXTERNAL_OPENCODE_PLUGIN_MANIFEST = {
+    ...OPENCODE_PLUGIN_MANIFEST,
+    id: 'acme.opencode-declared-secret',
+};
 
 const SECRET_ID = 'opencodeServerPassword';
 const SESSION_ID = 'session-declared-secret';
@@ -235,7 +241,7 @@ async function prepareRetainedAgentFixture() {
     await mkdir(join(sourceRootPath, 'agent'), { recursive: true });
     await writeFile(
         join(sourceRootPath, '.happier-plugin', 'plugin.json'),
-        JSON.stringify(OPENCODE_PLUGIN_MANIFEST),
+        JSON.stringify(EXTERNAL_OPENCODE_PLUGIN_MANIFEST),
         'utf8',
     );
     await writeFile(
@@ -248,11 +254,11 @@ async function prepareRetainedAgentFixture() {
         .digest('hex')
         .slice(0, 16)}`;
     const record = await createImmutablePluginGenerationRecordFromSource({
-        pluginId: OPENCODE_PLUGIN_MANIFEST.id,
+        pluginId: EXTERNAL_OPENCODE_PLUGIN_MANIFEST.id,
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
         immutableGenerationId,
     });
@@ -265,7 +271,7 @@ async function prepareRetainedAgentFixture() {
     await persistValidatedAgentSessionRunnerFactories({
         paths,
         record,
-        manifestAuthority: 'bundled_first_party',
+        manifestAuthority: 'external',
         factories: [{
             localAgentId: 'opencode',
             locator,
@@ -275,11 +281,15 @@ async function prepareRetainedAgentFixture() {
     });
     const retainedAgent = createAgentSessionRunnerFactoryBinding({
         v: 1,
-        pluginId: OPENCODE_PLUGIN_MANIFEST.id,
-        pluginVersion: OPENCODE_PLUGIN_MANIFEST.version,
+        pluginId: EXTERNAL_OPENCODE_PLUGIN_MANIFEST.id,
+        pluginVersion: EXTERNAL_OPENCODE_PLUGIN_MANIFEST.version,
         agentId: 'opencode',
         localAgentId: 'opencode',
-        immutableGenerationId,
+        sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId,
+            installSource: 'localPath',
+        },
         locator,
         normalizedModulePath: 'agent/runtime.mjs',
         loadMode: 'immutable-js',
@@ -300,7 +310,7 @@ function daemonSecretCustody(
                 ),
             }),
     }).resolve({
-        pluginId: OPENCODE_PLUGIN_MANIFEST.id,
+        pluginId: EXTERNAL_OPENCODE_PLUGIN_MANIFEST.id,
         declaration: {
             id: SECRET_ID,
             custody: 'daemon',
@@ -316,21 +326,27 @@ function daemonSecretCustody(
 function invocationSeed(
     fixture: Awaited<ReturnType<typeof prepareRetainedAgentFixture>>,
 ): PluginInvocationServicesSeed {
+    if (fixture.retainedAgent.sourceCustody.kind !== 'managed') {
+        throw new Error('Expected managed retained Agent fixture');
+    }
     return Object.freeze({
         plugin: {
-            id: OPENCODE_PLUGIN_MANIFEST.id,
-            version: OPENCODE_PLUGIN_MANIFEST.version,
+            id: EXTERNAL_OPENCODE_PLUGIN_MANIFEST.id,
+            version: EXTERNAL_OPENCODE_PLUGIN_MANIFEST.version,
         },
         contribution: {
             id: 'opencode',
-            qualifiedId: `${OPENCODE_PLUGIN_MANIFEST.id}/agents/opencode`,
+            qualifiedId: `${EXTERNAL_OPENCODE_PLUGIN_MANIFEST.id}/agents/opencode`,
         },
-        generation: fixture.retainedAgent.immutableGenerationId,
+        occurrenceId: createPluginRuntimeOccurrenceId(
+            EXTERNAL_OPENCODE_PLUGIN_MANIFEST.id,
+        ),
+        sourceCustody: fixture.retainedAgent.sourceCustody,
         correlationId: 'declared-secret-correlation',
         surface: 'agent',
         session: { id: SESSION_ID },
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
     });
 }
 

@@ -44,7 +44,7 @@ export type ReloadControllerTargetedContributionsHost = Readonly<{
 function staleGeneration(): PluginError {
     return new PluginError({
         code: 'plugin_generation_stale',
-        message: 'Plugin generation is stale',
+        message: 'Plugin occurrenceId is stale',
     });
 }
 
@@ -77,13 +77,18 @@ function targetedContributionsUnavailable(): PluginError {
 function projectAdmittedSnapshot(
     point: TargetedContributionPointRef<unknown>,
     snapshot: AdmittedTargetedContributionSnapshot,
+    readPluginSourceCustody: (pluginId: string) => import('@happier-dev/protocol').PluginSourceCustodyV1 | null,
 ): TargetedContributionSnapshot<unknown> {
+    const targetSourceCustody = readPluginSourceCustody(snapshot.target.pluginId);
+    if (!targetSourceCustody) throw targetedContributionsUnavailable();
     const contributions = snapshot.contributions.map((contribution) => {
+        const sourceCustody = readPluginSourceCustody(contribution.contributor.pluginId);
+        if (!sourceCustody) throw targetedContributionsUnavailable();
         const contributor = Object.freeze({
             pluginId: contribution.contributor.pluginId,
             contributionId: contribution.contributor.contributionId,
-            immutableGenerationId:
-                contribution.contributor.immutableGenerationId,
+            occurrenceId: contribution.contributor.occurrenceId,
+            sourceCustody,
         });
         const protocol = Object.freeze({
             id: contribution.protocol.id,
@@ -98,7 +103,7 @@ function projectAdmittedSnapshot(
                     operation.role,
                     createAdmittedTargetedOperationExecutionHandle({
                         action: operation.action,
-                        targetImmutableGenerationId: snapshot.target.immutableGenerationId,
+                        targetOccurrenceId: snapshot.target.occurrenceId,
                         identity: {
                             target: { pluginId: point.targetPluginId },
                             point: {
@@ -131,7 +136,8 @@ function projectAdmittedSnapshot(
         });
     });
     return Object.freeze({
-        generation: snapshot.target.immutableGenerationId,
+        occurrenceId: snapshot.target.occurrenceId,
+        sourceCustody: targetSourceCustody,
         contributions: Object.freeze(contributions),
     });
 }
@@ -303,7 +309,7 @@ export function createTargetedContributionsService<TContribution = unknown>(
  * Adapts the stable daemon reload snapshot to target-local observations.  A
  * contributor replacement invalidates the target's view; only replacement of
  * the target itself retires its observation.  In particular, this never binds
- * to generation-local `retireLiveSubscriptionConsumers`.
+ * to occurrenceId-local `retireLiveSubscriptionConsumers`.
  */
 export function createReloadControllerTargetedContributionsService(
     host: ReloadControllerTargetedContributionsHost,
@@ -317,7 +323,7 @@ export function createReloadControllerTargetedContributionsService(
                     return host.reloadController.subscribe((result) => {
                         if (!result.ok || result.changedPluginIds.length === 0) return;
                         // `retirePluginConsumers` synchronously retires the
-                        // target generation before the controller publishes
+                        // target occurrenceId before the controller publishes
                         // this result. The common invalidation path observes
                         // that canonical signal/currentness and disposes.
                         listener();
@@ -337,7 +343,13 @@ export function createReloadControllerTargetedContributionsService(
                             protocol: params.point.protocol,
                         });
                         if (!snapshot) throw targetedContributionsUnavailable();
-                        return projectAdmittedSnapshot(params.point, snapshot);
+                        const readPluginSourceCustody = lease.registry.readPluginSourceCustody;
+                        if (!readPluginSourceCustody) throw targetedContributionsUnavailable();
+                        return projectAdmittedSnapshot(
+                            params.point,
+                            snapshot,
+                            readPluginSourceCustody,
+                        );
                     } finally {
                         await lease.release();
                     }

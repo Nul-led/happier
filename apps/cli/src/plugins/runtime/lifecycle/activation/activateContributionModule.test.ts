@@ -41,7 +41,7 @@ describe('contribution module activation', () => {
             },
         });
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 voiceProviders: [{
                     id: 'speech', title: 'Speech', kind: 'speech',
@@ -78,7 +78,7 @@ describe('contribution module activation', () => {
             api.actions.register('run', async () => ({ ok: true }));
         });
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
             }),
@@ -94,7 +94,7 @@ describe('contribution module activation', () => {
 
     it('returns a coded unavailable result when required rights have no daemon activation', async () => {
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
             }),
@@ -110,7 +110,7 @@ describe('contribution module activation', () => {
     it('keeps a descriptor-only module dormant without invoking default exports', async () => {
         const defaultExport = vi.fn();
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 resources: [{ id: 'guide', kind: 'asset', path: 'guide.md', contentType: 'text/markdown' }],
             }),
@@ -131,7 +131,7 @@ describe('contribution module activation', () => {
             api.providers.register('gateway', runtime);
         });
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 providers: [{
                     v: 1, id: 'gateway', name: 'Gateway', kind: 'aggregator',
@@ -164,7 +164,7 @@ describe('contribution module activation', () => {
     it('keeps a descriptor-only Provider dormant and grants no runtime registration', async () => {
         const activate = vi.fn();
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 providers: [{
                     v: 1, id: 'gateway', name: 'Gateway', kind: 'aggregator',
@@ -191,7 +191,7 @@ describe('contribution module activation', () => {
 
     it('publishes no managed Provider runtime when activation omits its exact registration', async () => {
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 providers: [{
                     v: 1, id: 'gateway', name: 'Gateway', kind: 'aggregator',
@@ -224,7 +224,7 @@ describe('contribution module activation', () => {
 
     it('rejects legacy returned-disposable activation without publishing', async () => {
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({}),
             moduleNamespace: { activate: () => ({ dispose() {} }) },
             forceActivation: true,
@@ -238,7 +238,7 @@ describe('contribution module activation', () => {
     it('does not invent plugin cleanup when activation throws before returning', async () => {
         const cleanup = vi.fn();
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
             }),
@@ -260,7 +260,7 @@ describe('contribution module activation', () => {
     it('disposes a registered dynamic MCP runtime once when activation throws before returning', async () => {
         const disposeRuntime = vi.fn(async () => undefined);
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 mcp: { servers: [{ id: 'tools', title: 'Tools', kind: 'dynamic' }], discoverySources: [] },
             }),
@@ -281,7 +281,7 @@ describe('contribution module activation', () => {
     it('invokes resolved cleanup once when graph validation fails after activation', async () => {
         const cleanup = vi.fn(async () => undefined);
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
             }),
@@ -300,7 +300,7 @@ describe('contribution module activation', () => {
         const disposeRuntime = vi.fn(async () => { cleanupOrder.push('mcp'); });
         const cleanup = vi.fn(async () => { cleanupOrder.push('activation'); });
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
                 mcp: { servers: [{ id: 'tools', title: 'Tools', kind: 'dynamic' }], discoverySources: [] },
@@ -325,7 +325,7 @@ describe('contribution module activation', () => {
     it('invokes resolved cleanup at most once when a successful generation retires', async () => {
         const cleanup = vi.fn(async () => undefined);
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
             }),
@@ -351,7 +351,7 @@ describe('contribution module activation', () => {
         const disposeSecond = vi.fn(async () => { cleanupOrder.push('second'); });
         const cleanup = vi.fn(async () => { cleanupOrder.push('activation'); });
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 mcp: {
                     servers: [
@@ -387,7 +387,7 @@ describe('contribution module activation', () => {
         });
 
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
             }),
@@ -409,7 +409,7 @@ describe('contribution module activation', () => {
         const cleanup = vi.fn(() => new Promise<void>(() => undefined));
         try {
             const activation = activateContributionModule({
-                pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+                pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
                 manifest: manifest({
                     actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
                 }),
@@ -436,7 +436,7 @@ describe('contribution module activation', () => {
         const cleanup = vi.fn(async () => undefined);
         try {
             const activation = activateContributionModule({
-                pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+                pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
                 manifest: manifest({
                     actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
                 }),
@@ -484,7 +484,7 @@ describe('contribution module activation', () => {
         const warning = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
         try {
             const activation = activateContributionModule({
-                pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+                pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
                 manifest: manifest({
                     actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
                 }),
@@ -527,7 +527,7 @@ describe('contribution module activation', () => {
         let rejectActivation: ((error: Error) => void) | undefined;
         try {
             const activation = activateContributionModule({
-                pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+                pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
                 manifest: manifest({
                     actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
                 }),
@@ -562,14 +562,14 @@ describe('contribution module activation', () => {
         vi.useFakeTimers();
         try {
             const hangingActivation = activateContributionModule({
-                pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+                pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
                 manifest: manifest({
                     actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
                 }),
                 moduleNamespace: { activate: () => new Promise(() => undefined) },
             });
             const unrelatedActivation = activateContributionModule({
-                pluginId: 'acme.activation', generation: '8', isGenerationCurrent: () => true,
+                pluginId: 'acme.activation', occurrenceId: '8', isOccurrenceCurrent: () => true,
                 manifest: manifest({
                     actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
                 }),
@@ -604,7 +604,7 @@ describe('contribution module activation', () => {
             });
 
             const activation = activateContributionModule({
-                pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+                pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
                 manifest: manifest({
                     actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
                 }),
@@ -621,7 +621,7 @@ describe('contribution module activation', () => {
     it('carries a local development source location for an activate export that throws', async () => {
         const sourceRoot = '/Users/alice/workspaces/acme-plugin';
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             localDevelopmentSourceRoot: sourceRoot,
             manifest: manifest({
                 actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
@@ -648,7 +648,7 @@ describe('contribution module activation', () => {
 
     it('publishes no source location for an activate export that throws outside the local development realm', async () => {
         const result = await activateContributionModule({
-            pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+            pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
             manifest: manifest({
                 actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
             }),
@@ -747,13 +747,50 @@ describe('contribution module activation transaction deadline', () => {
         api.agents.registerExternalSessions(AGENT_ID, externalSessionsContribution);
     }
 
+    it('publishes a completed Agent registration when wall time jumps before the timeout fires', async () => {
+        let wallTimeMs = Date.now();
+        const clock = vi.spyOn(Date, 'now').mockImplementation(() => wallTimeMs);
+        try {
+            const result = await activateContributionModule({
+                pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
+                manifest: agentsManifest(),
+                moduleNamespace: {
+                    activate(api: PluginApi) {
+                        registerSessionCapableAgent(api);
+                    },
+                },
+                resolveRelativeModule: async () => {
+                    // Model a blocked event loop: elapsed wall time alone does
+                    // not mean the asynchronous deadline callback won.
+                    wallTimeMs += 30_001;
+                    return {
+                        module: {
+                            agentRuntimeFactory,
+                            externalSessions: externalSessionsContribution,
+                        },
+                        normalizedModulePath: 'agent-runtime.js',
+                        loadMode: 'immutable-js' as const,
+                    };
+                },
+            });
+
+            expect(result.status).toBe('active');
+            expect(result.registrations).toEqual(expect.arrayContaining([
+                expect.objectContaining({ family: 'agents', localId: AGENT_ID }),
+            ]));
+            await result.dispose();
+        } finally {
+            clock.mockRestore();
+        }
+    });
+
     it('bounds locator resolution and companion validation behind the absolute activation deadline and closes the candidate', async () => {
         vi.useFakeTimers();
         let capturedApi: PluginApi | undefined;
         const cleanup = vi.fn(async () => undefined);
         try {
             const activation = activateContributionModule({
-                pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+                pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
                 manifest: agentsManifest(),
                 moduleNamespace: {
                     activate(api: PluginApi) {
@@ -811,7 +848,7 @@ describe('contribution module activation transaction deadline', () => {
         );
         try {
             const activation = activateContributionModule({
-                pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+                pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
                 manifest: agentsManifest(),
                 moduleNamespace: {
                     activate(api: PluginApi) {
@@ -872,7 +909,7 @@ describe('contribution module activation transaction deadline', () => {
         );
         try {
             const activation = activateContributionModule({
-                pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+                pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
                 manifest: agentsManifest(),
                 moduleNamespace: {
                     activate(api: PluginApi) {
@@ -941,7 +978,7 @@ describe('contribution module activation transaction deadline', () => {
         });
         try {
             const activation = activateContributionModule({
-                pluginId: 'acme.activation', generation: '7', isGenerationCurrent: () => true,
+                pluginId: 'acme.activation', occurrenceId: '7', isOccurrenceCurrent: () => true,
                 manifest: manifest({
                     actions: [{ id: 'run', title: 'Run', scopes: ['session'], surfaces: ['cli'], execution: { target: 'daemon' }, placementBindings: ['primary'], dangerLevel: 'safe' }],
                     mcp: {

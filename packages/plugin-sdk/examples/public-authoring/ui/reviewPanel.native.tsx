@@ -45,7 +45,7 @@ function readSessionWidgetMount(
     context: RenderContext,
 ): Readonly<{ presentation: 'content' | 'fill' }> | null {
     const mount = context.surface.mount;
-    return mount.kind === 'embedded' && mount.role === 'sessionWidget'
+    return mount.kind === 'embedded' && mount.role === 'widget'
         ? { presentation: mount.presentation }
         : null;
 }
@@ -446,9 +446,9 @@ function ReviewStatusWidget({
 }
 
 function ReviewPanel(context: RenderContext) {
-    const sessionWidget = readSessionWidgetMount(context);
-    if (sessionWidget) {
-        return <ReviewStatusWidget context={context} presentation={sessionWidget.presentation} />;
+    const widget = readSessionWidgetMount(context);
+    if (widget) {
+        return <ReviewStatusWidget context={context} presentation={widget.presentation} />;
     }
 
     const destinationLocalId = readDestinationLocalId(context);

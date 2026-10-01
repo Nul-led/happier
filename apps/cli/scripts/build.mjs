@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -8,6 +7,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { exitWithCommandResult, runCommand } from '../../stack/scripts/utils/proc/proc.mjs';
 
 import { resolveTypeScriptCliInvocation } from '../../../scripts/workspaces/resolveTypeScriptCliInvocation.mjs';
 import { readHappyCliRuntimeInputFreshness } from '../../stack/scripts/utils/proc/cli_runtime_inputs.mjs';
@@ -40,15 +40,18 @@ function reclaimAbandonedCliBuildDirs(packageRoot, activeOutputDir) {
   }
 }
 
-function runNodeScript(scriptPath, args, options = {}) {
-  const result = spawnSync(process.execPath, [scriptPath, ...args], {
+async function runNodeScript(scriptPath, args, options = {}) {
+  const result = await runCommand(process.execPath, [scriptPath, ...args], {
+    ownedProcessGroup: true,
     cwd: options.cwd,
     env: options.env,
     stdio: 'inherit',
   });
   if (result.error) throw result.error;
   if (result.signal) {
-    throw new Error(`${scriptPath} terminated by signal ${result.signal}`);
+    const error = new Error(`${scriptPath} terminated by signal ${result.signal}`);
+    error.signal = result.signal;
+    throw error;
   }
   if (result.status !== 0) {
     throw new Error(`${scriptPath} exited with status ${String(result.status)}`);
@@ -138,18 +141,9 @@ async function buildCliDistUnlocked(options = {}) {
     repoRoot,
     hostPackageDir: packageRoot,
   });
-  const stackAdmittedInputFingerprint = String(
-    env.HAPPIER_CLI_BUILD_INPUT_FINGERPRINT ?? '',
-  ).trim().toLowerCase();
-  if (
-    stackAdmittedInputFingerprint
-    && !/^[a-f0-9]{64}$/.test(stackAdmittedInputFingerprint)
-  ) {
-    throw new Error('[cli-build-inputs] invalid Stack-admitted runtime input fingerprint');
-  }
   // Yarn runs build:shared before this script. That preparation can canonically
   // publish generated CLI source, so the immutable snapshot below contains the
-  // inputs observed here rather than the Stack's earlier admission. Record the
+  // inputs observed here. Record the
   // fingerprint of the bytes that are actually snapshotted and compiled. A
   // later live-source edit is still detected by the Stack when it compares this
   // manifest with the post-build runtime inputs.
@@ -178,11 +172,11 @@ async function buildCliDistUnlocked(options = {}) {
     const typeScriptInvocation = (options.resolveTypeScriptCliInvocationImpl ?? resolveTypeScriptCliInvocation)({
       processExecPath: process.execPath,
     });
-    (options.runTypecheckImpl ?? runNodeScript)(typeScriptInvocation.argsPrefix[0], ['-p', 'tsconfig.build.json', '--noEmit'], {
+    await (options.runTypecheckImpl ?? runNodeScript)(typeScriptInvocation.argsPrefix[0], ['-p', 'tsconfig.build.json', '--noEmit'], {
       cwd: immutableSource.packageRoot,
       env,
     });
-    (options.runPkgrollBuildImpl ?? runPkgrollBuild)({
+    await (options.runPkgrollBuildImpl ?? runPkgrollBuild)({
       packageJsonPath: immutableSource.packageJsonPath,
       outputDir,
       env,
@@ -237,6 +231,6 @@ if (invokedAsMain) {
     await buildCliDist();
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
+    exitWithCommandResult({ status: 1, signal: error?.signal });
   }
 }

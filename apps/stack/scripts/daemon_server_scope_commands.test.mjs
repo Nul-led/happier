@@ -172,7 +172,7 @@ async function withStackOwnedHealthServer({ stackName, envPath }, fn) {
         });
     });
     try {
-        await fn({ port });
+        await fn({ port, pid: server.pid });
     } finally {
         try {
             process.kill(-server.pid, 'SIGTERM');
@@ -246,7 +246,15 @@ test('hstack start ignores a running daemon from another server scope', async ()
         await withStackOwnedHealthServer({
             stackName,
             envPath: join(storageDir, stackName, 'env'),
-        }, async ({ port }) => {
+        }, async ({ port, pid }) => {
+            await writeFile(join(storageDir, stackName, 'stack.runtime.json'), JSON.stringify({
+                version: 1,
+                stackName,
+                ownerPid: null,
+                ports: { server: port },
+                processes: { serverPid: pid },
+                serverProxy: { enabled: false, mode: 'direct' },
+            }) + '\n');
             const result = await runNode([runScript, '--no-ui'], {
                 cwd: repoRoot,
                 env: createIsolatedStackCommandEnv({

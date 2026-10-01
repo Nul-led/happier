@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PluginUiArtifactsManifestV1Schema } from '@happier-dev/protocol/plugins/ui';
+import { PluginUiArtifactsManifestV2Schema } from '@happier-dev/protocol/plugins/ui';
 
 import { buildPluginContributionRegistry } from './package';
 import type { LoadedPlugin } from '@/plugins/discovery/load/installed';
@@ -226,7 +226,6 @@ describe('target package contribution projection', () => {
           target: 'client',
           client: {
             artifactId: 'voice-client',
-            modulePath: './voiceClient',
             exportName: 'registerVoiceAction',
           },
           platforms: ['web', 'ios'],
@@ -240,7 +239,6 @@ describe('target package contribution projection', () => {
         target: 'client',
         client: {
           artifactId: 'voice-client',
-          modulePath: './voiceClient',
           exportName: 'registerVoiceAction',
         },
         platforms: ['web', 'ios'],
@@ -251,22 +249,21 @@ describe('target package contribution projection', () => {
   });
 
   it('retains generated Artifact custody on the exact client Action that declares it', () => {
-    const generatedUiArtifactsManifest = PluginUiArtifactsManifestV1Schema.parse({
-      version: 1 as const,
+    const generatedUiArtifactsManifest = PluginUiArtifactsManifestV2Schema.parse({
+      version: 2 as const,
       entries: [{
-        contributionId: 'action-client-artifact',
+        artifactId: 'action-client-artifact',
         tier: 'reactNative' as const,
-        platform: 'web' as const,
-        entry: 'react-native/action-client/index.js',
+        entry: 'react-native/action-client-artifact/entry.cjs.bundle',
         files: [{
-          relativePath: 'react-native/action-client/index.js',
+          relativePath: 'react-native/action-client-artifact/entry.cjs.bundle',
           digest: `sha256:${'2'.repeat(64)}`,
           byteSize: 1,
         }],
         digest: `sha256:${'1'.repeat(64)}`,
-        builtWith: { bundler: 'vite' as const, version: '7.0.0' },
-        hostUiApiVersion: '1.0.0',
-        compat: { react: '19.2.0', reactNative: '0.83.4' },
+        builtWith: { bundler: 'esbuild' as const, version: '0.27.2' },
+        executable: { exports: ['activate'] },
+        hostUiApiRange: '^1.0.0',
       }],
     });
     const registry = buildPluginContributionRegistry({
@@ -280,7 +277,6 @@ describe('target package contribution projection', () => {
             target: 'client',
             client: {
               artifactId: 'action-client-artifact',
-              modulePath: './actionClient',
               exportName: 'activate',
             },
             platforms: ['web'],
@@ -776,24 +772,23 @@ describe('target package contribution projection', () => {
           serviceIds: ['openai-codex'] as const,
         },
       },
-      client: { artifactId: 'voice-runtime', modulePath: './voiceRuntime', exportName: 'activate' as const },
+      client: { artifactId: 'voice-runtime', exportName: 'activate' as const },
     };
-    const generatedUiArtifactsManifest = PluginUiArtifactsManifestV1Schema.parse({
-      version: 1 as const,
+    const generatedUiArtifactsManifest = PluginUiArtifactsManifestV2Schema.parse({
+      version: 2 as const,
       entries: [{
-        contributionId: 'voice-runtime',
+        artifactId: 'voice-runtime',
         tier: 'reactNative' as const,
-        platform: 'web' as const,
-        entry: 'react-native/voice-runtime/index.js',
+        entry: 'react-native/voice-runtime/entry.cjs.bundle',
         files: [{
-          relativePath: 'react-native/voice-runtime/index.js',
+          relativePath: 'react-native/voice-runtime/entry.cjs.bundle',
           digest: `sha256:${'2'.repeat(64)}`,
           byteSize: 1,
         }],
         digest: `sha256:${'1'.repeat(64)}`,
-        builtWith: { bundler: 'vite' as const, version: '7.0.0' },
-        hostUiApiVersion: '1.0.0',
-        compat: { react: '19.2.0', reactNative: '0.83.4' },
+        builtWith: { bundler: 'esbuild' as const, version: '0.27.2' },
+        executable: { exports: ['activate'] },
+        hostUiApiRange: '^1.0.0',
       }],
     });
     const registry = buildPluginContributionRegistry({
@@ -842,7 +837,7 @@ describe('target package contribution projection', () => {
           serviceIds: ['openai-codex'] as const,
         },
       },
-      client: { artifactId: 'voice-runtime', modulePath: './voiceRuntime', exportName: 'activate' as const },
+      client: { artifactId: 'voice-runtime', exportName: 'activate' as const },
     };
 
     expect(() => buildPluginContributionRegistry({

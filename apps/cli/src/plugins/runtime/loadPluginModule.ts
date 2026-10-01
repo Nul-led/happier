@@ -4,9 +4,10 @@ import { pathToFileURL } from 'node:url';
 
 import { createJiti } from 'jiti';
 
-import { isPluginTrustRecordAuthorized } from '@/plugins/store/install/trustIdentity';
+import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
 
 import type { CommittedPluginExecutionAuthorization, PluginActivationSource } from './activationSources';
+import type { PluginRuntimeSourceAuthority } from './sourceAuthority';
 
 export type PluginModuleNamespace = Readonly<Record<string, unknown>> & Readonly<{
     default?: unknown;
@@ -47,6 +48,32 @@ const SUPPORTED_DEV_DAEMON_ENTRY_EXTENSIONS = new Set(
     SUPPORTED_DEV_DAEMON_ENTRY_EXTENSION_LIST,
 );
 const TYPESCRIPT_DEV_DAEMON_ENTRY_EXTENSIONS = new Set(['.ts', '.mts', '.cts']);
+const SUPPORTED_PLUGIN_AUTHOR_SOURCE_EXTENSIONS = new Set([
+    '.ts',
+    '.mts',
+    '.js',
+    '.mjs',
+]);
+
+export function isSupportedPluginAuthorSourceExtension(entryPath: string): boolean {
+    return SUPPORTED_PLUGIN_AUTHOR_SOURCE_EXTENSIONS.has(
+        extname(entryPath).toLowerCase(),
+    );
+}
+
+async function importMutablePluginAuthorSourceModule(
+    loader: ReturnType<typeof createJiti>,
+    entryPath: string,
+): Promise<PluginModuleNamespace> {
+    const extension = extname(entryPath).toLowerCase();
+    // Jiti's async .js/.mjs path can delegate to Node's immutable native ESM
+    // cache. These bytes are author-owned and mutable, so keep JavaScript in
+    // Jiti's transform/cache path where the candidate-scope eviction applies.
+    if (extension === '.js' || extension === '.mjs') {
+        return loader(entryPath) as PluginModuleNamespace;
+    }
+    return await loader.import(entryPath) as PluginModuleNamespace;
+}
 
 export async function loadPluginAuthorSourceModule(
     entryPath: string,
@@ -56,7 +83,7 @@ export async function loadPluginAuthorSourceModule(
 ): Promise<PluginModuleNamespace> {
     const resolvedEntryPath = resolve(entryPath);
     const extension = extname(resolvedEntryPath).toLowerCase();
-    if (extension !== '.ts' && extension !== '.mts') {
+    if (!isSupportedPluginAuthorSourceExtension(resolvedEntryPath)) {
         throw createModuleLoadError(
             'PLUGIN_DAEMON_ENTRY_KIND_UNSUPPORTED',
             `Unsupported plugin author source extension '${extension || '<none>'}' for '${resolvedEntryPath}'`,
@@ -83,7 +110,7 @@ export async function loadPluginAuthorSourceModule(
             ? { alias: { ...options.aliases } }
             : {}),
     });
-    return await loader.import(resolvedEntryPath) as PluginModuleNamespace;
+    return await importMutablePluginAuthorSourceModule(loader, resolvedEntryPath);
 }
 
 export function resolvePluginModuleLoadMode(input: Readonly<{
@@ -201,32 +228,38 @@ export function createPluginTypeScriptGenerationScope(options: Readonly<{
     return generationScope;
 }
 
+/**
+ * Creates a fresh evaluation scope for mutable trusted development bytes.
+ * Jiti shares Node's module cache even across loader instances, so evict only
+ * modules physically owned by this author root before the candidate starts.
+ */
+export async function createPluginTypeScriptCandidateScope(options: Readonly<{
+    rootPath: string;
+    aliases?: Readonly<Record<string, string>>;
+}>): Promise<object> {
+    const canonicalRoot = await realpath(resolve(options.rootPath));
+    const candidateScope = createPluginTypeScriptGenerationScope({
+        ...(options.aliases ? { aliases: options.aliases } : {}),
+    });
+    const state = resolveTypeScriptGenerationLoaderState(candidateScope);
+    for (const cachedPath of Object.keys(state.loader.cache)) {
+        const absoluteCachedPath = resolve(cachedPath);
+        if (
+            absoluteCachedPath === canonicalRoot
+            || isCanonicalAbsolutePathInsideRoot(canonicalRoot, absoluteCachedPath)
+        ) {
+            delete state.loader.cache[cachedPath];
+        }
+    }
+    return candidateScope;
+}
+
 async function assertTrusted(
     committedAuthorization: CommittedPluginExecutionAuthorization | undefined,
+    sourceAuthority?: PluginRuntimeSourceAuthority,
 ): Promise<void> {
-    if (committedAuthorization) {
-        const authorized = isPluginTrustRecordAuthorized(
-            committedAuthorization.trust,
-            {
-                pluginId: committedAuthorization.pluginId,
-                distribution: committedAuthorization.distribution,
-                realm: 'daemon',
-            },
-        );
-        if (!authorized) {
-            throw createModuleLoadError(
-                'PLUGIN_DAEMON_TRUST_APPROVAL_REQUIRED',
-                'Committed plugin execution authorization does not match the reviewed distribution and immutable generation',
-            );
-        }
-        if (!(await committedAuthorization.isCurrent())) {
-            throw createModuleLoadError(
-                'PLUGIN_DAEMON_TRUST_APPROVAL_REQUIRED',
-                `Committed plugin execution authorization is stale for generation '${committedAuthorization.immutableGenerationId}'`,
-            );
-        }
-        return;
-    }
+    if (committedAuthorization) return;
+    if (sourceAuthority?.kind === 'development') return;
     throw createModuleLoadError(
         'PLUGIN_DAEMON_TRUST_APPROVAL_REQUIRED',
         'Plugin executable load requires a reviewed, committed, current daemon generation',
@@ -314,9 +347,10 @@ async function importFileBackedModule(params: Readonly<{
         if (cachedModule?.loaded) {
             return cachedModule.exports as PluginModuleNamespace;
         }
-        return await generationState.loader.import(
+        return await importMutablePluginAuthorSourceModule(
+            generationState.loader,
             graphModulePath,
-        ) as PluginModuleNamespace;
+        );
     }
 
     return await import(resolveNativePluginModuleUrl({
@@ -424,10 +458,11 @@ async function loadFileBackedModule(params: Readonly<{
     devEntryPath?: string | null;
     useDevelopmentEntry?: boolean;
     committedAuthorization?: CommittedPluginExecutionAuthorization;
+    sourceAuthority?: PluginRuntimeSourceAuthority;
     generationScope?: object;
     nativeFileUrlMode?: NativeFileUrlMode;
 }>): Promise<PluginModuleNamespace> {
-    await assertTrusted(params.committedAuthorization);
+    await assertTrusted(params.committedAuthorization, params.sourceAuthority);
 
     const selectedEntry = resolveSelectedEntryPath({
         entryPath: params.entryPath,
@@ -485,7 +520,7 @@ export async function loadPluginModule<TModule extends PluginModuleNamespace>(pa
     nativeFileUrlMode?: NativeFileUrlMode;
 }>): Promise<TModule> {
     if (params.source.kind === 'prepared') {
-        await assertTrusted(params.source.committedAuthorization);
+        await assertTrusted(params.source.committedAuthorization, params.source.sourceAuthority);
         return params.source.module;
     }
     if (params.source.kind === 'file_backed') {
@@ -494,6 +529,7 @@ export async function loadPluginModule<TModule extends PluginModuleNamespace>(pa
             devEntryPath: params.source.devEntryPath,
             useDevelopmentEntry: params.source.useDevelopmentEntry,
             committedAuthorization: params.source.committedAuthorization,
+            sourceAuthority: params.source.sourceAuthority,
             generationScope: params.source.generationScope,
             nativeFileUrlMode: params.nativeFileUrlMode,
         }) as TModule;

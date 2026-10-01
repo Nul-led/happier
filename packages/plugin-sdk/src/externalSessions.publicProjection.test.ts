@@ -5,6 +5,7 @@ import type {
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type {
+    AgentExternalSessionCandidateThread,
     AgentExternalSessionTranscriptRawRecord,
     AgentExternalSessionsInvocationBounds,
     AgentExternalSessionUserProjection,
@@ -85,6 +86,13 @@ describe('External Sessions public producer projections', () => {
         expectTypeOf<AgentExternalSessionUserProjection>()
             .toEqualTypeOf<ProtocolExternalSessionUserProjection>();
         expect(externalSessions).not.toHaveProperty('AgentExternalSessionUserProjectionSchema');
+    });
+
+    it('publishes the candidate thread type used by the candidate projection', () => {
+        expectTypeOf<AgentExternalSessionCandidateThread>().toMatchTypeOf<{
+            kind: 'reviewer' | 'subagent';
+            parentRemoteSessionId: string | null;
+        }>();
     });
 
     it('publishes the exact candidate-precedence values without a second implementation', () => {

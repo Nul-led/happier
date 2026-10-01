@@ -71,15 +71,15 @@ describe('target Voice speech registry', () => {
         const retirement = new AbortController();
         const entry = Object.freeze({
             pluginId: 'acme.speech',
-            generation: '7',
+            occurrenceId: '7',
             registration: Object.freeze({ family: 'voiceProviders' as const, localId: 'main', value: runtime }),
         });
         const targetRegistrations = [entry];
         const registry = createTargetVoiceSpeechRegistry({
-            generation: 7,
             voiceProviders: [contribution()],
             targetRegistrations,
-            resolveGenerationLifecycle: () => ({
+            readPluginOccurrenceId: () => '7',
+            resolveOccurrenceLifecycle: () => ({
                 isCurrent: () => current,
                 retirementSignal: retirement.signal,
             }),
@@ -91,7 +91,7 @@ describe('target Voice speech registry', () => {
 
         const resolved = registry.read({ pluginId: 'acme.speech', localId: 'main' });
         expect(resolved).toMatchObject({
-            generation: '7',
+            occurrenceId: '7',
             qualifiedId: 'acme.speech/main',
             runtime,
             contribution: speechDefinition,
@@ -121,22 +121,22 @@ describe('target Voice speech registry', () => {
                 turn: { cancelResponse: true, bargeIn: true },
                 tools: { effectCalls: 'none' },
             },
-            client: { artifactId: 'voice-ui', modulePath: './voice.js', exportName: 'activate' },
+            client: { artifactId: 'voice-ui', exportName: 'activate' },
         };
         const registry = createTargetVoiceSpeechRegistry({
-            generation: 8,
             voiceProviders: [contribution(), contribution(conversation)],
             targetRegistrations: [{
-                pluginId: 'acme.speech', generation: '7',
+                pluginId: 'acme.speech', occurrenceId: '7',
                 registration: { family: 'voiceProviders', localId: 'main', value: runtime },
             }, {
-                pluginId: 'acme.speech', generation: '8',
+                pluginId: 'acme.speech', occurrenceId: '8',
                 registration: {
                     family: 'voiceProviders', localId: 'conversation',
                     value: runtime,
                 },
             }],
-            resolveGenerationLifecycle: () => ({
+            readPluginOccurrenceId: () => '8',
+            resolveOccurrenceLifecycle: () => ({
                 isCurrent: () => true,
                 retirementSignal: new AbortController().signal,
             }),

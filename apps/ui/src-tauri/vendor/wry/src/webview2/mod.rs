@@ -1397,6 +1397,26 @@ impl InnerWebView {
     Ok(true)
   }
 
+  pub fn can_go_back(&self) -> Result<bool> {
+    let mut available = BOOL::default();
+    unsafe { self.webview.CanGoBack(&mut available) }.map_err(Into::into)?;
+    Ok(available.as_bool())
+  }
+
+  pub fn can_go_forward(&self) -> Result<bool> {
+    let mut available = BOOL::default();
+    unsafe { self.webview.CanGoForward(&mut available) }.map_err(Into::into)?;
+    Ok(available.as_bool())
+  }
+
+  pub fn go_forward(&self) -> Result<bool> {
+    if !self.can_go_forward()? {
+      return Ok(false);
+    }
+    unsafe { self.webview.GoForward() }.map_err(Into::into)?;
+    Ok(true)
+  }
+
   pub fn id(&self) -> crate::WebViewId<'_> {
     &self.id
   }

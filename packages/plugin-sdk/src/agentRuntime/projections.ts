@@ -97,6 +97,7 @@ export type {
   AgentAccountUsageQuotaSource,
   AgentAccountUsageRecoveryCredit,
   AgentAccountUsageRecoveryCredits,
+  AgentAccountUsageSubscription,
   AgentAccountUsageSnapshot,
 } from './accountUsage.js';
 export type {
@@ -124,6 +125,8 @@ export type {
   AgentSessionHookServerStartRequest,
   AgentSessionHooksService,
   AgentSessionHostServices,
+  AgentSessionInputFilesService,
+  AgentSessionVerifiedImageInput,
   AgentSessionHappierToolsService,
   AgentSessionNativeHomeService,
   AgentSessionSubagentObservation,
@@ -293,6 +296,9 @@ export type {
   AgentCliSessionCommandOptionsV1,
   AgentCliSessionCommandParsedArgsV1,
   AgentProviderCliAttachDeclarationV1,
+  AgentProviderCliAttachHostFactsV1,
+  AgentSettingsSelectedSystemToolInputV1,
+  AgentSettingsSelectedSystemToolV1,
   AgentProviderCliAttachReachabilityV1,
   AgentProviderCliAttachTargetResolutionV1,
   AgentProviderCliAttachTargetV1,
@@ -478,6 +484,9 @@ export type {
   AgentSessionModelsService,
   AgentSessionModelsSnapshot,
   AgentSessionModelsSource,
+  AgentSessionModesService,
+  AgentSessionModesSnapshot,
+  AgentSessionModesSource,
   AgentSessionProviderTranscriptPublishRequest,
   AgentSessionTerminalComposerClearOutcome,
   AgentSessionWorkflowActivityService,
@@ -579,6 +588,8 @@ export type AttachAvailabilityRequest = Readonly<{
 export type AttachRequest = Readonly<{
   sessionId: string;
   metadata: AttachSessionMetadata;
+  /** Cancels only the foreground attach client; the provider Session remains alive. */
+  signal?: AbortSignal;
 }>;
 
 export type AttachFailureCode =

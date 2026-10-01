@@ -1,4 +1,4 @@
-import type { ScmWorkingSnapshot } from '@happier-dev/plugin-sdk/scm';
+import type { ScmWorkingSnapshot, ScmRemoteRequest } from '@happier-dev/plugin-sdk/scm';
 import {
   evaluateScmRemoteMutationPreconditions as evaluateSharedRemoteMutationPreconditions,
   SCM_OPERATION_ERROR_CODES,
@@ -13,6 +13,8 @@ export function evaluateRemoteMutationPreconditions(input: {
     kind: RemoteMutationKind;
     snapshot: ScmWorkingSnapshot;
     hasExplicitRemoteOrBranch: boolean;
+    request?: ScmRemoteRequest;
+    behindAppliesToTarget?: boolean;
 }): ScmRemoteMutationGuardResult {
     return evaluateSharedRemoteMutationPreconditions({
         kind: input.kind,
@@ -22,8 +24,10 @@ export function evaluateRemoteMutationPreconditions(input: {
             requireUpstreamWhenNoExplicitTarget: true,
             requireActiveHead: false,
             blockPushOnConflicts: true,
-            blockPushWhenBehind: true,
-            requireCleanPull: true,
+            blockPushWhenBehind: input.request?.pushMode !== 'force_with_lease' && input.behindAppliesToTarget !== false,
+            requireCleanPull: !input.request?.dirtyPolicy || input.request.dirtyPolicy === 'refuse',
+            blockActiveOperation: true,
+            allowDetachedPushWithExplicitSource: input.kind === 'push' && Boolean(input.request?.branch) && input.request?.pushMode !== 'force_with_lease',
         },
         mapReasonToError: mapRemoteMutationReasonToError,
     });
@@ -34,6 +38,8 @@ function mapRemoteMutationReasonToError(
     reason: ScmRemoteMutationReason
 ): Exclude<ScmRemoteMutationGuardResult, { ok: true }> {
     switch (reason) {
+        case 'operation_in_progress':
+            return { ok: false, errorCode: SCM_OPERATION_ERROR_CODES.BRANCH_OPERATION_IN_PROGRESS, error: 'Finish or abort the active Git operation before synchronizing.' };
         case 'conflicts_present':
             return {
                 ok: false,

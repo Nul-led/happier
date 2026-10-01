@@ -101,7 +101,7 @@ const APPLIED_OBSERVATION = {
     v: 1,
     title: 'Consolidate the duplicated normalizer',
     scopeLabel: 'octo-org/example-app',
-    state: { presentation: 'closed', nativeLabel: 'Merged' },
+    state: { presentation: 'resolved', nativeLabel: 'Merged' },
     facts: [],
   },
   viewer: { involvement: ['reviewRequested'] },
@@ -808,7 +808,7 @@ describe('the mounted GitHub write controls', () => {
   });
 
   it('offers no impossible reopen after the authoritative observation says merged', async () => {
-    const detail = await mountDetail({ presentation: 'closed', nativeLabel: 'Merged' });
+    const detail = await mountDetail({ presentation: 'resolved', nativeLabel: 'Merged' });
 
     await expect(detail.queryByRole('button', { name: 'Reopen pull request' }))
       .resolves.toBeUndefined();

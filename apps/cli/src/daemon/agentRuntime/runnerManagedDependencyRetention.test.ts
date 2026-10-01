@@ -31,6 +31,12 @@ type SessionMarkerProcessIdentity = Parameters<
   typeof verifyMarkerProcessLiveness
 >[0];
 
+const managedCustody = (immutableGenerationId: string) => ({
+  kind: 'managed' as const,
+  immutableGenerationId,
+  installSource: 'localPath' as const,
+});
+
 function marker(
   overrides: Partial<DaemonSessionMarker> = {},
 ): DaemonSessionMarker {
@@ -44,7 +50,7 @@ function marker(
     processStartTimeMs: 12_345,
     runnerManagedDependencyRetentionV1: {
       v: 1,
-      sourceGenerationIds: ['registry:g'],
+      sourceCustodies: [managedCustody('registry:g')],
       qualifiedDependencyIds: ['acme.plugin/tool'],
     },
     ...overrides,
@@ -61,7 +67,7 @@ describe('live Runner Agent managed-dependency retention', () => {
     });
     const expected = {
       v: 1 as const,
-      sourceGenerationIds: ['registry:g'],
+      sourceCustodies: [managedCustody('registry:g')],
       qualifiedDependencyIds: ['acme.plugin/tool'],
     };
 
@@ -120,7 +126,7 @@ describe('live Runner Agent managed-dependency retention', () => {
       }),
     ).resolves.toEqual({
       v: 1,
-      sourceGenerationIds: [],
+      sourceCustodies: [],
       qualifiedDependencyIds: [],
     });
   });
@@ -132,7 +138,7 @@ describe('live Runner Agent managed-dependency retention', () => {
       processStartTimeMs: 22_345,
       runnerManagedDependencyRetentionV1: {
         v: 1,
-        sourceGenerationIds: ['registry:stopped'],
+        sourceCustodies: [managedCustody('registry:stopped')],
         qualifiedDependencyIds: ['acme.plugin/stopped'],
       },
     });
@@ -141,7 +147,7 @@ describe('live Runner Agent managed-dependency retention', () => {
       processStartTimeMs: 32_345,
       runnerManagedDependencyRetentionV1: {
         v: 1,
-        sourceGenerationIds: ['registry:reused'],
+        sourceCustodies: [managedCustody('registry:reused')],
         qualifiedDependencyIds: ['acme.plugin/reused'],
       },
     });
@@ -178,9 +184,9 @@ describe('live Runner Agent managed-dependency retention', () => {
       }),
     ).resolves.toEqual({
       v: 1,
-      sourceGenerationIds: [
-        'registry:g',
-        'registry:reused',
+      sourceCustodies: [
+        managedCustody('registry:g'),
+        managedCustody('registry:reused'),
       ],
       qualifiedDependencyIds: [
         'acme.plugin/reused',
@@ -207,11 +213,11 @@ describe('live Runner Agent managed-dependency retention', () => {
         v: 1,
         adoptedManagedProviderAuthority: {
           pluginId,
-          immutableGenerationId: providerP1,
+          sourceCustody: managedCustody(providerP1),
           manifestAuthority: 'external',
           hardRevocationRevisionAtAdmission: 0,
         },
-        sourceGenerationIds: [currentQ],
+        sourceCustodies: [managedCustody(currentQ)],
         qualifiedDependencyIds: ['acme.provider/tool-p1'],
       },
     });
@@ -223,11 +229,11 @@ describe('live Runner Agent managed-dependency retention', () => {
         v: 1,
         adoptedManagedProviderAuthority: {
           pluginId,
-          immutableGenerationId: providerP2,
+          sourceCustody: managedCustody(providerP2),
           manifestAuthority: 'external',
           hardRevocationRevisionAtAdmission: 0,
         },
-        sourceGenerationIds: [currentQ],
+        sourceCustodies: [managedCustody(currentQ)],
         qualifiedDependencyIds: ['acme.provider/tool-p2'],
       },
     });
@@ -301,7 +307,7 @@ describe('live Runner Agent managed-dependency retention', () => {
                 canonicalPath: '/tmp/acme-provider',
               },
             },
-            updatePolicy: 'reviewEveryUpdate',
+            updatePolicy: 'allowed',
             optionalAccess: [],
           },
         },
@@ -318,7 +324,7 @@ describe('live Runner Agent managed-dependency retention', () => {
         transactionId: 'multi-provider-retention',
         baseRevision: 0,
         installationState,
-        pluginGenerations: {
+        pluginOccurrenceIds: {
           [pluginId]: {
             immutableGenerationId: currentQ,
           },
@@ -339,7 +345,7 @@ describe('live Runner Agent managed-dependency retention', () => {
         }),
       ).resolves.toEqual({
         v: 1,
-        sourceGenerationIds: [currentQ],
+        sourceCustodies: [managedCustody(currentQ)],
         qualifiedDependencyIds: [
           'acme.provider/tool-p1',
           'acme.provider/tool-p2',

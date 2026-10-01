@@ -62,6 +62,41 @@ test('reusable tests callers explicitly select jobs without inheriting caller ev
     );
   }
 
+  for (const [job, input] of [
+    ['mobile-e2e-android', 'run_mobile_e2e_android'],
+    ['mobile-e2e-ios', 'run_mobile_e2e_ios'],
+    ['release-assets-docker', 'run_release_assets_docker'],
+    ['self-host-systemd-e2e', 'run_self_host_systemd'],
+    ['self-host-launchd-e2e', 'run_self_host_launchd'],
+    ['self-host-schtasks-e2e', 'run_self_host_schtasks'],
+    ['self-host-daemon-e2e', 'run_self_host_daemon'],
+    ['e2e-core-slow', 'run_e2e_core_slow'],
+    ['release_actor_guard', 'run_providers'],
+    ['providers', 'run_providers'],
+  ]) {
+    assert.equal(
+      parsed?.jobs?.[job]?.if,
+      `\${{ inputs.select_jobs_explicitly && inputs.${input} }}`,
+      `${job} must honor explicit reusable inputs even when GitHub preserves the caller event`,
+    );
+  }
+
+  for (const job of ['ui-e2e', 'workspace-sync-real']) {
+    assert.doesNotMatch(
+      JSON.stringify(parsed?.jobs?.[job]),
+      /github\.event_name\s*[!=]=\s*'workflow_call'/u,
+      `${job} must use the explicit-selection boundary rather than the caller event to bypass path filtering`,
+    );
+  }
+
+  for (const job of ['installers-smoke-linux', 'installers-smoke-macos', 'installers-smoke-windows']) {
+    const env = parsed?.jobs?.[job]?.env ?? {};
+    for (const key of ['INSTALLERS_CHANNEL', 'INSTALLERS_SOURCE', 'INSTALLERS_REF', 'INSTALLERS_RELEASE_CHANNEL']) {
+      assert.match(String(env[key] ?? ''), /inputs\.select_jobs_explicitly/u);
+      assert.doesNotMatch(String(env[key] ?? ''), /github\.event_name == 'workflow_call'/u);
+    }
+  }
+
   assert.equal(
     parsed?.jobs?.stress?.if,
     '${{ inputs.run_stress }}',
@@ -105,13 +140,14 @@ test('real workspace sync obeys the explicit reusable-workflow selection boundar
   );
 });
 
-test('the existing Home Iroh real lane owns both real Chromium completion verticals', async () => {
+test('the existing Home Iroh real lane runs native, Chromium, and Docker relay journeys', async () => {
   const parsed = YAML.parse(await readWorkflow('.github/workflows/tests.yml'));
   const dispatch = YAML.parse(await readWorkflow('.github/workflows/tests-dispatch.yml'));
   const uiPackage = JSON.parse(await readWorkflow('apps/ui/package.json'));
+  const irohPackage = JSON.parse(await readWorkflow('packages/iroh-native/package.json'));
   const job = parsed?.jobs?.['home-iroh-real'];
   assert.equal(job?.if, '${{ !inputs.select_jobs_explicitly || inputs.run_home_iroh_real }}');
-  assert.equal(job?.name, 'Iroh real transport (native + Chromium)');
+  assert.equal(job?.name, 'Iroh real transport (native + Chromium + Docker relay)');
 
   const dispatchCall = Object.values(dispatch?.jobs ?? {}).find(
     (candidate) => candidate?.uses === './.github/workflows/tests.yml',
@@ -127,13 +163,22 @@ test('the existing Home Iroh real lane owns both real Chromium completion vertic
     'the existing manual dispatch selector must forward to the reusable Home Iroh real lane',
   );
   const resolveStep = dispatch?.jobs?.resolve?.steps?.find((step) => step?.id === 'flags');
-  assert.match(
-    resolveStep?.run ?? '',
-    /if has home_iroh_real; then run_home_iroh_real=true; fi/u,
-    'the existing custom-check parser must select the Home Iroh real output',
+  assert.equal(
+    resolveStep?.run,
+    'node scripts/pipeline/checks/resolve-checks-plan.mjs --target hosted',
+    'manual dispatch must invoke the canonical hosted checks resolver',
   );
 
   const steps = job?.steps ?? [];
+  const nativeBuildStepIndex = steps.findIndex((step) => /test:home-iroh:real/u.test(step?.run ?? ''));
+  const ownerTestStepIndex = steps.findIndex((step) => /@happier-dev\/iroh-native test$/u.test(step?.run ?? ''));
+  assert.ok(nativeBuildStepIndex >= 0 && ownerTestStepIndex > nativeBuildStepIndex,
+    'Iroh owner tests must run after the real lane builds the native addon');
+  assert.equal(
+    steps[ownerTestStepIndex]?.env?.HAPPIER_IROH_REQUIRE_NODE_ADDON,
+    '1',
+    'Iroh owner tests must fail instead of skipping addon-backed lifecycle coverage',
+  );
   assert.ok(
     steps.some((step) => /playwright install --with-deps chromium/u.test(step?.run ?? '')),
     'the existing lane must provision real Chromium',
@@ -141,6 +186,15 @@ test('the existing Home Iroh real lane owns both real Chromium completion vertic
   assert.ok(
     steps.some((step) => /proof:browser-iroh-real-verticals/u.test(step?.run ?? '')),
     'the existing lane must invoke the combined browser completion command',
+  );
+  const dockerStepIndex = steps.findIndex((step) => /test:home-iroh:docker/u.test(step?.run ?? ''));
+  assert.ok(dockerStepIndex > nativeBuildStepIndex,
+    'the Docker relay journey must run after the native addon is built',
+  );
+  assert.match(
+    irohPackage?.scripts?.['test:home-iroh:docker'] ?? '',
+    /hstack-exec/u,
+    'the Docker relay journey must use the existing remote execution owner',
   );
   assert.equal(
     uiPackage?.scripts?.['proof:browser-iroh-real-verticals'],

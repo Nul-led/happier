@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ingestPluginManifestV2 } from '@happier-dev/protocol';
+import { admitScmRemotePolicy } from '@happier-dev/protocol/scm';
 
-import { createGitScmBackendRuntimeRegistration } from './backend.js';
+import { createGitBackend, createGitScmBackendRuntimeRegistration } from './backend.js';
 import { GIT_SCM_BACKEND_CAPABILITIES } from './capabilities.js';
 import { GIT_SCM_BACKEND_CONTRIBUTION, PLUGIN_MANIFEST } from './manifest.js';
 
@@ -45,6 +46,19 @@ describe('git SCM backend runtime registration', () => {
 
         expect(registration.handlers.hosting?.repositoryDescribePublishTargets).toEqual(expect.any(Function));
         expect(GIT_SCM_BACKEND_CAPABILITIES.hosting.repositoryPublishTargets.support).toBe('supported');
+    });
+
+    it('admits implemented remote policies through the real Git capability projection', () => {
+        const backend = createGitBackend();
+        const capabilities = backend.getCapabilities({ mode: '.git' });
+
+        expect(admitScmRemotePolicy({ dirtyPolicy: 'autostash', reconcile: 'rebase' }, capabilities)).toEqual({ success: true });
+        expect(admitScmRemotePolicy({ dirtyPolicy: 'allow_git', reconcile: 'merge' }, capabilities)).toEqual({ success: true });
+        expect(admitScmRemotePolicy({ pushMode: 'force_with_lease' }, capabilities)).toEqual({ success: true });
+        expect(admitScmRemotePolicy(
+            { pushMode: 'force_with_lease' },
+            backend.getCapabilities({ mode: '.git', executableAvailable: false }),
+        )).toMatchObject({ success: false, errorCode: 'FEATURE_UNSUPPORTED' });
     });
 
     it('does not advertise managed Git resolution when the installable has no managed fallback', () => {

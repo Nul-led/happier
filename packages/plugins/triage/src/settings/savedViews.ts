@@ -65,6 +65,14 @@ export const TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1 = 'triage.savedViews';
 export const MAX_TRIAGE_SAVED_VIEWS_SERIALIZED_UTF8_BYTES_V1 =
     PLUGIN_ACCOUNT_STORAGE_LIMITS_V1.maximumValueEncodedBytes;
 
+/**
+ * How a saved view presents its rows: the view the reader chose while looking through it (PLAN.md r0.41, "Views:
+ * List | Board, persisted per saved view"). It is remembered with the view, never as a layout Setting. A value
+ * this build does not know makes the stored set unreadable rather than silently becoming List.
+ */
+export const TRIAGE_SAVED_VIEW_PRESENTATIONS_V1 = Object.freeze(['list', 'board'] as const);
+export type TriageSavedViewPresentationV1 = (typeof TRIAGE_SAVED_VIEW_PRESENTATIONS_V1)[number];
+
 export type CorpusSavedViewV1 = Readonly<{
     /** Target-minted opaque id; neither an entry/source identity nor a storage tag. */
     viewId: string;
@@ -75,6 +83,7 @@ export type CorpusSavedViewV1 = Readonly<{
     order: TriageListOrderV1;
     /** Retained across a non-Smart order switch, consumed only when `order === 'smart'`. */
     smartPolicy: CorpusSmartPolicyV1;
+    view: TriageSavedViewPresentationV1;
 }>;
 
 export type CorpusSavedViewsCatalogV1 = Readonly<{
@@ -111,6 +120,7 @@ export type CorpusSavedViewsRejectionV1 =
     | 'filterValue'
     | 'order'
     | 'smartPolicy'
+    | 'view'
     | 'valueTooLarge';
 
 export type CorpusSavedViewsMutationResultV1 =
@@ -136,6 +146,8 @@ export type CorpusSavedViewDraftV1 = Readonly<{
     filters: SurfaceFilterSelectionV1;
     order: TriageListOrderV1;
     smartPolicy: CorpusSmartPolicyV1;
+    /** Absent from a writer that predates views; such a view presents as List. */
+    view?: TriageSavedViewPresentationV1;
 }>;
 
 type CorpusSavedViewCommandBaseV1 = Readonly<{ expectedRevision: string }>;
@@ -236,6 +248,7 @@ function readView(viewId: string, draft: Readonly<{
     filters: unknown;
     order: unknown;
     smartPolicy: unknown;
+    view?: unknown;
 }>): ViewOutcome {
     // The complete Account KV value has the canonical storage boundary.
     // Labels have no independent provider, transport, or product ceiling.
@@ -249,9 +262,11 @@ function readView(viewId: string, draft: Readonly<{
     if (smartPolicy === null) return { ok: false, reason: 'smartPolicy' };
     const filters = readFilters(draft.filters);
     if (!filters.ok) return filters;
+    const view = draft.view === undefined ? 'list' : readClosedValue(TRIAGE_SAVED_VIEW_PRESENTATIONS_V1)(draft.view);
+    if (view === null) return { ok: false, reason: 'view' };
     return {
         ok: true,
-        view: { viewId, label, query: query.data, filters: filters.filters, order, smartPolicy },
+        view: { viewId, label, query: query.data, filters: filters.filters, order, smartPolicy, view },
     };
 }
 
@@ -283,7 +298,9 @@ export function parseTriageSavedViews(raw: unknown): CorpusSavedViewsReadV1 {
     const views: CorpusSavedViewV1[] = [];
     const ids = new Set<string>();
     for (const member of candidate.views) {
-        const view = readExactKeys(member, ['viewId', 'label', 'query', 'filters', 'order', 'smartPolicy']);
+        // A view saved before views existed has no `view` member; it presents as List.
+        const view = readExactKeys(member, ['viewId', 'label', 'query', 'filters', 'order', 'smartPolicy', 'view'])
+            ?? readExactKeys(member, ['viewId', 'label', 'query', 'filters', 'order', 'smartPolicy']);
         if (!view || typeof view.viewId !== 'string' || !VIEW_ID_PATTERN.test(view.viewId)) return unreadable;
         if (ids.has(view.viewId)) return unreadable;
         ids.add(view.viewId);
@@ -293,6 +310,7 @@ export function parseTriageSavedViews(raw: unknown): CorpusSavedViewsReadV1 {
             filters: view.filters,
             order: view.order,
             smartPolicy: view.smartPolicy,
+            ...(view.view === undefined ? {} : { view: view.view }),
         });
         if (!parsed.ok) return unreadable;
         views.push(parsed.view);
@@ -333,6 +351,7 @@ function toStoredValue(value: CorpusSavedViewsCatalogV1): JsonValue {
             },
             order: view.order,
             smartPolicy: { v: 1, precedence: [...view.smartPolicy.precedence] },
+            view: view.view,
         })),
         selectedViewId: value.selectedViewId,
     };

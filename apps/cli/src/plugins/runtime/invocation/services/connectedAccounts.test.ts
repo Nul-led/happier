@@ -44,13 +44,13 @@ function createSeed(options: Readonly<{
             id: 'run',
             qualifiedId: 'acme.consumer/actions/run',
         }),
-        generation: 'generation-1',
+        occurrenceId: 'occurrenceId-1',
         correlationId: 'correlation-1',
         surface: 'cli',
         ...(options.session ? { session: options.session } : {}),
         ...(options.currentSession ? { currentSession: options.currentSession } : {}),
         signal: controller.signal,
-        isGenerationCurrent: () => current,
+        isOccurrenceCurrent: () => current,
     });
     return {
         seed,
@@ -437,7 +437,7 @@ describe('stable plugin Connected Accounts host', () => {
         expect(kindReads).toBe(0);
     });
 
-    it('rechecks generation currentness after snapshotting a crafted request', async () => {
+    it('rechecks occurrenceId currentness after snapshotting a crafted request', async () => {
         const invocation = createSeed();
         const request = new Proxy({
             kind: 'environment' as const,
@@ -451,7 +451,7 @@ describe('stable plugin Connected Accounts host', () => {
         const owner = createOwner({
             materialize: vi.fn(async () => ({
                 kind: 'environment' as const,
-                env: { TOKEN: 'stale-generation-secret' },
+                env: { TOKEN: 'stale-occurrenceId-secret' },
             })),
         });
         const service = createStablePluginConnectedAccountsHost(owner)
@@ -463,7 +463,7 @@ describe('stable plugin Connected Accounts host', () => {
         expect(owner.materialize).not.toHaveBeenCalled();
     });
 
-    it('rechecks generation currentness after composing plugin operation signals before every async owner dispatch', async () => {
+    it('rechecks occurrenceId currentness after composing plugin operation signals before every async owner dispatch', async () => {
         const cases = [
             {
                 ownerMethod: 'getBinding' as const,
@@ -516,7 +516,7 @@ describe('stable plugin Connected Accounts host', () => {
         }
     });
 
-    it('rechecks generation currentness after reading each request-selection input field', async () => {
+    it('rechecks occurrenceId currentness after reading each request-selection input field', async () => {
         for (const retiringField of ['purpose', 'reason'] as const) {
             const invocation = createSeed();
             const owner = createOwner();
@@ -876,7 +876,7 @@ describe('stable plugin Connected Accounts host', () => {
         });
     });
 
-    it('rechecks generation currentness after snapshotting a crafted producer result', async () => {
+    it('rechecks occurrenceId currentness after snapshotting a crafted producer result', async () => {
         const invocation = createSeed();
         const result = Object.defineProperty({
             kind: 'httpHeaders' as const,
@@ -884,7 +884,7 @@ describe('stable plugin Connected Accounts host', () => {
             enumerable: true,
             get() {
                 invocation.retire();
-                return { authorization: 'Bearer stale-generation-secret' };
+                return { authorization: 'Bearer stale-occurrenceId-secret' };
             },
         }) as PluginConnectedAccountMaterialization;
         const owner = createOwner({
@@ -1030,7 +1030,7 @@ describe('stable plugin Connected Accounts host', () => {
         subscription.dispose();
     });
 
-    it('retires the invocation capability and its subscriptions with the consumer generation', async () => {
+    it('retires the invocation capability and its subscriptions with the consumer occurrenceId', async () => {
         const dispose = vi.fn();
         const owner = createOwner({
             watch: vi.fn(() => Object.freeze({ dispose })),

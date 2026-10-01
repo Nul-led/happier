@@ -92,9 +92,9 @@ describe('Account plugin Data collection watch lifecycle', () => {
             });
             const account = host.bind({
                 pluginId,
-                generation: '1',
+                occurrenceId: '1',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             if (!account) throw new Error('Expected an Account A binding');
 
@@ -151,9 +151,9 @@ describe('Account plugin Data collection watch lifecycle', () => {
             });
             const account = host.bind({
                 pluginId,
-                generation: '1',
+                occurrenceId: '1',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             if (!account) throw new Error('Expected an Account A binding');
 
@@ -212,9 +212,9 @@ describe('Account plugin Data collection watch lifecycle', () => {
             });
             const account = host.bind({
                 pluginId,
-                generation: '1',
+                occurrenceId: '1',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             if (!account) throw new Error('Expected an Account A binding');
             const listener = vi.fn();
@@ -286,9 +286,9 @@ describe('Account plugin Data collection watch lifecycle', () => {
         });
         const account = host.bind({
             pluginId,
-            generation: '1',
+            occurrenceId: '1',
             signal: controller.signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         if (!account) throw new Error('Expected an Account Data binding');
         const listener = vi.fn();
@@ -335,9 +335,9 @@ describe('Account plugin Data collection watch lifecycle', () => {
         });
         const account = host.bind({
             pluginId,
-            generation: '1',
+            occurrenceId: '1',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         if (!account) throw new Error('Expected an Account Data binding');
         const collection = account.collection(collectionDefinition);

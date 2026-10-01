@@ -42,6 +42,7 @@ const CLI_MIXED_INPUT_REJECTION_DIAGNOSTICS = [
 const CLI_MIXED_INPUT_RETRY_MS = 250;
 const CLI_WORKSPACE_RUNTIME_ADVANCED_ERROR_CODE = 'ECLIWORKSPACERUNTIMEADVANCED';
 const DAEMON_CONTROL_PUBLICATION_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000];
+const inFlightDevDaemonStarts = new Map();
 
 function sleepMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -148,22 +149,45 @@ function normalizeDistClosureFingerprint(value) {
   return /^[a-f0-9]{16}$/.test(fingerprint) ? fingerprint : null;
 }
 
+function normalizeWorkspaceRuntimeIdentity(value) {
+  const identity = String(value ?? '').trim().toLowerCase();
+  return /^[a-f0-9]{64}$/.test(identity) ? identity : null;
+}
+
 async function isCandidateDistAlreadyActive({
   ping,
   successorDistClosureFingerprint,
+  successorWorkspaceRuntimeIdentity,
   runtimeStatePath,
 }, {
+  readCliDistBuildManifestImpl = readCliDistBuildManifest,
   readStackRuntimeStateFileImpl = readStackRuntimeStateFile,
 } = {}) {
   const candidateFingerprint = normalizeDistClosureFingerprint(successorDistClosureFingerprint);
+  const candidateWorkspaceRuntimeIdentity = normalizeWorkspaceRuntimeIdentity(
+    successorWorkspaceRuntimeIdentity,
+  );
   const activeFingerprint = normalizeDistClosureFingerprint(ping?.distClosureFingerprint);
   const activePid = normalizeDaemonPid(ping?.pid);
+  const activeRuntimeEntrypoint = String(
+    ping?.state?.startedWithRuntimeEntrypoint ?? '',
+  ).trim();
+  // The ping fingerprint is launch admission metadata. Verify the immutable entrypoint's own
+  // manifest as well so a failed replacement cannot make its incumbent look current.
+  const activeRuntime = activeRuntimeEntrypoint
+    ? readCliDistBuildManifestImpl(activeRuntimeEntrypoint)
+    : null;
   const statePath = String(runtimeStatePath ?? '').trim();
   if (
     ping?.ok !== true
     || !candidateFingerprint
+    || !candidateWorkspaceRuntimeIdentity
     || activeFingerprint !== candidateFingerprint
     || !activePid
+    || activeRuntime?.ok !== true
+    || normalizeDistClosureFingerprint(activeRuntime.fingerprint) !== candidateFingerprint
+    || normalizeWorkspaceRuntimeIdentity(activeRuntime.manifest?.workspaceRuntimeIdentity)
+      !== candidateWorkspaceRuntimeIdentity
     || !statePath
   ) {
     return false;
@@ -257,20 +281,36 @@ export async function startDevDaemon({
   if (!startDaemon) return { started: false, reason: 'daemon-disabled' };
 
   try {
-    await startLocalDaemonWithAuthImpl({
-      cliBin,
-      cliHomeDir,
-      internalServerUrl,
-      publicServerUrl,
-      runtimeStatePath,
-      isShuttingDown,
-      forceRestart: Boolean(restart),
-      admitPriorDistImmediately: Boolean(startLastGreen),
-      preserveExistingRunning: Boolean(preserveExistingRunning),
-      env,
-      stackName,
-      cliIdentity,
-    });
+    const scope = JSON.stringify([cliHomeDir, internalServerUrl, stackName, cliIdentity]);
+    for (;;) {
+      let active = inFlightDevDaemonStarts.get(scope);
+      if (!active) {
+        const start = Promise.resolve().then(() => startLocalDaemonWithAuthImpl({
+          cliBin,
+          cliHomeDir,
+          internalServerUrl,
+          publicServerUrl,
+          runtimeStatePath,
+          isShuttingDown,
+          forceRestart: Boolean(restart),
+          admitPriorDistImmediately: Boolean(startLastGreen),
+          preserveExistingRunning: Boolean(preserveExistingRunning),
+          env,
+          stackName,
+          cliIdentity,
+        })).finally(() => {
+          if (inFlightDevDaemonStarts.get(scope)?.start === start) inFlightDevDaemonStarts.delete(scope);
+        });
+        active = { start, forceRestart: Boolean(restart) };
+        inFlightDevDaemonStarts.set(scope, active);
+      }
+      if (restart && !active.forceRestart) {
+        await active.start.catch(() => undefined);
+        continue;
+      }
+      await active.start;
+      break;
+    }
     return { started: true };
   } catch (error) {
     if (!startLastGreen && !keepServerRunningOnFailure) throw error;
@@ -362,21 +402,14 @@ export function createHappyCliReloadExecutor({
       successorActivationMayOutliveGeneration = false;
       successorWorkspaceRuntimeIdentity = null;
       const publicationChanged = context.changedDescriptors?.includes('daemon:cli-publication') === true;
-      if (publicationChanged) {
+      if (
+        publicationChanged
+        && existsSyncImpl(join(cliDir, 'dist', 'index.mjs'))
+        && existsSyncImpl(join(cliDir, 'dist', '.build-manifest.json'))
+      ) {
         const distEntrypoint = join(cliDir, 'dist', 'index.mjs');
-        const manifestPath = join(cliDir, 'dist', '.build-manifest.json');
-        if (!existsSyncImpl(distEntrypoint) || !existsSyncImpl(manifestPath)) {
-          throw new Error(
-            '[local] watch: an external happier-cli publication was observed without a complete dist; refusing to activate it.',
-          );
-        }
         const distClosure = readCliDistBuildManifest(distEntrypoint);
-        if (!distClosure.ok || !distClosure.fingerprint) {
-          throw new Error(
-            `[local] watch: external happier-cli publication is invalid (${distClosure.reason}); refusing to activate it.`,
-          );
-        }
-        if (distClosure.fingerprint !== activeDistClosureFingerprint) {
+        if (distClosure.ok && distClosure.fingerprint && distClosure.fingerprint !== activeDistClosureFingerprint) {
           await probeCliDistRuntimeImportImpl(distEntrypoint, { cwd: cliDir, env });
           const currentInputs = await readCliRuntimeInputFreshnessImpl(cliDir);
           const publishedInputFingerprint = String(
@@ -420,10 +453,13 @@ export function createHappyCliReloadExecutor({
             ...(successorPublicationSuperseded ? { requestFollowup: true } : {}),
           };
         }
-        if (context.changedDescriptors.length === 1) {
+        if (distClosure.ok && distClosure.fingerprint && context.changedDescriptors.length === 1) {
           return { skipped: true, reason: 'cli-publication-already-active' };
         }
       }
+      // A manifest notification can land between the two directory renames of
+      // another publisher. The canonical build lock waits for its publication,
+      // then validates or repairs the resulting dist before activation.
       logger.log('[local] watch: happier-cli changed → rebuilding + restarting daemon...');
       let buildResult;
       for (;;) {
@@ -575,7 +611,12 @@ export function createHappyCliReloadExecutor({
       }
       if (ping?.ok === true) {
         if (await isCandidateDistAlreadyActive(
-          { ping, successorDistClosureFingerprint, runtimeStatePath },
+          {
+            ping,
+            successorDistClosureFingerprint,
+            successorWorkspaceRuntimeIdentity,
+            runtimeStatePath,
+          },
           { readStackRuntimeStateFileImpl },
         )) {
           activeDistClosureFingerprint = successorDistClosureFingerprint;

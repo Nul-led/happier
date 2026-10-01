@@ -1,6 +1,7 @@
 import type { ScmHostingProviderRef } from '@happier-dev/plugin-sdk/scm/hosting';
 import { describe, expect, it } from 'vitest';
 import { GITHUB_API_VERSION } from '../observations/githubProviderContracts.js';
+import { createGithubRestAdapter } from './restAdapter.js';
 
 const githubProvider: ScmHostingProviderRef = {
   id: 'scm.github',
@@ -33,13 +34,25 @@ function jsonResponse(body: unknown, init?: Readonly<{
 }
 
 describe('GitHub REST pull request adapter', () => {
-  it('uses a github.com connected-account token for REST list requests', async () => {
-    const mod = await import('./restAdapter.js').catch(() => null);
-    expect(mod).not.toBeNull();
-    if (!mod) return;
+  it('marks a definite provider rejection as a non-effect without assuming the same for server errors', async () => {
+    const create = { provider: githubProvider, base: 'main', head: 'feature', title: 'Review' };
+    const rejected = createGithubRestAdapter({
+      resolveToken: async () => ({ kind: 'available', token: 'bound-token' }),
+      fetcher: async () => jsonResponse({ message: 'Validation failed' }, { status: 422 }),
+    });
+    await expect(rejected.createPullRequest(create)).rejects.toMatchObject({ errorCode: 'COMMAND_FAILED', effectNotApplied: true });
+    const uncertain = createGithubRestAdapter({
+      resolveToken: async () => ({ kind: 'available', token: 'bound-token' }),
+      fetcher: async () => jsonResponse({ message: 'Server failed' }, { status: 500 }),
+    });
+    const error = await uncertain.createPullRequest(create).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toMatchObject({ effectNotApplied: true });
+  });
 
+  it('uses a github.com connected-account token for REST list requests', async () => {
     const requests: Array<Readonly<{ url: string; init?: RequestInit }>> = [];
-    const adapter = mod.createGithubRestAdapter({
+    const adapter = createGithubRestAdapter({
       resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token', profileKey: 'github:work' }),
       fetcher: async (url: string, init?: RequestInit) => {
         requests.push({ url, init });
@@ -87,12 +100,8 @@ describe('GitHub REST pull request adapter', () => {
   });
 
   it('uses operation-scoped runtime token materialization when constructor token resolver is absent', async () => {
-    const mod = await import('./restAdapter.js').catch(() => null);
-    expect(mod).not.toBeNull();
-    if (!mod) return;
-
     const requests: Array<Readonly<{ url: string; init?: RequestInit }>> = [];
-    const adapter = mod.createGithubRestAdapter({
+    const adapter = createGithubRestAdapter({
       fetcher: async (url: string, init?: RequestInit) => {
         requests.push({ url, init });
         return jsonResponse([]);
@@ -128,16 +137,12 @@ describe('GitHub REST pull request adapter', () => {
   });
 
   it('keeps auth profile keys scoped to the provider context that resolved them', async () => {
-    const mod = await import('./restAdapter.js').catch(() => null);
-    expect(mod).not.toBeNull();
-    if (!mod) return;
-
     const otherProvider: ScmHostingProviderRef = {
       ...githubProvider,
       id: 'scm.github.other',
       nameWithOwner: 'other-owner/other-repo',
     };
-    const adapter = mod.createGithubRestAdapter({
+    const adapter = createGithubRestAdapter({
       resolveToken: async ({ provider }) => ({
         kind: 'available',
         token: `redacted-${provider.id}`,
@@ -154,12 +159,8 @@ describe('GitHub REST pull request adapter', () => {
   });
 
   it('does not send github.com token material to Enterprise hosts', async () => {
-    const mod = await import('./restAdapter.js').catch(() => null);
-    expect(mod).not.toBeNull();
-    if (!mod) return;
-
     const requests: unknown[] = [];
-    const adapter = mod.createGithubRestAdapter({
+    const adapter = createGithubRestAdapter({
       resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token', profileKey: 'github:work' }),
       fetcher: async (url: string, init?: RequestInit) => {
         requests.push({ url, init });
@@ -177,12 +178,8 @@ describe('GitHub REST pull request adapter', () => {
   });
 
   it('rejects forged github.com provider base URLs before attaching token material', async () => {
-    const mod = await import('./restAdapter.js').catch(() => null);
-    expect(mod).not.toBeNull();
-    if (!mod) return;
-
     const requests: unknown[] = [];
-    const adapter = mod.createGithubRestAdapter({
+    const adapter = createGithubRestAdapter({
       resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token' }),
       fetcher: async (url: string, init?: RequestInit) => {
         requests.push({ url, init });
@@ -203,12 +200,8 @@ describe('GitHub REST pull request adapter', () => {
   });
 
   it('rejects pull request URL references from a different repository before fetching current-repo data', async () => {
-    const mod = await import('./restAdapter.js').catch(() => null);
-    expect(mod).not.toBeNull();
-    if (!mod) return;
-
     const requests: unknown[] = [];
-    const adapter = mod.createGithubRestAdapter({
+    const adapter = createGithubRestAdapter({
       resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token' }),
       fetcher: async (url: string, init?: RequestInit) => {
         requests.push({ url, init });
@@ -224,11 +217,7 @@ describe('GitHub REST pull request adapter', () => {
   });
 
   it('resolves checkout reference metadata without checkout orchestration', async () => {
-    const mod = await import('./restAdapter.js').catch(() => null);
-    expect(mod).not.toBeNull();
-    if (!mod) return;
-
-    const adapter = mod.createGithubRestAdapter({
+    const adapter = createGithubRestAdapter({
       resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token', profileKey: 'github:work' }),
       fetcher: async (url: string) => {
         return jsonResponse({
@@ -256,11 +245,7 @@ describe('GitHub REST pull request adapter', () => {
   });
 
   it('classifies a throttled GitHub 403 as a retryable backend limit, not a credential failure', async () => {
-    const mod = await import('./restAdapter.js').catch(() => null);
-    expect(mod).not.toBeNull();
-    if (!mod) return;
-
-    const adapter = mod.createGithubRestAdapter({
+    const adapter = createGithubRestAdapter({
       resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token' }),
       fetcher: async () => jsonResponse({ message: 'API rate limit exceeded for user ID 1.' }, {
         status: 403,
@@ -283,11 +268,7 @@ describe('GitHub REST pull request adapter', () => {
   });
 
   it('still reports an unthrottled GitHub 403 as remote authentication required', async () => {
-    const mod = await import('./restAdapter.js').catch(() => null);
-    expect(mod).not.toBeNull();
-    if (!mod) return;
-
-    const adapter = mod.createGithubRestAdapter({
+    const adapter = createGithubRestAdapter({
       resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token' }),
       fetcher: async () => jsonResponse({ message: 'Resource not accessible by personal access token' }, {
         status: 403,

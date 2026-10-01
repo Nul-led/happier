@@ -5,7 +5,7 @@ import {
   type ControlRuntime,
 } from './controlRuntime.js';
 import type { ControlAttemptResult } from './outcome.js';
-import { isSafeWindowForSlashControl, type ClaudeScreenState } from '../screenState.js';
+import { isClaudeUsageLimitWaitBlockingComposerClear, isSafeWindowForSlashControl, type ClaudeScreenState } from '../screenState.js';
 import type { SettingsGuard } from './settingsGuard.js';
 import type { ClaudeTuiControlTelemetrySink } from './telemetry.js';
 import type { ApplyRuntimeConfigReason } from './types.js';
@@ -183,6 +183,10 @@ async function runSlashControl(ctx: SlashControlContext, spec: SlashControlSpec)
     return { kind: 'scheduled', timing: 'next_idle', reason: 'generating' };
   }
 
+  if (isClaudeUsageLimitWaitBlockingComposerClear(state0)) {
+    return { kind: 'scheduled', timing: 'queued_until_safe_window', reason: 'usage_limit_wait' };
+  }
+
   // Leftover own-dialog (incident cmq8y3nlx, L6): a queued `/effort` executed at turn end leaves
   // its confirmation dialog on screen. It IS the pending command — answer it deliberately instead
   // of failing the safe-window check on every retry (which could never converge).
@@ -208,6 +212,9 @@ async function runSlashControl(ctx: SlashControlContext, spec: SlashControlSpec)
         const recaptured = await captureScreenState(port);
         if (recaptured.kind !== 'state') return captureFailureToResult(recaptured);
         state0 = recaptured.state;
+        if (isClaudeUsageLimitWaitBlockingComposerClear(state0)) {
+          return { kind: 'scheduled', timing: 'queued_until_safe_window', reason: 'usage_limit_wait' };
+        }
         if (state0.generating || state0.queuedMessageBannerVisible) {
           return { kind: 'scheduled', timing: 'next_idle', reason: 'generating' };
         }
@@ -277,7 +284,8 @@ async function runSlashControl(ctx: SlashControlContext, spec: SlashControlSpec)
       await wait(timings.slashPickerSettleMs);
       const afterType = await captureScreenState(port);
       if (afterType.kind !== 'state') {
-        await port.sendSpecialKey('Escape');
+        // Capture failure does not revoke the last observed provider-owned wait.
+        if (!state0.usageLimitWaitVisible) await port.sendSpecialKey('Escape');
         return captureFailureToResult(afterType);
       }
       if (afterType.state.unrecognizedConfirmationDialogVisible) {
@@ -285,9 +293,14 @@ async function runSlashControl(ctx: SlashControlContext, spec: SlashControlSpec)
         // answer the dialog) and never Escape (it would decline it). Fail closed.
         return unrecognizedDialogResult();
       }
+      if (afterType.state.selectionListVisible) {
+        return { kind: 'scheduled', timing: 'queued_until_safe_window', reason: 'unsafe_overlay' };
+      }
       // TOCTOU: a turn started or a user draft replaced the command between typing and submitting.
       if (afterType.state.generating || afterType.state.userDraftPresent) {
-        await port.sendSpecialKey('Escape');
+        if (!isClaudeUsageLimitWaitBlockingComposerClear(afterType.state)) {
+          await port.sendSpecialKey('Escape');
+        }
         return { kind: 'failed', reason: 'toctou_drift_before_submit' };
       }
       // Pre-Enter composer EQUALITY (incident cmq7pyqkj, U1): the recapture must show EXACTLY the
@@ -301,7 +314,9 @@ async function runSlashControl(ctx: SlashControlContext, spec: SlashControlSpec)
           name: 'unified.control.verification_mismatch',
           properties: { key: spec.key, expected: spec.commandText, observed: composerAfterType },
         });
-        await port.sendSpecialKey('Escape');
+        if (!isClaudeUsageLimitWaitBlockingComposerClear(afterType.state)) {
+          await port.sendSpecialKey('Escape');
+        }
         return { kind: 'failed', reason: COMPOSER_CONTENT_MISMATCH_REASON };
       }
 
@@ -374,6 +389,11 @@ async function runSlashControl(ctx: SlashControlContext, spec: SlashControlSpec)
     }
 
     if (effective === null) {
+      if (finalState !== null && isClaudeUsageLimitWaitBlockingComposerClear(finalState)) {
+        const restore = await restoreOnce();
+        if (!restore.ok) return { kind: 'failed', reason: `settings_guard:${restore.reason}` };
+        return { kind: 'scheduled', timing: 'queued_until_safe_window', reason: 'usage_limit_wait' };
+      }
       if (queuedByProvider) {
         const restore = await restoreOnce();
         if (!restore.ok) return { kind: 'failed', reason: `settings_guard:${restore.reason}` };

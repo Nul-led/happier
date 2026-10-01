@@ -22,9 +22,20 @@ const STACK_TEST_RUNNER_ENV_DENY_LIST = new Set([
   'HAPPIER_ACTIVE_SERVER_ID',
   'HAPPIER_DAEMON_SERVICE_LABEL',
   'HAPPIER_DAEMON_STARTUP_SOURCE',
+  'HAPPIER_DEV_TARGET_EXECUTION',
+  'HAPPIER_EXEC_CONFIG_PATH',
+  'HAPPIER_HEAVYWEIGHT_ADMISSION_MACHINE',
+  'HAPPIER_HEAVYWEIGHT_ADMISSION_ROOT',
+  'HAPPIER_HEAVYWEIGHT_ADMISSION_TOKEN',
   'HAPPIER_HOME_DIR',
+  'HAPPIER_HSTACK_DISPATCH_CONTROL',
+  'HAPPIER_HSTACK_EXECUTION',
+  'HAPPIER_PREFERRED_EXECUTION',
   'HAPPIER_SERVER_URL',
   'HAPPIER_WEBAPP_URL',
+  'NPM_CONFIG_CACHE',
+  'YARN_CACHE_FOLDER',
+  'npm_config_cache',
 ]);
 const STACK_TEST_ISOLATED_ROOT_MARKER = 'HAPPIER_STACK_TEST_ISOLATED_ROOT';
 const STACK_TEST_REPO_DIR_MARKER = 'HAPPIER_STACK_TEST_REPO_DIR';
@@ -52,6 +63,8 @@ export function sanitizeStackTestRunnerEnv(env = {}, { isolatedStackRoot = '', r
     cleanEnv.HAPPIER_STACK_STORAGE_DIR = join(root, 'stacks');
     cleanEnv.HAPPIER_STACK_WORKSPACE_DIR = join(root, 'workspace');
     cleanEnv.HAPPIER_STACK_RUNTIME_DIR = join(root, 'runtime');
+    cleanEnv.YARN_CACHE_FOLDER = join(root, 'cache', 'yarn');
+    cleanEnv.npm_config_cache = join(root, 'cache', 'npm');
   }
 
   const repo = String(repoDir ?? '').trim() || inheritedRepoDir;

@@ -8,6 +8,7 @@ import {
     type ProcessLiveness,
 } from '@happier-dev/cli-common/process';
 import { PluginError } from '@happier-dev/plugin-sdk';
+import { pluginSourceCustodyV1Equal } from '@happier-dev/protocol';
 import { createManagedServiceEndpointProjectionV1,
     managedServiceEndpointProjectionFileName,
     parseManagedServiceEndpointProjectionV1,
@@ -521,7 +522,6 @@ export function createManagedServiceDurabilityOwner(params: Readonly<{
             && (
                 query.sessionId !== undefined
                 || query.contributionId === undefined
-                || query.immutableGenerationId === undefined
             )
         ) return null;
         if (
@@ -529,7 +529,7 @@ export function createManagedServiceDurabilityOwner(params: Readonly<{
             && (
                 query.sessionId === undefined
                 || query.contributionId === undefined
-                || query.immutableGenerationId !== undefined
+                || query.sourceCustody !== undefined
             )
         ) return null;
         return await runExclusive(async () => {
@@ -544,9 +544,11 @@ export function createManagedServiceDurabilityOwner(params: Readonly<{
                     || projection.contributionId === query.contributionId
                 ))
                 .filter((projection) => (
-                    query.immutableGenerationId === undefined
-                    || projection.immutableGenerationId
-                        === query.immutableGenerationId
+                    query.sourceCustody === undefined
+                    || pluginSourceCustodyV1Equal(
+                        projection.sourceCustody,
+                        query.sourceCustody,
+                    )
                 ))
                 .filter((projection) => {
                     if (query.selector.kind === 'baseUrl') {

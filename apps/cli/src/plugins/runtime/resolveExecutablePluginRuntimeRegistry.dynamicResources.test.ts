@@ -1,7 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 import { ConversationProvidersContributionProtocolV1 } from '@happier-dev/channels-protocol/v1';
@@ -13,14 +12,12 @@ import {
     createResolvedContributionRegistry,
     resolveMergedContributionRegistry,
 } from '@/plugins/projection/registry/createResolvedContributionRegistry';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import { projectLoadedPluginContributes } from '@/plugins/projection/registry/resolvePluginContributions';
 import { seedCurrentLocalPathPluginFixture } from '@/plugins/store/registry/currentState.testkit';
 import { readCurrentCommittedPluginGenerations } from '@/plugins/store/registry/generationStore';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
-import { pluginSourceProvenanceForKind } from '@/plugins/manifest/sourceProvenance';
 
-import { resolveExecutablePluginRuntimeRegistry } from './resolveExecutablePluginRuntimeRegistry';
+import { resolveExecutablePluginRuntimeRegistry as resolveExecutablePluginRuntimeRegistryProduction } from './resolveExecutablePluginRuntimeRegistry';
 import type { AccountPluginDataStorageHostDependencies } from './context/accountPluginDataStorage';
 import { createPluginReloadController } from './reload/controller';
 import type { ResolveSessionResourceAccess } from './invocation/services/resources';
@@ -44,6 +41,31 @@ const CHANNELS_PLUGIN_ID = BUNDLED_CHANNELS_PLUGIN_ID;
 const CHANNELS_PROVIDER_FIXTURE_ID = 'acme.channel.resource-test';
 const FIXTURE_HAPPIER_ENGINE = '^0.2.10';
 const CHANNELS_PROVIDER_OPERATIONS = ConversationProvidersContributionProtocolV1.operations;
+
+function resolveExecutablePluginRuntimeRegistry(
+    params: NonNullable<Parameters<typeof resolveExecutablePluginRuntimeRegistryProduction>[0]> = {},
+) {
+    return resolveExecutablePluginRuntimeRegistryProduction({
+        ...params,
+        resolveDevelopmentSourceAuthority:
+            params.resolveDevelopmentSourceAuthority
+            ?? (({ pluginId, rootPath }) => ({
+                kind: 'development' as const,
+                registeredRootId: `dynamic-resource-fixture:${pluginId}`,
+                canonicalRoot: rootPath,
+                observedRevision: 1,
+            })),
+    });
+}
+
+function requirePluginOccurrenceId(
+    runtime: Readonly<{ readPluginOccurrenceId?: (pluginId: string) => string | null }>,
+    pluginId: string,
+): string {
+    const occurrenceId = runtime.readPluginOccurrenceId?.(pluginId) ?? null;
+    if (!occurrenceId) throw new Error(`Expected current occurrence for ${pluginId}`);
+    return occurrenceId;
+}
 
 type DynamicResourceFixtureControl = {
     value: string;
@@ -254,35 +276,12 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             });
             const baseGenerationAuthority = await readCurrentCommittedPluginGenerations(
                 resolvePluginStorePaths({ happyHomeDir }),
-                { bundledArtifacts: [] },
+                {},
             );
             if (!baseGenerationAuthority) {
                 throw new Error('Expected the committed external fixture generation');
             }
-            const channelsArtifact = BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS.find((artifact) => (
-                artifact.record.pluginId === BUNDLED_CHANNELS_PLUGIN_ID
-            ));
-            if (!channelsArtifact) {
-                throw new Error('Expected the bundled Channels immutable artifact');
-            }
-            const generationAuthority = Object.freeze({
-                ...baseGenerationAuthority,
-                generations: new Map([
-                    ...baseGenerationAuthority.generations,
-                    [BUNDLED_CHANNELS_PLUGIN_ID, Object.freeze({
-                        pluginId: BUNDLED_CHANNELS_PLUGIN_ID,
-                        immutableGenerationId: channelsArtifact.record.immutableGenerationId,
-                        rootPath: fileURLToPath(new URL(
-                            '../../../../../packages/plugins/channels/',
-                            import.meta.url,
-                        )),
-                        record: {
-                            ...channelsArtifact.record,
-                            sourceProvenance: pluginSourceProvenanceForKind('bundled'),
-                        },
-                    })],
-                ]),
-            });
+            const generationAuthority = baseGenerationAuthority;
 
             runtime = await resolveExecutablePluginRuntimeRegistry({
                 happyHomeDir,
@@ -343,7 +342,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             const contributes = await resolveScopedDynamicResourceFixtureContributes(happyHomeDir);
             const generationAuthority = await readCurrentCommittedPluginGenerations(
                 resolvePluginStorePaths({ happyHomeDir }),
-                { bundledArtifacts: [] },
+                {},
             );
             if (!generationAuthority) {
                 throw new Error('Expected committed dynamic Resource fixture generations');
@@ -358,7 +357,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
 
             expect(runtime.activatedPluginIds).toEqual(new Set([PLUGIN_ID]));
             const resource = await runtime.readUiResource?.({
-                expectedGeneration: String(runtime.generation),
+                expectedCallerOccurrenceId: requirePluginOccurrenceId(runtime, PLUGIN_ID),
                 callerPluginId: PLUGIN_ID,
                 resourceId: 'live-status',
             });
@@ -384,7 +383,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             const contributes = await resolveScopedDynamicResourceFixtureContributes(happyHomeDir);
             const generationAuthority = await readCurrentCommittedPluginGenerations(
                 resolvePluginStorePaths({ happyHomeDir }),
-                { bundledArtifacts: [] },
+                {},
             );
             if (!generationAuthority) {
                 throw new Error('Expected committed dynamic Resource fixture generation');
@@ -414,7 +413,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             const contributes = await resolveScopedDynamicResourceFixtureContributes(happyHomeDir);
             const generationAuthority = await readCurrentCommittedPluginGenerations(
                 resolvePluginStorePaths({ happyHomeDir }),
-                { bundledArtifacts: [] },
+                {},
             );
             if (!generationAuthority) {
                 throw new Error('Expected committed dynamic Resource fixture generations');
@@ -425,8 +424,8 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
                 generationAuthority,
                 pluginIds: [PLUGIN_ID, PEER_PLUGIN_ID],
             });
-            const retainedActivationRegistryLeases = firstRuntime
-                .retainActivationRegistryComponentsExcluding?.(new Set([PLUGIN_ID])) ?? [];
+            const retainedPeerComponent = firstRuntime.retainPluginActivationComponent?.(PEER_PLUGIN_ID) ?? null;
+            const retainedActivationRegistryLeases = retainedPeerComponent ? [retainedPeerComponent] : [];
             expect(retainedActivationRegistryLeases).toHaveLength(1);
             expect([...retainedActivationRegistryLeases[0]!.pluginIds]).toEqual([PEER_PLUGIN_ID]);
 
@@ -444,7 +443,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             ]));
             expect(await readFile(peer.activationLogPath, 'utf8')).toBe('activate\n');
             const resource = await secondRuntime.readUiResource?.({
-                expectedGeneration: String(secondRuntime.generation),
+                expectedCallerOccurrenceId: requirePluginOccurrenceId(secondRuntime, PEER_PLUGIN_ID),
                 callerPluginId: PEER_PLUGIN_ID,
                 resourceId: PEER_RESOURCE_ID,
             });
@@ -513,15 +512,15 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
                     },
                 },
             });
-            const expectedGeneration = String(runtime.generation);
+            const expectedCallerOccurrenceId = requirePluginOccurrenceId(runtime, PLUGIN_ID);
             const read = await runtime.readUiResource?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 resourceId: 'live-status',
             });
             expect(new TextDecoder().decode(read?.bytes)).toEqual(JSON.stringify({ account: 'ready' }));
             const opened = await runtime.openUiResourceWatch?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 subscriptionId: 'account-surface',
                 resourceId: 'live-status',
@@ -560,10 +559,10 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
                 accountId: 'account-a',
                 witness: { v: 1, throughCursor: 1, entries: [] },
             });
-            const expectedGeneration = String(runtime.generation);
+            const expectedCallerOccurrenceId = requirePluginOccurrenceId(runtime, PLUGIN_ID);
 
             const read = await runtime.readUiResource?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 resourceId: 'live-status',
                 context: { kind: 'session', sessionId: 'session-a' },
@@ -571,7 +570,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             expect(new TextDecoder().decode(read?.bytes)).toEqual(JSON.stringify({ sessionId: 'session-a' }));
 
             const opened = await runtime.openUiResourceWatch?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 subscriptionId: 'session-surface',
                 resourceId: 'live-status',
@@ -603,10 +602,10 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
         try {
             runtime = await resolveExecutablePluginRuntimeRegistry({ happyHomeDir });
             expect(runtime.pluginDiagnosticsByPluginId[PLUGIN_ID]).toEqual([]);
-            const expectedGeneration = String(runtime.generation);
+            const expectedCallerOccurrenceId = requirePluginOccurrenceId(runtime, PLUGIN_ID);
 
             const opened = await runtime.openUiResourceWatch?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 subscriptionId: 'surface-1',
                 resourceId: 'live-status',
@@ -614,7 +613,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             expect(opened).toMatchObject({ subscriptionId: 'surface-1', digest: expect.any(String) });
 
             const polled = runtime.pollUiResourceWatch?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 subscriptionId: 'surface-1',
                 waitMs: 5_000,
@@ -628,7 +627,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             // The signal carries no bytes: the observer re-reads through the
             // single snapshot authority and gets the CURRENT value.
             const reread = await runtime.readUiResource?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 resourceId: 'live-status',
             });
@@ -655,17 +654,17 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
         let runtime: Awaited<ReturnType<typeof resolveExecutablePluginRuntimeRegistry>> | null = null;
         try {
             runtime = await resolveExecutablePluginRuntimeRegistry({ happyHomeDir });
-            const expectedGeneration = String(runtime.generation);
+            const expectedCallerOccurrenceId = requirePluginOccurrenceId(runtime, PLUGIN_ID);
             control().publish(JSON.stringify({ revision: 9 }));
 
             const opened = await runtime.openUiResourceWatch?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 subscriptionId: 'late-surface',
                 resourceId: 'live-status',
             });
             const polled = await runtime.pollUiResourceWatch?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 subscriptionId: 'late-surface',
                 waitMs: 5_000,
@@ -677,7 +676,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             expect(currentDigest).toEqual(opened?.digest);
 
             const reread = await runtime.readUiResource?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 resourceId: 'live-status',
             });
@@ -696,16 +695,16 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
         let runtime: Awaited<ReturnType<typeof resolveExecutablePluginRuntimeRegistry>> | null = null;
         try {
             runtime = await resolveExecutablePluginRuntimeRegistry({ happyHomeDir });
-            const expectedGeneration = String(runtime.generation);
+            const expectedCallerOccurrenceId = requirePluginOccurrenceId(runtime, PLUGIN_ID);
             const packaged = await runtime.readUiResource?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 resourceId: 'style-guide',
             });
             expect(new TextDecoder().decode(packaged?.bytes)).toEqual('# Style guide\n');
 
             await expect(runtime.openUiResourceWatch?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 subscriptionId: 'surface-packaged',
                 resourceId: 'style-guide',
@@ -754,9 +753,9 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
         let firstLease: Awaited<ReturnType<ReturnType<typeof createPluginReloadController>['acquireRuntimeRegistry']>> | null = null;
         try {
             firstRuntime = await resolveExecutablePluginRuntimeRegistry({ happyHomeDir });
-            const expectedGeneration = String(firstRuntime.generation);
+            const expectedCallerOccurrenceId = requirePluginOccurrenceId(firstRuntime, PLUGIN_ID);
             await firstRuntime.openUiResourceWatch?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 subscriptionId: 'surface-1',
                 resourceId: 'live-status',
@@ -767,7 +766,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             firstLease = await reloadController.acquireRuntimeRegistry();
 
             const polled = firstRuntime.pollUiResourceWatch?.({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: PLUGIN_ID,
                 subscriptionId: 'surface-1',
                 waitMs: 60_000,
@@ -780,7 +779,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             });
             await reloadController.adoptPreparedRuntimeRegistry({
                 registry: secondRuntime,
-                changedPluginIds: [],
+                changedPluginIds: [PLUGIN_ID],
                 durableRevision: 1,
                 runningSessionDisposition: 'retainRunningSessions',
             });
@@ -1111,7 +1110,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             ]));
             const generationAuthority = await readCurrentCommittedPluginGenerations(
                 resolvePluginStorePaths({ happyHomeDir }),
-                { bundledArtifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS },
+                {},
             );
             if (!generationAuthority) throw new Error('Expected committed Channels fixture generations');
             reloadController = createPluginReloadController({
@@ -1138,23 +1137,23 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             runtime = runtimeLease.registry;
             expect(runtime.pluginDiagnosticsByPluginId[CHANNELS_PROVIDER_FIXTURE_ID] ?? []).toEqual([]);
             expect(runtime.activatedPluginIds.has(CHANNELS_PLUGIN_ID)).toBe(true);
-            const expectedGeneration = String(runtime.generation);
+            const expectedCallerOccurrenceId = requirePluginOccurrenceId(runtime, CHANNELS_PLUGIN_ID);
             const readUiResource = runtime.readUiResource;
             if (!readUiResource) throw new Error('Expected the Channels Resource reader');
             await expect(readUiResource({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: CHANNELS_PLUGIN_ID,
                 resourceId: 'connections-v1',
             })).rejects.toMatchObject({ code: 'collection_unavailable' });
 
             accountDataAvailable = true;
             const initialConnections = await readUiResource({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: CHANNELS_PLUGIN_ID,
                 resourceId: 'connections-v1',
             });
             const initialBindings = await readUiResource({
-                expectedGeneration,
+                expectedCallerOccurrenceId,
                 callerPluginId: CHANNELS_PLUGIN_ID,
                 resourceId: 'bindings-v1',
             });

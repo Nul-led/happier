@@ -26,6 +26,7 @@ import {
 import { createPluginStateStore } from '@/plugins/store/state.testkit';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 import type { ResolvedActivatedHookRegistration } from './types';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 async function writeInstalledSettingsPlugin(params: Readonly<{
   happyHomeDir: string;
@@ -541,6 +542,8 @@ describe('getResolvedContributionRegistry', () => {
         },
       },
     });
+    const alphaOccurrenceId = createPluginRuntimeOccurrenceId('alpha.plugin');
+    const betaOccurrenceId = createPluginRuntimeOccurrenceId('beta.plugin');
     const inputs = {
       agents: [],
       actions: [
@@ -552,9 +555,9 @@ describe('getResolvedContributionRegistry', () => {
         event('alpha.plugin', 'repository/updated', 'configure-source', 'baseline-history-gap'),
         event('beta.plugin', 'repository/updated', 'configure-source'),
       ],
-      immutableGenerationIdsByPluginId: {
-        'alpha.plugin': 'alpha-immutable-generation',
-        'beta.plugin': 'beta-immutable-generation',
+      occurrenceIdsByPluginId: {
+        'alpha.plugin': alphaOccurrenceId,
+        'beta.plugin': betaOccurrenceId,
       },
     };
 
@@ -566,25 +569,25 @@ describe('getResolvedContributionRegistry', () => {
         event: expect.objectContaining({
           id: 'alpha.plugin/repository/updated',
           identity: { pluginId: 'alpha.plugin', localId: 'repository/updated' },
-          immutableGenerationId: 'alpha-immutable-generation',
+          occurrenceId: alphaOccurrenceId,
         }),
         setupAction: expect.objectContaining({
           id: 'alpha.plugin/configure-source',
           identity: { pluginId: 'alpha.plugin', localId: 'configure-source' },
-          immutableGenerationId: 'alpha-immutable-generation',
+          occurrenceId: alphaOccurrenceId,
           title: 'Alpha setup',
         }),
         historyGapResetAction: expect.objectContaining({
           id: 'alpha.plugin/baseline-history-gap',
           identity: { pluginId: 'alpha.plugin', localId: 'baseline-history-gap' },
-          immutableGenerationId: 'alpha-immutable-generation',
+          occurrenceId: alphaOccurrenceId,
           title: 'Resume source',
         }),
       }),
       expect.objectContaining({
         event: expect.objectContaining({
           id: 'beta.plugin/repository/updated',
-          immutableGenerationId: 'beta-immutable-generation',
+          occurrenceId: betaOccurrenceId,
         }),
         setupAction: expect.objectContaining({
           id: 'beta.plugin/configure-source',
@@ -593,13 +596,13 @@ describe('getResolvedContributionRegistry', () => {
       }),
     ]);
 
-    const staleGeneration = createResolvedContributionRegistry({
+    const staleOccurrence = createResolvedContributionRegistry({
       ...inputs,
-      immutableGenerationIdsByPluginId: {
-        'alpha.plugin': 'alpha-immutable-generation',
+      occurrenceIdsByPluginId: {
+        'alpha.plugin': alphaOccurrenceId,
       },
     });
-    expect(staleGeneration.automationEligibleEvents?.map((entry) => entry.event.id)).toEqual([
+    expect(staleOccurrence.automationEligibleEvents?.map((entry) => entry.event.id)).toEqual([
       'alpha.plugin/repository/updated',
     ]);
 

@@ -33,4 +33,21 @@ describe('buildOpenCodeThinkingModelOptionsFromVariants', () => {
       options: [{ value: 'max', name: 'Max' }],
     }]);
   });
+
+  it('uses released V2 variant arrays as reasoning-effort options', () => {
+    expect(buildOpenCodeThinkingModelOptionsFromVariants([
+      { id: 'high' },
+      { id: 'low' },
+      { id: 'high' },
+    ], null)).toEqual([{
+      id: 'reasoning_effort',
+      name: 'Thinking',
+      type: 'select',
+      currentValue: 'high',
+      options: [
+        { value: 'low', name: 'Low' },
+        { value: 'high', name: 'High' },
+      ],
+    }]);
+  });
 });

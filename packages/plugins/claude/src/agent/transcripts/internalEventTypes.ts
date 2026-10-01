@@ -3,6 +3,13 @@ export const INTERNAL_CLAUDE_EVENT_TYPES = new Set<string>([
     'change',
     'queue-operation',
     'rate_limit_event',
+    'attachment',
+    'last-prompt',
+    'mode',
+    'pr-link',
+    'tool_progress',
+    // Claude Agent SDK 0.3.206+: per-command queue/execution state, not conversation output.
+    'command_lifecycle',
 ]);
 
 /**
@@ -27,16 +34,18 @@ export const CLAUDE_NON_TRANSCRIPT_RECORD_TYPES = new Set<string>([
     ...INTERNAL_CLAUDE_EVENT_TYPES,
     'agent-setting',
     'ai-title',
-    'attachment',
     'bridge-session',
     'control_request',
     'control_response',
     'event',
-    'last-prompt',
-    'mode',
     'permission-mode',
     'progress',
     'result',
     'summary',
     'system',
 ]);
+
+/** Transcript-only exclusions; raw lifecycle observers still receive these events. */
+export function isClaudeInternalEventType(type: unknown): boolean {
+    return typeof type === 'string' && INTERNAL_CLAUDE_EVENT_TYPES.has(type);
+}

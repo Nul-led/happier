@@ -87,6 +87,7 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({ ElicitRequestSchema: {}, 
 
 import type { ResolvedMcpServerContribution } from '@/plugins/projection/registry/types';
 import type { HostCurrentSessionInteractionsService } from '@/agent/runtime/state/currentSessionUiTypes';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import { createStableDeclaredMcpTransportConnector } from './mcpDeclaredTransport';
 
 describe('stable declared MCP transport connector', () => {
@@ -131,7 +132,7 @@ describe('stable declared MCP transport connector', () => {
             seed: {
                 plugin: { id: 'caller.plugin', version: '1.0.0' },
                 contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-                generation: 'generation-1', correlationId: 'correlation-1', surface: 'agent',
+                occurrenceId: createPluginRuntimeOccurrenceId('caller.plugin'), correlationId: 'correlation-1', surface: 'agent',
                 session: { id: 'session-1' }, currentSession: {
                     interactions: {
                         // The fixture exercises only the questions overload.
@@ -149,7 +150,7 @@ describe('stable declared MCP transport connector', () => {
                         admittedPermissionCeiling: 'read-only' as const,
                     },
                 }),
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             signal: abort.signal,
         });
@@ -234,7 +235,7 @@ describe('stable declared MCP transport connector', () => {
             requester: {
                 pluginId: 'caller.plugin',
                 contributionId: 'run',
-                generationId: 'generation-1',
+                occurrenceId: 'occurrence-1',
                 invocationId: 'correlation-1',
             },
         }));
@@ -279,14 +280,14 @@ describe('stable declared MCP transport connector', () => {
             seed: {
                 plugin: { id: 'caller.plugin', version: '1.0.0' },
                 contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-                generation: 'generation-1', correlationId: 'correlation-1', surface: 'agent',
+                occurrenceId: createPluginRuntimeOccurrenceId('caller.plugin'), correlationId: 'correlation-1', surface: 'agent',
                 session: { id: 'session-1' }, currentSession: {
                     interactions: {
                         request: interactions as unknown as HostCurrentSessionInteractionsService['request'],
                     },
                 },
                 signal: seedAbort.signal,
-                isGenerationCurrent: () => generationCurrent,
+                isOccurrenceCurrent: () => generationCurrent,
             },
             signal: connectorAbort.signal,
         });
@@ -327,7 +328,7 @@ describe('stable declared MCP transport connector', () => {
         pendingInteractions.shift()?.();
         await expect(generationResponse).resolves.toEqual({ action: 'cancel' });
 
-        seedAbort.abort(new Error('generation retired'));
+        seedAbort.abort(new Error('occurrenceId retired'));
         expect(connectSignal?.aborted).toBe(true);
     });
 
@@ -361,10 +362,10 @@ describe('stable declared MCP transport connector', () => {
             seed: {
                 plugin: { id: 'caller.plugin', version: '1.0.0' },
                 contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-                generation: 'generation-1', correlationId: 'correlation-1', surface: 'agent',
+                occurrenceId: 'occurrenceId-1', correlationId: 'correlation-1', surface: 'agent',
                 session: { id: 'session-1' },
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
         });
 
@@ -398,9 +399,9 @@ describe('stable declared MCP transport connector', () => {
             seed: {
                 plugin: { id: 'caller.plugin', version: '1.0.0' },
                 contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-                generation: 'generation-1', correlationId: 'correlation-1', surface: 'agent',
+                occurrenceId: 'occurrenceId-1', correlationId: 'correlation-1', surface: 'agent',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
         });
 

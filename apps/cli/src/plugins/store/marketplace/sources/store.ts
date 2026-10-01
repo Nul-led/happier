@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 
 import {
   createDefaultCuratedMarketplaceSourceRegistryV1,
+  DEFAULT_CURATED_MARKETPLACE_SOURCE_URL,
   MarketplaceSourceRegistryV1Schema,
   type MarketplaceSourceRegistryMutationV1,
   type MarketplaceSourceRegistryV1,
@@ -17,13 +18,6 @@ import { MARKETPLACE_SOURCE_REGISTRY_LOCK_NAME, withPluginStoreLock } from '@/pl
 import { ensurePluginStoreDirectories, resolvePluginStorePaths, type PluginStorePaths } from '@/plugins/store/paths';
 
 export type MarketplaceSourceRegistryInputV1 = Extract<MarketplaceSourceRegistryMutationV1, { kind: 'upsert' }>['input'];
-
-const DEFAULT_CURATED_MARKETPLACE_SOURCE_URL = 'https://marketplace.happier.dev/catalog.json';
-
-function resolveCuratedMarketplaceSourceUrl(): string {
-  const candidate = String(process.env.HAPPIER_MARKETPLACE_CURATED_SOURCE_URL ?? '').trim();
-  return candidate || DEFAULT_CURATED_MARKETPLACE_SOURCE_URL;
-}
 
 function createMarketplaceSourceRecord(
   input: MarketplaceSourceRegistryInputV1,
@@ -57,7 +51,10 @@ function assertMarketplaceSourceAuthorityTransition(
   }
 }
 
-export function createMarketplaceSourceRegistryStore(params?: Readonly<{ happyHomeDir?: string }>): Readonly<{
+export function createMarketplaceSourceRegistryStore(params?: Readonly<{
+  happyHomeDir?: string;
+  curatedSourceUrl?: string;
+}>): Readonly<{
   paths: PluginStorePaths;
   read: () => Promise<MarketplaceSourceRegistryV1>;
   write: (next: MarketplaceSourceRegistryV1) => Promise<void>;
@@ -74,6 +71,7 @@ export function createMarketplaceSourceRegistryStore(params?: Readonly<{ happyHo
   resolvePreferredSource: () => Promise<MarketplaceSourceV1 | null>;
 }> {
   const paths = resolvePluginStorePaths(params);
+  const curatedSourceUrl = params?.curatedSourceUrl ?? DEFAULT_CURATED_MARKETPLACE_SOURCE_URL;
 
   async function readUnlocked(): Promise<MarketplaceSourceRegistryV1 | null> {
     try {
@@ -115,7 +113,7 @@ export function createMarketplaceSourceRegistryStore(params?: Readonly<{ happyHo
         if (current) {
           return current;
         }
-        const seeded = createDefaultCuratedMarketplaceSourceRegistryV1(resolveCuratedMarketplaceSourceUrl());
+        const seeded = createDefaultCuratedMarketplaceSourceRegistryV1(curatedSourceUrl);
         await writeUnlocked(seeded);
         return seeded;
       },
@@ -127,7 +125,7 @@ export function createMarketplaceSourceRegistryStore(params?: Readonly<{ happyHo
       paths,
       lockName: MARKETPLACE_SOURCE_REGISTRY_LOCK_NAME,
       fn: async () => {
-        const current = await readUnlocked() ?? createDefaultCuratedMarketplaceSourceRegistryV1(resolveCuratedMarketplaceSourceUrl());
+        const current = await readUnlocked() ?? createDefaultCuratedMarketplaceSourceRegistryV1(curatedSourceUrl);
         const parsed = MarketplaceSourceRegistryV1Schema.parse(next);
         assertMarketplaceSourceAuthorityTransition(current, parsed);
         await writeUnlocked(parsed);
@@ -142,7 +140,7 @@ export function createMarketplaceSourceRegistryStore(params?: Readonly<{ happyHo
       paths,
       lockName: MARKETPLACE_SOURCE_REGISTRY_LOCK_NAME,
       fn: async () => {
-        const current = await readUnlocked() ?? createDefaultCuratedMarketplaceSourceRegistryV1(resolveCuratedMarketplaceSourceUrl());
+        const current = await readUnlocked() ?? createDefaultCuratedMarketplaceSourceRegistryV1(curatedSourceUrl);
         const next = MarketplaceSourceRegistryV1Schema.parse(await transform(current));
         assertMarketplaceSourceAuthorityTransition(current, next);
         await writeUnlocked(next);

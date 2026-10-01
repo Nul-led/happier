@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { PluginProjectionV2Schema } from '@happier-dev/protocol';
 import type { PluginApi } from '@happier-dev/plugin-sdk';
 
 import { ingestCanonicalPluginManifest } from '@/plugins/manifest/ingest';
@@ -116,6 +117,9 @@ function createContributes(manifest: ReturnType<typeof ingestManifest>): Resolve
         catalogEntriesById: Object.freeze({}),
         agentDefinitionsById: new Map(),
         pluginDiagnosticsByPluginId: Object.freeze({}),
+        occurrenceIdsByPluginId: Object.freeze({
+            [PLUGIN_ID]: 'acme-tracker-occurrence-1',
+        }),
     } as unknown as ResolvedContributionRegistry;
 }
 
@@ -150,6 +154,12 @@ describe('UI-T28 configuration reachability after a failed activation', () => {
                 generation: 4,
                 pluginDiagnosticsByPluginId: activated.pluginDiagnosticsByPluginId,
             });
+
+            // The daemon serializes this exact complete projection through the
+            // strict Protocol response schema. Every plugin-owned family entry
+            // carries the current runtime occurrence stamped by the shared
+            // family freezer, including Connected Account descriptors.
+            expect(() => PluginProjectionV2Schema.parse(projection)).not.toThrow();
 
             // Host-rendered settings: the repair form is still projected, with
             // the field the user must fix.

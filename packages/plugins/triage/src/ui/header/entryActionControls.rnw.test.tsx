@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { testkitEntryRef } from '../../corpus/testkit/observations.test-support.js';
 import type { TriageActionV1 } from '../../settings/actions.js';
 import {
+  readTriagePrimaryActionIdV1,
   TriageEntryActionControls,
   type TriageEntryActionRequestV1,
 } from './entryActionControls.js';
@@ -78,4 +79,49 @@ describe('the mounted configured entry action controls', () => {
     expect(requests).toHaveLength(2);
     expect(requests[1]?.action.actionId).toBe('formal-review-two');
   });
+
+  it('says why a press started nothing instead of doing nothing', async () => {
+    const surface = defineUiSurface(() => (
+      <TriageEntryActionControls
+        target={{
+          kind: 'entry',
+          sectionId: 'open',
+          entryRef: testkitEntryRef({ entryId: '17', kindId: 'pull-request' }),
+          sourceInstanceId: '11111111-1111-4111-8111-111111111111',
+        }}
+        actions={[formalAction('formal-review-one', 'Security review')]}
+        workflowSubject="pullRequest"
+        preparesReviewWorkspace
+        // The catalog changed between render and press: the action is gone.
+        onAction={async () => ({ kind: 'missing' as const })}
+      />
+    ));
+    const fixture = await createPluginUiTestkit({
+      identity: { instanceId: 'fixture-instance-refused', mountNonce: 'fixture-mount-refused' },
+      authorPlugin: { id: 'happier.triage', version: '0.0.0' },
+      surface,
+      surfaceContext: createSurfaceContextFixture(),
+      adapter: createPluginUiRnwSemanticSurfaceAdapter(),
+    });
+    mounted.push(fixture);
+
+    await fixture.press(await fixture.getByRole('button', { name: 'Security review' }));
+    await expect(fixture.getByText('That action is no longer available for this entry.'))
+      .resolves.toBeDefined();
+  });
 });
+
+describe('the one primary entry action', () => {
+  it('is the first action a reader can press, in catalog order', () => {
+    const security = formalAction('formal-review-one', 'Security review');
+    const architecture = formalAction('formal-review-two', 'Architecture review');
+    const ask = Object.freeze({ ...security, actionId: 'ask', label: 'Ask', workspaceMode: 'reference_only' as const });
+
+    expect(readTriagePrimaryActionIdV1([security, architecture], true)).toBe('formal-review-one');
+    // A blocked action is never the primary one; the next pressable action is.
+    expect(readTriagePrimaryActionIdV1([security, ask], false)).toBe('ask');
+    expect(readTriagePrimaryActionIdV1([security, architecture], false)).toBeNull();
+    expect(readTriagePrimaryActionIdV1([], true)).toBeNull();
+  });
+});
+

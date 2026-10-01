@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import { PLUGIN_MANIFEST } from '../manifest.js';
-import {
-    TRIAGE_ENTRIES_COMPACT_RENDERER_ID_V1,
-    TRIAGE_ENTRY_PICKER_RENDERER_ID_V1,
-    TRIAGE_LIST_PAGE_RENDERER_ID_V1,
-    TRIAGE_SESSION_ENTRIES_RENDERER_ID_V1,
-} from '../ui/contributions.js';
 
 /**
  * `requiredHostMethods` is a renderer ADMISSION contract, not an availability
@@ -46,7 +40,7 @@ describe('Triage Composer renderer host-method declarations', () => {
         // `readComposer` + `applyComposer` for Attach/Remove, which is the
         // entire reason this surface exists; `openTriageEntryDetails` →
         // `openSurface`, the whole of **View details**.
-        expect([...declaredHostMethods(TRIAGE_ENTRY_PICKER_RENDERER_ID_V1) ?? []].sort())
+        expect([...declaredHostMethods('entry-picker') ?? []].sort())
             .toEqual(['applyComposer', 'executeAction', 'openSurface', 'readComposer', 'watchComposer']);
     });
 
@@ -57,7 +51,7 @@ describe('Triage Composer renderer host-method declarations', () => {
         // update path after mount — without it the label freezes at its
         // mount-time value and then claims attachments the message will not
         // carry, which is exactly the state this renderer exists to prevent.
-        expect([...declaredHostMethods(TRIAGE_ENTRIES_COMPACT_RENDERER_ID_V1) ?? []].sort())
+        expect([...declaredHostMethods('entries-compact') ?? []].sort())
             .toEqual(['readComposer', 'watchComposer']);
     });
 
@@ -66,7 +60,7 @@ describe('Triage Composer renderer host-method declarations', () => {
         // compact label renders a count and owns no control at all, so a
         // navigation requirement there could only refuse a surface that never
         // needed the method.
-        expect(declaredHostMethods(TRIAGE_ENTRIES_COMPACT_RENDERER_ID_V1) ?? [])
+        expect(declaredHostMethods('entries-compact') ?? [])
             .not.toContain('openSurface');
     });
 
@@ -76,8 +70,8 @@ describe('Triage Composer renderer host-method declarations', () => {
         // would refuse both surfaces.
         const composerMethods = ['readComposer', 'watchComposer', 'applyComposer'];
         for (const rendererId of [
-            TRIAGE_LIST_PAGE_RENDERER_ID_V1,
-            TRIAGE_SESSION_ENTRIES_RENDERER_ID_V1,
+            'list-page',
+            'session-entries-panel',
         ]) {
             const declared = declaredHostMethods(rendererId) ?? [];
             for (const method of composerMethods) expect(declared).not.toContain(method);

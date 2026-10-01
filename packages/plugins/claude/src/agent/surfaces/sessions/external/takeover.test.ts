@@ -24,6 +24,7 @@ describe('Claude External Sessions takeover launch derivation', () => {
             environmentVariables: {
                 CLAUDE_CONFIG_DIR: '/home/user/.claude-current',
             },
+            applyConnectedAccountDefaults: true,
         });
         expect(plan).not.toHaveProperty('directory');
         expect(plan).not.toHaveProperty('backendModeHint');
@@ -56,6 +57,7 @@ describe('Claude External Sessions takeover launch derivation', () => {
                 deadlineAtMs: Date.now() + 15_000,
                 maxSerializedBytes: 262_144,
                 linkedSessionId: 'happier-session-1',
+                transcriptStorage: 'persisted',
                 remoteSessionId: 'claude-session-current',
                 source: {
                     kind: 'claudeConfig',
@@ -78,6 +80,7 @@ describe('Claude External Sessions takeover launch derivation', () => {
             deadlineAtMs: Date.now() + 15_000,
             maxSerializedBytes: 262_144,
             linkedSessionId: 'happier-session-1',
+            transcriptStorage: 'persisted',
             remoteSessionId: 'claude-session-current',
                 source: {
                 kind: 'claudeConfig',

@@ -86,6 +86,7 @@ const V2_MESSAGE = {
 
 function v2Response(pathAndQuery: string): unknown {
   const path = pathAndQuery.split('?')[0] ?? '';
+  if (path === '/api/info') return { version: '2.0.15', pid: 123, urls: [], paths: { tmp: '/tmp' } };
   if (path === '/api/session') return { data: [V2_SESSION], cursor: { next: 'vendor-next' } };
   if (path === '/api/session/active') return { data: { [V2_SESSION.id]: { type: 'running' } } };
   if (path === `/api/session/${V2_SESSION.id}`) return { data: V2_SESSION };
@@ -95,6 +96,7 @@ function v2Response(pathAndQuery: string): unknown {
 
 function v1Response(pathAndQuery: string): unknown {
   const path = pathAndQuery.split('?')[0] ?? '';
+  if (path === '/global/health') return { healthy: true };
   if (path === '/experimental/session') {
     return [{
       id: 'ses_v1',
@@ -147,10 +149,10 @@ describe('managed External Sessions dialect', () => {
     });
   });
 
-  it('never promotes an attached server Happier does not own', async () => {
+  it('negotiates an attached server without inferring its dialect from a local executable', async () => {
     // Happier did not spawn this process, so no executable fact exists for it.
-    // The attached declaration keeps the proven legacy route and the resolver is
-    // not consulted at all.
+    // Its authenticated readiness therefore tries the released V2 contract and
+    // retained V1 contract in order, while the local resolver is not consulted.
     const { exec, resolve } = createExec(V2_EXECUTABLE);
 
     const spec = await resolveOpenCodeExternalSessionsManagedService({
@@ -160,7 +162,11 @@ describe('managed External Sessions dialect', () => {
     });
 
     expect(spec?.healthCheck).toMatchObject({
-      target: { kind: 'servicePath', path: '/global/health' },
+      kind: 'http',
+      alternatives: [
+        { target: { kind: 'servicePath', path: '/api/info' } },
+        { target: { kind: 'servicePath', path: '/global/health' } },
+      ],
     });
     expect(resolve).not.toHaveBeenCalled();
   });
@@ -180,6 +186,7 @@ describe('managed External Sessions dialect', () => {
     expect(result.ok && result.value.candidates.map((candidate) => candidate.remoteSessionId))
       .toEqual([V2_SESSION.id]);
     expect(requests).toEqual([
+      '/api/info',
       '/api/session?directory=%2Ftmp%2Fproject&limit=10',
     ]);
   });
@@ -205,7 +212,7 @@ describe('managed External Sessions dialect', () => {
       ...(nextCursor ? { cursor: nextCursor } : {}),
     });
 
-    expect(requests[1]).toBe('/api/session?limit=1&cursor=vendor-next');
+    expect(requests[3]).toBe('/api/session?limit=1&cursor=vendor-next');
   });
 
   it('pages a transcript over the V2 session and message routes', async () => {
@@ -224,6 +231,7 @@ describe('managed External Sessions dialect', () => {
     expect(page.ok).toBe(true);
     expect(page.ok && page.value.items.map((item) => item.messageRole)).toEqual(['user']);
     expect(requests).toEqual([
+      '/api/info',
       `/api/session/${V2_SESSION.id}`,
       `/api/session/${V2_SESSION.id}/message?limit=10`,
       `/api/session/${V2_SESSION.id}`,
@@ -243,6 +251,47 @@ describe('managed External Sessions dialect', () => {
 
     expect(result.ok).toBe(true);
     expect(requests).toEqual([
+      '/api/info',
+      '/global/health',
+      '/experimental/session?directory=%2Ftmp%2Fproject&limit=11',
+    ]);
+  });
+
+  it('does not treat an unrelated 200 HTML /api/info response as V2', async () => {
+    const { exec } = createExec(STABLE_EXECUTABLE);
+    const requests: string[] = [];
+    const read: AgentExternalSessionsManagedEndpointRead = async ({ pathAndQuery }) => {
+      requests.push(pathAndQuery);
+      if (pathAndQuery === '/api/info') {
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          headers: { 'content-type': 'text/html' },
+          body: new Response('<html>proxy landing page</html>').body,
+        };
+      }
+      const value = v1Response(pathAndQuery);
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        body: new Response(JSON.stringify(value)).body,
+      };
+    };
+    const contribution = createOpenCodeExternalSessionsContribution({ env: {} });
+
+    const result = await contribution.listCandidates({
+      ...invocation(read, exec),
+      source: MANAGED_SOURCE,
+      maxItems: 10,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(requests).toEqual([
+      '/api/info',
+      '/global/health',
       '/experimental/session?directory=%2Ftmp%2Fproject&limit=11',
     ]);
   });

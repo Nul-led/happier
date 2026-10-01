@@ -7,6 +7,9 @@ import type {
     PluginProcessHandle,
     PluginProcessResult,
 } from '@happier-dev/plugin-sdk/exec';
+import type {
+    ManagedServiceHttpHealthResponse,
+} from '@happier-dev/plugin-sdk/managed-services';
 import { isPluginError, PluginError } from '@happier-dev/plugin-sdk';
 import type { PluginDiagnosticData } from '@happier-dev/plugin-sdk';
 import {
@@ -20,6 +23,7 @@ import type {
     ManagedServiceDurableLogCapture,
 } from './managedServiceDurability';
 import {
+    isManagedServiceHttpHealthResponse,
     MANAGED_SERVICE_NUMERIC_CONTRACT,
 } from './managedServiceSpecNormalization';
 import {
@@ -79,6 +83,10 @@ export type ManagedServiceProcessHealthCheck =
         target?:
             | { kind: 'serverPath'; path: string }
             | { kind: 'url'; url: string };
+        alternatives?: readonly Readonly<{
+            target: Readonly<{ kind: 'serverPath'; path: string }>;
+            response: ManagedServiceHttpHealthResponse;
+        }>[];
         headers?: Readonly<Record<string, string>>;
         /** Host-private lease resolver. Public plugin specs cannot supply this callback. */
         resolveHeaders?: (
@@ -184,12 +192,13 @@ export interface ManagedServiceProcessSupervisor {
 }
 
 type ManagedServiceProcessScope = Readonly<{
-    generation: string;
+    occurrenceId: string;
+    sourceCustody?: import('@happier-dev/protocol').PluginSourceCustodyV1;
     pluginId: string;
     contributionId: string;
     sessionId?: string;
     operationId?: string;
-    isGenerationCurrent(): boolean;
+    isOccurrenceCurrent(): boolean;
     exec: Pick<ExecService, 'spawn' | 'run'>;
 }>;
 
@@ -203,7 +212,7 @@ type RunnerManagedServiceSupervisionRequest = Readonly<{
     contributionId: string;
     operationClaimId?: string;
     serverId: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
     signal: AbortSignal;
 }> & (
     | Readonly<{
@@ -540,6 +549,31 @@ function canonicalHealthCheckFacts(
 ): ManagedServiceProcessHealthCheck {
     if (check.kind === 'command') return check;
     const { resolveHeaders: _resolveHeaders, ...canonicalCheck } = check;
+    const fixtureEndpoint = Object.freeze({
+        baseUrl: 'http://127.0.0.1:49152',
+        host: '127.0.0.1',
+        port: 49_152,
+        hostPolicy: 'ownedLoopback' as const,
+    });
+    if (check.alternatives) {
+        return {
+            ...canonicalCheck,
+            alternatives: check.alternatives.map((alternative) => {
+                const canonical = new URL(healthCheckUrl(
+                    check,
+                    fixtureEndpoint,
+                    alternative.target,
+                ));
+                return {
+                    ...alternative,
+                    target: {
+                        kind: 'serverPath' as const,
+                        path: `${canonical.pathname}${canonical.search}`,
+                    },
+                };
+            }),
+        };
+    }
     if (!check.target) return canonicalCheck;
     if (check.target.kind === 'url') {
         return {
@@ -550,12 +584,6 @@ function canonicalHealthCheckFacts(
             },
         };
     }
-    const fixtureEndpoint = Object.freeze({
-        baseUrl: 'http://127.0.0.1:49152',
-        host: '127.0.0.1',
-        port: 49_152,
-        hostPolicy: 'ownedLoopback' as const,
-    });
     const canonical = new URL(resolveHealthServerPath(check.target.path, fixtureEndpoint).baseUrl);
     return {
         ...canonicalCheck,
@@ -601,6 +629,23 @@ function canonicalSpecFacts(spec: ManagedServiceProcessSpec): unknown {
             'plugin_managed_server_health_timeout_invalid',
             'Managed server health timeout must be between 1 and 60000 milliseconds',
         );
+    }
+    if (spec.healthCheck?.kind === 'http' && spec.healthCheck.alternatives) {
+        if (
+            spec.healthCheck.target !== undefined
+            || spec.healthCheck.alternatives.length === 0
+            || spec.healthCheck.alternatives.some((alternative) => (
+                alternative.target.kind !== 'serverPath'
+                || typeof alternative.target.path !== 'string'
+                || alternative.target.path.length === 0
+                || !isManagedServiceHttpHealthResponse(alternative.response)
+            ))
+        ) {
+            return fail(
+                'plugin_managed_server_health_invalid',
+                'Managed server ordered health alternatives are invalid',
+            );
+        }
     }
     if (spec.durableLog && (
         !Number.isSafeInteger(spec.durableLog.keepCount)
@@ -691,19 +736,77 @@ function processExitCode(result: PluginProcessResult): string {
     return observed.diagnostic.code;
 }
 
-function healthCheckUrl(check: Extract<ManagedServiceProcessHealthCheck, { kind: 'http' }>, endpoint: ManagedServiceProcessEndpoint): string {
-    if (!check.target || check.target.kind === 'serverPath') {
-        const path = check.target?.path ?? '/';
+type ManagedServiceProcessHttpHealthCheck = Extract<
+    ManagedServiceProcessHealthCheck,
+    Readonly<{ kind: 'http' }>
+>;
+
+type ManagedServiceProcessHttpHealthTarget =
+    NonNullable<ManagedServiceProcessHttpHealthCheck['target']>;
+
+function healthCheckUrl(
+    check: ManagedServiceProcessHttpHealthCheck,
+    endpoint: ManagedServiceProcessEndpoint,
+    target: ManagedServiceProcessHttpHealthTarget | undefined = check.target,
+): string {
+    if (!target || target.kind === 'serverPath') {
+        const path = target?.path ?? '/';
         return resolveHealthServerPath(path, endpoint).baseUrl;
     }
-    const target = parseManagedServiceEndpointUrl(check.target.url, endpoint.hostPolicy, { allowSearch: true });
-    if (target.host !== endpoint.host || target.port !== endpoint.port) {
+    const parsedTarget = parseManagedServiceEndpointUrl(target.url, endpoint.hostPolicy, { allowSearch: true });
+    if (parsedTarget.host !== endpoint.host || parsedTarget.port !== endpoint.port) {
         return fail(
             'plugin_managed_server_endpoint_denied',
             'Managed server health checks must target the supervised endpoint',
         );
     }
-    return target.baseUrl;
+    return parsedTarget.baseUrl;
+}
+
+function validateHealthCheckTargets(
+    check: ManagedServiceProcessHttpHealthCheck,
+    endpoint: ManagedServiceProcessEndpoint,
+): void {
+    if (check.alternatives) {
+        for (const alternative of check.alternatives) {
+            healthCheckUrl(check, endpoint, alternative.target);
+        }
+        return;
+    }
+    healthCheckUrl(check, endpoint);
+}
+
+function readsManagedServiceHttpHealthResponse(
+    body: unknown,
+    response: ManagedServiceHttpHealthResponse,
+): boolean {
+    if (
+        typeof body !== 'object'
+        || body === null
+        || Array.isArray(body)
+    ) {
+        return false;
+    }
+    const record = body as Readonly<Record<string, unknown>>;
+    return Object.entries(response.required).every(([name, requirement]) => {
+        const value = record[name];
+        switch (requirement) {
+            case 'true':
+                return value === true;
+            case 'nonEmptyString':
+                return typeof value === 'string' && value.length > 0;
+            case 'nonNegativeInteger':
+                return typeof value === 'number'
+                    && Number.isInteger(value)
+                    && value >= 0;
+            case 'array':
+                return Array.isArray(value);
+            case 'object':
+                return typeof value === 'object'
+                    && value !== null
+                    && !Array.isArray(value);
+        }
+    });
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -829,7 +932,7 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
     ): Promise<ManagedServiceProcessHandle> {
         let endpoint = resolveInitialEndpoint(spec);
         if (spec.healthCheck?.kind === 'http' && endpoint) {
-            healthCheckUrl(spec.healthCheck, endpoint);
+            validateHealthCheckTargets(spec.healthCheck, endpoint);
         }
         const issuedInstanceId = createInstanceId();
         const instanceId = typeof issuedInstanceId === 'string' ? issuedInstanceId.trim() : '';
@@ -944,20 +1047,18 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
         };
         const isGenerationUsable = (): boolean => {
             try {
-                return scope.isGenerationCurrent() && !entry.lifecycle.signal.aborted;
+                return scope.isOccurrenceCurrent() && !entry.lifecycle.signal.aborted;
             } catch {
                 return false;
             }
         };
         const assertGenerationUsable = (): void => {
-            if (!isGenerationUsable()) fail('plugin_generation_stale', 'Plugin generation is stale');
+            if (!isGenerationUsable()) fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
         };
         const requireEndpoint = (): ManagedServiceProcessEndpoint => endpoint ?? fail(
             'plugin_managed_server_endpoint_unavailable',
             'Managed server endpoint detection is incomplete',
         );
-        const immutableGenerationId = scope.generation;
-
         async function publishEndpointProjection(): Promise<void> {
             if (endpointProjectionPublication) {
                 await endpointProjectionPublication;
@@ -985,7 +1086,12 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
                         : {}),
                     serverId: spec.id,
                     instanceId,
-                    immutableGenerationId,
+                    sourceCustody: scope.sourceCustody ?? (() => {
+                        throw new PluginError({
+                            code: 'plugin_managed_server_projection_custody_missing',
+                            message: 'Managed server endpoint projection source custody is unavailable',
+                        });
+                    })(),
                     custodyOwner,
                     endpoint: projectedEndpoint,
                     createdAtMs: snapshot.startedAtMs ?? now(),
@@ -1143,35 +1249,58 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
                 }, signal, timeoutMs);
             }
             return await runBoundedHealthProbe(async (probeSignal) => {
-                const leasedHeaders = healthCheck.resolveHeaders
-                    ? await healthCheck.resolveHeaders(probeSignal)
-                    : undefined;
-                if (
-                    leasedHeaders?.isCurrent
-                    && !await leasedHeaders.isCurrent(probeSignal)
-                ) {
-                    return false;
+                const alternatives = healthCheck.alternatives ?? [{
+                    target: healthCheck.target,
+                    response: undefined,
+                }];
+                for (const alternative of alternatives) {
+                    const leasedHeaders = healthCheck.resolveHeaders
+                        ? await healthCheck.resolveHeaders(probeSignal)
+                        : undefined;
+                    if (
+                        leasedHeaders?.isCurrent
+                        && !await leasedHeaders.isCurrent(probeSignal)
+                    ) {
+                        return false;
+                    }
+                    const response = await fetchImpl(healthCheckUrl(
+                        healthCheck,
+                        requireEndpoint(),
+                        alternative.target,
+                    ), {
+                        method: 'GET',
+                        headers: {
+                            ...(healthCheck.headers ?? {}),
+                            ...(leasedHeaders?.headers ?? {}),
+                        },
+                        redirect: 'manual',
+                        signal: probeSignal,
+                    });
+                    try {
+                        if (!response.ok) continue;
+                        if (!alternative.response) return true;
+                        const contentType = response.headers.get('content-type') ?? '';
+                        if (!/^application\/(?:[^;]+\+)?json(?:\s*;|$)/iu.test(contentType)) {
+                            continue;
+                        }
+                        const body = await response.json().catch(() => null);
+                        if (readsManagedServiceHttpHealthResponse(
+                            body,
+                            alternative.response,
+                        )) {
+                            return true;
+                        }
+                    } finally {
+                        // Status-only and rejected shaped probes both settle
+                        // their bodies so repeating watchdogs retain no socket.
+                        try {
+                            await response.body?.cancel();
+                        } catch {
+                            // A consumed, locked, or aborted body is settled.
+                        }
+                    }
                 }
-                const response = await fetchImpl(healthCheckUrl(healthCheck, requireEndpoint()), {
-                    method: 'GET',
-                    headers: {
-                        ...(healthCheck.headers ?? {}),
-                        ...(leasedHeaders?.headers ?? {}),
-                    },
-                    redirect: 'manual',
-                    signal: probeSignal,
-                });
-                const ok = response.ok;
-                // A status-only probe never reads the body, and an unread
-                // finite or streaming body keeps its socket checked out until
-                // the agent times it out. Settle it best-effort so a repeating
-                // watchdog cannot accumulate retained sockets.
-                try {
-                    await response.body?.cancel();
-                } catch {
-                    // A body already disturbed, locked, or aborted is settled.
-                }
-                return ok;
+                return false;
             }, signal, timeoutMs);
         }
 
@@ -1410,7 +1539,7 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
                         }));
                 if (spec.healthCheck?.kind === 'http') {
                     if (requestedEndpoint) {
-                        healthCheckUrl(spec.healthCheck, requestedEndpoint);
+                        validateHealthCheckTargets(spec.healthCheck, requestedEndpoint);
                     } else if (spec.healthCheck.target?.kind === 'url') {
                         return fail(
                             'plugin_managed_server_endpoint_denied',
@@ -1472,7 +1601,7 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
                     port: endpoint.port,
                 });
                 if (spec.healthCheck?.kind === 'http') {
-                    healthCheckUrl(spec.healthCheck, endpoint);
+                    validateHealthCheckTargets(spec.healthCheck, endpoint);
                 }
             }
             const request = launchRequest(spec, endpoint);
@@ -1492,7 +1621,7 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
                         ? { operationClaimId: scope.operationId }
                         : {}),
                     serverId: spec.id,
-                    immutableGenerationId,
+                    occurrenceId: scope.occurrenceId,
                     executable: request.executable,
                     environmentKeys: Object.freeze(Object.keys(request.env ?? {}).sort()),
                     signal: entry.lifecycle.signal,
@@ -1589,7 +1718,7 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
             let custodyFacts: SupervisedPluginProcessCustody | null = null;
             if (managedProcessCustody) {
                 // The helper writes the handshake only after the target was
-                // assigned to the generation-unique job and resumed, so these
+                // assigned to the occurrenceId-unique job and resumed, so these
                 // facts are the custody-established fact. Without them the
                 // establishment fails before any projection or use.
                 custodyFacts = await waitForSupervisedPluginProcessCustody({
@@ -1674,7 +1803,7 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
                     );
                 }
                 if (spec.healthCheck?.kind === 'http') {
-                    healthCheckUrl(spec.healthCheck, endpoint);
+                    validateHealthCheckTargets(spec.healthCheck, endpoint);
                 }
             }
             setSnapshot({ ...snapshot, pid: processId });
@@ -1683,7 +1812,7 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
                     const pid = processId;
                     if (custodyFacts) {
                         // Windows job custody IS the process identity: the
-                        // projection persists the generation-unique job name,
+                        // projection persists the occurrenceId-unique job name,
                         // and recovery acts on the job. A pid-birth comparison
                         // could never be as exact as the containment itself.
                         processStartIdentity = formatWindowsJobCustodyStartIdentity(
@@ -1741,7 +1870,7 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
                     ? { operationClaimId: scope.operationId }
                     : {}),
                 serverId: spec.id,
-                immutableGenerationId,
+                occurrenceId: scope.occurrenceId,
                 signal: entry.lifecycle.signal,
             });
             if (authorization.mode !== 'externalAttach') {
@@ -1924,8 +2053,8 @@ export function createManagedServiceProcessSupervisorHost(params: Readonly<{
                     cleanup: () => Promise<void>,
                 ): Readonly<{ release(): void }>;
             }) {
-                if (!scope.isGenerationCurrent()) {
-                    return fail('plugin_generation_stale', 'Plugin generation is stale');
+                if (!scope.isOccurrenceCurrent()) {
+                    return fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
                 }
                 assertNotAborted(options?.signal);
                 assertSpecId(spec.id);

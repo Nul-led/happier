@@ -112,6 +112,28 @@ test('buildExpoDevEnv publishes a remote target through its stable outer Expo po
   assert.equal(env.EXPO_PACKAGER_PROXY_URL, 'http://100.79.179.31:18829');
 });
 
+test('buildExpoDevEnv makes only remote Dev Target Expo processes headless', () => {
+  const remoteEnv = buildExpoDevEnv({
+    baseEnv: { HAPPIER_DEV_TARGET_EXECUTION: '1' },
+    apiServerUrl: 'http://localhost:52753',
+    wantDevClient: true,
+    wantWeb: true,
+    stackMode: true,
+    stackName: 'qa-agent-remote',
+  });
+  const localEnv = buildExpoDevEnv({
+    baseEnv: {},
+    apiServerUrl: 'http://localhost:52753',
+    wantDevClient: true,
+    wantWeb: true,
+    stackMode: true,
+    stackName: 'qa-agent-local',
+  });
+
+  assert.equal(remoteEnv.EXPO_UNSTABLE_HEADLESS, '1');
+  assert.equal(localEnv.EXPO_UNSTABLE_HEADLESS, undefined);
+});
+
 test('buildExpoDevEnv does not set EXPO_APP_SLUG in dev-client mode (slug must match EAS project)', () => {
   const baseEnv = {
     ...process.env,

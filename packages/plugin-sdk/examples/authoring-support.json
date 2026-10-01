@@ -15,6 +15,7 @@
     "examples/react-native-dev-hot-reload": "advanced-public-preview",
     "examples/react-native-installed": "advanced-public-preview",
     "examples/session-agent": "maintained-public-reference",
+    "examples/team-credential-administrator": "maintained-public-reference",
     "examples/tracked-action": "advanced-public-preview",
     "fixtures/action-contract-composition": "conformance-reference",
     "fixtures/authoring-inference": "inference-fixture",

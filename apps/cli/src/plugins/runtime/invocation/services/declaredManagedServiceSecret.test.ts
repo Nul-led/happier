@@ -15,10 +15,10 @@ import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { createDeclaredManagedServiceSecretResolver } from './declaredManagedServiceSecret';
 
 const scope = Object.freeze({
-    generation: 'generation-1',
+    occurrenceId: 'occurrenceId-1',
     pluginId: 'acme.managed-service',
     contributionQualifiedId: 'acme.managed-service/agents/managed',
-    isGenerationCurrent: () => true,
+    isOccurrenceCurrent: () => true,
 });
 
 type DeclaredSecretLease = Readonly<{
@@ -99,7 +99,7 @@ describe('declared managed-service secret resolver', () => {
             const declaredSecretReadPort = secretsHost.bindManagedServiceSecretReadPort({
                 pluginId: scope.pluginId,
                 signal: new AbortController().signal,
-                isGenerationCurrent: scope.isGenerationCurrent,
+                isOccurrenceCurrent: scope.isOccurrenceCurrent,
                 registerRawForRedaction: () => {},
             });
             if (!declaredSecretReadPort) throw new Error('Expected declared secret read port');
@@ -132,7 +132,7 @@ describe('declared managed-service secret resolver', () => {
     });
 
     it('keeps retained G on its admitted daemon declaration while H uses its own declaration and live custody state', async () => {
-        const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-managed-secret-generation-'));
+        const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-managed-secret-occurrenceId-'));
         const paths = resolvePluginStorePaths({ happyHomeDir });
         const managedOrigin = 'http://127.0.0.1:4312';
         const resolveDeviceLocalSecretStorage = async () => Object.freeze({
@@ -168,25 +168,25 @@ describe('declared managed-service secret resolver', () => {
             const gSecretReadPort = gSecretsHost.bindManagedServiceSecretReadPort({
                 pluginId: scope.pluginId,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => gCurrent,
+                isOccurrenceCurrent: () => gCurrent,
                 registerRawForRedaction: () => {},
             });
             const hSecretReadPort = hSecretsHost.bindManagedServiceSecretReadPort({
                 pluginId: scope.pluginId,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 registerRawForRedaction: () => {},
             });
             if (!gSecretReadPort || !hSecretReadPort) throw new Error('Expected declared secret read ports');
             const gScope = Object.freeze({
                 ...scope,
-                generation: 'G',
-                isGenerationCurrent: () => gCurrent,
+                occurrenceId: 'G',
+                isOccurrenceCurrent: () => gCurrent,
                 declaredSecretReadPort: gSecretReadPort,
             });
             const hScope = Object.freeze({
                 ...scope,
-                generation: 'H',
+                occurrenceId: 'H',
                 declaredSecretReadPort: hSecretReadPort,
             });
             const gPassword = daemonCustody.resolve({
@@ -310,7 +310,7 @@ describe('declared managed-service secret resolver', () => {
         const readPort = secretsHost.bindManagedServiceSecretReadPort({
             pluginId: scope.pluginId,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             registerRawForRedaction: () => {},
         });
         if (!readPort) throw new Error('Expected declared secret read port');

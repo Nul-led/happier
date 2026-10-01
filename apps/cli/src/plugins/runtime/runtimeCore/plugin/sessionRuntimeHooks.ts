@@ -2,7 +2,7 @@ import type {
     RuntimeTurnOperations,
     RuntimeTurnPromptMeta,
 } from '@/agent/runtime/turns/runtimeTurnOperations';
-import type { AgentSessionModelsSource } from '@happier-dev/plugin-sdk/agents/runtime';
+import type { AgentSessionModelsSource, AgentSessionModesSource } from '@happier-dev/plugin-sdk/agents/runtime';
 import type {
     HostProviderInputOutcomeEvidence,
 } from '@/agent/runtime/session/input/providerInputOutcome';
@@ -39,6 +39,7 @@ export type PluginRuntimeApplyConfigDeltaInFlight = (
 
 export type PluginRuntimeHookOperations = RuntimeTurnOperations & Readonly<{
     models?: AgentSessionModelsSource;
+    modes?: AgentSessionModesSource;
     supportsInFlightSteer?: () => boolean;
     isTurnInFlight?: () => boolean;
     canSteerPrompt?: () => boolean;

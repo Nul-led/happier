@@ -99,7 +99,13 @@ describe('Antigravity plugin manifest', () => {
         platforms: ['macos', 'linux', 'windows'],
         sources: [expect.objectContaining({
           kind: 'pinnedArchive', version: '1.1.1',
-          assetsByPlatform: expect.objectContaining({ 'linux-x64': expect.objectContaining({ args: ['--uid='] }) }),
+          archiveExtractionLimits: {
+            maxArchiveBytes: 1024 * 1024 * 1024,
+            maxFileBytes: 2 * 1024 * 1024 * 1024,
+            maxExpandedBytes: 2 * 1024 * 1024 * 1024,
+            timeoutMs: 10 * 60_000,
+          },
+          assetsByPlatform: expect.objectContaining({ 'linux-x64': expect.objectContaining({ args: ['--uid='], sizeBytes: 681969407 }) }),
         })],
       }),
     ]);

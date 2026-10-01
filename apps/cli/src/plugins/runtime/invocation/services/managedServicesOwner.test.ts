@@ -157,23 +157,23 @@ function lifecycleSpec(input: Readonly<{
 }
 
 function lifecycleScope(input: Readonly<{
-    generation: string;
+    occurrenceId: string;
     contributionQualifiedId?: string;
     sessionId?: string;
     operationId?: string;
     signal?: AbortSignal;
-    isGenerationCurrent?: () => boolean;
+    isOccurrenceCurrent?: () => boolean;
 }>) {
     return Object.freeze({
-        generation: input.generation,
+        occurrenceId: input.occurrenceId,
         pluginId: 'acme.providers',
         contributionQualifiedId: input.contributionQualifiedId
             ?? 'acme.providers/providers/gateway',
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),
         ...(input.operationId ? { operationId: input.operationId } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
-        isGenerationCurrent:
-            input.isGenerationCurrent ?? (() => true),
+        isOccurrenceCurrent:
+            input.isOccurrenceCurrent ?? (() => true),
     });
 }
 
@@ -240,7 +240,7 @@ function createConnectedAccounts(
 function createHarness(
     hostFetch?: typeof globalThis.fetch,
     registerRawForRedaction: (input: Readonly<{
-        generation: string;
+        occurrenceId: string;
         pluginId: string;
         contributionQualifiedId: string;
         sessionId?: string;
@@ -288,13 +288,13 @@ function createHarness(
     });
     const authorization = { current: true };
     const scope = {
-        generation: 'provider-p',
+        occurrenceId: 'provider-p',
         pluginId: 'acme.providers',
         contributionQualifiedId:
             'acme.providers/providers/gateway',
         sessionId: 'session-one',
         signal: new AbortController().signal,
-        isGenerationCurrent: () => authorization.current,
+        isOccurrenceCurrent: () => authorization.current,
     };
     return {
         authorization,
@@ -593,7 +593,7 @@ describe('managed-services SVC09 owner', () => {
         expect(harness.supervise).not.toHaveBeenCalled();
     });
 
-    it('owns Session-scoped host-Basic generation, spawn injection, redaction, and exact-handle requests without disclosure', async () => {
+    it('owns Session-scoped host-Basic occurrenceId, spawn injection, redaction, and exact-handle requests without disclosure', async () => {
         const hostFetch = vi.fn<typeof globalThis.fetch>(async (
             request,
             init,
@@ -761,7 +761,11 @@ describe('managed-services SVC09 owner', () => {
                     harness.scope.contributionQualifiedId,
                 serverId: 'gateway',
                 instanceId: 'instance-one',
-                immutableGenerationId: harness.scope.generation,
+                sourceCustody: {
+                    kind: 'managed' as const,
+                    immutableGenerationId: harness.scope.occurrenceId,
+                    installSource: 'localPath' as const,
+                },
                 custodyOwner: 'sessionRunner' as const,
                 mode: 'managedSpawn' as const,
                 endpoint: {
@@ -791,7 +795,7 @@ describe('managed-services SVC09 owner', () => {
                 resolveProjectedManagedServiceRequest: (candidate) =>
                     harness.owner.bindSessionManagedServiceRequest({
                         sessionId: candidate.sessionId,
-                        generation: harness.scope.generation,
+                        occurrenceId: harness.scope.occurrenceId,
                         pluginId: candidate.pluginId,
                         contributionQualifiedId:
                             candidate.contributionId,
@@ -835,7 +839,7 @@ describe('managed-services SVC09 owner', () => {
     });
 
     it.each([
-        ['attach', lifecycleScope({ generation: 'provider-p', sessionId: 'session-one' }), {
+        ['attach', lifecycleScope({ occurrenceId: 'provider-p', sessionId: 'session-one' }), {
             id: 'gateway',
             clientAccess: {
                 kind: 'hostBasic', username: 'opencode',
@@ -843,7 +847,7 @@ describe('managed-services SVC09 owner', () => {
             },
             mode: { kind: 'attach', baseUrl: 'http://127.0.0.1:4312' },
         }],
-        ['non-Session', lifecycleScope({ generation: 'provider-p' }), {
+        ['non-Session', lifecycleScope({ occurrenceId: 'provider-p' }), {
             id: 'gateway',
             clientAccess: {
                 kind: 'hostBasic', username: 'opencode',
@@ -857,7 +861,7 @@ describe('managed-services SVC09 owner', () => {
                 },
             },
         }],
-        ['colon username', lifecycleScope({ generation: 'provider-p', sessionId: 'session-one' }), {
+        ['colon username', lifecycleScope({ occurrenceId: 'provider-p', sessionId: 'session-one' }), {
             id: 'gateway',
             clientAccess: {
                 kind: 'hostBasic', username: 'open:code',
@@ -871,7 +875,7 @@ describe('managed-services SVC09 owner', () => {
                 },
             },
         }],
-        ['control username', lifecycleScope({ generation: 'provider-p', sessionId: 'session-one' }), {
+        ['control username', lifecycleScope({ occurrenceId: 'provider-p', sessionId: 'session-one' }), {
             id: 'gateway',
             clientAccess: {
                 kind: 'hostBasic', username: 'open\ncode',
@@ -885,7 +889,7 @@ describe('managed-services SVC09 owner', () => {
                 },
             },
         }],
-        ['invalid environment key', lifecycleScope({ generation: 'provider-p', sessionId: 'session-one' }), {
+        ['invalid environment key', lifecycleScope({ occurrenceId: 'provider-p', sessionId: 'session-one' }), {
             id: 'gateway',
             clientAccess: {
                 kind: 'hostBasic', username: 'opencode',
@@ -918,7 +922,7 @@ describe('managed-services SVC09 owner', () => {
             'daemon',
         );
         const services = harness.owner.bindScope(
-            lifecycleScope({ generation: 'provider-p', operationId: 'browse-one' }),
+            lifecycleScope({ occurrenceId: 'provider-p', operationId: 'browse-one' }),
             exec,
         );
 
@@ -969,7 +973,7 @@ describe('managed-services SVC09 owner', () => {
             'daemon',
         );
         const services = harness.owner.bindScope(
-            lifecycleScope({ generation: 'provider-p' }),
+            lifecycleScope({ occurrenceId: 'provider-p' }),
             exec,
         );
 
@@ -998,7 +1002,7 @@ describe('managed-services SVC09 owner', () => {
     it('still requires an exact Session scope for host-Basic under Session-runner custody', async () => {
         const harness = createHarness();
         const services = harness.owner.bindScope(
-            lifecycleScope({ generation: 'provider-p', operationId: 'browse-one' }),
+            lifecycleScope({ occurrenceId: 'provider-p', operationId: 'browse-one' }),
             exec,
         );
 
@@ -1141,7 +1145,7 @@ describe('managed-services SVC09 owner', () => {
             });
         }
         // The caller cancelled itself. Reporting that as service unavailability would tell the
-        // plugin its endpoint, credentials or generation are gone and invite re-establishment.
+        // plugin its endpoint, credentials or occurrenceId are gone and invite re-establishment.
         const aborted = new AbortController();
         aborted.abort('caller canceled');
         await expect(handle.request({
@@ -1226,7 +1230,7 @@ describe('managed-services SVC09 owner', () => {
             }>) => input.caller.abort('caller canceled'),
         },
         {
-            label: 'the generation stops being current',
+            label: 'the occurrenceId stops being current',
             expectedCode: 'plugin_managed_service_unavailable',
             end: (input: Readonly<{
                 caller: AbortController;
@@ -2070,13 +2074,13 @@ describe('managed-services SVC09 owner', () => {
             resolveScope: (scope) => scope,
         });
         const services = owner.bindScope({
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             pluginId: 'acme.providers',
             contributionQualifiedId:
                 'acme.providers/providers/gateway',
             sessionId: 'session-one',
             operationId: 'mcp:session-one:attach-inspection',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }, exec);
 
         const handle = await services.supervise({
@@ -2409,11 +2413,11 @@ describe('managed-services SVC09 owner', () => {
             resolveScope: (scope) => scope,
         });
         const services = owner.bindScope(lifecycleScope({
-            generation: 'generation-late-invalidated',
+            occurrenceId: 'occurrenceId-late-invalidated',
             sessionId: 'session-late-invalidated',
             operationId:
                 'session-demand:session-late-invalidated:provider-p',
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
         }), exec);
 
         const supervision = services.supervise(lifecycleSpec({
@@ -2523,11 +2527,11 @@ describe('managed-services SVC09 owner', () => {
             }) satisfies ConnectedAccountsService;
             let current = true;
             const scope = lifecycleScope({
-                generation: `generation-late-${invalidationKind}`,
+                occurrenceId: `occurrenceId-late-${invalidationKind}`,
                 sessionId: `session-late-${invalidationKind}`,
                 operationId:
                     `session-demand:session-late-${invalidationKind}:provider-p`,
-                isGenerationCurrent: () => current,
+                isOccurrenceCurrent: () => current,
             });
             const owner = createManagedServicesOwner({
                 processSupervisorHost: Object.freeze({
@@ -2583,7 +2587,7 @@ describe('managed-services SVC09 owner', () => {
             expect(disposeWatch).toHaveBeenCalledOnce();
 
             const firstRetirementFailure = await owner.retireGeneration!(
-                scope.generation,
+                scope.occurrenceId,
                 scope.pluginId,
             ).then(
                 () => null,
@@ -2606,11 +2610,11 @@ describe('managed-services SVC09 owner', () => {
             expect(disposeWatch).toHaveBeenCalledOnce();
 
             await expect(owner.retireGeneration!(
-                scope.generation,
+                scope.occurrenceId,
                 scope.pluginId,
             )).resolves.toBeUndefined();
             await expect(owner.retireGeneration!(
-                scope.generation,
+                scope.occurrenceId,
                 scope.pluginId,
             )).resolves.toBeUndefined();
             expect(stop).toHaveBeenCalledOnce();
@@ -3100,7 +3104,7 @@ describe('managed-services SVC09 owner', () => {
 
         cleanupAllowed = true;
         await expect(harness.owner.retireGeneration!(
-            harness.scope.generation,
+            harness.scope.occurrenceId,
             harness.scope.pluginId,
         )).resolves.toBeUndefined();
         expect(releaseFiles).toHaveBeenCalledTimes(3);
@@ -3178,7 +3182,7 @@ describe('managed-services SVC09 owner', () => {
 
         cleanupAllowed = true;
         await expect(harness.owner.retireGeneration!(
-            harness.scope.generation,
+            harness.scope.occurrenceId,
             harness.scope.pluginId,
         )).resolves.toBeUndefined();
         expect(releaseFiles).toHaveBeenCalledTimes(2);
@@ -3488,7 +3492,7 @@ describe('managed-services SVC09 owner', () => {
             resolveScope: (scope) => scope,
         });
         const services = owner.bindScope(lifecycleScope({
-            generation: 'generation-waiters',
+            occurrenceId: 'occurrenceId-waiters',
             operationId: 'operation-waiters',
         }), exec);
         const firstAbort = new AbortController();
@@ -3577,7 +3581,7 @@ describe('managed-services SVC09 owner', () => {
             resolveScope: (scope) => scope,
         });
         const services = owner.bindScope(lifecycleScope({
-            generation: 'generation-abandoned-late-handle',
+            occurrenceId: 'occurrenceId-abandoned-late-handle',
             operationId: 'operation-abandoned-late-handle',
         }), exec);
         const abort = new AbortController();
@@ -3647,7 +3651,7 @@ describe('managed-services SVC09 owner', () => {
             resolveScope: (scope) => scope,
         });
         const services = owner.bindScope(lifecycleScope({
-            generation: 'generation-post-spawn-cleanup',
+            occurrenceId: 'occurrenceId-post-spawn-cleanup',
             operationId: 'operation-post-spawn-cleanup',
         }), createLifecycleExec([process]));
 
@@ -3839,11 +3843,11 @@ describe('managed-services SVC09 owner', () => {
                 id: 'gateway',
                 qualifiedId: 'acme.providers/providers/gateway',
             }),
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             correlationId,
             surface: 'background' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const spec = lifecycleSpec({
             id: 'gateway',
@@ -3867,7 +3871,7 @@ describe('managed-services SVC09 owner', () => {
         expect(harness.exec.spawn).toHaveBeenCalledTimes(2);
     });
 
-    it('bounds a Session-bearing daemon invocation to its operation correlation and retires it with the generation', async () => {
+    it('bounds a Session-bearing daemon invocation to its operation correlation and retires it with the occurrenceId', async () => {
         const process = createLifecycleProcess(8_200);
         const harness = createLifecycleHarness([process], 'daemon');
         const context = Object.freeze({
@@ -3886,12 +3890,12 @@ describe('managed-services SVC09 owner', () => {
                 id: 'gateway',
                 qualifiedId: 'acme.providers/providers/gateway',
             }),
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             correlationId: 'mcp:session-one:ordinary-call',
             surface: 'mcp' as const,
             session: Object.freeze({ id: 'session-one' }),
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }), harness.exec, context)!;
         const handle = await services.supervise(lifecycleSpec({
             id: 'gateway',
@@ -3910,7 +3914,7 @@ describe('managed-services SVC09 owner', () => {
     it('refuses daemon custody when Session context has no bounded operation identity', async () => {
         const harness = createLifecycleHarness([], 'daemon');
         const services = harness.owner.bindScope(lifecycleScope({
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             sessionId: 'session-one',
         }), harness.exec);
 
@@ -3939,16 +3943,16 @@ describe('managed-services SVC09 owner', () => {
                     qualifiedId:
                         'acme.providers/providers/gateway',
                 }),
-                generation: 'provider-p',
+                occurrenceId: 'provider-p',
                 correlationId,
                 surface: 'cli' as const,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             const binding =
                 withPluginInvocationServiceBindingAvailability(
                     createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                        seed.generation,
+                        seed.occurrenceId,
                         `binding:${correlationId}`,
                     ),
                     {
@@ -4033,7 +4037,7 @@ describe('managed-services SVC09 owner', () => {
         const process = createLifecycleProcess(8_201);
         const harness = createLifecycleHarness([process]);
         const scope = lifecycleScope({
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             sessionId: 'session-exact-scope',
             operationId: 'session-demand:session-exact-scope:provider-p',
         });
@@ -4043,7 +4047,7 @@ describe('managed-services SVC09 owner', () => {
         );
         const replacementDaemonServices = harness.owner.bindScope(
             lifecycleScope({
-                generation: scope.generation,
+                occurrenceId: scope.occurrenceId,
                 sessionId: scope.sessionId,
                 operationId: scope.operationId,
             }),
@@ -4102,7 +4106,7 @@ describe('managed-services SVC09 owner', () => {
         const secondProcess = createLifecycleProcess(8_206);
         const harness = createLifecycleHarness([firstProcess, secondProcess]);
         const services = harness.owner.bindScope(lifecycleScope({
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             sessionId: 'session-terminal-process',
             operationId:
                 'session-demand:session-terminal-process:provider-p',
@@ -4188,7 +4192,7 @@ describe('managed-services SVC09 owner', () => {
             resolveScope: (scope) => scope,
         });
         const services = owner.bindScope(lifecycleScope({
-            generation: 'provider-terminal-cleanup',
+            occurrenceId: 'provider-terminal-cleanup',
             sessionId: 'session-terminal-cleanup',
             operationId:
                 'session-demand:session-terminal-cleanup:provider-p',
@@ -4303,7 +4307,7 @@ describe('managed-services SVC09 owner', () => {
             resolveScope: (scope) => scope,
         });
         const services = owner.bindScope(lifecycleScope({
-            generation: 'provider-terminal-stop-result',
+            occurrenceId: 'provider-terminal-stop-result',
             sessionId: 'session-terminal-stop-result',
             operationId:
                 'session-demand:session-terminal-stop-result:provider-p',
@@ -4387,7 +4391,7 @@ describe('managed-services SVC09 owner', () => {
         );
         const bindScope = (scope: typeof firstScope | typeof secondScope) =>
             harness.owner.bindScope(lifecycleScope({
-                generation: 'provider-p',
+                occurrenceId: 'provider-p',
                 ...scope,
             }), harness.exec);
         const spec = lifecycleSpec({
@@ -4425,23 +4429,23 @@ describe('managed-services SVC09 owner', () => {
         const effectiveStartOwner =
             'provider-explicit-start:machine-a:acme.providers/gateway';
         const pServices = harness.owner.bindScope(lifecycleScope({
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             operationId: effectiveStartOwner,
-            isGenerationCurrent: () => pCurrent,
+            isOccurrenceCurrent: () => pCurrent,
         }), harness.exec);
         const pHandle = await pServices.supervise(lifecycleSpec({
             id: 'gateway',
-            args: Object.freeze(['serve', '--generation=P']),
+            args: Object.freeze(['serve', '--occurrenceId=P']),
         }));
 
         pCurrent = false;
         const qServices = harness.owner.bindScope(lifecycleScope({
-            generation: 'provider-q',
+            occurrenceId: 'provider-q',
             operationId: effectiveStartOwner,
         }), harness.exec);
         const qEstablishment = qServices.supervise(lifecycleSpec({
             id: 'gateway',
-            args: Object.freeze(['serve', '--generation=Q']),
+            args: Object.freeze(['serve', '--occurrenceId=Q']),
         }));
         const firstLifecycleEvent = await Promise.race([
             pDisposalStarted.promise.then(() => 'p-retirement-started' as const),
@@ -4472,12 +4476,12 @@ describe('managed-services SVC09 owner', () => {
             qProcess,
         ]);
         const pScope = lifecycleScope({
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             sessionId: 'session-retained-p',
             operationId: 'session-demand:session-retained-p:provider-p',
         });
         const gScope = lifecycleScope({
-            generation: 'agent-g',
+            occurrenceId: 'agent-g',
             contributionQualifiedId:
                 'acme.providers/agents/coding-agent',
             sessionId: 'session-retained-p',
@@ -4485,7 +4489,7 @@ describe('managed-services SVC09 owner', () => {
         const pSpec = lifecycleSpec({
             id: 'provider-gateway',
             port: 43_125,
-            args: Object.freeze(['serve', '--generation=P']),
+            args: Object.freeze(['serve', '--occurrenceId=P']),
         });
         const gSpec = lifecycleSpec({
             id: 'generic-agent-service',
@@ -4511,7 +4515,7 @@ describe('managed-services SVC09 owner', () => {
 
         const replacementDaemonP = await harness.owner.bindScope(
             lifecycleScope({
-                generation: pScope.generation,
+                occurrenceId: pScope.occurrenceId,
                 sessionId: pScope.sessionId,
                 operationId: pScope.operationId,
             }),
@@ -4528,13 +4532,13 @@ describe('managed-services SVC09 owner', () => {
             (error: unknown) => Object.freeze({ status: 'failed' as const, error }),
         );
         const qHandle = await harness.owner.bindScope(lifecycleScope({
-            generation: 'provider-q',
+            occurrenceId: 'provider-q',
             sessionId: 'session-current-q',
             operationId: 'session-demand:session-current-q:provider-q',
         }), harness.exec).supervise(lifecycleSpec({
             id: 'provider-gateway',
             port: 43_127,
-            args: Object.freeze(['serve', '--generation=Q']),
+            args: Object.freeze(['serve', '--occurrenceId=Q']),
         }));
         const pStateAfterOrdinaryPublication = pHandle.snapshot().state;
         const gStateAfterOrdinaryPublication = gHandle.snapshot().state;
@@ -4580,11 +4584,11 @@ describe('managed-services SVC09 owner', () => {
         ]);
         let current = true;
         const scope = lifecycleScope({
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             sessionId: 'session-lifecycle-end',
             operationId: 'session-demand:session-lifecycle-end:provider-p',
             signal: controller.signal,
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
         });
         const services = harness.owner.bindScope(scope, harness.exec);
         const spec = lifecycleSpec({
@@ -4607,7 +4611,7 @@ describe('managed-services SVC09 owner', () => {
         let replacement: ManagedServiceHandle | null = null;
         if (startReplacement) {
             replacement = await harness.owner.bindScope(lifecycleScope({
-                generation: 'provider-q',
+                occurrenceId: 'provider-q',
                 sessionId: scope.sessionId,
                 operationId:
                     'session-demand:session-lifecycle-end:provider-q',
@@ -4654,7 +4658,7 @@ describe('managed-services SVC09 owner', () => {
             ]),
             pluginId: 'acme.providers',
             contributionQualifiedId: 'acme.providers/providers/gateway',
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             purposeBindingsEqualityKey:
                 input.purposeBindingsEqualityKey ?? 'binding-key-one',
             isCurrent: input.isCurrent ?? (() => true),
@@ -4733,7 +4737,7 @@ describe('managed-services SVC09 owner', () => {
             ]),
             pluginId: 'acme.providers',
             contributionQualifiedId: 'acme.providers/providers/gateway',
-            generation: 'provider-p',
+            occurrenceId: 'provider-p',
             purposeBindingsEqualityKey: 'binding-key-one',
             isCurrent: () => operationCurrent,
             ...(signal ? { signal } : {}),
@@ -4800,7 +4804,7 @@ describe('managed-services SVC09 owner', () => {
                 operationId: operationIdentity,
                 pluginId: 'acme.providers',
                 contributionQualifiedId: 'acme.providers/providers/gateway',
-                generation: 'provider-p',
+                occurrenceId: 'provider-p',
                 purposeBindingsEqualityKey: `binding-${operationIdentity}`,
                 lifecycleKind,
                 isCurrent: () => true,
@@ -4856,6 +4860,137 @@ describe('managed-services SVC09 owner', () => {
 
         await expect(harness.owner.dispose()).resolves.toBeUndefined();
         expect(cleanupByOperation.get('public-start')).toHaveBeenCalledOnce();
+    });
+
+    it('reports external operation retirement only after all application custody is actually released', async () => {
+        const harness = createLifecycleHarness([], 'daemon');
+        const notify = vi.fn(async () => undefined);
+        let cleanupBlocked = true;
+        const operation = (localId: string) => ({
+            operationId: `external-operation/${localId}`,
+            pluginId: 'acme.providers',
+            contributionQualifiedId: `acme.providers/providers/${localId}`,
+            occurrenceId: 'provider-p',
+            purposeBindingsEqualityKey: 'binding',
+            lifecycleKind: 'providerBroker' as const,
+            retirementGroup: { identity: 'key-one/operation-one', onRetired: notify },
+            isCurrent: () => true,
+            establish: async () => explicitStartOutcome(async () => {
+                if (localId === 'second' && cleanupBlocked) throw new Error('child still held');
+            }),
+        });
+        await harness.owner.runManagedProviderExplicitStart(operation('first'));
+        await harness.owner.runManagedProviderExplicitStart(operation('second'));
+        await harness.owner.retireManagedProviderExplicitStart(operation('first'));
+        expect(notify).not.toHaveBeenCalled();
+        await expect(harness.owner.retireManagedProviderExplicitStart(operation('second'))).rejects.toThrow();
+        expect(notify).not.toHaveBeenCalled();
+        cleanupBlocked = false;
+        await harness.owner.retireManagedProviderExplicitStart(operation('second'));
+        expect(notify).toHaveBeenCalledOnce();
+        expect(harness.owner.readRetainedSemanticCustodyCount()).toBe(0);
+        await harness.owner.dispose();
+    });
+
+    it('reports external operation retirement after failed first establishment releases its custody', async () => {
+        const harness = createLifecycleHarness([], 'daemon');
+        const notify = vi.fn(async () => undefined);
+        await expect(harness.owner.runManagedProviderExplicitStart({
+            operationId: 'external-key-failed-start',
+            pluginId: 'acme.providers',
+            contributionQualifiedId: 'acme.providers/providers/gateway',
+            occurrenceId: 'provider-p',
+            purposeBindingsEqualityKey: 'binding',
+            lifecycleKind: 'providerBroker',
+            retirementGroup: { identity: 'key-one/operation-one', onRetired: notify },
+            isCurrent: () => true,
+            establish: async () => { throw new Error('establishment failed'); },
+        })).rejects.toThrow('establishment failed');
+        expect(notify).toHaveBeenCalledOnce();
+        expect(harness.owner.readRetainedSemanticCustodyCount()).toBe(0);
+        await harness.owner.dispose();
+    });
+
+    it('retains broker custody when current authority cannot be observed', async () => {
+        const harness = createLifecycleHarness([], 'daemon');
+        const cleanup = vi.fn(async () => undefined);
+        await harness.owner.runManagedProviderExplicitStart({
+            operationId: 'external-key-unknown',
+            pluginId: 'acme.providers',
+            contributionQualifiedId: 'acme.providers/providers/gateway',
+            occurrenceId: 'provider-p',
+            purposeBindingsEqualityKey: 'binding',
+            lifecycleKind: 'providerBroker',
+            isCurrent: () => true,
+            revalidateRetainedCurrentness: async () => { throw new Error('Home unreachable'); },
+            establish: async () => explicitStartOutcome(cleanup),
+        });
+        await expect(harness.owner.revalidateManagedProviderExplicitStarts()).resolves.toBe(0);
+        expect(cleanup).not.toHaveBeenCalled();
+        expect(harness.owner.readRetainedSemanticCustodyCount()).toBe(1);
+        await harness.owner.dispose();
+    });
+
+    it('retains a cleaned external claim until its exact retirement is acknowledged', async () => {
+        const harness = createLifecycleHarness([], 'daemon');
+        let acknowledged = false;
+        const cleanup = vi.fn(async () => undefined);
+        const notify = vi.fn(async () => {
+            if (!acknowledged) throw new Error('Home unreachable');
+        });
+        const operation = {
+            operationId: 'external-key-ack',
+            pluginId: 'acme.providers',
+            contributionQualifiedId: 'acme.providers/providers/gateway',
+            occurrenceId: 'provider-p',
+            purposeBindingsEqualityKey: 'binding',
+            lifecycleKind: 'providerBroker' as const,
+            retirementGroup: { identity: 'key-one/operation-one', onRetired: notify },
+            isCurrent: () => true,
+            establish: async () => explicitStartOutcome(cleanup),
+        };
+        await harness.owner.runManagedProviderExplicitStart(operation);
+        await expect(harness.owner.retireManagedProviderExplicitStart(operation)).rejects.toThrow('Home unreachable');
+        expect(harness.owner.readRetainedSemanticCustodyCount()).toBe(1);
+        acknowledged = true;
+        await harness.owner.retireManagedProviderExplicitStart(operation);
+        expect(harness.owner.readRetainedSemanticCustodyCount()).toBe(0);
+        expect(cleanup).toHaveBeenCalledOnce();
+        expect(notify).toHaveBeenCalledTimes(2);
+        await harness.owner.dispose();
+    });
+
+    it('cannot join an external operation while its final retirement acknowledgement is pending', async () => {
+        const harness = createLifecycleHarness([], 'daemon');
+        const notificationStarted = deferred<void>();
+        const acknowledgement = deferred<void>();
+        const operation = (localId: string) => ({
+            operationId: `external-operation/${localId}`,
+            pluginId: 'acme.providers',
+            contributionQualifiedId: `acme.providers/providers/${localId}`,
+            occurrenceId: 'provider-p',
+            purposeBindingsEqualityKey: 'binding',
+            lifecycleKind: 'providerBroker' as const,
+            retirementGroup: {
+                identity: 'key-one/operation-one',
+                async onRetired() {
+                    notificationStarted.resolve();
+                    await acknowledgement.promise;
+                },
+            },
+            isCurrent: () => true,
+            establish: async () => explicitStartOutcome(),
+        });
+        await harness.owner.runManagedProviderExplicitStart(operation('first'));
+        const retirement = harness.owner.retireManagedProviderExplicitStart(operation('first'));
+        // Race the notification against completed retirement so missing callback
+        // behavior fails directly rather than hanging the fixture.
+        await Promise.race([notificationStarted.promise, retirement]);
+        const joined = await harness.owner.runManagedProviderExplicitStart(operation('second'));
+        acknowledgement.resolve();
+        await retirement;
+        expect(joined.status).toBe('unavailable');
+        await harness.owner.dispose();
     });
 
     it('retires a terminal explicit-start claim before concurrent retries establish one replacement', async () => {
@@ -4929,7 +5064,7 @@ describe('managed-services SVC09 owner', () => {
             release(): Promise<void>;
         }>) => {
             const services = owner.bindScope(lifecycleScope({
-                generation: 'provider-terminal',
+                occurrenceId: 'provider-terminal',
                 operationId,
                 signal: input.signal,
             }), exec);
@@ -4943,7 +5078,7 @@ describe('managed-services SVC09 owner', () => {
             operationId,
             pluginId: 'acme.providers',
             contributionQualifiedId: 'acme.providers/providers/gateway',
-            generation: 'provider-terminal',
+            occurrenceId: 'provider-terminal',
             purposeBindingsEqualityKey: 'binding-key-one',
             isCurrent: () => true,
             establish,
@@ -5048,7 +5183,7 @@ describe('managed-services SVC09 owner', () => {
             release(): Promise<void>;
         }>) => {
             const services = owner.bindScope(lifecycleScope({
-                generation: 'provider-terminal-failure',
+                occurrenceId: 'provider-terminal-failure',
                 operationId,
                 signal: input.signal,
             }), exec);
@@ -5062,7 +5197,7 @@ describe('managed-services SVC09 owner', () => {
             operationId,
             pluginId: 'acme.providers',
             contributionQualifiedId: 'acme.providers/providers/gateway',
-            generation: 'provider-terminal-failure',
+            occurrenceId: 'provider-terminal-failure',
             purposeBindingsEqualityKey: 'binding-key-one',
             isCurrent: () => true,
             establish,
@@ -5144,7 +5279,7 @@ describe('managed-services SVC09 owner', () => {
             release(): Promise<void>;
         }>) => {
             const services = owner.bindScope(lifecycleScope({
-                generation: 'provider-binding-change',
+                occurrenceId: 'provider-binding-change',
                 operationId,
                 signal: input.signal,
             }), exec);
@@ -5160,7 +5295,7 @@ describe('managed-services SVC09 owner', () => {
                 pluginId: 'acme.providers',
                 contributionQualifiedId:
                     'acme.providers/providers/gateway',
-                generation: 'provider-binding-change',
+                occurrenceId: 'provider-binding-change',
                 purposeBindingsEqualityKey,
                 isCurrent: () => true,
                 establish,

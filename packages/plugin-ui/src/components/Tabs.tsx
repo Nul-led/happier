@@ -50,6 +50,19 @@ export type TabsProps = Readonly<{
   onValueChange: (value: string) => void;
   ariaLabel: string;
   testID?: string;
+  /**
+   * `host` when an enclosing frame already draws the tab strip for this
+   * surface (a detail that mounted it for one tab): only the selected panel
+   * renders, still inside its own active interval.
+   */
+  tabList?: 'shown' | 'host';
+  /**
+   * `fill` gives the tab root and the active panel the parent's remaining
+   * height, for panels that host a bounded view such as `SessionChat` or a
+   * self-scrolling panel. The default `content` sizes to the panel, which is
+   * right inside a scroll area.
+   */
+  layout?: 'content' | 'fill';
   children?: ReactNode;
 }>;
 

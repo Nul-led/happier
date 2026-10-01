@@ -2,12 +2,9 @@ import {
     PluginMachineExecutionOriginV1Schema,
     PluginUiResourceBindingCapabilityV1Schema,
     DaemonHostedWebFrameCapabilityV1Schema,
-    deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1,
     type DaemonHostedWebFrameCapabilityV1,
     type DaemonPluginHostedWebArtifactCacheIdentityV1,
-    type DaemonPluginReactNativeCrashMountV1,
-    type DaemonPluginReactNativeCrashStateV1,
-    type DaemonPluginReactNativeBundleCacheIdentityV1 as ReactNativeBundleCacheIdentity,
+    type DaemonPluginUiArtifactByteIdentityV1 as ReactNativeBundleCacheIdentity,
     type PluginMachineExecutionOriginV1,
     type PluginUiResourceBindingCapabilityV1,
 } from '@happier-dev/protocol';
@@ -15,18 +12,18 @@ import {
     normalizePluginUiDestinationBindingV1,
     normalizePluginUiInlineSurfaceBindingV1,
     isPluginUiAuthoredViewInlineSurfaceRoleV1,
-    isPluginUiSurfaceBindingPotentiallySupportedOnPlatformV1,
     normalizePluginSessionHeaderActionDescriptorV1,
     normalizePluginUiSemanticCommandV1,
     normalizePluginUiSettingsPageBindingV1,
     PLUGIN_UI_HOST_API_VERSION_V1,
     deriveGeneratedHostedWebAssetPolicyV1,
     PluginUiDestinationBindingV1Schema,
-    PluginUiPlatformV1Schema,
     selectPluginUiDestinationBindingRendererV1,
     selectPluginUiInlineSurfaceBindingRendererV1,
-    type PluginUiArtifactsManifestEntryV1,
+    type PluginUiArtifactsManifestEntryV2,
+    type PluginUiChannelV1,
     type PluginUiDestinationBindingV1,
+    type PluginUiPlatformV1,
     type PluginUiSurfaceBindingV1,
 } from '@happier-dev/protocol/plugins/ui';
 import {
@@ -35,11 +32,6 @@ import {
 } from '@happier-dev/protocol/plugins/contributions/ui';
 
 import { definePluginProjectionFamilyV2 } from '@/plugins/projection/families';
-import { createReactNativeCrashStateBindingKey } from '@/plugins/runtime/ui/reactNativeCrashDisableState';
-import {
-    deriveReactNativeNativeCapabilitiesDigest,
-    type ReactNativeBundleHostRuntime,
-} from '@/plugins/install/ui/reactNativeBundles';
 import type {
     ResolvedContributionRegistry,
     ResolvedUiRendererV2Contribution,
@@ -50,6 +42,7 @@ import type {
 } from '../types';
 import {
     collectResolvedGeneratedHostedWebArtifactOwners,
+    collectResolvedGeneratedReactNativeCollectionMigrationArtifactOwners,
     findGeneratedHostedWebArtifactEntry,
     collectResolvedGeneratedReactNativeArtifactOwners,
     findResolvedGeneratedReactNativeClientContributionArtifactOwner,
@@ -58,23 +51,32 @@ import {
 import type { StablePluginDeclarativeModel } from '@/plugins/runtime/invocation/services/declarativeModel';
 import { generatedUiArtifactCompatibilityFailure } from './artifactCompatibility';
 
-export type PluginUiProjectedEntry = Readonly<Record<string, unknown> & {
+type PluginUiProjectedEntryCandidate = Readonly<Record<string, unknown> & {
     id: string;
     pluginId?: string;
     contributionKind: string;
 }>;
 
+function artifactSelectionOwnerForPluginSource(
+    source: Readonly<{ kind: string }>,
+): 'accountRelease' | 'daemonProjection' {
+    return source.kind === 'bundled' || source.kind === 'path'
+        ? 'daemonProjection'
+        : 'accountRelease';
+}
+
+export type PluginUiProjectedEntry = PluginUiProjectedEntryCandidate & Readonly<{
+    occurrenceId: string;
+}>;
+
 export type ReactNativeBundleProjectionHostRuntimeContext = Readonly<{
     featureEnabled?: boolean;
-    // Phase 6.3: the `plugins.ui.reactNativeBundles.devHotReload` author gate. A
-    // separate kill-switch from the family feature; only authorises the
-    // dev-server source for a local plugin on the development channel.
-    devHotReloadEnabled?: boolean;
-    loaderBackendAvailable?: boolean;
-    loaderBackendDiagnostics?: readonly string[];
-    /** Present only on daemon-produced live projections; an absent binding fails closed. */
-    crashStatesByBindingKey?: Readonly<Record<string, DaemonPluginReactNativeCrashStateV1 | undefined>>;
-    hostRuntime?: Partial<ReactNativeBundleHostRuntime>;
+    hostRuntime?: Readonly<{
+        hostAppVersion?: string;
+        hostUiApiVersion?: string;
+        platform?: PluginUiPlatformV1;
+        channel?: PluginUiChannelV1;
+    }>;
 }>;
 
 export type HostedWebProjectionHostRuntimeContext = Readonly<{
@@ -118,14 +120,11 @@ function projectPluginUiResourceCapability(
 function projectSurfaceResourceRuntime(
     pluginId: string,
     hostRuntime: PluginUiProjectionHostRuntimeContext | undefined,
-    crashState?: DaemonPluginReactNativeCrashStateV1,
 ): Readonly<{
     resourceCapability: PluginUiResourceBindingCapabilityV1;
-    reactNativeCrashState?: DaemonPluginReactNativeCrashStateV1;
 }> {
     return Object.freeze({
         resourceCapability: projectPluginUiResourceCapability(pluginId, hostRuntime),
-        ...(crashState ? { reactNativeCrashState: crashState } : {}),
     });
 }
 
@@ -135,8 +134,8 @@ function readPluginId(entry: Readonly<{ pluginId?: string }>): string | null {
 }
 
 function addEntry(
-    entriesById: Record<string, PluginUiProjectedEntry>,
-    entry: PluginUiProjectedEntry,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
+    entry: PluginUiProjectedEntryCandidate,
 ): void {
     // The resolved registry rejects live duplicate bindings before projection. Keep
     // this direct-input guard so an invalid synthetic registry cannot silently choose
@@ -154,13 +153,17 @@ function addEntry(
  * unavailable.
  */
 function stampEntriesWithExecutionOrigins(
-    entriesById: Record<string, PluginUiProjectedEntry>,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
     originsByPluginId: Readonly<Record<string, PluginMachineExecutionOriginV1>> | undefined,
 ): void {
     if (!originsByPluginId) return;
     for (const [entryId, entry] of Object.entries(entriesById)) {
         const pluginId = readPluginId(entry);
         if (!pluginId) continue;
+        // A search provider is identity plus its query Action reference; the
+        // Action carries its own execution origin, and the closed Protocol arm
+        // admits no second copy.
+        if (entry.contributionKind === 'searchProvider') continue;
         const parsedOrigin = PluginMachineExecutionOriginV1Schema.safeParse(originsByPluginId[pluginId]);
         if (!parsedOrigin.success || parsedOrigin.data.materializationRef.pluginId !== pluginId) continue;
         entriesById[entryId] = Object.freeze({
@@ -169,6 +172,27 @@ function stampEntriesWithExecutionOrigins(
             materializationRef: Object.freeze({ ...parsedOrigin.data.materializationRef }),
         });
     }
+}
+
+/**
+ * Stamps every public UI contribution with the exact admitted plugin slot.
+ * A contribution without a current occurrence is omitted, matching Action
+ * projection admission rather than substituting installed-package identity.
+ */
+function stampEntriesWithOccurrenceIds(
+    entriesById: Readonly<Record<string, PluginUiProjectedEntryCandidate>>,
+    occurrenceIdsByPluginId: ResolvedContributionRegistry['occurrenceIdsByPluginId'],
+): Record<string, PluginUiProjectedEntry> {
+    const stamped: Record<string, PluginUiProjectedEntry> = {};
+    for (const [entryId, entry] of Object.entries(entriesById)) {
+        const pluginId = readPluginId(entry);
+        const occurrenceId = pluginId
+            ? occurrenceIdsByPluginId?.[pluginId]
+            : undefined;
+        if (!pluginId || !occurrenceId) continue;
+        stamped[entryId] = Object.freeze({ ...entry, occurrenceId });
+    }
+    return stamped;
 }
 
 /**
@@ -208,7 +232,7 @@ function narrowProjectedTranslationBundles(
 
 function projectTranslations(
     registry: ResolvedContributionRegistry,
-    entriesById: Record<string, PluginUiProjectedEntry>,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
     requestedLocale: string | undefined,
 ): void {
     const v2ByPluginId = new Map<string, ResolvedUiTranslationBundleV2Contribution[]>();
@@ -271,7 +295,7 @@ function projectTranslations(
 
 function projectSessionHeaderActions(
     registry: ResolvedContributionRegistry,
-    entriesById: Record<string, PluginUiProjectedEntry>,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
 ): void {
     for (const contribution of registry.sessionHeaderActions ?? []) {
         const pluginId = readPluginId(contribution);
@@ -311,7 +335,7 @@ function projectSessionHeaderActions(
  */
 function projectSearchProviders(
     registry: ResolvedContributionRegistry,
-    entriesById: Record<string, PluginUiProjectedEntry>,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
 ): void {
     for (const contribution of registry.searchProviders ?? []) {
         const pluginId = readPluginId(contribution);
@@ -344,7 +368,7 @@ function projectSearchProviders(
  */
 function projectTranscriptActivities(
     registry: ResolvedContributionRegistry,
-    entriesById: Record<string, PluginUiProjectedEntry>,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
 ): void {
     for (const contribution of registry.transcriptActivities ?? []) {
         const pluginId = readPluginId(contribution);
@@ -367,7 +391,7 @@ function projectTranscriptActivities(
 
 function projectSessionInfoSections(
     registry: ResolvedContributionRegistry,
-    entriesById: Record<string, PluginUiProjectedEntry>,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
     declarativeHostRuntime: DeclarativeProjectionHostRuntimeContext | undefined,
     hostRuntime: PluginUiProjectionHostRuntimeContext | undefined,
 ): void {
@@ -464,7 +488,7 @@ function hasHostedWebFrameAdapter(
 }
 function projectGeneratedHostedWebRenderers(
     registry: ResolvedContributionRegistry,
-    entriesById: Record<string, PluginUiProjectedEntry>,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
     generation: number,
     hostRuntimeContext?: HostedWebProjectionHostRuntimeContext,
 ): ReadonlySet<string> {
@@ -482,7 +506,10 @@ function projectGeneratedHostedWebRenderers(
         const graphValid = Boolean(
             artifact
             && hostedWebPolicy
-            && artifact.hostUiApiVersion === PLUGIN_UI_HOST_API_VERSION_V1,
+            && generatedUiArtifactCompatibilityFailure({
+                entry: artifact,
+                hostRuntime: { hostUiApiVersion: PLUGIN_UI_HOST_API_VERSION_V1 },
+            }) === null,
         );
         const failure = !graphValid
             ? 'hosted_web_static_artifact_missing'
@@ -492,11 +519,7 @@ function projectGeneratedHostedWebRenderers(
         const artifactReadIdentity: DaemonPluginHostedWebArtifactCacheIdentityV1 | undefined =
             graphValid && featureEnabled && artifact
                 ? Object.freeze({
-                    pluginId,
-                    contributionId,
                     artifactDigest: artifact.digest,
-                    platform: 'web',
-                    projectionGeneration: generation,
                 })
                 : undefined;
         const runtime = failure
@@ -523,6 +546,7 @@ function projectGeneratedHostedWebRenderers(
             pluginVersion: owner.pluginVersion ?? '0.0.0',
             contributionKind: 'hostedWeb',
             contributionId,
+            artifactSelectionOwner: artifactSelectionOwnerForPluginSource(owner.pluginSource),
             generatedV2: true,
             requiredHostMethods: owner.requiredHostMethods,
             source: owner.source,
@@ -568,7 +592,7 @@ function generatedReactNativeRuntimeResult(params: Readonly<{
         }),
         ...(params.cacheIdentity
             ? {
-                cacheKey: deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1(params.cacheIdentity),
+                cacheKey: params.cacheIdentity.artifactDigest,
                 cacheIdentity: params.cacheIdentity,
                 loadPolicy: Object.freeze({ source: 'installedArtifact' as const }),
             }
@@ -577,8 +601,8 @@ function generatedReactNativeRuntimeResult(params: Readonly<{
 }
 
 function generatedReactNativeCompatibilityFailure(params: Readonly<{
-    entry: PluginUiArtifactsManifestEntryV1;
-    hostRuntime: Partial<ReactNativeBundleHostRuntime> | undefined;
+    entry: PluginUiArtifactsManifestEntryV2;
+    hostRuntime: Readonly<{ hostUiApiVersion?: string }> | undefined;
 }>): string | null {
     const host = params.hostRuntime;
     if (!host) return 'generated_react_native_host_runtime_unavailable';
@@ -586,24 +610,14 @@ function generatedReactNativeCompatibilityFailure(params: Readonly<{
         entry: params.entry,
         hostRuntime: {
             hostUiApiVersion: host.hostUiApiVersion ?? '',
-            reactVersion: host.reactVersion ?? '',
-            ...(host.reactNativeVersion !== undefined
-                ? { reactNativeVersion: host.reactNativeVersion }
-                : {}),
-            ...(host.expoRuntimeVersion !== undefined
-                ? { expoRuntimeVersion: host.expoRuntimeVersion }
-                : {}),
-            ...(host.hermesVersion !== undefined
-                ? { hermesVersion: host.hermesVersion }
-                : {}),
         },
     });
 }
 
 function projectGeneratedReactNativeBundles(
     registry: ResolvedContributionRegistry,
-    entriesById: Record<string, PluginUiProjectedEntry>,
-    generation: number,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
+    _generation: number,
     hostRuntimeContext?: ReactNativeBundleProjectionHostRuntimeContext,
 ): ReadonlySet<string> {
     const ownedContributionKeys = new Set<string>();
@@ -618,6 +632,7 @@ function projectGeneratedReactNativeBundles(
     for (const owner of [
         ...collectResolvedGeneratedReactNativeArtifactOwners(registry),
         ...clientActionOwners,
+        ...collectResolvedGeneratedReactNativeCollectionMigrationArtifactOwners(registry),
     ]) {
         const pluginId = owner.pluginId;
         const contributionId = owner.contributionId;
@@ -626,10 +641,7 @@ function projectGeneratedReactNativeBundles(
             : owner.requiredHostMethods;
         ownedContributionKeys.add(`${pluginId}\0${contributionId}`);
 
-        const resolved = findGeneratedReactNativeArtifactEntry({
-            owner,
-            platform: hostRuntimeContext?.hostRuntime?.platform,
-        });
+        const resolved = findGeneratedReactNativeArtifactEntry({ owner, platform: undefined });
         const compatibilityFailure = resolved.entry
             ? generatedReactNativeCompatibilityFailure({
                 entry: resolved.entry,
@@ -638,26 +650,10 @@ function projectGeneratedReactNativeBundles(
             : null;
         const failure = resolved.failure ?? compatibilityFailure;
         const entry = resolved.entry;
-        const featureEnabled = hostRuntimeContext?.featureEnabled === true;
-        const loaderBackendAvailable = hostRuntimeContext?.loaderBackendAvailable === true;
         const hostRuntime = hostRuntimeContext?.hostRuntime;
         const cacheIdentity: ReactNativeBundleCacheIdentity | undefined =
-            entry && entry.platform && !failure && featureEnabled && loaderBackendAvailable && hostRuntime
-            ? Object.freeze({
-                pluginId,
-                contributionId,
-                artifactDigest: entry.digest,
-                hostAppVersion: hostRuntime.hostAppVersion ?? '0.0.0',
-                hostUiApiVersion: entry.hostUiApiVersion,
-                reactVersion: entry.compat.react ?? '',
-                reactNativeVersion: entry.compat.reactNative ?? '',
-                ...(entry.compat.expoRuntime ? { expoRuntimeVersion: entry.compat.expoRuntime } : {}),
-                ...(entry.compat.hermes ? { hermesVersion: entry.compat.hermes } : {}),
-                platform: entry.platform,
-                channel: hostRuntime.channel ?? 'internal',
-                nativeCapabilitiesDigest: deriveReactNativeNativeCapabilitiesDigest([]),
-                projectionGeneration: hostRuntime.projectionGeneration ?? generation,
-            })
+            entry && !failure && hostRuntime
+            ? Object.freeze({ artifactDigest: entry.digest })
             : undefined;
         const runtime = failure
             ? generatedReactNativeRuntimeResult({
@@ -665,21 +661,7 @@ function projectGeneratedReactNativeBundles(
                 reason: failure,
                 diagnostics: [failure],
             })
-            : !featureEnabled
-                ? generatedReactNativeRuntimeResult({
-                    state: 'fallback',
-                    reason: 'feature_disabled',
-                    diagnostics: ['feature_disabled'],
-                })
-                : !loaderBackendAvailable
-                    ? generatedReactNativeRuntimeResult({
-                        state: 'fallback',
-                        reason: 'loader_backend_unavailable',
-                        diagnostics: hostRuntimeContext?.loaderBackendDiagnostics?.length
-                            ? hostRuntimeContext.loaderBackendDiagnostics
-                            : ['loader_backend_unavailable'],
-                    })
-                    : generatedReactNativeRuntimeResult({
+            : generatedReactNativeRuntimeResult({
                         state: 'loadable',
                         reason: 'compatible',
                         diagnostics: [],
@@ -692,30 +674,21 @@ function projectGeneratedReactNativeBundles(
             pluginVersion: owner.pluginVersion ?? '0.0.0',
             contributionKind: 'reactNativeBundle',
             contributionId,
+            artifactSelectionOwner: artifactSelectionOwnerForPluginSource(owner.pluginSource),
             generatedV2: true,
             generatedOwnerKind: owner.kind,
             requiredHostMethods,
-            entry: entry?.repack
-                ? Object.freeze({
-                    containerName: entry.repack.containerName,
-                    modulePath: entry.repack.modulePath,
-                    exportName: entry.repack.exportName,
-                })
-                : Object.freeze({ exportName: 'renderSurface' as const }),
+            entry: Object.freeze({
+                artifactId: entry?.artifactId ?? owner.artifactId,
+                exportName: owner.expectedExecutable?.exportName ?? 'renderSurface',
+            }),
             compatibility: entry
                 ? Object.freeze({
-                    hostUiApiVersion: entry.hostUiApiVersion,
-                    reactVersion: entry.compat.react,
-                    reactNativeVersion: entry.compat.reactNative,
-                    ...(entry.compat.expoRuntime ? { expoRuntimeVersion: entry.compat.expoRuntime } : {}),
-                    ...(entry.compat.hermes ? { hermesVersion: entry.compat.hermes } : {}),
-                    supportedPlatforms: Object.freeze([entry.platform]),
-                    supportedChannels: Object.freeze([hostRuntimeContext?.hostRuntime?.channel ?? 'internal']),
-                    requiredNativeCapabilities: Object.freeze([]),
+                    hostUiApiRange: entry.hostUiApiRange,
                 })
                 : undefined,
             hostApi: Object.freeze({
-                minVersion: entry?.hostUiApiVersion ?? PLUGIN_UI_HOST_API_VERSION_V1,
+                minVersion: entry?.hostUiApiRange ?? PLUGIN_UI_HOST_API_VERSION_V1,
                 methods: Object.freeze([...requiredHostMethods]),
             }),
             fallback: Object.freeze({ kind: 'unavailable' as const }),
@@ -842,8 +815,8 @@ function generatedViewDisplay(view: ResolvedUiViewV2Contribution): Readonly<Reco
     const presentationDefaults = {
         ...(definition.icon === undefined ? {} : { iconToken: definition.icon }),
         ...(projectedBadge === undefined ? {} : { badge: projectedBadge }),
-        ...(destinationDefinition?.groupHint !== undefined
-            ? { groupHint: destinationDefinition.groupHint }
+        ...(destinationDefinition && 'placement' in destinationDefinition && destinationDefinition.placement !== undefined
+            ? { placement: destinationDefinition.placement }
             : {}),
         ...(destinationDefinition?.rankHint !== undefined
             ? { rankHint: destinationDefinition.rankHint }
@@ -1001,75 +974,9 @@ export function projectPluginUiRendererAvailability<
     });
 }
 
-/**
- * A React Native renderer's executable bytes are shared, but crash containment
- * is not: it belongs to this exact projected mount/renderer binding. The
- * daemon supplies the already-reconciled state map; projection only attaches
- * that fact and declines a live RN mount when it is missing.
- */
-/**
- * Attaches one exact pre-reconciled crash state to a generated renderer. The
- * mount identity is supplied by the producer; this projection never derives a
- * broader destination or target from a renderer alone.
- */
-export function projectPluginUiRendererCrashState(params: Readonly<{
-    mount: DaemonPluginReactNativeCrashMountV1;
-    renderer: ResolvedUiRendererV2Contribution;
-    availability: Readonly<{
-        state: 'available' | 'fallback' | 'blocked' | 'disabled';
-        reason: string;
-        diagnostics: readonly string[];
-    }>;
-    hostRuntime?: PluginUiProjectionHostRuntimeContext;
-}>): Readonly<{
-    availability: Readonly<{
-        state: 'available' | 'fallback' | 'blocked' | 'disabled';
-        reason: string;
-        diagnostics: readonly string[];
-    }>;
-    crashState?: DaemonPluginReactNativeCrashStateV1;
-}> {
-    if (params.renderer.definition.kind !== 'reactNative') {
-        return Object.freeze({ availability: params.availability });
-    }
-    const statesByBindingKey = params.hostRuntime?.reactNativeBundles?.crashStatesByBindingKey;
-    // Projection unit callers that do not represent a daemon live path retain
-    // their existing runtime-only assertions. Every daemon projection supplies
-    // this map, where a missing exact binding is fail-closed below.
-    if (statesByBindingKey === undefined) {
-        return Object.freeze({ availability: params.availability });
-    }
-    const state = statesByBindingKey[createReactNativeCrashStateBindingKey({
-        mount: params.mount,
-        renderer: params.renderer.identity,
-    })];
-    if (!state) {
-        return Object.freeze({
-            availability: params.availability.state === 'available'
-                ? Object.freeze({
-                    state: 'fallback' as const,
-                    reason: 'crash_state_unavailable',
-                    diagnostics: Object.freeze(['crash_state_unavailable']),
-                })
-                : params.availability,
-        });
-    }
-    if (!state.disabled || params.availability.state !== 'available') {
-        return Object.freeze({ availability: params.availability, crashState: state });
-    }
-    return Object.freeze({
-        availability: Object.freeze({
-            state: 'disabled' as const,
-            reason: 'crash_disabled',
-            diagnostics: Object.freeze(['crash_threshold_reached']),
-        }),
-        crashState: state,
-    });
-}
-
 function projectGeneratedUiSettingsGroups(
     registry: ResolvedContributionRegistry,
-    entriesById: Record<string, PluginUiProjectedEntry>,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
 ): void {
     for (const group of registry.uiSettingsGroupsV2 ?? []) {
         const pluginId = readPluginId(group);
@@ -1093,9 +1000,8 @@ function projectGeneratedUiSettingsGroups(
 
 function projectGeneratedUiSettingsPages(
     registry: ResolvedContributionRegistry,
-    entriesById: Record<string, PluginUiProjectedEntry>,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
     declarativeHostRuntime?: DeclarativeProjectionHostRuntimeContext,
-    hostRuntime?: PluginUiProjectionHostRuntimeContext,
 ): void {
     const renderersByKey = new Map<string, ResolvedUiRendererV2Contribution>();
     for (const renderer of registry.uiRenderersV2 ?? []) {
@@ -1129,12 +1035,6 @@ function projectGeneratedUiSettingsPages(
                 kind: 'plugin' as const,
                 id: Object.freeze({ pluginId, localId: page.definition.group.localId }),
             });
-        const crashStateProjection = projectPluginUiRendererCrashState({
-            mount: Object.freeze({ kind: 'destination' as const, destination: binding.destination }),
-            renderer,
-            availability: rendererAvailability,
-            hostRuntime,
-        });
         addEntry(entriesById, {
             id: `settingsPage:${pluginId}:${page.definition.id}`,
             pluginId,
@@ -1155,17 +1055,14 @@ function projectGeneratedUiSettingsPages(
             }),
             binding,
             renderer: rendererProjection.rendererRef,
-            ...(crashStateProjection.crashState
-                ? { runtime: Object.freeze({ reactNativeCrashState: crashStateProjection.crashState }) }
-                : {}),
-            availability: crashStateProjection.availability,
+            availability: rendererAvailability,
         });
     }
 }
 
 function projectGeneratedUiViews(
     registry: ResolvedContributionRegistry,
-    entriesById: Record<string, PluginUiProjectedEntry>,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
     declarativeHostRuntime?: DeclarativeProjectionHostRuntimeContext,
     hostRuntime?: PluginUiProjectionHostRuntimeContext,
 ): void {
@@ -1206,8 +1103,6 @@ function projectGeneratedUiViews(
                     : 'singleton',
             });
         if (!binding) continue;
-        const destinationPlatformCandidate = hostRuntime?.reactNativeBundles?.hostRuntime?.platform;
-        const destinationPlatform = PluginUiPlatformV1Schema.safeParse(destinationPlatformCandidate);
         const candidateRenderers = binding.rendererChain.flatMap((rendererIdentity) => {
             const renderer = renderersByKey.get(`${pluginId}\0${rendererIdentity.localId}`);
             if (!renderer) return [];
@@ -1215,43 +1110,17 @@ function projectGeneratedUiViews(
                 ? declarativeHostRuntime?.modelsByRendererKey?.[`${pluginId}\0${renderer.definition.id}`]
                 : undefined;
             const projectedRenderer = projectPluginUiRendererRef(renderer, declarativeModel);
-            const rendererAvailability = destinationPlatformCandidate !== undefined
-                && (!destinationPlatform.success
-                    || !isPluginUiSurfaceBindingPotentiallySupportedOnPlatformV1(
-                        binding,
-                        destinationPlatform.data,
-                    ))
-                ? Object.freeze({
-                    state: 'fallback' as const,
-                    reason: 'destination_platform_unavailable',
-                    diagnostics: Object.freeze(['destination_platform_unavailable']),
-                })
-                : projectPluginUiRendererAvailability({
-                    pluginId,
-                    renderer,
-                    declarativeModel,
-                    registryRendererRef: projectedRenderer.registryRendererRef,
-                    entriesById,
-            });
-            const crashStateProjection = projectPluginUiRendererCrashState({
-                mount: binding.kind === 'destination'
-                    ? Object.freeze({ kind: 'destination' as const, destination: binding.destination })
-                    : Object.freeze({
-                        kind: 'inline' as const,
-                        surface: binding.surface,
-                        role: binding.role,
-                    }),
+            const rendererAvailability = projectPluginUiRendererAvailability({
+                pluginId,
                 renderer,
-                availability: rendererAvailability,
-                hostRuntime,
+                declarativeModel,
+                registryRendererRef: projectedRenderer.registryRendererRef,
+                entriesById,
             });
             return [{
                 renderer,
                 projectedRenderer,
-                availability: crashStateProjection.availability,
-                ...(crashStateProjection.crashState
-                    ? { crashState: crashStateProjection.crashState }
-                    : {}),
+                availability: rendererAvailability,
             }];
         });
         const primaryCandidate = candidateRenderers[0];
@@ -1276,6 +1145,31 @@ function projectGeneratedUiViews(
         const rightSidebar = selectedBinding.kind === 'destination'
             ? generatedRightSidebarMetadata(selectedBinding)
             : null;
+        const pageColumn = view.definition.container === 'appPage'
+            && 'column' in view.definition && view.definition.column
+            ? view.definition.column as Pick<typeof view.definition, 'renderer'>
+            : undefined;
+        const columnRenderer = pageColumn
+            ? renderersByKey.get(`${pluginId}\0${pageColumn.renderer}`)
+            : undefined;
+        const columnDeclarativeModel = columnRenderer?.definition.kind === 'declarative'
+            ? declarativeHostRuntime?.modelsByRendererKey?.[`${pluginId}\0${columnRenderer.definition.id}`]
+            : undefined;
+        const projectedColumnRenderer = columnRenderer
+            ? projectPluginUiRendererRef(columnRenderer, columnDeclarativeModel)
+            : undefined;
+        const column = columnRenderer && projectedColumnRenderer
+            ? Object.freeze({
+                renderer: projectedColumnRenderer.rendererRef,
+                availability: projectPluginUiRendererAvailability({
+                    pluginId,
+                    renderer: columnRenderer,
+                    declarativeModel: columnDeclarativeModel,
+                    registryRendererRef: projectedColumnRenderer.registryRendererRef,
+                    entriesById,
+                }),
+            })
+            : undefined;
         addEntry(entriesById, {
             id: `surfacePlacement:${pluginId}:${descriptorId}`,
             pluginId,
@@ -1290,13 +1184,26 @@ function projectGeneratedUiViews(
             binding: selectedBinding,
             renderer: effectiveCandidate.projectedRenderer.rendererRef,
             display,
+            ...(selectedBinding.kind === 'inline'
+                && selectedBinding.role === 'widget'
+                && 'placements' in view.definition
+                && view.definition.placements !== undefined
+                ? { placements: view.definition.placements }
+                : {}),
+            ...(selectedBinding.kind === 'inline'
+                && selectedBinding.role === 'widget'
+                && selectedBinding.targetKind === 'app'
+                ? { home: 'home' in view.definition && view.definition.home !== undefined
+                    ? view.definition.home
+                    : Object.freeze({ default: 'available' as const }) }
+                : {}),
+            ...(column ? { column } : {}),
             actions: Object.freeze([]),
             ...(headerActions.length === 0 ? {} : { headerActions }),
             ...(rightSidebar ? { rightSidebar } : {}),
             runtime: projectSurfaceResourceRuntime(
                 pluginId,
                 hostRuntime,
-                effectiveCandidate.crashState,
             ),
             availability: effectiveCandidate.availability,
         });
@@ -1304,7 +1211,7 @@ function projectGeneratedUiViews(
 }
 
 function isProjectedOpenableContentDestination(
-    entry: PluginUiProjectedEntry | undefined,
+    entry: PluginUiProjectedEntryCandidate | undefined,
     pluginId: string,
     destinationId: string,
 ): boolean {
@@ -1321,7 +1228,7 @@ function isProjectedOpenableContentDestination(
 
 function projectOpenableContentViewers(
     registry: ResolvedContributionRegistry,
-    entriesById: Record<string, PluginUiProjectedEntry>,
+    entriesById: Record<string, PluginUiProjectedEntryCandidate>,
 ): void {
     const viewers = [...(registry.openableContentViewers ?? [])].sort((left, right) => (
         `${left.identity.pluginId}\0${left.identity.localId}`.localeCompare(
@@ -1362,7 +1269,7 @@ export const pluginUiProjectionFamily = definePluginProjectionFamilyV2({
     family: 'pluginUi',
     project({ registry, generation, pluginExecutionOriginsByPluginId, pluginUiHostRuntime, requestedLocale }) {
         const hostRuntime = pluginUiHostRuntime as PluginUiProjectionHostRuntimeContext | undefined;
-        const entriesById: Record<string, PluginUiProjectedEntry> = {};
+        const entriesById: Record<string, PluginUiProjectedEntryCandidate> = {};
         projectTranslations(registry, entriesById, requestedLocale);
         projectSessionHeaderActions(registry, entriesById);
         projectSearchProviders(registry, entriesById);
@@ -1392,13 +1299,15 @@ export const pluginUiProjectionFamily = definePluginProjectionFamilyV2({
             registry,
             entriesById,
             hostRuntime?.declarative,
-            hostRuntime,
         );
         stampEntriesWithExecutionOrigins(entriesById, pluginExecutionOriginsByPluginId);
 
         return {
             family: 'pluginUi',
-            entriesById,
+            entriesById: stampEntriesWithOccurrenceIds(
+                entriesById,
+                registry.occurrenceIdsByPluginId,
+            ),
         };
     },
 });

@@ -613,7 +613,6 @@ builtArtifactDescribe('external physical target and contributor packages', { tim
         );
         for (const sourcePath of [
             join(externalTargetedPackageFixtureRoot, 'target', 'src', 'index.ts'),
-            join(externalTargetedPackageFixtureRoot, 'target', 'src', 'pluginUiBuild.ts'),
             join(externalTargetedPackageFixtureRoot, 'target', 'src', 'surface.tsx'),
             join(externalTargetedPackageFixtureRoot, 'target', 'src', 'targetedSurfaceSelection.ts'),
             join(externalTargetedPackageFixtureRoot, 'target', 'src', 'declarativeAuthoring.ts'),

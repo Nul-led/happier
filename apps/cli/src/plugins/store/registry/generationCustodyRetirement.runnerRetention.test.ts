@@ -42,14 +42,22 @@ function createDeferred(): Readonly<{
   return Object.freeze({ promise, resolve });
 }
 
+function managedSourceCustody(immutableGenerationId: string) {
+  return Object.freeze({
+    kind: 'managed' as const,
+    immutableGenerationId,
+    installSource: 'localPath' as const,
+  });
+}
+
 describe('live Runner Agent generation retention', () => {
-  it('retains a current-host generation while retiring an inapplicable generated generation', async () => {
+  it('retains a live generation while pruning an obsolete bundled copy without remote generation retirement', async () => {
     const happyHomeDir = await mkdtemp(
       join(tmpdir(), 'happier-current-bundled-retention-'),
     );
     const paths = resolvePluginStorePaths({ happyHomeDir });
-    const currentHostGenerationId = 'generation-current-host-bundled';
-    const inapplicableGenerationId = 'generation-inapplicable-bundled';
+    const currentHostGenerationId = 'bundled-current-host';
+    const inapplicableGenerationId = 'bundled-inapplicable';
     const currentHostGenerationRoot = join(
       paths.generationsDir,
       currentHostGenerationId,
@@ -63,7 +71,7 @@ describe('live Runner Agent generation retention', () => {
       pluginId: string,
       immutableGenerationId: string,
     ) => ({
-      sourceProvenance: 'registryCustodied' as const,
+      sourceProvenance: 'localSource' as const,
       t: 'happier_plugin_generation_v1' as const,
       schemaVersion: 1 as const,
       pluginId,
@@ -124,7 +132,7 @@ describe('live Runner Agent generation retention', () => {
         transactionId: 'current-bundled-retention',
         baseRevision: 0,
         installationState: stateReference,
-        pluginGenerations: {},
+        pluginOccurrenceIds: {},
         createdAtMs: 1,
         creator: { pid: 1, instanceId: 'daemon-a' },
       };
@@ -146,18 +154,97 @@ describe('live Runner Agent generation retention', () => {
         removed: [inapplicableGenerationId],
         failures: [],
       });
-      expect(retireGeneration).toHaveBeenCalledTimes(1);
-      expect(retireGeneration).toHaveBeenCalledWith({
-        token: 'account-token',
-        pluginId: 'happier.agent.inapplicable',
-        immutableGenerationId: inapplicableGenerationId,
-      });
+      expect(retireGeneration).not.toHaveBeenCalled();
       await expect(
         access(join(currentHostGenerationRoot, 'runtime.mjs')),
       ).resolves.toBeUndefined();
       await expect(
         access(join(inapplicableGenerationRoot, 'runtime.mjs')),
       ).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(happyHomeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('retires an uninstalled managed generation from its durable exact source custody after restart', async () => {
+    const happyHomeDir = await mkdtemp(
+      join(tmpdir(), 'happier-uninstalled-managed-retirement-'),
+    );
+    const paths = resolvePluginStorePaths({ happyHomeDir });
+    const pluginId = 'acme.uninstalled';
+    const immutableGenerationId = 'generation-uninstalled-managed';
+    const generationRoot = join(paths.generationsDir, immutableGenerationId);
+    const runtimeBytes = 'export default "managed";';
+    const sourceCustody = {
+      kind: 'managed' as const,
+      immutableGenerationId,
+      installSource: 'archive' as const,
+    };
+    const state: PluginInstallationStateRevision = {
+      t: 'happier_plugin_installations_v1',
+      schemaVersion: 1,
+      revisionId: 'state-after-managed-uninstall',
+      createdAtMs: 2,
+      plugins: {},
+      rollbackRetention: [],
+    };
+
+    try {
+      await mkdir(generationRoot, { recursive: true });
+      await writeFile(join(generationRoot, 'runtime.mjs'), runtimeBytes, 'utf8');
+      await writeFile(
+        join(generationRoot, 'plugin-generation.v1.json'),
+        JSON.stringify({
+          sourceProvenance: 'registryCustodied',
+          sourceCustody,
+          t: 'happier_plugin_generation_v1',
+          schemaVersion: 1,
+          pluginId,
+          immutableGenerationId,
+          createdAtMs: 1,
+          files: [{
+            relativePath: 'runtime.mjs',
+            byteLength: Buffer.byteLength(runtimeBytes),
+          }],
+          manifestRelativePath: 'runtime.mjs',
+        }),
+        'utf8',
+      );
+      const installationState = await persistInstallationStateRevision({
+        paths,
+        state,
+      });
+      const commit: PluginRegistryCommitRecord = {
+        t: 'happier_plugin_registry_commit_v1',
+        schemaVersion: 1,
+        revision: 2,
+        transactionId: 'managed-uninstall-complete',
+        baseRevision: 1,
+        installationState,
+        pluginOccurrenceIds: {},
+        createdAtMs: 2,
+        creator: { pid: 1, instanceId: 'daemon-after-restart' },
+      };
+      const retireGeneration = vi.fn(async () => undefined);
+
+      await expect(reconcilePluginGenerationCustodyRetirement({
+        paths,
+        commit,
+        isCommitCurrent: async () => true,
+        readCredentials: async () => ({ token: 'account-token', encryption: null }),
+        readRunnerRetainedGenerationIds: async () => new Set(),
+        retireGeneration,
+      })).resolves.toMatchObject({
+        status: 'reconciled',
+        removed: [immutableGenerationId],
+        failures: [],
+      });
+      expect(retireGeneration).toHaveBeenCalledWith({
+        token: 'account-token',
+        pluginId,
+        immutableGenerationId,
+        sourceCustody,
+      });
     } finally {
       await rm(happyHomeDir, { recursive: true, force: true });
     }
@@ -172,19 +259,19 @@ describe('live Runner Agent generation retention', () => {
         updatedAt: 1,
         processCommandHash: 'a'.repeat(64),
         processStartTimeMs: 12_345,
-        runnerAgentImmutableGenerationId:
-          'generation-live-runner',
+        runnerAgentSourceCustodyV1:
+          managedSourceCustody('generation-live-runner'),
         runnerManagedDependencyRetentionV1: {
           v: 1,
           adoptedManagedProviderAuthority: {
             pluginId: 'acme.provider',
-            immutableGenerationId:
-              'generation-provider-live-p',
+            sourceCustody:
+              managedSourceCustody('generation-provider-live-p'),
             manifestAuthority: 'external',
             hardRevocationRevisionAtAdmission: 0,
           },
-          sourceGenerationIds: [
-            'generation-managed-live-g1',
+          sourceCustodies: [
+            managedSourceCustody('generation-managed-live-g1'),
           ],
           qualifiedDependencyIds: [
             'acme.runner-retention/tool-g1',
@@ -206,12 +293,12 @@ describe('live Runner Agent generation retention', () => {
           secondRunner.processCommandHash,
         processStartTimeMs:
           secondRunner.processStartTimeMs,
-        runnerAgentImmutableGenerationId:
-          'generation-live-runner-g2',
+        runnerAgentSourceCustodyV1:
+          managedSourceCustody('generation-live-runner-g2'),
         runnerManagedDependencyRetentionV1: {
           v: 1,
-          sourceGenerationIds: [
-            'generation-managed-live-g2',
+          sourceCustodies: [
+            managedSourceCustody('generation-managed-live-g2'),
           ],
           qualifiedDependencyIds: [
             'acme.runner-retention/tool-g2',
@@ -266,16 +353,16 @@ describe('live Runner Agent generation retention', () => {
       updatedAt: 1,
       processCommandHash: 'c'.repeat(64),
       processStartTimeMs: 21_001,
-      runnerAgentImmutableGenerationId: 'generation-agent-g',
+      runnerAgentSourceCustodyV1: managedSourceCustody('generation-agent-g'),
       runnerManagedDependencyRetentionV1: {
         v: 1,
         adoptedManagedProviderAuthority: {
           pluginId: 'acme.provider',
-          immutableGenerationId: 'generation-provider-p',
+          sourceCustody: managedSourceCustody('generation-provider-p'),
           manifestAuthority: 'external',
           hardRevocationRevisionAtAdmission: 0,
         },
-        sourceGenerationIds: ['generation-dependency-g'],
+        sourceCustodies: [managedSourceCustody('generation-dependency-g')],
         qualifiedDependencyIds: ['acme.runner-retention/tool'],
       },
     };
@@ -357,11 +444,11 @@ describe('live Runner Agent generation retention', () => {
         updatedAt: 1,
         processCommandHash: 'a'.repeat(64),
         processStartTimeMs: 12_345,
-        runnerAgentImmutableGenerationId:
-          'generation-live-runner',
+        runnerAgentSourceCustodyV1:
+          managedSourceCustody('generation-live-runner'),
         runnerManagedDependencyRetentionV1: {
           v: 1,
-          sourceGenerationIds: ['generation-managed-live'],
+          sourceCustodies: [managedSourceCustody('generation-managed-live')],
           qualifiedDependencyIds: ['acme.runner-retention/tool'],
         },
       };
@@ -454,7 +541,7 @@ describe('live Runner Agent generation retention', () => {
               canonicalPath: '/tmp/acme-runner-attachment',
             },
           },
-          updatePolicy: 'reviewEveryUpdate',
+          updatePolicy: 'allowed',
           optionalAccess: [],
         },
       },
@@ -487,7 +574,7 @@ describe('live Runner Agent generation retention', () => {
         transactionId: 'runner-retirement-race',
         baseRevision: 0,
         installationState: stateReference,
-        pluginGenerations: {
+        pluginOccurrenceIds: {
           'acme.runner-attachment': {
             immutableGenerationId: currentGenerationId,
           },
@@ -566,7 +653,7 @@ describe('live Runner Agent generation retention', () => {
               canonicalPath: '/tmp/acme-pre-marker',
             },
           },
-          updatePolicy: 'reviewEveryUpdate',
+          updatePolicy: 'allowed',
           optionalAccess: [],
         },
       },
@@ -584,7 +671,7 @@ describe('live Runner Agent generation retention', () => {
       pluginVersion: '1.0.0',
       agentId: 'pre-marker',
       localAgentId: 'pre-marker',
-      immutableGenerationId: retainedGenerationId,
+      sourceCustody: managedSourceCustody(retainedGenerationId),
       locator: {
         module: './agent/factory.mjs',
         export: 'createRuntime',
@@ -609,6 +696,7 @@ describe('live Runner Agent generation retention', () => {
           byteLength: Buffer.byteLength(runtimeBytes),
         }],
         manifestRelativePath: 'runtime.mjs',
+        sourceCustody: managedSourceCustody(retainedGenerationId),
       }), 'utf8');
       const stateReference = await persistInstallationStateRevision({
         paths,
@@ -621,7 +709,7 @@ describe('live Runner Agent generation retention', () => {
         transactionId: 'pre-marker-successor-cleanup',
         baseRevision: 0,
         installationState: stateReference,
-        pluginGenerations: {
+        pluginOccurrenceIds: {
           'acme.pre-marker': {
             immutableGenerationId: currentGenerationId,
           },
@@ -744,7 +832,7 @@ describe('live Runner Agent generation retention', () => {
               canonicalPath: '/tmp/acme-provider',
             },
           },
-          updatePolicy: 'reviewEveryUpdate',
+          updatePolicy: 'allowed',
           optionalAccess: [],
         },
       },
@@ -762,11 +850,11 @@ describe('live Runner Agent generation retention', () => {
         v: 1,
         adoptedManagedProviderAuthority: {
           pluginId: 'acme.provider',
-          immutableGenerationId: providerGenerationId,
+          sourceCustody: managedSourceCustody(providerGenerationId),
           manifestAuthority: 'external',
           hardRevocationRevisionAtAdmission: 0,
         },
-        sourceGenerationIds: [],
+        sourceCustodies: [],
         qualifiedDependencyIds: [],
       },
     };
@@ -794,7 +882,7 @@ describe('live Runner Agent generation retention', () => {
         transactionId: 'provider-retention',
         baseRevision: 0,
         installationState: stateReference,
-        pluginGenerations: {
+        pluginOccurrenceIds: {
           'acme.provider': {
             immutableGenerationId: currentGenerationId,
           },
@@ -830,7 +918,7 @@ describe('live Runner Agent generation retention', () => {
         ...marker,
         runnerManagedDependencyRetentionV1: {
           v: 1,
-          sourceGenerationIds: [],
+          sourceCustodies: [],
           qualifiedDependencyIds: [],
         },
       };

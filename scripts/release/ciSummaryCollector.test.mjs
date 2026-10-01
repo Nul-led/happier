@@ -68,6 +68,31 @@ test('explicit selection requires every selected job while leaving unrelated ski
   assert.deepEqual(summary.failures.map(({ id }) => id), ['ui']);
 });
 
+test('explicit selection is authoritative regardless of the reusable caller event', () => {
+  const inputs = {
+    select_jobs_explicitly: true,
+    run_mobile_e2e_android: true,
+    run_release_assets_docker: true,
+    run_self_host_systemd: true,
+    run_e2e_core_slow: true,
+    run_providers: true,
+  };
+
+  for (const eventName of ['push', 'pull_request', 'schedule', 'workflow_dispatch', 'workflow_call']) {
+    const required = jobsForSelectedInputs({ inputs, eventName });
+    for (const job of [
+      'mobile-e2e-android',
+      'release-assets-docker',
+      'self-host-systemd-e2e',
+      'e2e-core-slow',
+      'release_actor_guard',
+      'providers',
+    ]) {
+      assert.equal(required.has(job), true, `${job} must be required for caller event ${eventName}`);
+    }
+  }
+});
+
 test('selected jobs fail closed for missing and non-success conclusions', () => {
   for (const result of [undefined, null, 'skipped', 'cancelled', 'timed_out']) {
     const summary = collectCiSummary({

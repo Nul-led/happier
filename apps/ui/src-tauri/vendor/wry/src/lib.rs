@@ -2112,6 +2112,24 @@ impl WebView {
     self.webview.go_back()
   }
 
+  /// Whether the native webview has a preceding history entry.
+  #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+  pub fn can_go_back(&self) -> crate::Result<bool> {
+    self.webview.can_go_back()
+  }
+
+  /// Whether the native webview has a following history entry.
+  #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+  pub fn can_go_forward(&self) -> crate::Result<bool> {
+    self.webview.can_go_forward()
+  }
+
+  /// Navigate forward, returning false when there is no following history entry.
+  #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+  pub fn go_forward(&self) -> crate::Result<bool> {
+    self.webview.go_forward()
+  }
+
   /// Set the webview zoom level
   ///
   /// ## Platform-specific:

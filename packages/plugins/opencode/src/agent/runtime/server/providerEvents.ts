@@ -46,6 +46,7 @@ export function attachOpenCodeProviderEventSubscriptionIfNeeded(params: Readonly
     const controller = new AbortController();
     params.state.subscriptionAbort = controller;
     void params.client.subscribeGlobalEvents({
+      sessionId: params.state.providerSessionId,
       signal: controller.signal,
       onEvent: (event, delivery: OpenCodeGlobalEventDelivery) => {
         const eventType = typeof event.payload?.type === 'string'
@@ -57,9 +58,15 @@ export function attachOpenCodeProviderEventSubscriptionIfNeeded(params: Readonly
         const handler = delivery.provenance === 'untrusted-observation'
           ? params.handleProviderObservation
           : params.handleProviderEvent;
-        void handler(event).catch((error: unknown) => {
+        const work = handler(event).catch((error: unknown) => {
           params.ctx.logger.debug('[OpenCodeServer] failed to handle provider event (non-fatal)', { error });
         });
+        // Catalog observations must settle in stream order, but a human decision
+        // must not hold the stream open and block unrelated observations.
+        if (eventType === 'server.connected' || eventType === 'provider.updated' || eventType === 'model.updated' || eventType === 'agent.updated' || eventType === 'session.updated') {
+          return work;
+        }
+        void work;
       },
       onUnavailable: notifySubscriptionUnavailable,
     }).then(

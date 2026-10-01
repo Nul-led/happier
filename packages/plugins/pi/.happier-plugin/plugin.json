@@ -27,6 +27,7 @@
               "resume"
             ],
             "startupInstructions": {
+              "revisionChanges": "resume",
               "versions": [
                 1
               ]
@@ -472,6 +473,7 @@
         "scope": {
           "envKeys": [
             "HAPPIER_PI_THINKING_LEVEL",
+            "PI_OFFLINE",
             "HAPPIER_CONNECTED_ACCOUNT_REQUEST_AUTH_CAPABILITY_PATH",
             "HAPPIER_PI_REQUEST_AUTH_PRODUCER_VERSION",
             "NODE_ENV",
@@ -499,6 +501,19 @@
   },
   "id": "happier.agent.pi",
   "runtime": {
+    "agentFactories": [
+      {
+        "loadMode": "immutable-js",
+        "localAgentId": "pi",
+        "locator": {
+          "export": "createPiAgentRuntime",
+          "externalSessionsExport": "piExternalSessionsContribution",
+          "module": "./agent/runtime/engine",
+          "runtimeApiVersion": 1
+        },
+        "normalizedModulePath": ".happier-plugin/agent/runtime/engine.js"
+      }
+    ],
     "apiVersion": 1
   },
   "schemaVersion": 2,

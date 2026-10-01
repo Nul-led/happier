@@ -111,17 +111,16 @@ describe('zero-consumer SDK contraction', () => {
     it('removes manual UI artifact rows while retaining the generated artifact builder', () => {
         const buildBarrel = readFileSync(new URL('./ui/build/index.ts', import.meta.url), 'utf8');
         const publicBuildBarrel = readFileSync(new URL('./ui/build/index.public.ts', import.meta.url), 'utf8');
-        const generatedBuilder = readFileSync(new URL('./ui/build/buildUiArtifacts.ts', import.meta.url), 'utf8');
+        const generatedBuilder = readFileSync(new URL('./ui/build/buildUniversalUiArtifacts.ts', import.meta.url), 'utf8');
         const publicContract = readFileSync(new URL('./ui/publicContract.ts', import.meta.url), 'utf8');
-        const nativeBundleSource = readFileSync(new URL('./ui/reactNativeBundles.ts', import.meta.url), 'utf8');
 
         expect(existsSync(new URL('./ui/build/artifactContribution.ts', import.meta.url))).toBe(false);
         expect(existsSync(new URL('./ui/artifacts.ts', import.meta.url))).toBe(false);
+        expect(existsSync(new URL('./ui/reactNativeBundles.ts', import.meta.url))).toBe(false);
         expect(buildBarrel).not.toContain('artifactContribution');
         expect(publicBuildBarrel).not.toContain('artifactContribution');
         expect(publicContract).not.toMatch(/\bPluginUiArtifactContributionV1\b/);
-        expect(nativeBundleSource).not.toMatch(/\bPluginReactNativeBundleContributionV1\b/);
-        expect(generatedBuilder).toContain('PluginUiArtifactsManifestV1Schema');
+        expect(generatedBuilder).toContain('PluginUiArtifactsManifestV2Schema');
     });
 
     it('uses operation availability as the PluginServices canonical identity', () => {

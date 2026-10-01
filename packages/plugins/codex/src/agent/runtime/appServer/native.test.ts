@@ -22,6 +22,10 @@ const clientModuleMocks = vi.hoisted(() => ({
   createCodexNativeAppServerClient: vi.fn(),
 }));
 
+const sharedServerModuleMocks = vi.hoisted(() => ({
+  createCodexSharedAppServer: vi.fn(async () => null),
+}));
+
 vi.mock('./runtime.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('./runtime.js')>(),
   createCodexAppServerRuntime: runtimeModuleMocks.createCodexAppServerRuntime,
@@ -31,6 +35,10 @@ vi.mock('./runtime.js', async (importOriginal) => ({
 vi.mock('./client.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('./client.js')>(),
   createCodexNativeAppServerClient: clientModuleMocks.createCodexNativeAppServerClient,
+}));
+
+vi.mock('./sharedServer.js', () => ({
+  createCodexSharedAppServer: sharedServerModuleMocks.createCodexSharedAppServer,
 }));
 
 import {
@@ -121,9 +129,73 @@ function createConnectedAccountsFixture(input?: Readonly<{
 describe('createCodexNativeAppServerSessionRuntime', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sharedServerModuleMocks.createCodexSharedAppServer.mockResolvedValue(null);
     clientModuleMocks.createCodexNativeAppServerClient.mockResolvedValue({
       request: vi.fn(async () => ({ threadId: 'forked-thread' })),
       dispose: vi.fn(async () => undefined),
+    });
+  });
+
+  it('reuses the native Codex daemon for an exact daemon-proxy resume', async () => {
+    const appServer = createAppServerSession();
+    runtimeModuleMocks.createCodexAppServerRuntime.mockReturnValueOnce(appServer.runtime);
+    const context = {
+      signal: new AbortController().signal,
+      services: {
+        logger: { debug: vi.fn() },
+        sessions: { current: { media: { registerSourceRoot: vi.fn() } } },
+        connectedAccounts: createConnectedAccountsFixture(),
+      },
+      session: { id: 'session-1', services: {} },
+      ui: { title: { set: vi.fn(async () => undefined) } },
+    } as unknown as AgentSessionRuntimeContext;
+
+    const session = await openCodexNativeAppServerSession({
+      kind: 'resume',
+      sessionId: 'session-1',
+      cwd: '/tmp/codex',
+      providerSessionId: 'thread-381',
+      runtimeDescriptorV1: {
+        v: 1,
+        agentId: 'codex',
+        agent: {
+          backendMode: 'appServer',
+          providerSessionId: 'thread-381',
+          appServerTransport: 'daemonProxy',
+        },
+      },
+    }, context);
+
+    expect(sharedServerModuleMocks.createCodexSharedAppServer).not.toHaveBeenCalled();
+    const runtimeParams = runtimeModuleMocks.createCodexAppServerRuntime.mock.calls.at(-1)?.[0];
+    expect(runtimeParams).toMatchObject({
+      appServerEndpoint: undefined,
+      appServerTransport: 'daemonProxy',
+    });
+    await runtimeParams?.host.createClient({
+      cwd: '/tmp/codex',
+      processEnv: {},
+      configOverrides: [],
+      disableUserMcpServers: false,
+    });
+    expect(clientModuleMocks.createCodexNativeAppServerClient).toHaveBeenLastCalledWith(
+      expect.objectContaining({ transport: { kind: 'daemonProxy' } }),
+    );
+    expect(session.runtimeDescriptorV1).toMatchObject({
+      v: 1,
+      agentId: 'codex',
+      agent: {
+        backendMode: 'appServer',
+        providerSessionId: 'thread-381',
+      },
+    });
+    expect(session.runtimeDescriptorV1?.agent).not.toHaveProperty('appServerTransport');
+    expect(session.runtimeDescriptorV1).not.toMatchObject({
+      agent: {
+        agentExtra: {
+          runtimeHandle: { appServerTransport: 'daemonProxy' },
+        },
+      },
     });
   });
 
@@ -140,6 +212,37 @@ describe('createCodexNativeAppServerSessionRuntime', () => {
     );
 
     expect(runtime.runtimeAuth).toBe(runtimeAuth);
+  });
+
+  it('preserves the typed source of an app-server failed turn through the native adapter', () => {
+    const appServer = createAppServerSession();
+    const runtime = createCodexNativeAppServerSessionRuntime(appServer.runtime, 'session-1');
+    const events: AgentSessionRuntimeEvent[] = [];
+    runtime.watch((event) => events.push(event));
+
+    appServer.publish({
+      kind: 'turn-failed',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      emittedAtMs: 1,
+      issue: {
+        v: 1,
+        scope: 'primary_session',
+        status: 'failed',
+        code: 'codex_app_server_turn_failed',
+        source: 'auth_error',
+        occurredAt: 1,
+        agentId: 'codex',
+        sanitizedPreview: 'Codex authentication failed.',
+      },
+    });
+
+    expect(events).toContainEqual(expect.objectContaining({
+      kind: 'turn-failed',
+      diagnostic: expect.objectContaining({
+        details: { v: 1, source: 'auth_error' },
+      }),
+    }));
   });
 
   it.each([
@@ -331,16 +434,16 @@ describe('createCodexNativeAppServerSessionRuntime', () => {
       },
     }, context);
 
-    expect(clientModuleMocks.createCodexNativeAppServerClient).toHaveBeenCalledWith({
+    expect(clientModuleMocks.createCodexNativeAppServerClient).toHaveBeenCalledWith(expect.objectContaining({
       exec: context.services.exec,
       cwd: '/tmp/codex',
-      processEnv: {},
+      processEnv: expect.objectContaining({ PATH: process.env.PATH }),
       signal: controller.signal,
       initializeRequestOptions: {
         signal: controller.signal,
         timeoutMs: null,
       },
-    });
+    }));
   });
 
   it.each([
@@ -783,6 +886,36 @@ describe('createCodexNativeAppServerSessionRuntime', () => {
     await host.setTitle?.('Review');
 
     expect(setDisplayTitle).toHaveBeenCalledWith('Review', { signal: controller.signal });
+  });
+
+  it('admits async question replies through the host-stamped current Session handle', async () => {
+    const send = vi.fn(async () => ({ status: 'accepted' as const, localId: 'reply-1' }));
+    const controller = new AbortController();
+    const context = {
+      signal: controller.signal,
+      services: {
+        logger: { debug: vi.fn() },
+        sessions: { current: { send, media: { registerSourceRoot: vi.fn() } } },
+        connectedAccounts: createConnectedAccountsFixture(),
+      },
+      session: { id: 'session-1', services: {} },
+    } as unknown as AgentSessionRuntimeContext;
+    const host = createCodexNativeAppServerRuntimeHost({
+      request: { sessionId: 'session-1' } as AgentSessionOpenRequest,
+      context,
+      processEnv: {},
+    });
+
+    await host.sendUserMessage?.({
+      idempotencyKey: 'codex-async-question:abc',
+      text: '<send_user_message_question_reply>\n[]\n</send_user_message_question_reply>',
+    });
+
+    expect(send).toHaveBeenCalledWith({
+      kind: 'userText',
+      text: '<send_user_message_question_reply>\n[]\n</send_user_message_question_reply>',
+      idempotencyKey: 'codex-async-question:abc',
+    }, { signal: controller.signal });
   });
 
   it('requests reset-credit inventory through the supported non-following HTTP policy', async () => {

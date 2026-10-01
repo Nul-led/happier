@@ -69,6 +69,9 @@ export function spawn(cmd, args, options = {}) {
   queueMicrotask(() => child.emit('close', 0, null));
   return child;
 }
+export function spawnSync() {
+  return { status: 1, stdout: '', stderr: '' };
+}
 `),
     './utils/cli/prereqs.mjs': toDataUrl(`
 export async function assertCliPrereqs() {}
@@ -85,6 +88,7 @@ export async function resolveDefaultRemoteBranch() {
 `),
     './utils/worktrees/yarn_install_guard.mjs': toDataUrl(`
 export async function shouldRunYarnInstall() { return true; }
+export async function withYarnInstallGuard(_options, install) { return await install(); }
 `),
     './utils/proc/pm.mjs': toDataUrl(`
 export async function applyStackCacheEnv(env) { return env; }

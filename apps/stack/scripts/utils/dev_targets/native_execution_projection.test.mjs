@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { renderNativeExecutionProjection } from './native_execution_projection.mjs';
+import { renderNativeCommandPolicy, resolveRemoteCommandPolicy } from './remote_commands.mjs';
 
 test('native execution projection contains all POSIX targets and marks automatic command eligibility', () => {
   const output = renderNativeExecutionProjection({
@@ -27,12 +31,7 @@ test('native execution projection contains all POSIX targets and marks automatic
 
   assert.match(output, /^HSTACK_EXEC_PROJECTION_VERSION='2'$/m);
   assert.match(output, /^command_mode='auto'$/m);
-  assert.match(output, /^dependency_direct_commands='node npm npx pnpm tsc vitest yarn'$/m);
-  assert.match(output, /^dependency_corepack_subcommands='npm pnpm yarn'$/m);
-  assert.match(output, /^primary_only_direct_commands='git'$/m);
-  assert.match(output, /^source_search_direct_commands='find grep rg'$/m);
-  assert.match(output, /^validation_direct_commands='tsc vitest'$/m);
-  assert.match(output, /^validation_script_families='build check lint test typecheck vitest'$/m);
+  assert.doesNotMatch(output, /package_manager_commands|primary_only_direct_commands|source_search_direct_commands|validation_direct_commands|validation_script_families|source_test_components/);
   assert.match(output, /^execution_provenance_schema_version='1'$/m);
   assert.match(output, /^execution_provenance_filename='provenance\.jsonl'$/m);
   assert.match(output, /^target_count='1'$/m);
@@ -41,6 +40,52 @@ test('native execution projection contains all POSIX targets and marks automatic
   assert.match(output, /^target_1_ssh_config='\/tmp\/it'"'"'s\.conf'$/m);
   assert.match(output, /^target_1_repo_dir='\/repo path'$/m);
   assert.doesNotMatch(output, /win-host|C:\/repo/);
+});
+
+test('native command decision artifact is current and executes the canonical classifier policy', () => {
+  const artifact = new URL('./native_command_policy.sh', import.meta.url);
+  assert.equal(readFileSync(artifact, 'utf8'), renderNativeCommandPolicy());
+  const root = fileURLToPath(new URL('../../../../../', import.meta.url)).replace(/\/$/, '');
+  const cases = [
+    { args: ['node', '--test', 'packages/plugin-sdk/scripts/generateActionTypeMap.test.mjs'] },
+    { args: ['node', '--test', 'scripts/generateActionTypeMap.test.mjs'], cwd: 'packages/plugin-sdk' },
+    { args: ['node', '--test', 'apps/ui/scripts/generateBundledPluginUiArtifacts.test.mjs'] },
+    { args: ['node', '--test', 'packages/plugin-sdk/scripts/generateActionTypeMap.test.mjs', 'apps/ui/scripts/generateBundledPluginUiArtifacts.test.mjs'] },
+    { args: ['node', '--test', 'apps/stack/scripts/config.test.mjs'] },
+    { args: ['nodejs', '--test', 'owner.test.mjs'], cwd: 'apps/stack2' },
+    { args: ['node', '-e', 'console.log("control")'] },
+    { args: ['node', '--experimental-strip-types', 'apps/cli/scripts/build-owned/generateBundledPluginEntries.ts', '--mode', 'check'] },
+    { args: ['node', '--experimental-strip-types', 'apps/cli/scripts/build-owned/generateBundledPluginEntries.ts', '--mode=write'] },
+    { args: ['node', '--experimental-strip-types', 'other/generateBundledPluginEntries.ts', '--mode=check'] },
+    { args: ['tsc', '-p', 'apps/cli/tsconfig.json'] },
+    { args: ['tsc', '-p', 'apps\\cli\\tsconfig.json'] },
+    { args: ['node', 'scripts/workspaces/runTypeScriptCli.mjs', '--project=apps/cli/tsconfig.json'] },
+    { args: ['yarn', '-s', 'lint'] },
+    { args: ['--script=lint:local'] },
+    { args: ['git', 'status'] },
+    { args: ['rg', 'needle'] },
+    { args: ['corepack', 'yarn', '--cwd', 'apps/ui', '-s', 'vitest:local', 'run'] },
+    { args: ['corepack', 'yarn', '--cwd', './apps/ui/', '-s', 'vitest:local', 'run'] },
+    { args: ['vitest', 'run', '--config=./vitest.config.ts'], cwd: 'apps/cli' },
+    { args: ['vitest', 'run', '--config=vitest.artifact-cache.config.ts'], cwd: 'apps/ui' },
+    { args: ['vitest', 'run', '--config=unknown.config.ts'], cwd: 'apps/cli' },
+    { args: ['vitest', 'run', '--project=artifact'], cwd: 'apps/cli' },
+    { args: ['yarn', '--cwd=apps/ui', 'node', '../../scripts/testing/run-vitest-with-heartbeat.mjs', 'run'] },
+    { args: ['yarn', 'custom:script'], cwd: 'packages/plugin-sdk' },
+    { args: ['yarn', 'install'] },
+    { args: ['nodejs', 'node_modules\\vitest\\vitest.mjs', 'run'], cwd: 'apps/cli' },
+  ];
+  for (const { args, cwd = '.' } of cases) {
+    const policy = resolveRemoteCommandPolicy(args, { cwd });
+    const keys = Object.keys(policy);
+    const artifactWord = "'" + fileURLToPath(artifact).replaceAll("'", "'\"'\"'") + "'";
+    const body = 'repo_root=$1; invoked_cwd="$1/$2"; shift 2; . ' + artifactWord
+      + '; resolve_native_command_policy "$@"; printf "%s\\n" '
+      + keys.map(key => '"$policy_' + key + '"').join(' ');
+    const result = spawnSync('/bin/sh', ['-c', body, 'policy-parity', root, cwd, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trimEnd().split('\n'), keys.map(key => policy[key]), args.join(' ') + ' @ ' + cwd);
+  }
 });
 
 test('native execution projection retains an exact-only POSIX target under local command placement', () => {

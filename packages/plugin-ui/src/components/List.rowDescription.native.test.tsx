@@ -15,6 +15,7 @@ const nativePlatform = vi.hoisted(() => ({
 // actually carries a row's accessible name and description.
 vi.mock('react-native', () => ({
   Platform: nativePlatform,
+  StyleSheet: { hairlineWidth: 0.5 },
   I18nManager: { isRTL: false },
   FlatList: 'FlatList',
   Pressable: 'Pressable',

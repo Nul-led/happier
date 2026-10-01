@@ -30,7 +30,7 @@ import { homeEntries as resolveHomeEntries } from '../../../rollout/discovery/ho
 import { readCodexSessionMetaFromRollout } from '../../../rollout/discovery/indexData.js';
 import {
   CODEX_ROLLOUT_TITLE_HEAD_BUDGET,
-  readCodexSessionTitleFromRollout,
+  readCodexRolloutHead,
 } from '../../../rollout/discovery/rolloutTitle.js';
 import {
   DONE_CODEX_EXTERNAL_SESSION_ROLLOUT_SCAN,
@@ -127,10 +127,23 @@ function readNextCursor(raw: unknown): string | null {
   return typeof raw === 'string' && raw.trim().length > 0 ? raw : null;
 }
 
+function readLoadedThreadIds(value: unknown): ReadonlySet<string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return new Set();
+  const data = (value as Readonly<{ data?: unknown }>).data;
+  if (!Array.isArray(data)) return new Set();
+  return new Set(data.flatMap((entry) => {
+    if (typeof entry === 'string') return [entry];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const id = (entry as Readonly<{ id?: unknown }>).id;
+    return typeof id === 'string' ? [id] : [];
+  }));
+}
+
 function toCodexAppServerCandidate(
   thread: CodexAppServerThread,
   archived: boolean,
   processEnv: NodeJS.ProcessEnv,
+  loadedThreadIds: ReadonlySet<string>,
 ): CodexExternalSessionCandidate {
   const createdAtMs = Number.isFinite(thread.createdAt)
     ? Math.trunc((thread.createdAt as number) * 1000)
@@ -148,6 +161,7 @@ function toCodexAppServerCandidate(
   const runtimeDescriptorV1 = buildCodexAgentRuntimeDescriptorV1({
     backendMode: 'appServer',
     providerSessionId: thread.id,
+    ...(loadedThreadIds.has(thread.id) ? { appServerTransport: 'daemonProxy' } : {}),
   });
   return {
     remoteSessionId: thread.id,
@@ -177,6 +191,7 @@ async function listThreadsForArchiveStateWithClient(params: Readonly<{
   processEnv: NodeJS.ProcessEnv;
   archived: boolean;
   cursor: string | null;
+  loadedThreadIds: ReadonlySet<string>;
 }> & CodexExternalSessionInvocationBounds): Promise<CodexAppServerCandidatePage> {
   const pageSize = readThreadListPageSize(params.processEnv);
   throwIfCodexExternalSessionInvocationStopped(params);
@@ -189,7 +204,12 @@ async function listThreadsForArchiveStateWithClient(params: Readonly<{
   throwIfCodexExternalSessionInvocationStopped(params);
   const nextCursor = readNextCursor(result?.nextCursor);
   const candidates = asThreadArray(result?.data)
-    .map((thread) => toCodexAppServerCandidate(thread, params.archived, params.processEnv))
+    .map((thread) => toCodexAppServerCandidate(
+      thread,
+      params.archived,
+      params.processEnv,
+      params.loadedThreadIds,
+    ))
     .sort(compareCodexAppServerCandidates);
   return Object.freeze({
     candidates,
@@ -206,6 +226,7 @@ async function listCodexExternalSessionCandidatePagesWithClient(params: Readonly
   processEnv: NodeJS.ProcessEnv;
   active: CodexExternalSessionNativeCandidateCursorState;
   archived: CodexExternalSessionNativeCandidateCursorState;
+  loadedThreadIds?: ReadonlySet<string>;
 }> & CodexExternalSessionInvocationBounds): Promise<CodexAppServerCandidatePages> {
   throwIfCodexExternalSessionInvocationStopped(params);
   const [active, archived] = await Promise.all([
@@ -215,6 +236,7 @@ async function listCodexExternalSessionCandidatePagesWithClient(params: Readonly
         ...params,
         archived: false,
         cursor: params.active.cursor,
+        loadedThreadIds: params.loadedThreadIds ?? new Set(),
       }),
     params.archived.done
       ? Promise.resolve(null)
@@ -222,6 +244,7 @@ async function listCodexExternalSessionCandidatePagesWithClient(params: Readonly
         ...params,
         archived: true,
         cursor: params.archived.cursor,
+        loadedThreadIds: params.loadedThreadIds ?? new Set(),
       }),
   ]);
   throwIfCodexExternalSessionInvocationStopped(params);
@@ -242,6 +265,7 @@ export async function listCodexExternalSessionCandidatesViaExistingAppServerClie
     ...params,
     active: cursor.active,
     archived: cursor.archived,
+    loadedThreadIds: new Set(),
   });
   return [...(pages.active?.candidates ?? []), ...(pages.archived?.candidates ?? [])];
 }
@@ -285,19 +309,43 @@ async function listCodexSessionCandidatesViaAppServerWithBudget(params: Readonly
 
   const listPromise = (async (): Promise<CodexAppServerCandidatePages | null> => {
     try {
-      client = await createCodexNativeAppServerClient({
-        exec: params.exec,
-        processEnv,
-        signal,
-      });
-      return await listCodexExternalSessionCandidatePagesWithClient({
-        client,
-        processEnv,
-        active: params.active,
-        archived: params.archived,
-        signal,
-        deadlineAtMs: params.deadlineAtMs,
-      });
+      try {
+        client = await createCodexNativeAppServerClient({
+          exec: params.exec,
+          processEnv,
+          signal,
+          transport: { kind: 'daemonProxy' },
+        });
+        const loadedThreadIds = readLoadedThreadIds(
+          await client.request('thread/loaded/list'),
+        );
+        return await listCodexExternalSessionCandidatePagesWithClient({
+          client,
+          processEnv,
+          active: params.active,
+          archived: params.archived,
+          loadedThreadIds,
+          signal,
+          deadlineAtMs: params.deadlineAtMs,
+        });
+      } catch {
+        throwIfCodexExternalSessionInvocationStopped(params);
+        await disposeCodexAppServerClientBestEffort(client);
+        client = await createCodexNativeAppServerClient({
+          exec: params.exec,
+          processEnv,
+          signal,
+        });
+        return await listCodexExternalSessionCandidatePagesWithClient({
+          client,
+          processEnv,
+          active: params.active,
+          archived: params.archived,
+          loadedThreadIds: new Set(),
+          signal,
+          deadlineAtMs: params.deadlineAtMs,
+        });
+      }
     } catch (error) {
       throwIfCodexExternalSessionInvocationStopped(params);
       return null;
@@ -346,19 +394,16 @@ async function buildRolloutCandidate(params: Readonly<{
   group: CodexRolloutCandidateGroup;
   env: NodeJS.ProcessEnv;
   source: CodexRolloutCandidateEntry['source'];
-  includeTitle: boolean;
 }> & CodexExternalSessionInvocationBounds): Promise<CodexExternalSessionCandidate> {
   throwIfCodexExternalSessionInvocationStopped(params);
-  const [latestMeta, earliestMeta, title] = await Promise.all([
+  const [latestMeta, earliestMeta, { title, thread }] = await Promise.all([
     readCodexSessionMetaFromRollout(params.group.latestFilePath, params),
     readCodexSessionMetaFromRollout(params.group.earliestFilePath, params),
-    params.includeTitle
-      ? readCodexSessionTitleFromRollout(
-        params.group.earliestFilePath,
-        params,
-        CODEX_ROLLOUT_TITLE_HEAD_BUDGET,
-      )
-      : Promise.resolve(null),
+    readCodexRolloutHead(
+      params.group.earliestFilePath,
+      params,
+      CODEX_ROLLOUT_TITLE_HEAD_BUDGET,
+    ),
   ]);
   throwIfCodexExternalSessionInvocationStopped(params);
   const canonicalRemoteSessionId = [
@@ -379,6 +424,7 @@ async function buildRolloutCandidate(params: Readonly<{
   return {
     remoteSessionId: canonicalRemoteSessionId,
     ...(title ? { title } : {}),
+    ...(thread ? { thread } : {}),
     createdAtMs,
     updatedAtMs,
     archived: params.group.archived,
@@ -557,7 +603,6 @@ async function listRolloutCandidateOrdering(params: Readonly<{
       group,
       env: params.env,
       source,
-      includeTitle: true,
       signal: params.signal,
       deadlineAtMs: params.deadlineAtMs,
     }),
@@ -575,11 +620,17 @@ async function listRolloutCandidateOrdering(params: Readonly<{
   };
 }
 
+/**
+ * Internal threads are classified only once a row is built, so a searched page
+ * drops them after the build; the page may come back short while its cursor
+ * still continues the ordering. Native app-server rows are never threads: the
+ * default `thread/list` lists interactive sources only.
+ */
 async function buildCodexMergedOrderingPage(
   rows: readonly CodexMergedOrderingRow[],
-  params: Readonly<{ env: NodeJS.ProcessEnv }> & CodexExternalSessionInvocationBounds,
+  params: Readonly<{ env: NodeJS.ProcessEnv; includeThreads?: boolean }> & CodexExternalSessionInvocationBounds,
 ): Promise<CodexExternalSessionCandidate[]> {
-  return await mapCodexExternalSessionWorkWithConcurrency(
+  const built = await mapCodexExternalSessionWorkWithConcurrency(
     rows,
     resolveCodexRolloutSearchBuildConcurrency(params.env),
     async (row) => row.kind === 'candidate'
@@ -592,12 +643,12 @@ async function buildCodexMergedOrderingPage(
         // Exact-id lookups are the host candidate index's hydration route, so a
         // selected row must carry the title the indexed row deliberately does
         // not persist. It is one bounded rollout read per served row.
-        includeTitle: true,
         signal: params.signal,
         deadlineAtMs: params.deadlineAtMs,
       }),
     params,
   );
+  return params.includeThreads ? built : built.filter((candidate) => !candidate.thread);
 }
 
 /**
@@ -612,7 +663,7 @@ function buildRolloutScanCandidate(params: Readonly<{
   entry: CodexRolloutCandidateEntry;
   env: NodeJS.ProcessEnv;
 }>): CodexExternalSessionCandidate {
-  const { group, title } = params.entry;
+  const { group, title, thread } = params.entry;
   const updatedAtMs = Math.trunc(group.updatedAtMs);
   const createdAtMs = Math.trunc(
     Number.isFinite(group.earliestSortMs) ? group.earliestSortMs : group.earliestMtimeMs,
@@ -620,6 +671,7 @@ function buildRolloutScanCandidate(params: Readonly<{
   return {
     remoteSessionId: params.entry.remoteSessionId,
     ...(title ? { title } : {}),
+    ...(thread ? { thread } : {}),
     createdAtMs,
     updatedAtMs,
     archived: group.archived,
@@ -641,6 +693,7 @@ async function scanBoundedRolloutCandidateChunk(params: Readonly<{
   env: NodeJS.ProcessEnv;
   cursor?: string;
   limit: number;
+  includeThreads?: boolean;
 }> & CodexExternalSessionInvocationBounds): Promise<Readonly<{
   candidates: CodexExternalSessionCandidate[];
   nextCursor: string | null;
@@ -665,7 +718,11 @@ async function scanBoundedRolloutCandidateChunk(params: Readonly<{
     throw new CodexExternalSessionCandidateSourceChangedError();
   }
   return {
-    candidates: chunk.entries.map((entry) => buildRolloutScanCandidate({ entry, env: params.env })),
+    // Filtering the chunk itself keeps every index built from these chunks —
+    // its pages, cursors and total — about the same listing.
+    candidates: chunk.entries
+      .filter((entry) => params.includeThreads || !entry.thread)
+      .map((entry) => buildRolloutScanCandidate({ entry, env: params.env })),
     nextCursor: chunk.nextBoundary
       ? encodeCodexExternalSessionCandidateCursor(chunk.nextBoundary)
       : null,
@@ -912,6 +969,8 @@ export async function listCodexSessionCandidates(params: Readonly<{
   limit: number;
   searchTerm?: string;
   searchMode?: 'fast' | 'full';
+  /** Include internal threads (approval reviewers, spawned sub-agents). Absent: top-level sessions only. */
+  includeThreads?: boolean;
 }> & CodexExternalSessionInvocationBounds): Promise<Readonly<{
   candidates: CodexExternalSessionCandidate[];
   nextCursor: string | null;
@@ -933,6 +992,7 @@ export async function listCodexSessionCandidates(params: Readonly<{
       env: params.env,
       cursor: params.cursor,
       limit,
+      includeThreads: params.includeThreads,
       signal: params.signal,
       deadlineAtMs: params.deadlineAtMs,
     });

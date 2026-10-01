@@ -2,27 +2,26 @@ import {
   PluginActionExecutionV2Schema,
 } from '@happier-dev/protocol';
 import {
-  deriveGeneratedHostedWebAssetPolicyV1,
-  PluginUiArtifactsManifestEntryV1Schema,
-  type PluginUiArtifactsManifestEntryV1,
-  type PluginUiArtifactsManifestV1,
+  PluginUiArtifactsManifestEntryV2Schema,
+  type PluginUiArtifactsManifestEntryV2,
+  type PluginUiArtifactsManifestV2,
 } from '@happier-dev/protocol/plugins/ui';
 
-import type { ResolvedContributionRegistry } from '../types';
+import type { ResolvedContributionRegistry, ResolvedContributionSource } from '../types';
 
 export type ResolvedGeneratedReactNativeArtifactOwner = Readonly<{
   kind: 'renderer' | 'voiceProvider';
   pluginId: string;
+  pluginSource: ResolvedContributionSource;
   pluginVersion?: string;
   contributionId: string;
   artifactId: string;
   pluginRootPath?: string;
   manifestPath: string;
-  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV1;
+  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
   requiredHostMethods: readonly string[];
   declaredPlatforms?: readonly ('web' | 'ios' | 'android')[];
-  expectedRepackModule?: Readonly<{
-    modulePath: string;
+  expectedExecutable?: Readonly<{
     exportName: string;
   }>;
 }>;
@@ -36,22 +35,45 @@ export type ResolvedGeneratedReactNativeArtifactOwner = Readonly<{
 export type ResolvedGeneratedReactNativeClientContributionArtifactOwner = Readonly<{
   kind: 'clientContribution';
   pluginId: string;
+  pluginSource: ResolvedContributionSource;
   pluginVersion?: string;
   contributionId: string;
   artifactId: string;
   pluginRootPath?: string;
   manifestPath: string;
-  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV1;
+  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
   declaredPlatforms: readonly ('web' | 'ios' | 'android')[];
-  expectedRepackModule: Readonly<{
-    modulePath: string;
+  expectedExecutable: Readonly<{
     exportName: string;
+  }>;
+}>;
+
+/**
+ * One host-private executable owner derived only from the Account Collection
+ * declaration that names the migration Artifact. Renderers, Actions, and Voice
+ * contributions cannot manufacture this authority by exporting the same name.
+ */
+export type ResolvedGeneratedReactNativeCollectionMigrationArtifactOwner = Readonly<{
+  kind: 'collectionMigrations';
+  pluginId: string;
+  pluginSource: ResolvedContributionSource;
+  pluginVersion?: string;
+  contributionId: string;
+  artifactId: string;
+  pluginRootPath?: string;
+  manifestPath: string;
+  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
+  requiredHostMethods: readonly string[];
+  declaredPlatforms: readonly ('web' | 'ios' | 'android')[];
+  expectedExecutable: Readonly<{
+    exportName: 'collectionMigrations';
   }>;
 }>;
 
 type ResolvedGeneratedReactNativeExecutableArtifactOwner =
   | ResolvedGeneratedReactNativeArtifactOwner
-  | ResolvedGeneratedReactNativeClientContributionArtifactOwner;
+  | ResolvedGeneratedReactNativeClientContributionArtifactOwner
+  | ResolvedGeneratedReactNativeCollectionMigrationArtifactOwner;
 
 function readClientActionExecution(execution: unknown) {
   const parsed = PluginActionExecutionV2Schema.safeParse(execution);
@@ -67,6 +89,7 @@ export function collectResolvedGeneratedReactNativeArtifactOwners(
     owners.push(Object.freeze({
       kind: 'renderer',
       pluginId: renderer.pluginId,
+      pluginSource: Object.freeze({ ...renderer.source }),
       ...(renderer.pluginVersion ? { pluginVersion: renderer.pluginVersion } : {}),
       contributionId: renderer.definition.id,
       artifactId: renderer.definition.artifact,
@@ -83,6 +106,7 @@ export function collectResolvedGeneratedReactNativeArtifactOwners(
     owners.push(Object.freeze({
       kind: 'voiceProvider',
       pluginId: provider.pluginId,
+      pluginSource: Object.freeze({ ...provider.source }),
       ...(provider.pluginVersion ? { pluginVersion: provider.pluginVersion } : {}),
       contributionId: provider.definition.id,
       artifactId: provider.definition.client.artifactId,
@@ -93,8 +117,7 @@ export function collectResolvedGeneratedReactNativeArtifactOwners(
         : {}),
       requiredHostMethods: Object.freeze([]),
       declaredPlatforms: Object.freeze([...provider.definition.platforms]),
-      expectedRepackModule: Object.freeze({
-        modulePath: provider.definition.client.modulePath,
+      expectedExecutable: Object.freeze({
         exportName: provider.definition.client.exportName,
       }),
     }));
@@ -139,6 +162,7 @@ export function findResolvedGeneratedReactNativeClientContributionArtifactOwner(
   return Object.freeze({
     kind: 'clientContribution',
     pluginId: input.action.pluginId,
+    pluginSource: Object.freeze({ ...action.source }),
     ...(action.pluginVersion ? { pluginVersion: action.pluginVersion } : {}),
     contributionId: input.action.localId,
     artifactId: execution.client.artifactId,
@@ -148,18 +172,69 @@ export function findResolvedGeneratedReactNativeClientContributionArtifactOwner(
       ? { generatedUiArtifactsManifest: action.generatedUiArtifactsManifest }
       : {}),
     declaredPlatforms: Object.freeze([...execution.platforms]),
-    expectedRepackModule: Object.freeze({
-      modulePath: execution.client.modulePath,
+    expectedExecutable: Object.freeze({
       exportName: execution.client.exportName,
     }),
   });
+}
+
+export function collectResolvedGeneratedReactNativeClientContributionArtifactOwners(
+  registry: ResolvedContributionRegistry,
+): readonly ResolvedGeneratedReactNativeClientContributionArtifactOwner[] {
+  const owners = (registry.actions ?? []).flatMap((action) => {
+    const identity = action.identity;
+    if (!identity || identity.pluginId !== action.pluginId) return [];
+    const owner = findResolvedGeneratedReactNativeClientContributionArtifactOwner({
+      registry,
+      action: identity,
+    });
+    return owner ? [owner] : [];
+  });
+  return Object.freeze(owners);
+}
+
+export function collectResolvedGeneratedReactNativeCollectionMigrationArtifactOwners(
+  registry: ResolvedContributionRegistry,
+): readonly ResolvedGeneratedReactNativeCollectionMigrationArtifactOwner[] {
+  const owners: ResolvedGeneratedReactNativeCollectionMigrationArtifactOwner[] = [];
+  const candidatesByPlugin = new Map<string, NonNullable<ResolvedContributionRegistry['accountCollections']>>();
+  for (const contribution of registry.accountCollections ?? []) {
+    if (contribution.definition.migrations.length === 0 || !contribution.migrationArtifact) continue;
+    const candidates = candidatesByPlugin.get(contribution.pluginId) ?? [];
+    candidatesByPlugin.set(contribution.pluginId, [...candidates, contribution]);
+  }
+  for (const candidates of candidatesByPlugin.values()) {
+    // Candidate preparation carries one exact Artifact digest for the complete
+    // target contract set. Conflicting per-Collection Artifact owners are not
+    // silently merged into a second executable registry.
+    if (candidates.length !== 1) continue;
+    const contribution = candidates[0]!;
+    const migrationArtifact = contribution.migrationArtifact!;
+    owners.push(Object.freeze({
+      kind: 'collectionMigrations' as const,
+      pluginId: contribution.pluginId,
+      pluginSource: Object.freeze({ ...contribution.source }),
+      ...(contribution.pluginVersion ? { pluginVersion: contribution.pluginVersion } : {}),
+      contributionId: contribution.identity.localId,
+      artifactId: migrationArtifact.artifactId,
+      ...(contribution.pluginRootPath ? { pluginRootPath: contribution.pluginRootPath } : {}),
+      manifestPath: contribution.manifestPath,
+      ...(contribution.generatedUiArtifactsManifest
+        ? { generatedUiArtifactsManifest: contribution.generatedUiArtifactsManifest }
+        : {}),
+      requiredHostMethods: Object.freeze([]),
+      declaredPlatforms: Object.freeze(['web', 'ios', 'android'] as const),
+      expectedExecutable: Object.freeze({ exportName: migrationArtifact.exportName }),
+    }));
+  }
+  return Object.freeze(owners);
 }
 
 export function findGeneratedReactNativeArtifactEntry(input: Readonly<{
   owner: ResolvedGeneratedReactNativeExecutableArtifactOwner;
   platform: string | undefined;
 }>): Readonly<{
-  entry: PluginUiArtifactsManifestEntryV1 | null;
+  entry: PluginUiArtifactsManifestEntryV2 | null;
   failure: string | null;
 }> {
   if (
@@ -170,40 +245,28 @@ export function findGeneratedReactNativeArtifactEntry(input: Readonly<{
     return Object.freeze({ entry: null, failure: 'generated_react_native_platform_undeclared' });
   }
   const candidates = input.owner.generatedUiArtifactsManifest?.entries.filter((entry) => (
-    entry.contributionId === input.owner.artifactId && entry.tier === 'reactNative'
+    entry.artifactId === input.owner.artifactId && entry.tier === 'reactNative'
   )) ?? [];
   if (candidates.length === 0) {
     return Object.freeze({ entry: null, failure: 'generated_react_native_artifact_missing' });
   }
-  if (!input.platform) {
-    return Object.freeze({ entry: null, failure: 'generated_react_native_platform_unresolved' });
+  if (candidates.length !== 1) {
+    return Object.freeze({ entry: null, failure: 'generated_react_native_artifact_ambiguous' });
   }
-  const matching = candidates.filter((entry) => entry.platform === input.platform);
-  if (matching.length !== 1) {
-    return Object.freeze({ entry: null, failure: 'generated_react_native_artifact_platform_mismatch' });
+  const entry = candidates[0]!;
+  if (entry.tier !== 'reactNative') {
+    return Object.freeze({ entry: null, failure: 'generated_react_native_artifact_graph_invalid' });
   }
-  const entry = matching[0]!;
-  const expectedBundler = entry.platform === 'web' ? 'vite' : 'repack';
-  if (entry.builtWith.bundler !== expectedBundler) {
+  if (entry.builtWith.bundler !== 'esbuild') {
     return Object.freeze({ entry: null, failure: 'generated_react_native_bundler_mismatch' });
   }
-  if (entry.platform !== 'web' && !entry.repack) {
-    return Object.freeze({ entry: null, failure: 'generated_react_native_repack_identity_missing' });
-  }
-  if (entry.platform === 'web' && entry.repack) {
-    return Object.freeze({ entry: null, failure: 'generated_react_native_repack_identity_unexpected' });
-  }
   if (
-    entry.repack
-    && input.owner.expectedRepackModule
-    && (
-      entry.repack.modulePath !== input.owner.expectedRepackModule.modulePath
-      || entry.repack.exportName !== input.owner.expectedRepackModule.exportName
-    )
+    input.owner.expectedExecutable
+    && !entry.executable.exports.includes(input.owner.expectedExecutable.exportName)
   ) {
-    return Object.freeze({ entry: null, failure: 'generated_react_native_repack_identity_mismatch' });
+    return Object.freeze({ entry: null, failure: 'generated_react_native_export_missing' });
   }
-  if (!PluginUiArtifactsManifestEntryV1Schema.safeParse(entry).success) {
+  if (!PluginUiArtifactsManifestEntryV2Schema.safeParse(entry).success) {
     return Object.freeze({ entry: null, failure: 'generated_react_native_artifact_graph_invalid' });
   }
   const uniqueFiles = new Set(entry.files.map((file) => file.relativePath));
@@ -222,53 +285,22 @@ export function findGeneratedReactNativeArtifactEntry(input: Readonly<{
  * ordinary render export never confers that host-private authority.
  */
 export function findGeneratedReactNativeCollectionMigrationsModule(input: Readonly<{
-  owner: ResolvedGeneratedReactNativeArtifactOwner;
+  owner: ResolvedGeneratedReactNativeCollectionMigrationArtifactOwner;
   platform: string | undefined;
 }>): Readonly<{
-  entry: PluginUiArtifactsManifestEntryV1 | null;
-  moduleReference: NonNullable<PluginUiArtifactsManifestEntryV1['collectionMigrations']> | null;
+  entry: PluginUiArtifactsManifestEntryV2 | null;
+  moduleReference: Readonly<{ exportName: string }> | null;
   failure: string | null;
 }> {
   const resolved = findGeneratedReactNativeArtifactEntry(input);
   if (!resolved.entry) {
     return Object.freeze({ entry: null, moduleReference: null, failure: resolved.failure });
   }
-  const moduleReference = resolved.entry.collectionMigrations;
-  if (!moduleReference) {
-    return Object.freeze({
-      entry: null,
-      moduleReference: null,
-      failure: 'generated_react_native_collection_migrations_module_missing',
-    });
-  }
-  if (
-    resolved.entry.platform !== 'web'
-    && (
-      !('containerName' in moduleReference)
-      || !('modulePath' in moduleReference)
-      ||
-      !resolved.entry.repack
-      || moduleReference.containerName !== resolved.entry.repack.containerName
-      || moduleReference.modulePath !== resolved.entry.repack.modulePath
-    )
-  ) {
-    return Object.freeze({
-      entry: null,
-      moduleReference: null,
-      failure: 'generated_react_native_collection_migrations_module_mismatch',
-    });
-  }
-  if (
-    resolved.entry.platform === 'web'
-    && ('containerName' in moduleReference || 'modulePath' in moduleReference)
-  ) {
-    return Object.freeze({
-      entry: null,
-      moduleReference: null,
-      failure: 'generated_react_native_collection_migrations_module_mismatch',
-    });
-  }
-  return Object.freeze({ entry: resolved.entry, moduleReference, failure: null });
+  return Object.freeze({
+    entry: resolved.entry,
+    moduleReference: input.owner.expectedExecutable,
+    failure: null,
+  });
 }
 
 /**
@@ -278,6 +310,7 @@ export function findGeneratedReactNativeCollectionMigrationsModule(input: Readon
  */
 export type ResolvedGeneratedHostedWebArtifactOwner = Readonly<{
   pluginId: string;
+  pluginSource: ResolvedContributionSource;
   pluginVersion?: string;
   contributionId: string;
   artifactId: string;
@@ -287,7 +320,7 @@ export type ResolvedGeneratedHostedWebArtifactOwner = Readonly<{
   }>;
   pluginRootPath?: string;
   manifestPath: string;
-  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV1;
+  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
   requiredHostMethods: readonly string[];
 }>;
 
@@ -299,6 +332,7 @@ export function collectResolvedGeneratedHostedWebArtifactOwners(
     if (renderer.definition.kind !== 'hostedWeb') continue;
     owners.push(Object.freeze({
       pluginId: renderer.pluginId,
+      pluginSource: Object.freeze({ ...renderer.source }),
       ...(renderer.pluginVersion ? { pluginVersion: renderer.pluginVersion } : {}),
       contributionId: renderer.definition.id,
       artifactId: renderer.definition.source.artifact,
@@ -328,13 +362,12 @@ export function findResolvedGeneratedHostedWebArtifactOwner(input: Readonly<{
 export function findGeneratedHostedWebArtifactEntry(input: Readonly<{
   owner: ResolvedGeneratedHostedWebArtifactOwner;
 }>): Readonly<{
-  entry: PluginUiArtifactsManifestEntryV1 | null;
+  entry: PluginUiArtifactsManifestEntryV2 | null;
   failure: string | null;
 }> {
   const candidates = input.owner.generatedUiArtifactsManifest?.entries.filter((entry) => (
-    entry.contributionId === input.owner.artifactId
+    entry.artifactId === input.owner.artifactId
     && entry.tier === 'hostedWeb'
-    && entry.platform === 'web'
   )) ?? [];
   if (candidates.length === 0) {
     return Object.freeze({ entry: null, failure: 'generated_hosted_web_artifact_missing' });
@@ -343,18 +376,18 @@ export function findGeneratedHostedWebArtifactEntry(input: Readonly<{
     return Object.freeze({ entry: null, failure: 'generated_hosted_web_artifact_ambiguous' });
   }
   const entry = candidates[0]!;
-  if (entry.builtWith.bundler !== 'vite' || entry.repack) {
+  if (entry.tier !== 'hostedWeb') {
+    return Object.freeze({ entry: null, failure: 'generated_hosted_web_artifact_graph_invalid' });
+  }
+  if (entry.builtWith.staging !== 'staticDirectory') {
     return Object.freeze({ entry: null, failure: 'generated_hosted_web_bundler_mismatch' });
   }
-  if (!PluginUiArtifactsManifestEntryV1Schema.safeParse(entry).success) {
+  if (!PluginUiArtifactsManifestEntryV2Schema.safeParse(entry).success) {
     return Object.freeze({ entry: null, failure: 'generated_hosted_web_artifact_graph_invalid' });
   }
   const uniqueFiles = new Set(entry.files.map((file) => file.relativePath));
   if (uniqueFiles.size !== entry.files.length || !uniqueFiles.has(entry.entry)) {
     return Object.freeze({ entry: null, failure: 'generated_hosted_web_artifact_graph_invalid' });
-  }
-  if (!deriveGeneratedHostedWebAssetPolicyV1(entry)) {
-    return Object.freeze({ entry: null, failure: 'generated_hosted_web_artifact_root_invalid' });
   }
   if (!input.owner.pluginRootPath) {
     return Object.freeze({ entry: null, failure: 'generated_hosted_web_plugin_root_unavailable' });

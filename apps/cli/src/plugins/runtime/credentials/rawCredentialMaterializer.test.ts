@@ -1191,15 +1191,28 @@ describe('plugin raw credential materializer', () => {
     });
   });
 
-  it('fails a shared Saved Secret closed when its Home material is unavailable', async () => {
+  it.each([
+    ['forbidden', (resources: NonNullable<ActiveAccountSettingsSnapshot['savedSecretResources']>) => resources.slice(0, 0), 'ready'],
+    ['repair_required', (resources: NonNullable<ActiveAccountSettingsSnapshot['savedSecretResources']>) => resources.map((resource) => ({
+      ...resource,
+      materialStatus: 'update_required' as const,
+    })), undefined],
+    ['corrupt', (resources: NonNullable<ActiveAccountSettingsSnapshot['savedSecretResources']>) => resources.map((resource) => ({
+      ...resource,
+      materialStatus: 'ready' as const,
+      storedContent: null,
+    })), undefined],
+  ] as const)('preserves shared Saved Secret material status %s for plugin consumers', async (
+    materialStatus,
+    resourcesForStatus,
+    savedSecretCatalogState,
+  ) => {
     const initialSnapshot = snapshot({ source: 'savedSecret', sharedSecret: true });
     const saved = createHarness({
       initialSnapshot: {
         ...initialSnapshot,
-        savedSecretResources: initialSnapshot.savedSecretResources?.map((resource) => ({
-          ...resource,
-          materialStatus: 'update_required' as const,
-        })),
+        savedSecretResources: resourcesForStatus(initialSnapshot.savedSecretResources ?? []),
+        ...(savedSecretCatalogState ? { savedSecretCatalogState } : {}),
       },
     });
 
@@ -1207,6 +1220,7 @@ describe('plugin raw credential materializer', () => {
       kind: 'environment', keys: ['VOICE_TOKEN'],
     })).rejects.toMatchObject({
       code: 'plugin_voice_credential_access_unavailable',
+      details: { materialStatus },
     });
   });
 
@@ -1230,6 +1244,10 @@ describe('plugin raw credential materializer', () => {
       kind: 'environment', keys: ['VOICE_TOKEN'],
     })).rejects.toMatchObject({
       code: 'plugin_voice_credential_access_unavailable',
+      details: {
+        materialStatus: 'temporarily_unavailable',
+        admissionReason: 'reference_unavailable',
+      },
     });
     expect(references).toEqual(['happier:shared-secret:v1:resource_plugin_voice']);
   });

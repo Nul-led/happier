@@ -12,4 +12,4 @@
  * `CLAUDE_STATIC_MODELS` states the same id independently as a catalog row;
  * `models.test.ts` is what keeps the two in agreement.
  */
-export const CLAUDE_FLAGSHIP_MODEL_ID = 'claude-opus-5';
+export const CLAUDE_FLAGSHIP_MODEL_ID = 'claude-opus-5-5';

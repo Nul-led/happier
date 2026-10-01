@@ -1,13 +1,15 @@
 import type { SurfaceContext } from '@happier-dev/plugin-sdk/ui';
 import type { ReactNode } from 'react';
+import { act } from 'react';
 import { describe, expect, it } from 'vitest';
 
 import { mountThroughReactNativeWeb } from '../rnwMount.testSupport.js';
 import { createHostApiStub, createSurfaceContext } from '../surfaceFixture.testSupport.js';
 import { HappierInfoState, HappierInfoTile } from '../presentation/state/InfoState.js';
 import { HappierStatus } from '../presentation/status/Status.js';
-import { PluginUiProvider } from './PluginUiProvider.js';
-import { EmptyState, ErrorState, LoadingState, Spinner, State, Status } from './index.js';
+import type { PluginUiPresentationHost } from '../presentationHost/context.js';
+import { PluginUiProvider, PluginUiProviderInternal } from './PluginUiProvider.js';
+import { Button, EmptyState, ErrorState, FreshnessLine, LoadingState, Spinner, State, Status } from './index.js';
 
 /**
  * EU-7b, family `Spinner` / `LoadingState` / `EmptyState` / `ErrorState` /
@@ -33,6 +35,20 @@ function mountSurface(children: ReactNode, context?: SurfaceContext) {
 }
 
 describe('plugin-ui resource state renders real React Native semantics', () => {
+  it('honors explicit transition urgency on a compact failure line', () => {
+    const mount = mountSurface(<ErrorState layout="line" title="Save failed" accessibilitySemantics="alert" />);
+    const alert = mount.container.querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent).toContain('Save failed');
+    expect(mount.container.querySelector('[role="alert"]')?.getAttribute('aria-live')).toBe('assertive');
+    mount.unmount();
+  });
+  it('honors explicit status semantics on an unsized empty state', () => {
+    const mount = mountSurface(<EmptyState title="All caught up" accessibilitySemantics="status" />);
+    expect(mount.container.querySelector('[role="status"]')).not.toBeNull();
+    expect(mount.container.querySelector('[role="status"]')?.getAttribute('aria-live')).toBe('polite');
+    mount.unmount();
+  });
   it('keeps state announcement semantics on the shared state owner', () => {
     const mount = mountSurface(
       <HappierInfoState
@@ -93,6 +109,24 @@ describe('plugin-ui resource state renders real React Native semantics', () => {
     mount.unmount();
   });
 
+  it('renders destination-shaped skeleton rows, named once, instead of a centered spinner', () => {
+    const mount = mountSurface(
+      <LoadingState title="Reading the list" rows={4} testID="rows-loading" />,
+    );
+
+    const progressbars = [...mount.container.querySelectorAll<HTMLElement>('[role="progressbar"]')];
+    // One named busy region for the whole placeholder: a spinner beside the
+    // rows would announce the same wait twice.
+    expect(progressbars).toHaveLength(1);
+    expect(progressbars[0]?.getAttribute('aria-label')).toBe('Reading the list');
+    expect(progressbars[0]?.getAttribute('aria-busy')).toBe('true');
+    // The placeholder draws the rows it stands in for, and no visible prose.
+    expect(progressbars[0]?.children).toHaveLength(4);
+    expect(mount.container.textContent).toBe('');
+
+    mount.unmount();
+  });
+
   it('resolves default loading, empty, and error copy through the host translation owner', () => {
     const context = createSurfaceContext({
       translations: {
@@ -119,20 +153,36 @@ describe('plugin-ui resource state renders real React Native semantics', () => {
     mount.unmount();
   });
 
-  it('announces an error state without turning loading or empty copy into an alert', () => {
+  it('keeps static failures quiet and announces only explicitly urgent failures', () => {
     const mount = mountSurface(
       <>
         <LoadingState title="Loading reviews" />
         <EmptyState title="No reviews" />
         <ErrorState title="Reviews could not load" description="Try again." />
+        <ErrorState title="Save failed" accessibilitySemantics="alert" />
       </>,
     );
 
     const alerts = [...mount.container.querySelectorAll<HTMLElement>('[role="alert"]')];
     expect(alerts).toHaveLength(1);
-    expect(alerts[0]?.textContent).toContain('Reviews could not load');
+    expect(alerts[0]?.textContent).toContain('Save failed');
     expect(alerts[0]?.getAttribute('aria-live')).toBe('assertive');
 
+    mount.unmount();
+  });
+
+  it('supports unavailable and denied line states without exposing diagnostic detail or announcing', () => {
+    const mount = mountSurface(
+      <>
+        <ErrorState kind="unavailable" layout="line" title="Machine offline" details="machine_offline" />
+        <ErrorState kind="denied" layout="line" title="Ask an administrator" />
+        <LoadingState layout="line" title="Reading reviews" />
+      </>,
+    );
+    expect(mount.container.textContent).toContain('Machine offline');
+    expect(mount.container.textContent).toContain('Ask an administrator');
+    expect(mount.container.textContent).not.toContain('machine_offline');
+    expect(mount.container.querySelector('[role="alert"], [aria-live="assertive"]')).toBeNull();
     mount.unmount();
   });
 
@@ -225,12 +275,64 @@ describe('plugin-ui resource state renders real React Native semantics', () => {
 
     expect(mount.container.textContent).toContain('Could not load the resource');
     expect(mount.container.textContent).not.toContain('provider_response_invalid');
-    const painted = [...mount.container.querySelectorAll('*')].some((element) => {
+    // The copy is painted from the projected theme, and calmly: the title is
+    // ordinary text (the glyph carries the tone), never an alarm-red headline.
+    const paintedColors = [...mount.container.querySelectorAll('*')].flatMap((element) => {
       const color = (element as HTMLElement).style?.color;
-      return color !== undefined && color !== '' && normalizeColor(color) === context.theme.colors.danger.toLowerCase();
+      return color !== undefined && color !== '' ? [normalizeColor(color)] : [];
     });
-    expect(painted).toBe(true);
+    expect(paintedColors).toContain(context.theme.colors.text.toLowerCase());
+    expect(paintedColors).not.toContain(context.theme.colors.danger.toLowerCase());
 
+    mount.unmount();
+  });
+
+  it('keeps an error calm and its diagnostic behind a collapsed Details disclosure', async () => {
+    const context = createSurfaceContext({
+      translations: { 'happier.plugin-ui.state.details': 'Details' },
+    });
+    const mount = mountSurface(
+      <ErrorState
+        title="The list could not be read"
+        accessibilitySemantics="alert"
+        description="Try again in a moment."
+        details="unavailable · host_api_method_unavailable:executeAction"
+      />,
+      context,
+    );
+
+    // The sentence leads; the machine code is not on screen until asked for.
+    expect(mount.container.textContent).toContain('The list could not be read');
+    expect(mount.container.textContent).not.toContain('host_api_method_unavailable');
+    const toggle = mount.container.querySelector<HTMLElement>('[aria-expanded="false"]');
+    expect(toggle?.textContent).toBe('Details');
+    // Expanding the disclosure is not part of the alert: the live region keeps
+    // announcing only the failure itself.
+    expect(mount.container.querySelector('[role="alert"]')?.contains(toggle ?? null)).toBe(false);
+
+    await act(async () => { toggle?.click(); });
+    expect(mount.container.querySelector('[aria-expanded="true"]')).not.toBeNull();
+    expect(mount.container.textContent).toContain('unavailable · host_api_method_unavailable:executeAction');
+
+    mount.unmount();
+  });
+
+  it('offers a status notice its next action beside the sentence, outside the live region', () => {
+    const mount = mountSurface(
+      <Status
+        tone="warning"
+        label="Happier cannot reach your account right now, so pins and saved views cannot be changed."
+        action={<Button title="Retry" variant="plain" onPress={() => undefined} />}
+      />,
+    );
+
+    const region = mount.container.querySelector('[role="status"]');
+    const action = [...mount.container.querySelectorAll('[role="button"]')]
+      .find((node) => node.textContent === 'Retry');
+    expect(region?.textContent).toContain('cannot reach your account');
+    expect(action).toBeDefined();
+    // Pressing Retry, or its busy state, is not news the status announces.
+    expect(region?.contains(action ?? null)).toBe(false);
     mount.unmount();
   });
 
@@ -265,6 +367,97 @@ describe('plugin-ui resource state renders real React Native semantics', () => {
     expect(mount.container.textContent).toContain('Could not load');
     expect(mount.container.querySelectorAll('[role="progressbar"]').length).toBeGreaterThan(0);
 
+    mount.unmount();
+  });
+});
+
+/** The readable measure a state's copy column is laid out in (`HappierInfoTile`). */
+function measureOf(mount: ReturnType<typeof mountSurface>, title: string): string | null {
+  const titleNode = Array.from(mount.container.querySelectorAll<HTMLElement>('div, span'))
+    .find((element) => element.textContent === title && element.children.length === 0);
+  for (let element = titleNode?.parentElement ?? null; element; element = element.parentElement) {
+    if (element.style.maxWidth) return element.style.maxWidth;
+  }
+  return null;
+}
+
+function mountInHost(children: ReactNode, host: Partial<PluginUiPresentationHost>) {
+  const context = createSurfaceContext();
+  const presentationHost = {
+    renderMarkdown: () => null,
+    renderPopover: () => null,
+    renderIcon: () => null,
+    ...host,
+  } as unknown as PluginUiPresentationHost;
+  return mountThroughReactNativeWeb(
+    <PluginUiProviderInternal hostApi={createHostApiStub(context)} context={context} presentationHost={presentationHost}>
+      {children}
+    </PluginUiProviderInternal>,
+  );
+}
+
+describe('plugin states take the container they are mounted in (lab 5 host primitives)', () => {
+  it('offers a quiet second way under the empty state\'s one primary action', () => {
+    const mount = mountSurface(
+      <EmptyState
+        title="Nothing is linked yet"
+        action={<Button testID="primary" title="Attach a PR or issue" onPress={() => {}} />}
+        secondaryAction={<Button testID="secondary" variant="plain" title="Browse PRs & Issues" onPress={() => {}} />}
+      />,
+    );
+    const primary = mount.container.querySelector('[data-testid="primary"]');
+    const secondary = mount.container.querySelector('[data-testid="secondary"]');
+    expect(primary).not.toBeNull();
+    expect(secondary, 'the second way renders with the state').not.toBeNull();
+    // The one primary leads; the second way follows it in reading order.
+    expect(primary!.compareDocumentPosition(secondary!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    mount.unmount();
+  });
+
+  it('sizes an unsized state by the host container, and an explicit size still wins', () => {
+    const inPane = mountInHost(<EmptyState title="No conversations" />, { stateSize: 'pane' });
+    expect(measureOf(inPane, 'No conversations')).toBe('272px');
+    inPane.unmount();
+
+    const explicit = mountInHost(<ErrorState title="Could not load" size="details" />, { stateSize: 'pane' });
+    expect(measureOf(explicit, 'Could not load')).toBe('380px');
+    explicit.unmount();
+
+    const unsized = mountSurface(<LoadingState title="Loading" />);
+    expect(measureOf(unsized, 'Loading')).toBe('520px');
+    unsized.unmount();
+  });
+});
+
+describe('FreshnessLine: stale content told in one line', () => {
+  it('says as of when and why, as one polite status, and offers the one recovery', async () => {
+    let retried = 0;
+    const asOf = new Date(2026, 8, 29, 10, 42).getTime();
+    const mount = mountSurface(
+      <FreshnessLine
+        testID="fresh"
+        asOf={asOf}
+        now={new Date(2026, 8, 29, 11, 0).getTime()}
+        reason="Channels isn't reachable on MacBook Pro"
+        action={{ label: 'Retry', onPress: () => { retried += 1; } }}
+      />,
+    );
+    const line = mount.container.querySelector<HTMLElement>('[data-testid="fresh"]');
+    expect(line?.getAttribute('role')).toBe('status');
+    expect(line?.getAttribute('aria-live')).toBe('polite');
+    expect(line?.textContent).toMatch(/^As of 10:42.* · Channels isn't reachable on MacBook Pro/u);
+    const retry = mount.container.querySelector<HTMLElement>('[data-testid="fresh-action"]');
+    expect(retry?.getAttribute('role')).toBe('button');
+    await act(async () => { retry?.click(); });
+    expect(retried).toBe(1);
+    mount.unmount();
+  });
+
+  it('shows a reconnect in flight with the reason alone and no stale time', () => {
+    const mount = mountSurface(<FreshnessLine testID="fresh" reason="Reconnecting…" busy />);
+    const line = mount.container.querySelector<HTMLElement>('[data-testid="fresh"]');
+    expect(line?.textContent).toBe('Reconnecting…');
+    expect(line?.getAttribute('aria-busy')).toBe('true');
     mount.unmount();
   });
 });

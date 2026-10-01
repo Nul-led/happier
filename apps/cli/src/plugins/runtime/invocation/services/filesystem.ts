@@ -165,11 +165,11 @@ export function createPluginFileSystemService(params: Readonly<{
   roots: Readonly<{ pluginData: string; workspace: string; projects: ReadonlyMap<string, string> }>;
   scopes: readonly PluginFileSystemScope[];
   signal: AbortSignal;
-  isGenerationCurrent(): boolean;
+  isOccurrenceCurrent(): boolean;
   recordDisclosureMismatch?(mismatch: PluginFileSystemDisclosureMismatch): void;
 }>): FileSystemService {
   function guard(signal?: AbortSignal): void {
-    if (!params.isGenerationCurrent()) fail('plugin_generation_stale', 'Plugin generation is stale');
+    if (!params.isOccurrenceCurrent()) fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
     if (params.signal.aborted || signal?.aborted) fail('plugin_fs_aborted', 'Filesystem operation was aborted');
   }
   function rootFor(path: PluginPath): string {

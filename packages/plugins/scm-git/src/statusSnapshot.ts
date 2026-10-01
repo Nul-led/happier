@@ -91,6 +91,7 @@ export function buildGitSnapshot(input: {
     remotesOutput?: string;
     remoteHeadRefsOutput?: string;
     operationState?: ScmOperationState | null;
+    operationStateVersion?: 1;
     hostingProviderRegistry?: PullRequestStatusProjectionRegistry;
 }): ScmWorkingSnapshot {
     const parsedStatus = parseGitStatusPorcelainV2Z(input.statusOutput);
@@ -216,6 +217,7 @@ export function buildGitSnapshot(input: {
         },
         stashCount: parsedStatus.stashCount,
         operationState: input.operationState ?? null,
+        ...(input.operationStateVersion === 1 ? { operationStateVersion: 1 as const } : {}),
         hasConflicts: sortedEntries.some((entry) => entry.kind === 'conflicted'),
         entries: sortedEntries,
         totals: {

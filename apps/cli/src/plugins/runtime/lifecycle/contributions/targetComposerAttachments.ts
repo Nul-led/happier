@@ -34,11 +34,11 @@ import { runWithOptionalTimeout } from '@/plugins/runtime/lifecycle/utils';
 
 type TargetRegistration = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }>;
 
-type GenerationLifecycle = Readonly<{
+type OccurrenceLifecycle = Readonly<{
     isCurrent(): boolean;
     retirementSignal: AbortSignal;
 }>;
@@ -46,7 +46,7 @@ type GenerationLifecycle = Readonly<{
 export type TargetComposerAttachmentInvocationContextFactory = (
     input: Readonly<{
         attachment: PluginContributionIdentityV1;
-        generation: string;
+        occurrenceId: string;
         scope: PluginExecutionScopeV1;
         signal: AbortSignal;
         isCurrent(): boolean;
@@ -238,7 +238,7 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
      * undeclared callback registration authority.
      */
     declaredAttachments?: readonly ComposerAttachmentDeclaration[];
-    resolveGenerationLifecycle(pluginId: string): GenerationLifecycle;
+    resolveOccurrenceLifecycle(pluginId: string): OccurrenceLifecycle;
     createInvocationContext: TargetComposerAttachmentInvocationContextFactory;
     /**
      * Composer attachments are demand-ready: a plugin that only contributes
@@ -339,7 +339,7 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
         return declarationsByKey.get(declarationKey(attachment)) ?? null;
     }
 
-    function isEntryCurrent(entry: ComposerAttachmentRegistration, lifecycle: GenerationLifecycle): boolean {
+    function isEntryCurrent(entry: ComposerAttachmentRegistration, lifecycle: OccurrenceLifecycle): boolean {
         return lifecycle.isCurrent() && params.targetRegistrations.includes(entry);
     }
 
@@ -351,7 +351,7 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
      */
     async function ensureActivated(attachment: PluginContributionIdentityV1): Promise<void> {
         const entry = find(attachment);
-        if (entry && isEntryCurrent(entry, params.resolveGenerationLifecycle(attachment.pluginId))) return;
+        if (entry && isEntryCurrent(entry, params.resolveOccurrenceLifecycle(attachment.pluginId))) return;
         await params.activateAttachmentOnDemand(attachment);
     }
 
@@ -368,7 +368,7 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
         await ensureActivated(paramsForCall.attachment);
         const entry = find(paramsForCall.attachment);
         if (!entry) throw unavailableError(paramsForCall.attachment);
-        const lifecycle = params.resolveGenerationLifecycle(paramsForCall.attachment.pluginId);
+        const lifecycle = params.resolveOccurrenceLifecycle(paramsForCall.attachment.pluginId);
         if (!isEntryCurrent(entry, lifecycle)) throw staleError(paramsForCall.attachment);
         if (!hasPhase(entry.registration.value, paramsForCall.phase)) {
             throw callbackUnavailableError(paramsForCall.attachment, paramsForCall.phase);
@@ -393,7 +393,7 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
             if (signal.aborted) throw abortError();
             const createdInvocation = params.createInvocationContext({
                 attachment: paramsForCall.attachment,
-                generation: entry.generation,
+                occurrenceId: entry.occurrenceId,
                 scope: paramsForCall.scope,
                 signal,
                 isCurrent: () => !signal.aborted && isEntryCurrent(entry, lifecycle),
@@ -458,7 +458,7 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
         for (const attachment of input.attachments) {
             const declaration = findDeclaration(attachment.attachment);
             if (!declaration) throw unavailableError(attachment.attachment);
-            const lifecycle = params.resolveGenerationLifecycle(attachment.attachment.pluginId);
+            const lifecycle = params.resolveOccurrenceLifecycle(attachment.attachment.pluginId);
             if (!lifecycle.isCurrent() || lifecycle.retirementSignal.aborted) {
                 throw staleError(attachment.attachment);
             }
@@ -528,7 +528,7 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
                 const identity = { pluginId: candidate.pluginId, localId: candidate.registration.localId };
                 const key = `${identity.pluginId}\u0000${identity.localId}`;
                 if (seen.has(key)) continue;
-                const lifecycle = params.resolveGenerationLifecycle(identity.pluginId);
+                const lifecycle = params.resolveOccurrenceLifecycle(identity.pluginId);
                 if (!isEntryCurrent(candidate as ComposerAttachmentRegistration, lifecycle)) continue;
                 seen.add(key);
                 identities.push(Object.freeze(identity));
@@ -549,7 +549,7 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
             await ensureActivated(input.attachment);
             const entry = find(input.attachment);
             if (!entry) return false;
-            const lifecycle = params.resolveGenerationLifecycle(input.attachment.pluginId);
+            const lifecycle = params.resolveOccurrenceLifecycle(input.attachment.pluginId);
             return isEntryCurrent(entry, lifecycle) && hasPhase(entry.registration.value, input.phase);
         },
         admit,

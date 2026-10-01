@@ -9,6 +9,7 @@ import type {
   ConversationResolvedEndpointV1,
   ConversationPermissionMediationSourceCurrentnessInputV1,
   ConversationPermissionMediationSourceCurrentnessResultV1,
+  ConversationSessionLastDeliveryV1,
 } from '@happier-dev/channels-protocol/v1';
 import {
   areConversationEndpointIdentitiesEqual,
@@ -63,6 +64,7 @@ import {
   claimStaleConversationDeliveryAttemptRecovery,
   createReadyConversationDeliveryCustody,
   deriveConversationDeliveryAttention,
+  deriveConversationDeliveryLastOutcome,
   deriveConversationDeliveryProjection,
   isConversationDeliveryAutomaticTerminal,
   isConversationDeliveryContentFree,
@@ -576,6 +578,11 @@ export type ConversationOutwardDeliveryTranscriptActivitiesReadResult =
     kind: 'ready';
     activities: readonly PluginTranscriptActivitySnapshotV1[];
   }>
+  | Readonly<{ kind: 'invalid'; reason: 'invalidRow' }>
+  | Readonly<{ kind: 'unavailable'; reason: 'cancelled' | 'storageUnavailable' }>;
+
+export type ConversationOutwardDeliveryLastDeliveriesReadResult =
+  | Readonly<{ kind: 'ready'; lastDeliveries: readonly ConversationSessionLastDeliveryV1[] }>
   | Readonly<{ kind: 'invalid'; reason: 'invalidRow' }>
   | Readonly<{ kind: 'unavailable'; reason: 'cancelled' | 'storageUnavailable' }>;
 
@@ -2129,6 +2136,71 @@ export async function readConversationOutwardDeliveryTranscriptActivities(
   }
 
   return { kind: 'ready', activities: Object.freeze(activities) };
+}
+
+/**
+ * Reads the newest retained custody update for each exact binding. The existing
+ * index is not time-ordered, so every page is visited; retention remains owned
+ * by the delivery store. No send time or inbound activity is inferred.
+ */
+export async function readConversationOutwardDeliveryLastDeliveries(
+  input: ConversationOutwardDeliveryTranscriptActivitiesReaderInput,
+): Promise<ConversationOutwardDeliveryLastDeliveriesReadResult> {
+  if (input.signal.aborted) return { kind: 'unavailable', reason: 'cancelled' };
+  let collections: ConversationCollectionsModule;
+  try {
+    collections = await loadConversationCollectionsModule();
+  } catch {
+    return { kind: 'unavailable', reason: input.signal.aborted ? 'cancelled' : 'storageUnavailable' };
+  }
+  const targetsByBindingId = new Map(input.bindingTargets.map((target) => [target.bindingId, target]));
+  const lastDeliveries: ConversationSessionLastDeliveryV1[] = [];
+  for (const target of targetsByBindingId.values()) {
+    if (!ConversationConnectionIdV1Schema.safeParse(target.connectionId).success
+      || !ConversationBindingIdV1Schema.safeParse(target.bindingId).success) {
+      return { kind: 'invalid', reason: 'invalidRow' };
+    }
+    let latest: Readonly<{ custodyId: string; delivery: ConversationSessionLastDeliveryV1 }> | undefined;
+    let cursor: string | undefined;
+    do {
+      if (input.signal.aborted) return { kind: 'unavailable', reason: 'cancelled' };
+      let page: Awaited<ReturnType<ChannelDeliveriesCollection['query']>>;
+      try {
+        page = await input.deliveriesCollection.query({
+          index: collections.CHANNEL_DELIVERIES_INDEX_ID.byOwnerAttention,
+          prefix: [target.connectionId, target.bindingId],
+          order: 'asc',
+          limit: PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1,
+          ...(cursor === undefined ? {} : { cursor }),
+        }, { signal: input.signal });
+      } catch {
+        return { kind: 'unavailable', reason: input.signal.aborted ? 'cancelled' : 'storageUnavailable' };
+      }
+      for (const row of page.rows) {
+        const record = readConversationOutwardDeliveryRecord({ collections, row: row as unknown as StoredCollectionRow });
+        const atMs = isJsonRecord(row.value) ? row.value[collections.CHANNEL_DELIVERIES_FIELD.updatedAt] : undefined;
+        if (record === null || !isNonNegativeSafeInteger(atMs)
+          || record.obligation.connectionId !== target.connectionId
+          || record.obligation.bindingId !== target.bindingId) {
+          return { kind: 'invalid', reason: 'invalidRow' };
+        }
+        if (latest === undefined || atMs > latest.delivery.atMs
+          || (atMs === latest.delivery.atMs && compareCanonicalChannelRelationId(record.custodyId, latest.custodyId) > 0)) {
+          latest = {
+            custodyId: record.custodyId,
+            delivery: {
+              bindingId: target.bindingId,
+              atMs,
+              outcome: deriveConversationDeliveryLastOutcome(record.custody),
+            },
+          };
+        }
+      }
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+    if (latest !== undefined) lastDeliveries.push(latest.delivery);
+  }
+  return { kind: 'ready', lastDeliveries: Object.freeze(lastDeliveries) };
 }
 
 export type ConversationOutwardDeliveryReadyPreparation =

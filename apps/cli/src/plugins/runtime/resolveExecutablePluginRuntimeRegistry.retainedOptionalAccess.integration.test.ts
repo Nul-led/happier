@@ -236,7 +236,7 @@ async function installCurrentSource(input: Readonly<{
             manifestVersion: input.version,
             installedPath: null,
             trust,
-            updatePolicy: 'reviewEveryUpdate',
+            updatePolicy: 'allowed',
             optionalAccess: input.optionalAccess,
         },
         state: { enabled: true },
@@ -355,7 +355,7 @@ describe('retained Agent optional HostAccess', () => {
                 environment: Object.freeze({}),
                 providerBindingActive: false,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             await expect(
                 selectedGServices.services.connectedAccounts.getBinding(
@@ -460,7 +460,7 @@ describe('retained Agent optional HostAccess', () => {
                 environment: Object.freeze({}),
                 providerBindingActive: false,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             await expect(
                 narrowedGServices.services.connectedAccounts.getBinding(

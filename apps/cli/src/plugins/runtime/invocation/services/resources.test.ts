@@ -69,7 +69,7 @@ describe('stable plugin resources owner', () => {
         // The public-handoff archive fixture contributes an Agent but no
         // resources. Candidate construction therefore retains only these
         // first-party declarations, after the runtime replaces each root with
-        // its committed immutable-generation root.
+        // its committed immutable-occurrenceId root.
         const candidateResources = (builtIns.resources ?? []).map((resource) => {
             if (!resource.pluginId) throw new Error('Expected bundled resource plugin identity');
             return Object.freeze({
@@ -105,7 +105,7 @@ describe('stable plugin resources owner', () => {
         })).rejects.toMatchObject({ code: 'plugin_resource_generation_invalid' });
     });
 
-    it('derives a bundled resource digest from its exact declared file when the generation inventory is structural', async () => {
+    it('derives a bundled resource digest from its exact declared file when the occurrenceId inventory is structural', async () => {
         const resource = resolveBuiltInContributions().resources?.find((candidate) => (
             candidate.pluginId === 'happier.inspector' && candidate.definition.id === 'brand-icon'
         ));
@@ -134,7 +134,7 @@ describe('stable plugin resources owner', () => {
         const service = owner.bind({
             pluginId: resource.pluginId,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         expect(service.describe(resource.definition.id)).toMatchObject({
             digest: digest(bytes),
@@ -146,7 +146,7 @@ describe('stable plugin resources owner', () => {
         });
     });
 
-    it('serves exact local ids from the current immutable generation with plugin isolation', async () => {
+    it('serves exact local ids from the current immutable occurrenceId with plugin isolation', async () => {
         const alpha = await fixture('acme.alpha');
         const beta = await fixture('acme.beta', 'shared', Buffer.from('beta'));
         const owner = await createStablePluginResourcesOwner({
@@ -159,11 +159,11 @@ describe('stable plugin resources owner', () => {
 
         const alphaService = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const betaService = owner.bind({
             pluginId: 'acme.beta', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         const descriptor = alphaService.describe('shared');
@@ -180,7 +180,7 @@ describe('stable plugin resources owner', () => {
         expect(() => alphaService.describe('__proto__')).toThrowError(expect.objectContaining({ code: 'plugin_resource_not_found' }));
     });
 
-    it('binds and retires resource access by each exact immutable contribution generation', async () => {
+    it('binds and retires resource access by each exact immutable contribution occurrenceId', async () => {
         const alpha = await fixture('acme.alpha');
         const beta = await fixture('acme.beta');
         const owner = await createStablePluginResourcesOwner({
@@ -193,11 +193,11 @@ describe('stable plugin resources owner', () => {
 
         const alphaService = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const betaService = owner.bind({
             pluginId: 'acme.beta', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         owner.retirePlugin('acme.alpha');
@@ -205,7 +205,7 @@ describe('stable plugin resources owner', () => {
         expect(Buffer.from((await betaService.read('shared')).bytes)).toEqual(beta.bytes);
     });
 
-    it('accepts the measured official SDK closure admitted by the immutable generation owner', async () => {
+    it('accepts the measured official SDK closure admitted by the immutable occurrenceId owner', async () => {
         const value = await fixture('acme.sdk-closure');
         const files: ImmutablePluginGenerationRecord['files'] = [
             value.file,
@@ -234,7 +234,7 @@ describe('stable plugin resources owner', () => {
             registry: registry([exact.contribution]),
             generations: new Map([['acme.alpha', { pluginId: 'acme.alpha', immutableGenerationId: 'alpha-7', rootPath: exact.rootPath, files: [exact.file] }]]),
         });
-        const service = owner.bind({ pluginId: 'acme.alpha', signal: new AbortController().signal, isGenerationCurrent: () => true });
+        const service = owner.bind({ pluginId: 'acme.alpha', signal: new AbortController().signal, isOccurrenceCurrent: () => true });
 
         expect(Buffer.from((await service.read('shared', { maxBytes: exact.bytes.byteLength })).bytes)).toEqual(exact.bytes);
         await expect(service.read('shared', { maxBytes: exact.bytes.byteLength - 1 })).rejects.toMatchObject({ code: 'plugin_resource_too_large' });
@@ -249,7 +249,7 @@ describe('stable plugin resources owner', () => {
         });
         const emptyService = emptyOwner.bind({
             pluginId: 'acme.empty', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         await expect(emptyService.read('empty', { maxBytes: 0 })).resolves.toMatchObject({ bytes: new Uint8Array() });
 
@@ -298,7 +298,7 @@ describe('stable plugin resources owner', () => {
             registry: registry([value.contribution]),
             generations: new Map([['acme.alpha', { pluginId: 'acme.alpha', immutableGenerationId: 'alpha-7', rootPath: value.rootPath, files: [value.file] }]]),
         });
-        const service = owner.bind({ pluginId: 'acme.alpha', signal: new AbortController().signal, isGenerationCurrent: () => true });
+        const service = owner.bind({ pluginId: 'acme.alpha', signal: new AbortController().signal, isOccurrenceCurrent: () => true });
 
         await writeFile(join(value.rootPath, value.relativePath), 'HELLO');
         await expect(service.read('shared')).rejects.toMatchObject({ code: 'plugin_resource_integrity_mismatch' });
@@ -344,7 +344,7 @@ describe('stable plugin resources owner', () => {
         });
         let current = true;
         const parent = new AbortController();
-        const service = owner.bind({ pluginId: 'acme.alpha', signal: parent.signal, isGenerationCurrent: () => current });
+        const service = owner.bind({ pluginId: 'acme.alpha', signal: parent.signal, isOccurrenceCurrent: () => current });
         const call = new AbortController();
         call.abort();
         await expect(service.read('shared', { signal: call.signal })).rejects.toMatchObject({ code: 'plugin_resource_aborted' });
@@ -358,7 +358,7 @@ describe('stable plugin resources owner', () => {
         expect(() => service.describe('shared')).toThrowError(expect.objectContaining({ code: 'plugin_generation_stale' }));
     });
 
-    it('rechecks durable committed-generation currentness before serving bytes', async () => {
+    it('rechecks durable committed-occurrenceId currentness before serving bytes', async () => {
         const value = await fixture('acme.alpha');
         let committedGenerationCurrent = true;
         const owner = await createStablePluginResourcesOwner({
@@ -370,7 +370,7 @@ describe('stable plugin resources owner', () => {
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         await expect(service.read('shared')).resolves.toMatchObject({ digest: digest(value.bytes) });
@@ -378,7 +378,7 @@ describe('stable plugin resources owner', () => {
         await expect(service.read('shared')).rejects.toMatchObject({ code: 'plugin_generation_stale' });
     });
 
-    it('rejects a generation record keyed under a different plugin identity', async () => {
+    it('rejects a occurrenceId record keyed under a different plugin identity', async () => {
         const value = await fixture('acme.alpha');
 
         await expect(createStablePluginResourcesOwner({
@@ -405,7 +405,7 @@ describe('stable plugin resources owner', () => {
         });
         const service = owner.bind({
             pluginId: 'acme.alpha',
-            signal: new AbortController().signal, isGenerationCurrent: () => true,
+            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
         });
         const hostile = Object.create(null) as { maxBytes?: number };
         Object.defineProperty(hostile, 'maxBytes', {
@@ -425,7 +425,7 @@ describe('stable plugin resources owner', () => {
             registry: registry([value.contribution]),
             generations: new Map([['acme.alpha', { pluginId: 'acme.alpha', immutableGenerationId: 'alpha-7', rootPath: value.rootPath, files: [value.file] }]]),
         });
-        const service = owner.bind({ pluginId: 'acme.alpha', signal: new AbortController().signal, isGenerationCurrent: () => true });
+        const service = owner.bind({ pluginId: 'acme.alpha', signal: new AbortController().signal, isOccurrenceCurrent: () => true });
         expect(() => service.watch('shared', () => {})).toThrowError(expect.objectContaining({ code: 'plugin_resource_watch_unavailable' }));
 
         const hostile = Object.create(null) as ResolvedResourceContribution;
@@ -465,7 +465,7 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
         };
     }
 
-    it('applies the declaration-count bound per plugin generation rather than across the registry', async () => {
+    it('applies the declaration-count bound per plugin occurrenceId rather than across the registry', async () => {
         const pluginCount = MAX_PLUGIN_RESOURCES_PER_GENERATION + 1;
         const contributions = Array.from({ length: pluginCount }, (_, index) => (
             dynamicContribution(`acme.many-${index}`, 'shared')
@@ -478,17 +478,17 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
                 observe: () => ({ dispose: () => undefined }),
             },
         }));
-        const immutableGenerationIdsByPluginId = new Map(
+        const dynamicOccurrenceIdsByPluginId = new Map(
             Array.from({ length: pluginCount }, (_, index) => [
                 `acme.many-${index}`,
-                `generation-${index}`,
+                `occurrenceId-${index}`,
             ] as const),
         );
 
         const owner = await createStablePluginResourcesOwner({
             registry: registry(contributions),
             generations: new Map(),
-            immutableGenerationIdsByPluginId,
+            dynamicOccurrenceIdsByPluginId,
             dynamicProducers,
         });
 
@@ -508,7 +508,7 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
                 rootPath: packaged.rootPath,
                 files: [packaged.file],
             }]]),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-9']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-9']]),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -560,7 +560,7 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-9']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-9']]),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -575,7 +575,7 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         const first = await service.read('live');
@@ -604,7 +604,7 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-9']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-9']]),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -617,7 +617,7 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         await expect(service.read('live')).resolves.toMatchObject({ bytes: new Uint8Array([7, 8, 9]) });
@@ -635,7 +635,7 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-9']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-9']]),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -650,7 +650,7 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const changes: { digest: string }[] = [];
         service.watch('live', (change) => { changes.push(change); });
@@ -672,7 +672,7 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-9']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-9']]),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -693,7 +693,7 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const changes: { digest: string }[] = [];
         service.watch('live', (change) => { changes.push(change); });
@@ -721,14 +721,14 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
         await expect(createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-9']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-9']]),
             dynamicProducers: [],
         })).rejects.toMatchObject({ code: 'plugin_resource_producer_unavailable' });
     });
 });
 
 describe('dynamic resource watch retirement (EU-4b)', () => {
-    it('stops delivering to a watcher whose plugin generation is no longer current', async () => {
+    it('stops delivering to a watcher whose plugin occurrenceId is no longer current', async () => {
         let current = Buffer.from('a');
         let invalidate: (() => void) | null = null;
         let disposedProducerSubscriptions = 0;
@@ -750,7 +750,7 @@ describe('dynamic resource watch retirement (EU-4b)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([contribution]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-11']]),
+            dynamicOccurrenceIdsByPluginId: new Map([['acme.alpha', 'alpha-dynamic-11']]),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -765,7 +765,7 @@ describe('dynamic resource watch retirement (EU-4b)', () => {
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => generationCurrent,
+            isOccurrenceCurrent: () => generationCurrent,
         });
         const changes: { digest: string }[] = [];
         service.watch('live', (change) => { changes.push(change); });

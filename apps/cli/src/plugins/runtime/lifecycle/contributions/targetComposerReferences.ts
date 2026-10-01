@@ -16,11 +16,11 @@ import { runWithOptionalTimeout } from '@/plugins/runtime/lifecycle/utils';
 
 type TargetRegistration = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }>;
 
-type GenerationLifecycle = Readonly<{
+type OccurrenceLifecycle = Readonly<{
     isCurrent(): boolean;
     retirementSignal: AbortSignal;
 }>;
@@ -28,7 +28,7 @@ type GenerationLifecycle = Readonly<{
 export type TargetComposerReferenceInvocationContextFactory = (
     input: Readonly<{
         reference: PluginContributionIdentityV1;
-        generation: string;
+        occurrenceId: string;
         sessionId?: string;
         signal: AbortSignal;
         isCurrent(): boolean;
@@ -108,7 +108,7 @@ function isComposerReferenceRegistration(
 export function createTargetComposerReferenceRegistry(params: Readonly<{
     composerReferences: readonly ResolvedComposerReferenceContribution[];
     targetRegistrations: readonly TargetRegistration[];
-    resolveGenerationLifecycle(pluginId: string): GenerationLifecycle;
+    resolveOccurrenceLifecycle(pluginId: string): OccurrenceLifecycle;
     createInvocationContext: TargetComposerReferenceInvocationContextFactory;
     callbackTimeoutMs?: number;
 }>): Readonly<{
@@ -158,7 +158,7 @@ export function createTargetComposerReferenceRegistry(params: Readonly<{
             : null;
     }
 
-    function isEntryCurrent(entry: ComposerReferenceRegistration, lifecycle: GenerationLifecycle): boolean {
+    function isEntryCurrent(entry: ComposerReferenceRegistration, lifecycle: OccurrenceLifecycle): boolean {
         return lifecycle.isCurrent() && params.targetRegistrations.includes(entry);
     }
 
@@ -170,7 +170,7 @@ export function createTargetComposerReferenceRegistry(params: Readonly<{
     }>): Promise<TResult> {
         const entry = find(paramsForCall.reference);
         if (!entry) throw unavailableError(paramsForCall.reference);
-        const lifecycle = params.resolveGenerationLifecycle(paramsForCall.reference.pluginId);
+        const lifecycle = params.resolveOccurrenceLifecycle(paramsForCall.reference.pluginId);
         if (!isEntryCurrent(entry, lifecycle)) throw staleError(paramsForCall.reference);
 
         const timeout = new AbortController();
@@ -200,7 +200,7 @@ export function createTargetComposerReferenceRegistry(params: Readonly<{
             });
             const createdInvocation = params.createInvocationContext({
                 reference: paramsForCall.reference,
-                generation: entry.generation,
+                occurrenceId: entry.occurrenceId,
                 ...(paramsForCall.sessionId ? { sessionId: paramsForCall.sessionId } : {}),
                 signal,
                 isCurrent: () => isEntryCurrent(entry, lifecycle),
@@ -243,7 +243,7 @@ export function createTargetComposerReferenceRegistry(params: Readonly<{
                 if (!findDeclaration(identity)) continue;
                 const key = `${identity.pluginId}\u0000${identity.localId}`;
                 if (seen.has(key)) continue;
-                const lifecycle = params.resolveGenerationLifecycle(identity.pluginId);
+                const lifecycle = params.resolveOccurrenceLifecycle(identity.pluginId);
                 if (!isEntryCurrent(candidate as ComposerReferenceRegistration, lifecycle)) continue;
                 seen.add(key);
                 identities.push(Object.freeze(identity));

@@ -4,7 +4,7 @@ import type { PluginApi } from '@happier-dev/plugin-sdk';
 
 import type { LoadedPlugin } from '@/plugins/discovery/load/installed';
 import { ingestCanonicalPluginManifest } from '@/plugins/manifest/ingest';
-import { executePluginActionIfAvailable } from '@/plugins/projection/actions/execute';
+import { executeContributedAction } from '@/plugins/runtime/invocation/actions/executeContributedAction';
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import { projectLoadedPluginContributes } from '@/plugins/projection/registry/resolvePluginContributions';
 import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
@@ -33,7 +33,7 @@ import { buildPluginProjectionV2 } from './v2';
  *                                              qualified-key identity)
  *     -> `buildPluginProjectionV2`            (what the client receives)
  *     -> `activatePluginRuntimeRegistry`      (the referenced action's handler)
- *     -> `executePluginActionIfAvailable`     (invocation + current result)
+ *     -> `executeContributedAction`     (invocation + current result)
  *     -> generation replacement + retirement
  *     -> uninstall cleanup
  *
@@ -154,12 +154,14 @@ function executableRegistry(params: Readonly<{
         targetActionInvocations: buildTargetActionInvocationRegistry({
             contributes: params.registry,
             targetRegistrations: params.targetRegistrations ?? params.activated.targetRegistrations,
+            readCurrentPluginOccurrenceId: (pluginId) => params.activated.readPluginOccurrenceId(pluginId),
+            readCurrentPluginSourceCustody: (pluginId) => params.activated.readPluginSourceCustody(pluginId),
             readTargetActivationFacts: () => params.activated.targetActivationFacts,
             resolveAuthorizationFacts: (action) => ({
                 generation: {
-                    targetGeneration: action.generation,
-                    desiredGeneration: action.generation,
-                    appliedGeneration: action.generation,
+                    targetGeneration: action.occurrenceId,
+                    desiredGeneration: action.occurrenceId,
+                    appliedGeneration: action.occurrenceId,
                 },
                 resourceSelections: [],
                 scopedGrants: [],
@@ -176,7 +178,7 @@ async function invokePreview(
     registry: ResolvedExecutablePluginRuntimeRegistry,
     context: Readonly<{ sessionId?: string }> = { sessionId: 'session-1' },
 ) {
-    return executePluginActionIfAvailable({
+    return executeContributedAction({
         runtimeRegistry: registry,
         actionId: QUALIFIED_ACTION_ID,
         input: { messageId: 'msg-1' },
@@ -305,7 +307,7 @@ describe('EU-5c/EU-5d semantic host-extension chain', () => {
         expect(uninstalledProjection.familiesById.pluginUi?.entriesById[`sessionHeaderAction:${PLUGIN_ID}:preview`])
             .toBeUndefined();
         expect(uninstalledProjection.actionsById[QUALIFIED_ACTION_ID]).toBeUndefined();
-        expect(await executePluginActionIfAvailable({
+        expect(await executeContributedAction({
             registry: uninstalledRegistry,
             actionId: QUALIFIED_ACTION_ID,
             input: {},

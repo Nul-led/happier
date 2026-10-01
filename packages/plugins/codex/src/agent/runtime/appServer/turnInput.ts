@@ -1,9 +1,11 @@
 import {
+    HappierStructuredInputV1Schema,
     normalizeSessionAttachmentUploadPath,
     readStructuredInputMentionSourcesV1,
     sanitizeHappierStructuredInputV1,
     type HappierStructuredInputV1,
 } from '@happier-dev/plugin-sdk/sessions';
+import type { AgentSessionInputFilesService } from '@happier-dev/plugin-sdk/agents/runtime';
 
 type MetadataRecord = Record<string, unknown>;
 
@@ -20,6 +22,35 @@ function asRecord(value: unknown): MetadataRecord | null {
 
 function asRecordArray(value: unknown): MetadataRecord[] {
     return Array.isArray(value) ? value.map(asRecord).filter((entry): entry is MetadataRecord => Boolean(entry)) : [];
+}
+
+export class CodexBrowserImageUnavailableError extends Error {
+    readonly code = 'browser_media_unavailable';
+    constructor() { super('Codex browser image bytes could not be verified by the Session host'); }
+}
+
+/** Resolve browser references before the native codec; plugins never read host media paths. */
+export async function resolveCodexBrowserImageStructuredInput(
+    value: unknown,
+    inputFiles?: AgentSessionInputFilesService,
+    signal?: AbortSignal,
+): Promise<unknown> {
+    const envelope = asRecord(value);
+    const hasBrowserImages = asRecordArray(envelope?.imageInputs)
+        .some((image) => asRecord(image.provenance)?.kind === 'browserSessionMedia');
+    if (!hasBrowserImages) return value;
+    const parsed = HappierStructuredInputV1Schema.safeParse(value);
+    if (!parsed.success || !inputFiles) throw new CodexBrowserImageUnavailableError();
+    const images = [];
+    for (const image of parsed.data.imageInputs ?? []) {
+        if (asRecord(image.provenance)?.kind !== 'browserSessionMedia') { images.push(image); continue; }
+        const verified = await inputFiles.readVerifiedImage(image, signal ? { signal } : undefined);
+        if (!verified) throw new CodexBrowserImageUnavailableError();
+        // The native codec consumes a resolved image URL. Keeping the local path would make the
+        // shared normalizer treat this as an upload again and discard the browser artifact path.
+        images.push({ id: image.id, kind: 'image' as const, url: verified.url, mimeType: verified.mimeType });
+    }
+    return { ...parsed.data, imageInputs: images };
 }
 
 function readString(value: unknown): string | null {

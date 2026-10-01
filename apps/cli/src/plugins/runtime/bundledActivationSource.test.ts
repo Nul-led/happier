@@ -1,5 +1,4 @@
 import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,29 +9,14 @@ import {
   prepareSourceDevSharedDepsForBundledPluginRuntimeLoad,
   type SourceDevSharedDepsPreflightResult,
 } from '@/subprocess/sourceDevSharedDepsPreflight';
-import {
-  assertContainedRegularGenerationFile,
-  prepareImmutablePluginGeneration,
-  readCurrentCommittedPluginGenerations,
-  readValidatedAgentSessionRunnerFactories,
-} from '@/plugins/store/registry/generationStore';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
-import { readPluginManifest } from '@/plugins/manifest/read';
-import { activateContributionModule } from '@/plugins/runtime/lifecycle/activation/activateContributionModule';
-import { createAgentSessionRunnerFactoryBinding } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
-import { verifyRunnerAgentBindingAgainstGeneration } from '@/plugins/runtime/runner/loadRetainedAgentRuntimeLeaf';
-import { readValidatedAgentSessionRunnerFactory } from '@/plugins/runtime/api/registrationRightsHost';
 
 import {
   createBundledActivationSourceResolver,
-  prepareBundledExecutableGenerationAdmission,
+  resolvePackagedBundledActivationPaths,
   resolveBundledActivationSourceRepoRoot,
-  resolveCurrentHostBundledImmutableArtifacts,
-  selectBundledExecutableImmutableArtifacts,
   resolveSourceDevelopmentBundledPackageNames,
 } from './bundledActivationSource';
-import * as bundledActivationSource from './bundledActivationSource';
 import type { PluginDaemonModuleNamespace } from './types';
 
 const pluginModuleFixture: PluginDaemonModuleNamespace = {
@@ -113,6 +97,115 @@ afterEach(async () => {
 });
 
 describe('createBundledActivationSourceResolver', () => {
+  it('binds packaged activation from an executing runner snapshot to snapshot custody', () => {
+    const pluginId = 'happier.snapshot.fixture';
+    const packageName = '@happier-dev/plugins-snapshot-fixture';
+    const packageRoot = '/runtime/.runner-snapshots/snapshot-a/node_modules/@happier-dev/plugins-snapshot-fixture';
+    const daemonEntryPath = join(packageRoot, '.happier-plugin', 'daemon.js');
+
+    const source = createBundledActivationSourceResolver({
+      bundledPackageNames: [packageName],
+      immutableArtifactPackageNames: [packageName],
+      immutableArtifactEntryPathsByPackageName: new Map([[packageName, daemonEntryPath]]),
+      immutableArtifactRootPathsByPackageName: new Map([[packageName, packageRoot]]),
+      canImportFirstPartyPluginSource: () => false,
+      packagedRuntime: {
+        kind: 'pinned_runner_snapshot',
+        snapshotId: 'snapshot-a',
+      },
+    })({ pluginId, daemonEntryPath: packageName });
+
+    expect(source?.sourceAuthority).toEqual({
+      kind: 'bundled_first_party',
+      packagedRuntime: {
+        kind: 'pinned_runner_snapshot',
+        snapshotId: 'snapshot-a',
+      },
+      resolvedRoot: packageRoot,
+    });
+  });
+
+  it('activates directly from an authoritative CLI version root without creating a plugin generation', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'happier-packaged-bundled-direct-'));
+    tempDirs.push(tempDir);
+    const runtimeRoot = join(tempDir, 'versions', 'cli-version-0.3.0');
+    const happyHomeDir = join(tempDir, 'home');
+    const packageName = '@happier-dev/plugins-direct-fixture';
+    const pluginId = 'happier.direct.fixture';
+    const packageRoot = join(
+      runtimeRoot,
+      'node_modules',
+      '@happier-dev',
+      'plugins-direct-fixture',
+    );
+    const daemonEntryPath = join(packageRoot, '.happier-plugin', 'daemon.js');
+    await mkdir(dirname(daemonEntryPath), { recursive: true });
+    await writeFile(join(packageRoot, 'package.json'), JSON.stringify({
+      name: packageName,
+      version: '1.0.0',
+    }), 'utf8');
+    await writeFile(join(packageRoot, '.happier-plugin', 'plugin.json'), JSON.stringify({
+      schemaVersion: 2,
+      id: pluginId,
+      version: '1.0.0',
+      displayName: 'Direct fixture',
+      engines: { happier: '^0.3.0' },
+      runtime: { apiVersion: 1 },
+      entrypoints: { daemon: './.happier-plugin/daemon.js' },
+      hostAccess: { required: [], optional: [] },
+      contributes: {},
+    }), 'utf8');
+    await writeFile(daemonEntryPath, 'export async function activate() {}\n', 'utf8');
+
+    const packaged = resolvePackagedBundledActivationPaths({
+      runtimeRoot,
+      activationTargets: [{
+        pluginId,
+        daemonEntryPath: packageName,
+        sourceSpec: { kind: 'bundled' },
+      }],
+      metadata: [{ pluginId, packageName }],
+      locators: [{
+        pluginId,
+        manifest: {
+          schemaVersion: 2,
+          id: pluginId,
+          version: '1.0.0',
+          displayName: 'Direct fixture',
+          engines: { happier: '^0.3.0' },
+          runtime: { apiVersion: 1 },
+          entrypoints: { daemon: './.happier-plugin/daemon.js' },
+          hostAccess: { required: [], optional: [] },
+          contributes: {},
+        },
+      }],
+    });
+    const importModule = vi.fn(async () => pluginModuleFixture);
+    const source = createBundledActivationSourceResolver({
+      bundledPackageNames: [packageName],
+      immutableArtifactPackageNames: [packageName],
+      immutableArtifactEntryPathsByPackageName: packaged.entryPathsByPackageName,
+      immutableArtifactRootPathsByPackageName: packaged.rootPathsByPackageName,
+      canImportFirstPartyPluginSource: () => false,
+      importModule,
+      packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-version-0.3.0' },
+      repoRoot: '/source-checkout-unavailable',
+    })({ pluginId, daemonEntryPath: packageName });
+
+    expect(source?.sourceAuthority).toEqual({
+      kind: 'bundled_first_party',
+      packagedRuntime: {
+        kind: 'cli_version_root',
+        versionRootId: 'cli-version-0.3.0',
+      },
+      resolvedRoot: packageRoot,
+    });
+    await expect(source?.load()).resolves.toBe(pluginModuleFixture);
+    expect(importModule).toHaveBeenCalledWith(pathToFileURL(daemonEntryPath).href);
+    await expect(stat(resolvePluginStorePaths({ happyHomeDir }).generationsDir))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('resolves the canonical checkout through a preserve-symlinks source snapshot path', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'happier-bundled-source-root-symlink-'));
     tempDirs.push(tempDir);
@@ -202,262 +295,6 @@ describe('createBundledActivationSourceResolver', () => {
     })]).toEqual([packageName]);
   });
 
-  it('prepares every supplied executable bundled owner before immutable generation admission', async () => {
-    const prepareSourceDevSharedDeps = vi.fn(async () => syncedPreflight);
-
-    await prepareBundledExecutableGenerationAdmission({
-      artifacts: [
-        {
-          packageName: '@happier-dev/plugins-scm-git',
-          record: { pluginId: 'happier.scm.backend.git' },
-        },
-        {
-          packageName: '@happier-dev/plugins-scm-sapling',
-          record: { pluginId: 'happier.scm.backend.sapling' },
-        },
-        {
-          packageName: '@happier-dev/plugins-descriptor-only',
-          record: { pluginId: 'happier.descriptor.only' },
-        },
-      ],
-      prepareSourceDevSharedDeps,
-    });
-
-    expect(prepareSourceDevSharedDeps).toHaveBeenCalledTimes(1);
-    expect(prepareSourceDevSharedDeps).toHaveBeenCalledWith({
-      packageName: '@happier-dev/plugins-descriptor-only',
-      workspaceNames: [
-        'plugins-descriptor-only',
-        'plugins-scm-git',
-        'plugins-scm-sapling',
-      ],
-    });
-  });
-
-  it('omits descriptor-only and non-bundled targets from immutable bundled admission', () => {
-    const artifacts = [
-      {
-        packageName: '@happier-dev/plugins-scm-git',
-        record: { pluginId: 'happier.scm.backend.git' },
-      },
-      {
-        packageName: '@happier-dev/plugins-descriptor-only',
-        record: { pluginId: 'happier.descriptor.only' },
-      },
-      {
-        packageName: '@happier-dev/plugins-empty-entry',
-        record: { pluginId: 'happier.empty.entry' },
-      },
-      {
-        packageName: '@happier-dev/plugins-external-shadow',
-        record: { pluginId: 'acme.external.shadow' },
-      },
-    ] as const;
-
-    expect(selectBundledExecutableImmutableArtifacts({
-      artifacts,
-      activationTargets: [
-        {
-          pluginId: 'happier.scm.backend.git',
-          daemonEntryPath: '@happier-dev/plugins-scm-git',
-          sourceSpec: { kind: 'bundled' },
-        },
-        {
-          pluginId: 'happier.descriptor.only',
-          daemonEntryPath: null,
-          sourceSpec: { kind: 'bundled' },
-        },
-        {
-          pluginId: 'happier.empty.entry',
-          daemonEntryPath: '',
-          sourceSpec: { kind: 'bundled' },
-        },
-        {
-          pluginId: 'acme.external.shadow',
-          daemonEntryPath: '@happier-dev/plugins-external-shadow',
-          sourceSpec: { kind: 'path' },
-        },
-      ],
-    })).toEqual([artifacts[0]]);
-  });
-
-  it('materializes only the requested executable bundled plugin for a scoped runtime', () => {
-    const artifacts = [
-      {
-        packageName: '@happier-dev/plugins-codex',
-        record: { pluginId: 'happier.agent.codex' },
-      },
-      {
-        packageName: '@happier-dev/plugins-opencode',
-        record: { pluginId: 'happier.agent.opencode' },
-      },
-    ] as const;
-
-    expect(selectBundledExecutableImmutableArtifacts({
-      artifacts,
-      activationTargets: artifacts.map((artifact) => ({
-        pluginId: artifact.record.pluginId,
-        daemonEntryPath: artifact.packageName,
-        sourceSpec: { kind: 'bundled' },
-      })),
-      pluginIds: ['happier.agent.codex'],
-    })).toEqual([artifacts[0]]);
-  });
-
-  it('retains every executable immutable generation when source activation excludes its overlay', () => {
-    const artifacts = [
-      {
-        packageName: '@happier-dev/plugins-codex',
-        packageEntryRelativePath: 'dist/index.js',
-        record: { immutableGenerationId: 'bundled-codex' },
-      },
-      {
-        packageName: '@happier-dev/plugins-cursor',
-        packageEntryRelativePath: 'dist/index.js',
-        record: { immutableGenerationId: 'bundled-cursor' },
-      },
-      {
-        packageName: '@happier-dev/plugins-ohmypi',
-        packageEntryRelativePath: 'dist/index.js',
-        record: { immutableGenerationId: 'bundled-ohmypi' },
-      },
-      {
-        packageName: '@happier-dev/plugins-pi',
-        packageEntryRelativePath: 'dist/index.js',
-        record: { immutableGenerationId: 'bundled-pi' },
-      },
-    ] as const;
-    const repoRoot = '/source-checkout';
-    const sourceActivationArtifacts = resolveCurrentHostBundledImmutableArtifacts({
-      artifacts,
-      canImportFirstPartyPluginSource: () => true,
-      existsSync: () => true,
-      repoRoot,
-      resolveBundledPackageEntry: (packageName) => join(
-        repoRoot,
-        'apps',
-        'cli',
-        'node_modules',
-        '@happier-dev',
-        packageName.slice('@happier-dev/'.length),
-        'dist',
-        'index.js',
-      ),
-    });
-    expect(sourceActivationArtifacts).toEqual([]);
-
-    const resolveRetentionIds = Reflect.get(
-      bundledActivationSource,
-      'resolveBundledImmutableGenerationRetentionIds',
-    );
-    expect(resolveRetentionIds).toEqual(expect.any(Function));
-    if (typeof resolveRetentionIds !== 'function') return;
-
-    expect(resolveRetentionIds({ artifacts })).toEqual([
-      'bundled-codex',
-      'bundled-cursor',
-      'bundled-ohmypi',
-      'bundled-pi',
-    ]);
-  });
-
-  it('does not invoke source-dev preparation for a packaged host', async () => {
-    const prepareSourceDevSharedDeps = vi.fn(async () => syncedPreflight);
-
-    await prepareBundledExecutableGenerationAdmission({
-      artifacts: [{
-        packageName: '@happier-dev/plugins-scm-git',
-        record: { pluginId: 'happier.scm.backend.git' },
-      }],
-      canImportFirstPartyPluginSource: () => false,
-      prepareSourceDevSharedDeps,
-    });
-
-    expect(prepareSourceDevSharedDeps).not.toHaveBeenCalled();
-  });
-
-  it('refuses bundled generation admission when source-dev preparation fails', async () => {
-    await expect(prepareBundledExecutableGenerationAdmission({
-      artifacts: [{
-        packageName: '@happier-dev/plugins-scm-git',
-        record: { pluginId: 'happier.scm.backend.git' },
-      }],
-      prepareSourceDevSharedDeps: async () => ({
-        type: 'error',
-        errorMessage: 'source dependency closure is stale',
-      }),
-    })).rejects.toThrow('source dependency closure is stale');
-  });
-
-  it('admits the copied bundled Codex package and resolves its exact runner leaf outside a source-capable host', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-bundled-codex-admitted-copy-'));
-    tempDirs.push(happyHomeDir);
-    const artifact = BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS.find(
-      (candidate) => candidate.record.pluginId === 'happier.agent.codex',
-    );
-    expect(artifact).toBeDefined();
-    if (!artifact) throw new Error('Expected the generated bundled Codex artifact');
-    const packageEntryPath = createRequire(import.meta.url).resolve(artifact.packageName);
-    const packageRootPath = artifact.packageEntryRelativePath
-      .split('/')
-      .reduce((current) => dirname(current), packageEntryPath);
-    await assertContainedRegularGenerationFile(
-      packageRootPath,
-      artifact.record.manifestRelativePath,
-      'Bundled plugin manifest',
-    );
-    await assertContainedRegularGenerationFile(
-      packageRootPath,
-      artifact.packageEntryRelativePath,
-      'Bundled plugin activation entry',
-    );
-
-    const committed = await readCurrentCommittedPluginGenerations(
-      resolvePluginStorePaths({ happyHomeDir }),
-      { bundledArtifacts: [artifact] },
-    );
-    expect(committed?.unavailableBundledPackageNames).toEqual(new Set());
-    const admitted = committed?.generations.get(artifact.record.pluginId);
-    expect(admitted).toBeDefined();
-    if (!admitted) throw new Error('Expected the copied bundled Codex artifact to be admitted');
-    await expect(committed?.isCurrent()).resolves.toBe(true);
-
-    const source = createBundledActivationSourceResolver({
-      bundledPackageNames: [artifact.packageName],
-      immutableArtifactPackageNames: [artifact.packageName],
-      immutableArtifactEntryPathsByPackageName: new Map([[
-        artifact.packageName,
-        join(admitted.rootPath, ...artifact.packageEntryRelativePath.split('/')),
-      ]]),
-      immutableArtifactRootPathsByPackageName: new Map([[
-        artifact.packageName,
-        admitted.rootPath,
-      ]]),
-      immutableArtifactRecordsByPackageName: new Map([[
-        artifact.packageName,
-        admitted.record,
-      ]]),
-      unavailableImmutableArtifactPackageNames: committed?.unavailableBundledPackageNames,
-      canImportFirstPartyPluginSource: () => false,
-      repoRoot: '/source-checkout-unavailable',
-    })({
-      pluginId: artifact.record.pluginId,
-      daemonEntryPath: artifact.packageName,
-    });
-    expect(source).not.toBeNull();
-    await expect(source?.load()).resolves.toEqual(expect.objectContaining({
-      activate: expect.any(Function),
-    }));
-    await expect(source?.resolveRelativeModule('./agent/runtime/engine')).resolves.toEqual(
-      expect.objectContaining({
-        normalizedModulePath: 'dist/agent/runtime/engine.js',
-        module: expect.objectContaining({
-          createCodexAgentRuntime: expect.any(Function),
-        }),
-      }),
-    );
-  });
-
   it('ignores declarative bundled targets without an executable daemon entry', () => {
     const resolveActivationSource = createBundledActivationSourceResolver({
       bundledPackageNames: ['@happier-dev/plugins-example'],
@@ -480,6 +317,7 @@ describe('createBundledActivationSourceResolver', () => {
       canImportFirstPartyPluginSource: () => true,
       existsSync: (path) => path === '/repo/packages/plugins/scm-git/src/index.ts',
       importModule,
+      packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-version-0.3.0' },
       prepareSourceDevSharedDeps,
       repoRoot: '/repo',
     });
@@ -531,6 +369,41 @@ describe('createBundledActivationSourceResolver', () => {
     expect(prepareSourceDevSharedDeps).not.toHaveBeenCalled();
   });
 
+  it('binds checkout development custody to a first-party plugin loaded from its checkout dist', async () => {
+    // A repo-dev daemon runs from built output, so it cannot import plugin
+    // source and loads `packages/plugins/<id>/dist`. There is no packaged
+    // runtime root; the checkout package root is the source authority.
+    const resolveActivationSource = createBundledActivationSourceResolver({
+      bundledPackageNames: ['@happier-dev/plugins-triage'],
+      canImportFirstPartyPluginSource: () => false,
+      existsSync: (path) => (
+        path === '/repo/packages/plugins/triage/src/index.ts'
+        || path === '/repo/packages/plugins/triage/dist/index.js'
+      ),
+      importModule: vi.fn(async () => pluginModuleFixture),
+      prepareSourceDevSharedDeps: vi.fn(async () => syncedPreflight),
+      resolveDevelopmentSourceAuthority: ({ pluginId, rootPath }) => ({
+        kind: 'development',
+        registeredRootId: rootPath,
+        canonicalRoot: rootPath,
+        observedRevision: pluginId === 'happier.triage' ? 0 : -1,
+      }),
+      repoRoot: '/repo',
+    });
+
+    const source = resolveActivationSource({
+      pluginId: 'happier.triage',
+      daemonEntryPath: '@happier-dev/plugins-triage',
+    });
+
+    expect(source?.sourceAuthority).toEqual({
+      kind: 'development',
+      registeredRootId: '/repo/packages/plugins/triage',
+      canonicalRoot: '/repo/packages/plugins/triage',
+      observedRevision: 0,
+    });
+  });
+
   it('prefers first-party plugin source over dist when the current host can import plugin source', async () => {
     const imported: string[] = [];
     const importModule = vi.fn(async (specifier: string) => {
@@ -560,174 +433,10 @@ describe('createBundledActivationSourceResolver', () => {
     expect(prepareSourceDevSharedDeps).toHaveBeenCalledTimes(1);
   });
 
-  it('persists exact-generation runner validation while activating bundled source development code', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-bundled-source-runner-validation-'));
-    tempDirs.push(happyHomeDir);
-    const artifact = BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS.find(
-      (candidate) => candidate.record.pluginId === 'happier.agent.codex',
-    );
-    expect(artifact).toBeDefined();
-    if (!artifact) throw new Error('Expected the generated bundled Codex artifact');
-    const paths = resolvePluginStorePaths({ happyHomeDir });
-    const committed = await readCurrentCommittedPluginGenerations(paths, {
-      bundledArtifacts: [artifact],
-    });
-    const admitted = committed?.generations.get(artifact.record.pluginId);
-    expect(admitted).toBeDefined();
-    if (!admitted) throw new Error('Expected the copied bundled Codex artifact to be admitted');
-    const prepared = await prepareImmutablePluginGeneration({
-      paths,
-      sourceRootPath: admitted.rootPath,
-      record: admitted.record,
-    });
-    const manifest = await readPluginManifest({
-      sourceProvenance: 'registryCustodied',
-      manifestPath: join(prepared.rootPath, ...admitted.record.manifestRelativePath.split('/')),
-      manifestAuthority: 'bundled_first_party',
-      enforceEngineCompatibility: false,
-    });
-    expect(manifest.ok).toBe(true);
-    if (!manifest.ok) throw new Error('Expected the admitted Codex manifest to be valid');
-
-    const source = createBundledActivationSourceResolver({
-      bundledPackageNames: [artifact.packageName],
-      runnerImmutableArtifactEntryPathsByPackageName: new Map([[
-        artifact.packageName,
-        join(prepared.rootPath, ...(
-          artifact.daemonEntryRelativePath
-            ?? artifact.packageEntryRelativePath
-        ).split('/')),
-      ]]),
-      runnerImmutableArtifactRootPathsByPackageName: new Map([[
-        artifact.packageName,
-        prepared.rootPath,
-      ]]),
-      runnerImmutableArtifactRecordsByPackageName: new Map([[
-        artifact.packageName,
-        admitted.record,
-      ]]),
-      pluginStorePaths: paths,
-      canImportFirstPartyPluginSource: () => true,
-      prepareSourceDevSharedDeps: vi.fn(async () => syncedPreflight),
-      repoRoot: resolveBundledActivationSourceRepoRoot(import.meta.url),
-    })({
-      pluginId: artifact.record.pluginId,
-      daemonEntryPath: artifact.packageName,
-    });
-    if (!source) throw new Error('Expected a bundled Codex activation source');
-    const activation = await activateContributionModule({
-      pluginId: artifact.record.pluginId,
-      manifestAuthority: 'bundled_first_party',
-      generation: artifact.record.immutableGenerationId,
-      manifest: manifest.manifest,
-      moduleNamespace: await source.load(),
-      isGenerationCurrent: () => true,
-      resolveRelativeModule: source.resolveRelativeModule,
-      persistValidatedAgentSessionRunnerFactories:
-        source.persistValidatedAgentSessionRunnerFactories,
-    });
-    expect(activation.status).toBe('active');
-    expect(activation.validatedAgentSessionRunnerFactories).toEqual([
-      expect.objectContaining({
-        localAgentId: 'codex',
-        normalizedModulePath: '.happier-plugin/agent/runtime/engine.js',
-        loadMode: 'immutable-js',
-      }),
-    ]);
-    const agentRegistration = activation.registrations.find(
-      (registration) => registration.family === 'agents' && registration.localId === 'codex',
-    );
-    if (!agentRegistration || agentRegistration.family !== 'agents') {
-      throw new Error('Expected the live Codex Agent registration');
-    }
-    expect(readValidatedAgentSessionRunnerFactory(agentRegistration.value)).toMatchObject({
-      normalizedModulePath: '.happier-plugin/agent/runtime/engine.js',
-      loadMode: 'immutable-js',
-    });
-
-    const retained = await readValidatedAgentSessionRunnerFactories({
-      paths,
-      record: admitted.record,
-    });
-    expect(retained).toMatchObject({
-      pluginId: artifact.record.pluginId,
-      immutableGenerationId: artifact.record.immutableGenerationId,
-      manifestAuthority: 'bundled_first_party',
-      factories: [{
-        localAgentId: 'codex',
-        normalizedModulePath: '.happier-plugin/agent/runtime/engine.js',
-        loadMode: 'immutable-js',
-      }],
-    });
-    const retainedFact = retained.factories[0];
-    if (!retainedFact) throw new Error('Expected the retained Codex runner fact');
-    await expect(verifyRunnerAgentBindingAgainstGeneration({
-      paths,
-      binding: createAgentSessionRunnerFactoryBinding({
-        v: 1,
-        pluginId: artifact.record.pluginId,
-        pluginVersion: manifest.manifest.version,
-        agentId: 'codex',
-        localAgentId: retainedFact.localAgentId,
-        immutableGenerationId: admitted.record.immutableGenerationId,
-        locator: retainedFact.locator,
-        normalizedModulePath: retainedFact.normalizedModulePath,
-        loadMode: retainedFact.loadMode,
-      }),
-    })).resolves.toMatchObject({
-      bindingKind: 'plugin_factory_v1',
-      fact: retainedFact,
-    });
-    await activation.dispose();
-  });
-
-  it('loads inventory-admitted bundled artifacts from dist even in source development', async () => {
-    const imported: string[] = [];
-    const importModule = vi.fn(async (specifier: string) => {
-      imported.push(specifier);
-      return pluginModuleFixture;
-    });
-    const prepareSourceDevSharedDeps = vi.fn(async () => syncedPreflight);
-    const resolveActivationSource = createBundledActivationSourceResolver({
-      bundledPackageNames: ['@happier-dev/plugins-review-coderabbit'],
-      immutableArtifactPackageNames: ['@happier-dev/plugins-review-coderabbit'],
-      immutableArtifactEntryPathsByPackageName: new Map([[
-        '@happier-dev/plugins-review-coderabbit',
-        '/repo/packages/plugins/review-coderabbit/dist/index.js',
-      ]]),
-      canImportFirstPartyPluginSource: () => true,
-      existsSync: (path) => (
-        path === '/repo/packages/plugins/review-coderabbit/src/index.ts'
-        || path === '/repo/packages/plugins/review-coderabbit/dist/index.js'
-      ),
-      importModule,
-      prepareSourceDevSharedDeps,
-      repoRoot: '/repo',
-    });
-
-    await resolveActivationSource({
-      pluginId: 'happier.review.coderabbit',
-      daemonEntryPath: '@happier-dev/plugins-review-coderabbit',
-    })?.load();
-
-    expect(imported).toHaveLength(1);
-    expect(imported[0]).toMatch(/\/packages\/plugins\/review-coderabbit\/dist\/index\.js$/u);
-    expect(prepareSourceDevSharedDeps).not.toHaveBeenCalled();
-  });
-
-  it('selects the canonical source-dev activation input when an admissible copied package root has dependency extras', async () => {
+  it('selects the canonical source-development activation input', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'happier-bundled-source-dev-copy-extras-'));
     tempDirs.push(tempDir);
     const repoRoot = join(tempDir, 'repo');
-    const happyHomeDir = join(tempDir, 'home');
-    const copiedPackageRoot = join(
-      repoRoot,
-      'apps',
-      'cli',
-      'node_modules',
-      '@happier-dev',
-      'plugins-session-owner',
-    );
     const sourceEntryPath = join(
       repoRoot,
       'packages',
@@ -736,57 +445,8 @@ describe('createBundledActivationSourceResolver', () => {
       'src',
       'index.ts',
     );
-    const runtimeBytes = 'export function activate() {}\n';
-    const packageBytes = '{}';
-    await mkdir(join(copiedPackageRoot, 'dist'), { recursive: true });
-    await mkdir(join(copiedPackageRoot, 'node_modules', 'zod'), { recursive: true });
     await mkdir(join(sourceEntryPath, '..'), { recursive: true });
-    await writeFile(join(copiedPackageRoot, 'dist', 'index.js'), runtimeBytes, 'utf8');
-    await writeFile(join(copiedPackageRoot, 'package.json'), packageBytes, 'utf8');
-    await writeFile(
-      join(copiedPackageRoot, 'node_modules', 'zod', 'package.json'),
-      '{"name":"zod"}',
-      'utf8',
-    );
     await writeFile(sourceEntryPath, 'export function activate() {}\n', 'utf8');
-
-    const record = {
-      t: 'happier_plugin_generation_v1' as const,
-      schemaVersion: 1 as const,
-      pluginId: 'happier.agent.session-owner',
-      immutableGenerationId: 'bundled-session-owner',
-      createdAtMs: 0,
-      files: [
-        {
-          relativePath: 'dist/index.js',
-          byteLength: Buffer.byteLength(runtimeBytes),
-        },
-        {
-          relativePath: 'package.json',
-          byteLength: Buffer.byteLength(packageBytes),
-        },
-      ],
-      manifestRelativePath: 'package.json',
-    };
-    const committed = await readCurrentCommittedPluginGenerations(
-      resolvePluginStorePaths({ happyHomeDir }),
-      {
-        bundledArtifacts: [{
-          packageName: '@happier-dev/plugins-session-owner',
-          packageEntryRelativePath: 'dist/index.js',
-          record,
-        }],
-        resolveBundledPackageEntry: async () =>
-          join(copiedPackageRoot, 'dist', 'index.js'),
-      },
-    );
-    expect([...committed!.unavailableBundledPackageNames]).toEqual([]);
-    expect(committed?.generations.get('happier.agent.session-owner')).toEqual(
-      expect.objectContaining({
-        pluginId: 'happier.agent.session-owner',
-        immutableGenerationId: 'bundled-session-owner',
-      }),
-    );
     const sourceDevelopmentPackageNames =
       resolveSourceDevelopmentBundledPackageNames({
         artifacts: [{
@@ -797,7 +457,7 @@ describe('createBundledActivationSourceResolver', () => {
         existsSync: (path) => path === sourceEntryPath,
         repoRoot,
         resolveBundledPackageEntry: () =>
-          join(copiedPackageRoot, 'dist', 'index.js'),
+          join(repoRoot, 'apps', 'cli', 'node_modules', '@happier-dev', 'plugins-session-owner', 'dist', 'index.js'),
       });
     expect([...sourceDevelopmentPackageNames]).toEqual([
       '@happier-dev/plugins-session-owner',
@@ -812,13 +472,26 @@ describe('createBundledActivationSourceResolver', () => {
       canImportFirstPartyPluginSource: () => true,
       importModule,
       prepareSourceDevSharedDeps,
+      resolveDevelopmentSourceAuthority: ({ pluginId, rootPath }) => ({
+        kind: 'development',
+        registeredRootId: `registered:${pluginId}`,
+        canonicalRoot: rootPath,
+        observedRevision: 3,
+      }),
       repoRoot,
     });
 
-    await expect(resolveActivationSource({
+    const source = resolveActivationSource({
       pluginId: 'happier.agent.session-owner',
       daemonEntryPath: '@happier-dev/plugins-session-owner',
-    })?.load()).resolves.toBe(pluginModuleFixture);
+    });
+    await expect(source?.load()).resolves.toBe(pluginModuleFixture);
+    expect(source?.sourceAuthority).toEqual({
+      kind: 'development',
+      registeredRootId: 'registered:happier.agent.session-owner',
+      canonicalRoot: join(repoRoot, 'packages', 'plugins', 'session-owner'),
+      observedRevision: 3,
+    });
     expect(prepareSourceDevSharedDeps).toHaveBeenCalledWith({
       packageName: '@happier-dev/plugins-session-owner',
       workspaceNames: ['plugins-session-owner'],
@@ -960,6 +633,20 @@ describe('createBundledActivationSourceResolver', () => {
     await writeFile(compilerRunnerPath, 'export const createSessionOwnerAgentRuntime = () => ({});\n', 'utf8');
     await writeFile(daemonEntryPath, 'export const activate = () => undefined;\n', 'utf8');
     await writeFile(publishedRunnerPath, publishedRunnerBytes, 'utf8');
+    await writeFile(join(installedRoot, 'package.json'), JSON.stringify({
+      name: '@happier-dev/plugins-session-owner',
+    }), 'utf8');
+    await writeFile(join(installedRoot, '.happier-plugin', 'plugin.json'), JSON.stringify({
+      schemaVersion: 2,
+      id: 'happier.agent.session-owner',
+      version: '1.0.0',
+      displayName: 'Session owner',
+      engines: { happier: '^0.3.0' },
+      runtime: { apiVersion: 1 },
+      entrypoints: { daemon: './.happier-plugin/daemon.js' },
+      hostAccess: { required: [], optional: [] },
+      contributes: {},
+    }), 'utf8');
 
     const imported: string[] = [];
     const importModule = vi.fn(async (specifier: string) => {
@@ -973,21 +660,6 @@ describe('createBundledActivationSourceResolver', () => {
       ]),
       immutableArtifactRootPathsByPackageName: new Map([
         ['@happier-dev/plugins-session-owner', installedRoot],
-      ]),
-      immutableArtifactRecordsByPackageName: new Map([
-        ['@happier-dev/plugins-session-owner', {
-          sourceProvenance: 'localSource' as const,
-          t: 'happier_plugin_generation_v1' as const,
-          schemaVersion: 1 as const,
-          pluginId: 'happier.agent.session-owner',
-          immutableGenerationId: 'bundled-session-owner',
-          createdAtMs: 0,
-          files: [{
-            relativePath: '.happier-plugin/agent/runtime/engine.js',
-            byteLength: Buffer.byteLength(publishedRunnerBytes),
-          }],
-          manifestRelativePath: '.happier-plugin/plugin.json',
-        }],
       ]),
       canImportFirstPartyPluginSource: () => true,
       importModule,

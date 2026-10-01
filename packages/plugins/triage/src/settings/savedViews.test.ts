@@ -168,6 +168,7 @@ describe('mutateTriageSavedViews', () => {
             filters: lens,
             order: 'smart',
             smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
+            view: 'list',
         });
 
         // Deleting the selected view clears the selection in the same write.
@@ -495,6 +496,7 @@ describe('mutateTriageSavedViews', () => {
                 filters: lens,
                 order: 'newest',
                 smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
+                view: 'list',
             }],
             selectedViewId: created.viewId,
         });
@@ -509,5 +511,65 @@ describe('mutateTriageSavedViews', () => {
                 } as never],
             }),
         })).toEqual({ status: 'rejected', reason: 'filterValue' });
+    });
+
+    it('remembers the view per saved view, reading a view saved before views existed as List', async () => {
+        const fixture = createTestkitAccountKv();
+        const deps = createDeps(fixture);
+        const created = await mutateTriageSavedViews(deps, {
+            kind: 'create',
+            expectedRevision: fixture.revision(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1),
+            label: 'Mine',
+            query: '',
+            filters: filters(),
+            order: 'newest',
+            smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
+            view: 'list',
+        });
+        if (created.status !== 'applied') throw new Error('setup failed');
+        expect(created.value.views[0]?.view).toBe('list');
+        const board = await mutateTriageSavedViews(deps, {
+            kind: 'create',
+            expectedRevision: fixture.revision(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1),
+            label: 'Board',
+            query: '',
+            filters: filters(),
+            order: 'newest',
+            smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
+            view: 'board',
+        });
+        if (board.status !== 'applied') throw new Error(`board view not stored: ${JSON.stringify(board)}`);
+        expect(board.value.views.map((view) => view.view)).toEqual(['list', 'board']);
+
+        const earlier = parseTriageSavedViews({
+            v: 1,
+            views: [{
+                viewId: '00000001-0000-4000-8000-000000000000',
+                label: 'Before views',
+                query: '',
+                filters: filters(),
+                order: 'newest',
+                smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
+            }],
+            selectedViewId: null,
+        });
+        expect(earlier.kind).toBe('parsed');
+        expect(earlier.value.views[0]?.view).toBe('list');
+
+        // A view this build does not know belongs to a newer writer: the set is refused whole, never rewritten.
+        const newer = parseTriageSavedViews({
+            v: 1,
+            views: [{
+                viewId: '00000001-0000-4000-8000-000000000000',
+                label: 'Later',
+                query: '',
+                filters: filters(),
+                order: 'newest',
+                smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
+                view: 'timeline',
+            }],
+            selectedViewId: null,
+        });
+        expect(newer.kind).toBe('unreadable');
     });
 });

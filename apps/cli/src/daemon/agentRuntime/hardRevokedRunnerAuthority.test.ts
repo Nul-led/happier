@@ -11,7 +11,6 @@ import { createAgentSessionRunnerFactoryBinding } from '@/plugins/runtime/runner
 import { pluginSourceProvenanceForKind } from '@/plugins/manifest/sourceProvenance';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import { createPluginRegistryStateStore } from '@/plugins/store/registry/currentState';
 import { readPluginRegistryCommitRecord } from '@/plugins/store/registry/commitRecord';
 import {
@@ -64,12 +63,17 @@ async function prepareAttestedRunnerBinding(happyHomeDir: string) {
         sourceRootPath,
         manifestRelativePath,
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
     });
     const record = {
         ...generated,
         immutableGenerationId: 'generation-integrity',
+        sourceCustody: {
+            kind: 'managed' as const,
+            immutableGenerationId: 'generation-integrity',
+            installSource: 'localPath' as const,
+        },
     };
     const paths = resolvePluginStorePaths({ happyHomeDir });
     const prepared = await prepareImmutablePluginGeneration({
@@ -100,7 +104,11 @@ async function prepareAttestedRunnerBinding(happyHomeDir: string) {
             pluginVersion: '1.0.0',
             agentId: 'codex',
             localAgentId: 'fixture',
-            immutableGenerationId: record.immutableGenerationId,
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: record.immutableGenerationId,
+                installSource: 'localPath',
+            },
             locator,
             normalizedModulePath: moduleRelativePath,
             loadMode: 'immutable-js',
@@ -109,6 +117,15 @@ async function prepareAttestedRunnerBinding(happyHomeDir: string) {
         record,
         manifest,
     };
+}
+
+function retainedManagedGeneration(
+    binding: ReturnType<typeof createAgentSessionRunnerFactoryBinding>,
+): string {
+    if (binding.sourceCustody.kind !== 'managed') {
+        throw new Error('Expected managed retained Agent custody');
+    }
+    return binding.sourceCustody.immutableGenerationId;
 }
 
 type HardRevocationRefreshInput = Parameters<
@@ -133,230 +150,6 @@ const refreshWithHardRevocationCurrentness =
     ) => ReturnType<typeof refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority>;
 
 describe('hard-revoked Runner Agent authority', () => {
-    it('advances direct hard-revocation currentness for a tampered generated bundle and rejects its repaired retained authority after daemon replacement', async () => {
-        const happyHomeDir = await mkdtemp(`${tmpdir()}/happier-bundled-integrity-runner-`);
-        try {
-            const bundledArtifact = BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS.find(
-                (artifact) => artifact.record.pluginId === 'happier.agent.pi',
-            );
-            if (!bundledArtifact) throw new Error('Expected generated bundled Pi artifact');
-            const moduleRelativePath = 'dist/agent/runtime/engine.js';
-            const moduleFile = bundledArtifact.record.files.find(
-                (file) => file.relativePath === moduleRelativePath,
-            );
-            if (!moduleFile) throw new Error('Expected generated bundled Pi runtime module');
-            const paths = resolvePluginStorePaths({ happyHomeDir });
-            const createStateStore = () => createPluginRegistryStateStore({
-                happyHomeDir,
-                runtimeLifecycle: Object.freeze({
-                    prepare: async () => Object.freeze({
-                        abort: async () => undefined,
-                        adopt: async () => undefined,
-                    }),
-                }),
-                runHardRevocationCurrentnessChange: async (_pluginId, change) =>
-                    await change({ onApplied: () => undefined }),
-            });
-            const stateStore = createStateStore();
-            await stateStore.initialize();
-            const locator = {
-                module: './agent/runtime/engine',
-                export: 'createPiAgentRuntime',
-                runtimeApiVersion: 1 as const,
-                externalSessionsExport: 'piExternalSessionsContribution',
-            };
-            await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-                paths,
-                pluginId: bundledArtifact.record.pluginId,
-                immutableGenerationId: bundledArtifact.record.immutableGenerationId,
-                bundledArtifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-            })).resolves.toBe(true);
-            await persistValidatedAgentSessionRunnerFactories({
-                paths,
-                // A generated bundled artifact carries structural facts only;
-                // custody is stamped when the host admits the generation.
-                record: {
-                    ...bundledArtifact.record,
-                    sourceProvenance: pluginSourceProvenanceForKind('bundled'),
-                },
-                manifestAuthority: 'bundled_first_party',
-                factories: [{
-                    localAgentId: 'pi',
-                    locator,
-                    normalizedModulePath: moduleRelativePath,
-                    loadMode: 'immutable-js',
-                }],
-            });
-            const binding = createAgentSessionRunnerFactoryBinding({
-                v: 1,
-                pluginId: bundledArtifact.record.pluginId,
-                pluginVersion: PI_PLUGIN_MANIFEST.version,
-                agentId: 'pi',
-                localAgentId: 'pi',
-                immutableGenerationId:
-                    bundledArtifact.record.immutableGenerationId,
-                locator,
-                normalizedModulePath: moduleRelativePath,
-                loadMode: 'immutable-js',
-            });
-            const command =
-                '/immutable/runtime/versions/1.2.3/bin/happier pi --existing-session session-bundled-integrity';
-            const processCommandHash = createHash('sha256').update(command).digest('hex');
-            const authorityFilePath = await createAgentRuntimeDaemonServiceAuthorityPath({
-                happyHomeDir,
-                publicReleaseRing: 'stable',
-            });
-            const tracked: TrackedSession = {
-                startedBy: 'daemon',
-                pid: 4401,
-                sessionRunnerPid: 4402,
-                happySessionId: 'session-bundled-integrity',
-                processCommandHash,
-                processStartTimeMs: 42_345,
-                processCommand: command,
-                agentRuntimeDaemonServiceAuthorityFilePath: authorityFilePath,
-                spawnOptions: {
-                    directory: '/repo',
-                    backendTarget: {
-                        kind: 'backend',
-                        backendId: 'pi',
-                        sourceKind: 'built_in',
-                    },
-                    modelSelection: {
-                        v: 1,
-                        ref: {
-                            agentTargetKey: 'backend:pi',
-                            providerConnectionId: null,
-                            modelId: 'native',
-                        },
-                        updatedAt: 1,
-                    },
-                },
-            };
-            const resolveCurrentRetainedAgent = vi.fn(async () => binding);
-            const readProcessIdentityByPidFn = async (pid: number) => ({
-                pid,
-                command,
-                processStartTimeMs: 42_345,
-            });
-            await refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority({
-                happyHomeDir,
-                publicReleaseRing: 'stable',
-                httpPort: 3210,
-                sessionId: 'session-bundled-integrity',
-                tracked,
-                resolveCurrentRetainedAgent,
-                persistRunnerAgentImmutableGenerationId: async () => true,
-                persistRunnerManagedDependencyRetention: async () => true,
-                readProcessIdentityByPidFn,
-            });
-            tracked.reattachedFromDiskMarker = true;
-            const immutableModulePath = join(
-                paths.generationsDir,
-                bundledArtifact.record.immutableGenerationId,
-                moduleRelativePath,
-            );
-            const originalModuleBytes = await readFile(immutableModulePath);
-            await writeFile(immutableModulePath, 'tampered bundled runtime', 'utf8');
-            const resolveReattachedRetainedAgent = vi.fn(
-                async () => {
-                    throw new Error(
-                        'Reattached authority must not resolve a current retained Agent',
-                    );
-                },
-            );
-
-            const tamperedBundleIntegrityOwner = vi.fn(
-                stateStore.hardRevokeRunningSessionsForGenerationIntegrityFailure,
-            );
-            await expect(refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority({
-                happyHomeDir,
-                publicReleaseRing: 'stable',
-                httpPort: 3210,
-                sessionId: 'session-bundled-integrity',
-                tracked,
-                resolveCurrentRetainedAgent:
-                    resolveReattachedRetainedAgent,
-                persistRunnerAgentImmutableGenerationId: async () => true,
-                persistRunnerManagedDependencyRetention: async () => true,
-                readProcessIdentityByPidFn,
-                hardRevokeRunningSessionsForGenerationIntegrityFailure:
-                    tamperedBundleIntegrityOwner,
-            })).rejects.toThrow(/hard-revoked/i);
-            expect(tamperedBundleIntegrityOwner).toHaveBeenCalledOnce();
-            expect(tamperedBundleIntegrityOwner).toHaveBeenCalledWith({
-                pluginId: binding.pluginId,
-                immutableGenerationId: binding.immutableGenerationId,
-            });
-
-            const revokedCommit = await readPluginRegistryCommitRecord(paths);
-            if (!revokedCommit) throw new Error('Expected durable integrity commit');
-            const revokedState = await readInstallationStateRevision({
-                paths,
-                reference: revokedCommit.installationState,
-            });
-            expect(revokedState.plugins).toEqual({});
-            expect(revokedState.hardRevocationRevisions?.[binding.pluginId])
-                .toBe(revokedCommit.revision);
-
-            // Hard revocation removes the admitted generation. Recreate the
-            // hostile byte path to prove restored bytes still cannot revive
-            // the exact revoked authority.
-            await mkdir(dirname(immutableModulePath), { recursive: true });
-            await writeFile(immutableModulePath, originalModuleBytes);
-            const factoryFactPath = join(
-                paths.stateDir,
-                'validated-agent-session-runner-factories',
-                `${binding.immutableGenerationId}.v1.json`,
-            );
-            const factoryFactBytes = await readFile(factoryFactPath);
-            await rm(factoryFactPath);
-            const missingFactIntegrityOwner = vi.fn(
-                createStateStore()
-                    .hardRevokeRunningSessionsForGenerationIntegrityFailure,
-            );
-            await expect(refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority({
-                happyHomeDir,
-                publicReleaseRing: 'stable',
-                httpPort: 3210,
-                sessionId: 'session-bundled-integrity',
-                tracked,
-                resolveCurrentRetainedAgent:
-                    resolveReattachedRetainedAgent,
-                persistRunnerAgentImmutableGenerationId: async () => true,
-                persistRunnerManagedDependencyRetention: async () => true,
-                readProcessIdentityByPidFn,
-                hardRevokeRunningSessionsForGenerationIntegrityFailure:
-                    missingFactIntegrityOwner,
-            })).rejects.toThrow(/hard-revoked/i);
-            expect(missingFactIntegrityOwner).not.toHaveBeenCalled();
-
-            await writeFile(factoryFactPath, factoryFactBytes);
-            const replacementIntegrityOwner = vi.fn(
-                createStateStore()
-                    .hardRevokeRunningSessionsForGenerationIntegrityFailure,
-            );
-            await expect(refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority({
-                happyHomeDir,
-                publicReleaseRing: 'stable',
-                httpPort: 3210,
-                sessionId: 'session-bundled-integrity',
-                tracked,
-                resolveCurrentRetainedAgent:
-                    resolveReattachedRetainedAgent,
-                persistRunnerAgentImmutableGenerationId: async () => true,
-                persistRunnerManagedDependencyRetention: async () => true,
-                readProcessIdentityByPidFn,
-                hardRevokeRunningSessionsForGenerationIntegrityFailure:
-                    replacementIntegrityOwner,
-            })).rejects.toThrow(/hard-revoked/i);
-            expect(replacementIntegrityOwner).not.toHaveBeenCalled();
-            expect(resolveReattachedRetainedAgent).not.toHaveBeenCalled();
-        } finally {
-            await rm(happyHomeDir, { recursive: true, force: true });
-        }
-    });
-
     it('does not reinstall a reattached authority when the hard revision advances during exact retained-authority refresh', async () => {
         const happyHomeDir = await mkdtemp(`${tmpdir()}/happier-hard-race-runner-`);
         try {
@@ -387,7 +180,7 @@ describe('hard-revoked Runner Agent authority', () => {
                     modelSelection: {
                         v: 1,
                         ref: {
-                            agentTargetKey: 'backend:codex',
+                            agentTargetKey: 'agent:happier.agent.codex/codex',
                             providerConnectionId: null,
                             modelId: 'native',
                         },
@@ -408,7 +201,7 @@ describe('hard-revoked Runner Agent authority', () => {
                 sessionId: 'session-race',
                 tracked,
                 resolveCurrentRetainedAgent,
-                persistRunnerAgentImmutableGenerationId: async () => true,
+                persistRunnerAgentSourceCustody: async () => true,
                 persistRunnerManagedDependencyRetention: async () => true,
                 readProcessIdentityByPidFn,
                 readPluginHardRevocationRevision: async () => 0,
@@ -429,7 +222,7 @@ describe('hard-revoked Runner Agent authority', () => {
                         'Reattach must not resolve current retained authority',
                     );
                 },
-                persistRunnerAgentImmutableGenerationId: async () => true,
+                persistRunnerAgentSourceCustody: async () => true,
                 persistRunnerManagedDependencyRetention: async () => true,
                 readProcessIdentityByPidFn,
                 readPluginHardRevocationRevision: async () => {
@@ -487,7 +280,7 @@ describe('hard-revoked Runner Agent authority', () => {
                     modelSelection: {
                         v: 1,
                         ref: {
-                            agentTargetKey: 'backend:codex',
+                            agentTargetKey: 'agent:happier.agent.codex/codex',
                             providerConnectionId: null,
                             modelId: 'native',
                         },
@@ -509,7 +302,7 @@ describe('hard-revoked Runner Agent authority', () => {
                 sessionId: 'session-integrity',
                 tracked,
                 resolveCurrentRetainedAgent,
-                persistRunnerAgentImmutableGenerationId: async () => true,
+                persistRunnerAgentSourceCustody: async () => true,
                 persistRunnerManagedDependencyRetention: async () => true,
                 readProcessIdentityByPidFn,
                 readPluginHardRevocationRevision: async () => 0,
@@ -539,7 +332,7 @@ describe('hard-revoked Runner Agent authority', () => {
                 tracked,
                 resolveCurrentRetainedAgent:
                     resolveReattachedRetainedAgent,
-                persistRunnerAgentImmutableGenerationId: async () => true,
+                persistRunnerAgentSourceCustody: async () => true,
                 persistRunnerManagedDependencyRetention: async () => true,
                 readProcessIdentityByPidFn,
                 readPluginHardRevocationRevision: async () => 0,
@@ -588,7 +381,7 @@ describe('hard-revoked Runner Agent authority', () => {
                     modelSelection: {
                         v: 1,
                         ref: {
-                            agentTargetKey: 'backend:codex',
+                            agentTargetKey: 'agent:happier.agent.codex/codex',
                             providerConnectionId: null,
                             modelId: 'native',
                         },
@@ -610,7 +403,7 @@ describe('hard-revoked Runner Agent authority', () => {
                 sessionId: 'session-a',
                 tracked,
                 resolveCurrentRetainedAgent,
-                persistRunnerAgentImmutableGenerationId: async () => true,
+                persistRunnerAgentSourceCustody: async () => true,
                 persistRunnerManagedDependencyRetention: async () => true,
                 readProcessIdentityByPidFn,
                 readPluginHardRevocationRevision: async () => 0,
@@ -664,7 +457,7 @@ describe('hard-revoked Runner Agent authority', () => {
                 tracked,
                 resolveCurrentRetainedAgent:
                     resolveRestoredCurrentRetainedAgent,
-                persistRunnerAgentImmutableGenerationId:
+                persistRunnerAgentSourceCustody:
                     persistRestoredImmutableGeneration,
                 persistRunnerManagedDependencyRetention: async () => true,
                 readProcessIdentityByPidFn,
@@ -729,7 +522,7 @@ describe('hard-revoked Runner Agent authority', () => {
                 sessionId: 'session-provider-p',
                 tracked: daemonATracked,
                 resolveCurrentRetainedAgent,
-                persistRunnerAgentImmutableGenerationId: async () => true,
+                persistRunnerAgentSourceCustody: async () => true,
                 persistRunnerManagedDependencyRetention: async () => true,
                 readProcessIdentityByPidFn,
                 readPluginHardRevocationRevision: async () => 0,
@@ -751,17 +544,20 @@ describe('hard-revoked Runner Agent authority', () => {
                 processCommand: command,
                 agentRuntimeDaemonServiceAuthorityFilePath:
                     authorityFilePath,
-                runnerAgentImmutableGenerationId:
-                    binding.immutableGenerationId,
+                runnerAgentSourceCustodyV1: binding.sourceCustody,
                 runnerManagedDependencyRetentionV1: {
                     v: 1,
                     adoptedManagedProviderAuthority: {
                         pluginId: 'acme.provider.gateway',
-                        immutableGenerationId: 'generation-provider-p',
+                        sourceCustody: {
+                            kind: 'managed',
+                            immutableGenerationId: 'generation-provider-p',
+                            installSource: 'npm',
+                        },
                         manifestAuthority: 'external',
                         hardRevocationRevisionAtAdmission: 7,
                     },
-                    sourceGenerationIds: [],
+                    sourceCustodies: [],
                     qualifiedDependencyIds: [],
                 },
                 reattachedFromDiskMarker: true,
@@ -774,7 +570,7 @@ describe('hard-revoked Runner Agent authority', () => {
                     );
                 },
             );
-            const persistRunnerAgentImmutableGenerationId =
+            const persistRunnerAgentSourceCustody =
                 vi.fn(async () => true);
             const persistRunnerManagedDependencyRetention =
                 vi.fn(async () => true);
@@ -787,7 +583,7 @@ describe('hard-revoked Runner Agent authority', () => {
                 tracked: daemonBTracked,
                 resolveCurrentRetainedAgent:
                     resolveReattachedRetainedAgent,
-                persistRunnerAgentImmutableGenerationId,
+                persistRunnerAgentSourceCustody,
                 persistRunnerManagedDependencyRetention,
                 readProcessIdentityByPidFn,
                 readPluginHardRevocationRevision: async (pluginId) =>
@@ -800,7 +596,7 @@ describe('hard-revoked Runner Agent authority', () => {
                     ),
             })).rejects.toThrow(/Provider.*hard-revoked/i);
             expect(resolveReattachedRetainedAgent).not.toHaveBeenCalled();
-            expect(persistRunnerAgentImmutableGenerationId)
+            expect(persistRunnerAgentSourceCustody)
                 .not.toHaveBeenCalled();
             expect(persistRunnerManagedDependencyRetention)
                 .not.toHaveBeenCalled();

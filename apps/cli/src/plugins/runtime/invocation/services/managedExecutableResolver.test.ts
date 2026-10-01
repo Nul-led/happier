@@ -107,7 +107,7 @@ describe('stable managed executable resolver', () => {
             pluginId: 'happier.provider.cliproxyapi',
             providerLocalId: 'cliproxyapi',
             contributionQualifiedId: 'happier.provider.cliproxyapi/providers/cliproxyapi',
-            generation: 'generation-1',
+            occurrenceId: 'occurrenceId-1',
             isCurrent: () => true,
         });
 
@@ -128,7 +128,7 @@ describe('stable managed executable resolver', () => {
             pluginId: 'happier.provider.cliproxyapi',
             providerLocalId: 'codex',
             contributionQualifiedId: 'happier.provider.cliproxyapi/agents/codex',
-            generation: 'generation-1',
+            occurrenceId: 'occurrenceId-1',
             isCurrent: () => true,
         }],
         ['different plugin contribution', {
@@ -136,7 +136,7 @@ describe('stable managed executable resolver', () => {
             pluginId: 'other.provider',
             providerLocalId: 'cliproxyapi',
             contributionQualifiedId: 'other.provider/providers/cliproxyapi',
-            generation: 'generation-1',
+            occurrenceId: 'occurrenceId-1',
             isCurrent: () => true,
         }],
         ['same-plugin mismatched Provider contribution', {
@@ -145,7 +145,7 @@ describe('stable managed executable resolver', () => {
             providerLocalId: 'cliproxyapi',
             contributionQualifiedId:
                 'happier.provider.cliproxyapi/providers/other-provider',
-            generation: 'generation-1',
+            occurrenceId: 'occurrenceId-1',
             isCurrent: () => true,
         }],
         ['same-plugin wrong contribution family', {
@@ -154,7 +154,7 @@ describe('stable managed executable resolver', () => {
             providerLocalId: 'cliproxyapi',
             contributionQualifiedId:
                 'happier.provider.cliproxyapi/agents/cliproxyapi',
-            generation: 'generation-1',
+            occurrenceId: 'occurrenceId-1',
             isCurrent: () => true,
         }],
         ['retired Provider contribution', {
@@ -162,7 +162,7 @@ describe('stable managed executable resolver', () => {
             pluginId: 'happier.provider.cliproxyapi',
             providerLocalId: 'cliproxyapi',
             contributionQualifiedId: 'happier.provider.cliproxyapi/providers/cliproxyapi',
-            generation: 'generation-1',
+            occurrenceId: 'occurrenceId-1',
             isCurrent: () => false,
         }],
     ])('rejects packaged runtime authority for %s before asset resolution', async (_label, context) => {

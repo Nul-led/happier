@@ -41,6 +41,7 @@ async function createArchiveFixture(params?: Readonly<{
   packageVersion?: string;
   manifestVersion?: string;
   optionalSessions?: boolean;
+  optionalSessionsAccess?: readonly string[];
   action?: boolean;
   speech?: boolean;
   scm?: boolean;
@@ -90,7 +91,7 @@ async function createArchiveFixture(params?: Readonly<{
             id: 'project-sessions',
             capability: 'sessions',
             reason: 'Read project sessions',
-            scope: { access: ['read'], projectIds: ['project-a'] },
+            scope: { access: [...(params.optionalSessionsAccess ?? ['read'])], projectIds: ['project-a'] },
           }] : [],
         },
         contributes: params?.action || params?.hostedWeb ? {
@@ -365,8 +366,13 @@ describe('createDaemonArchivePluginChangePreparer', () => {
   it('updates a remote archive through the exact reviewed query-selected resource', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-archive-query-update-home-'));
     roots.push(happyHomeDir);
-    const initial = await createArchiveFixture();
-    const update = await createArchiveFixture({ packageVersion: '1.2.4' });
+    const initial = await createArchiveFixture({ optionalSessions: true });
+    const update = await createArchiveFixture({ packageVersion: '1.2.4', optionalSessions: true });
+    const widened = await createArchiveFixture({
+      packageVersion: '1.2.5',
+      optionalSessions: true,
+      optionalSessionsAccess: ['read', 'write'],
+    });
     let servedBytes = await readFile(initial.archivePath);
     const pathAndQuery = '/download?project=acme%20tools&asset=plugin.tgz&asset=portable';
     const origin = await startArchiveServer(() => servedBytes, pathAndQuery);
@@ -382,35 +388,47 @@ describe('createDaemonArchivePluginChangePreparer', () => {
       }),
     });
     await initialLease.release();
+    const prepareArchive = createDaemonArchivePluginChangePreparer({
+      happyHomeDir,
+      runtimeLifecycle,
+    });
+    let isInstalledUpdate = false;
     const service = createDaemonPluginChangeService({
-      prepare: createDaemonArchivePluginChangePreparer({
-        happyHomeDir,
-        runtimeLifecycle,
-      }),
+      prepare: async (request) => await prepareArchive(
+        request,
+        isInstalledUpdate
+          ? { installedUpdate: { pluginId: 'acme.archive-candidate' } }
+          : undefined,
+      ),
     });
     const begun = await service.requestPluginChange({ kind: 'installArchive', locator });
     if (begun.kind !== 'reviewRequired') throw new Error('Expected initial archive review');
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
+      optionalSelections: [{ accessId: 'project-sessions', selected: true }],
     })).resolves.toMatchObject({ kind: 'committed' });
 
     servedBytes = await readFile(update.archivePath);
+    isInstalledUpdate = true;
     const resolution = resolveInstalledPluginUpdate('acme.archive-candidate', (await store.read()).plugins['acme.archive-candidate']);
     const next = await service.requestPluginChange(resolution.request);
     expect(origin.observedUrls).toEqual([pathAndQuery, pathAndQuery]);
     expect(next).toMatchObject({
-      kind: 'reviewRequired',
-      review: { version: '1.2.4', source: { locator, integrity: update.integrity } },
+      kind: 'committed',
     });
-    if (next.kind !== 'reviewRequired') throw new Error('Expected updated archive review');
-    await expect(service.decidePluginChange({
-      pendingChangeId: next.pendingChangeId,
-      decision: 'installAndTrust',
-    })).resolves.toMatchObject({ kind: 'committed' });
     expect((await store.read()).plugins['acme.archive-candidate']).toMatchObject({
       source: { locator },
-      install: { manifestVersion: '1.2.4', trust: { distribution: { source: { canonicalUrl: locator } } } },
+      install: {
+        manifestVersion: '1.2.4',
+        trust: { distribution: { source: { canonicalUrl: locator }, integrity: update.integrity } },
+      },
+    });
+    servedBytes = await readFile(widened.archivePath);
+    await expect(service.requestPluginChange(resolution.request)).resolves.toMatchObject({
+      kind: 'reviewRequired',
+      reason: 'authorityExpansion',
+      authorityExpansion: expect.arrayContaining(['selectedOptionalHostAccess']),
     });
     await service.shutdown();
     await reloadController.shutdown();
@@ -466,7 +484,7 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     });
     const begun = await service.requestPluginChange({ kind: 'installArchive', locator: fixture.archivePath });
     expect(begun).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: {
         packageIdentity: { name: '@acme/archive-candidate', version: '1.2.3' },
         publisherIdentity: { status: 'unavailable' },
@@ -480,7 +498,7 @@ describe('createDaemonArchivePluginChangePreparer', () => {
         ],
         uiArtifacts: { status: 'none', contributionIds: [] },
         compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
       },
     });
     if (begun.kind !== 'reviewRequired') {
@@ -695,7 +713,7 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     const begun = await service.requestPluginChange({ kind: 'installArchive', locator: fixture.archivePath });
 
     expect(begun).toEqual(expect.objectContaining({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: expect.objectContaining({
         pluginId: 'acme.archive-candidate',
         version: '1.2.3',
@@ -819,7 +837,7 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     });
 
     expect(begun).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: {
         pluginId: 'acme.archive-candidate',
         source: { integrity: fixture.integrity },
@@ -927,7 +945,7 @@ describe('createDaemonArchivePluginChangePreparer', () => {
 
     const begun = await service.requestPluginChange({ kind: 'installArchive', locator: archiveUrl });
     expect(begun).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: {
         source: { kind: 'archive', locator: reviewArchiveUrl, integrity: fixture.integrity },
         updateChannel: { kind: 'archive', locator: reviewArchiveUrl },
@@ -977,7 +995,7 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     });
     const begun = await service.requestPluginChange({ kind: 'installArchive', locator: fixture.archivePath });
     expect(begun).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: { optionalHostAccess: [{ id: 'project-sessions', capability: 'sessions' }] },
     });
     if (begun.kind !== 'reviewRequired') throw new Error('Expected archive installation review');

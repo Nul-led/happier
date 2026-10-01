@@ -1,152 +1,195 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProviderConnectionIdSchema } from '@happier-dev/protocol';
-import type {
-  ManagedServiceHandle,
-  ManagedServiceRequest,
-  ManagedServiceResponse,
-  ManagedServiceSnapshot,
-} from '@happier-dev/plugin-sdk/managed-services';
+import type { AgentSessionModelsSnapshot, AgentSessionModelsSource } from '@happier-dev/plugin-sdk/agents/runtime';
+import type { AgentSessionModesSnapshot, AgentSessionModesSource } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import { createOpenCodeServerRuntimeAssembly } from './assembly.js';
 import type { OpenCodeRuntimeContext } from './runtimeContext.js';
 import {
   OPEN_CODE_REQUEST_AUTH_CAPABILITY_PATH_ENV,
 } from '../../auth/services/requestAuth/env.js';
+import {
+  resolveOpenCodeConnectedConfigHomeDir,
+  resolveOpenCodeRequestAuthV2PluginDir,
+  resolveOpenCodeRequestAuthV2PluginSourcePath,
+} from '../../auth/services/requestAuth/index.js';
+import { materializeOpenCodeAuthEnvironment } from '../../auth/services/materialize.js';
 
-function managedServiceHandle(params: Readonly<{
-  baseUrl: string;
-  state?: () => ManagedServiceSnapshot['state'];
-  waitError?: Error;
-  onDispose?: () => void;
-  request?: (input: ManagedServiceRequest) => Promise<ManagedServiceResponse>;
-  onWaitUntilHealthy?: (options: Readonly<{ timeoutMs?: number }>) => void;
-}>): ManagedServiceHandle {
-  const readSnapshot = (): ManagedServiceSnapshot => ({
-    id: 'opencode-server',
-    state: params.state?.() ?? 'healthy',
-    mode: 'spawn',
-    baseUrl: params.baseUrl,
-    startedAtMs: 100,
-    lastHealthyAtMs: 101,
-    diagnostics: [],
-    diagnosticsTruncated: false,
-  });
-  return {
-    snapshot: readSnapshot,
-    observe: (listener) => {
-      listener(readSnapshot());
-      return { dispose() {} };
-    },
-    waitUntilHealthy: async (options) => {
-      params.onWaitUntilHealthy?.(options);
-      if (params.waitError) throw params.waitError;
-      return readSnapshot();
-    },
-    stop: async () => ({ status: 'stopped' }),
-    dispose: async () => {
-      params.onDispose?.();
-    },
-    request: params.request ?? (async (input) => ({
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      headers: { 'content-type': 'application/json' },
-      body: new Response(
-        input.pathAndQuery === '/session?directory=%2Frepo'
-          ? JSON.stringify({ id: 'oc-session-1' })
-          : '{}',
-      ).body,
-    })),
-  };
-}
-
-function createContextFixture(params: Readonly<{
-  managedServerBaseUrl: string;
-  managedServerWaitError?: Error;
-  onManagedServerDispose?: () => void;
-  onWaitUntilHealthy?: (options: Readonly<{ timeoutMs?: number }>) => void;
-  systemToolExecutablePath?: string;
-  systemToolResolveError?: Error;
-  managedServerRequest?: (input: ManagedServiceRequest) => Promise<ManagedServiceResponse>;
-}>): OpenCodeRuntimeContext {
-  const abortController = new AbortController();
-  const sessionStorage = new Map<string, unknown>();
-  return {
-    exec: {
-      systemTools: {
-        resolve: vi.fn(async () => {
-          if (params.systemToolResolveError) throw params.systemToolResolveError;
-          return { executablePath: params.systemToolExecutablePath ?? '/usr/local/bin/opencode' };
-        }),
-      },
-    },
-    logger: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-    },
-    env: {
-      list: () => ({}),
-    },
-    abort: {
-      signal: abortController.signal,
-      compose: (signals) => AbortSignal.any(signals),
-    },
-    config: { values: {} },
-    managedServices: {
-      dependencies: {} as OpenCodeRuntimeContext['managedServices']['dependencies'],
-      supervise: vi.fn(async () => managedServiceHandle({
-        baseUrl: params.managedServerBaseUrl,
-        waitError: params.managedServerWaitError,
-        onDispose: params.onManagedServerDispose,
-        onWaitUntilHealthy: params.onWaitUntilHealthy,
-        ...(params.managedServerRequest ? { request: params.managedServerRequest } : {}),
-      })),
-    },
-    ui: {
-      askQuestions: vi.fn(async () => ({
-        requestId: 'question-cancelled',
-        kind: 'questions' as const,
-        status: 'userCancelled' as const,
-      })),
-    },
-    sessions: {
-      current: {
-        permissions: {
-          requestDecision: vi.fn(async () => ({
-            status: 'approved' as const,
-            persistence: 'once' as const,
-          })),
-        },
-      },
-      writeStateField: vi.fn(async () => undefined),
-    },
-    storage: {
-      daemonSession: {
-        get: vi.fn(async (key: string) => sessionStorage.get(key)),
-        set: vi.fn(async (key: string, value: unknown) => {
-          sessionStorage.set(key, value);
-        }),
-      },
-    },
-    experimental: {
-      telemetry: {
-        emit: vi.fn(),
-      },
-    },
-  };
-}
+import { createContextFixture } from './assembly.managedServices.testkit.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe('OpenCode server managed-service assembly', () => {
+  it('keeps V1 controls staged for the next prompt rather than claiming native zero-turn application', async () => {
+    const requests: Array<{ path: string; method: string }> = [];
+    const ctx = createContextFixture({ managedServerBaseUrl: 'http://127.0.0.1:49213', managedServerRequest: async (input) => {
+      requests.push({ path: input.pathAndQuery, method: input.method ?? 'GET' });
+      const path = input.pathAndQuery.split('?')[0];
+      const body = path === '/session' ? { id: 'oc-v1-staged' }
+        : path === '/provider' ? { all: [{ id: 'openai', models: { luna: { id: 'luna', name: 'Luna' } } }] } : {};
+      return { ok: true, status: 200, headers: { 'content-type': 'application/json' }, body: new Response(JSON.stringify(body)).body };
+    } });
+    const assembly = await createOpenCodeServerRuntimeAssembly({ ctx, directory: '/repo', happierSessionId: 'happy-v1-staged', endpoint: { mode: 'managed-spawn' }, request: { kind: 'create', sessionId: 'happy-v1-staged', cwd: '/repo' } });
+    try {
+      if (!('updateConfiguration' in assembly.runtime) || !assembly.runtime.updateConfiguration) throw new Error('Session configuration unavailable');
+      await expect(assembly.runtime.updateConfiguration({
+        mode: { value: 'plan', updatedAtMs: 1 }, model: { value: 'openai/luna', updatedAtMs: 1 },
+        permissionIntent: { value: null, updatedAtMs: 0 }, options: {},
+      })).resolves.toMatchObject({ status: 'deferred' });
+      expect(requests.some(({ path, method }) => method === 'POST' && (path.endsWith('/model') || path.endsWith('/agent') || path.includes('/message')))).toBe(false);
+    } finally { await assembly.dispose(); }
+  });
+
+  it('publishes the real V2 inventory on connection and catalog events, retaining failures but clearing a successful withdrawal', async () => {
+    let modelRows: unknown[] = [{ id: 'gpt-5.6-luna', providerID: 'openai', name: 'Luna' }];
+    let agentRows: unknown[] = ['build', 'plan', 'general', 'explore', 'compaction', 'title', 'summary'].map((id) => ({ id, name: id }));
+    let agentUnavailable = false;
+    let unavailable = false;
+    let eventStream: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let permissionRequested = false;
+    let resolvePermission!: (result: Awaited<ReturnType<OpenCodeRuntimeContext['sessions']['current']['permissions']['requestDecision']>>) => void;
+    const permissionDecision = new Promise<Awaited<ReturnType<OpenCodeRuntimeContext['sessions']['current']['permissions']['requestDecision']>>>((resolve) => { resolvePermission = resolve; });
+    const snapshots: AgentSessionModelsSnapshot[] = [];
+    const modeSnapshots: AgentSessionModesSnapshot[] = [];
+    const emit = (type: string, directory = '/repo', data: unknown = {}) => {
+      if (!eventStream) throw new Error('Provider event stream unavailable');
+      eventStream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type, location: { directory }, data })}\n\n`));
+    };
+    const ctx = createContextFixture({
+      managedServerBaseUrl: 'http://127.0.0.1:49212',
+      permissionDecision: async () => { permissionRequested = true; return await permissionDecision; },
+      managedServerRequest: async (input) => {
+        const path = input.pathAndQuery.split('?')[0];
+        if (path === '/api/event') {
+          const body = new ReadableStream<Uint8Array>({ start(controller) {
+            eventStream = controller;
+            emit('server.connected');
+            input.signal?.addEventListener('abort', () => controller.close(), { once: true });
+          } });
+          return { ok: true, status: 200, headers: { 'content-type': 'text/event-stream' }, body };
+        }
+        const failed = (unavailable && path === '/api/model') || (agentUnavailable && path === '/api/agent');
+        const response = path === '/api/session'
+          ? { data: { id: 'oc-catalog' } }
+          : path === '/api/provider'
+            ? { data: [{ id: 'openai' }] }
+            : path === '/api/model' ? { data: modelRows }
+              : path === '/api/agent' ? { data: agentRows }
+                : path === '/api/session/oc-catalog' ? { data: { id: 'oc-catalog', agent: 'build' } } : { data: [] };
+        return { ok: !failed, status: failed ? 503 : 200, headers: { 'content-type': 'application/json' }, body: new Response(JSON.stringify(response)).body };
+      },
+    });
+    const assembly = await createOpenCodeServerRuntimeAssembly({
+      ctx, directory: '/repo', happierSessionId: 'happy-catalog', endpoint: { mode: 'managed-spawn' },
+      // The models service is the public plugin-to-host boundary, not a replacement catalog owner.
+      models: { bind(source: AgentSessionModelsSource) {
+        snapshots.push(source.read());
+        return source.subscribe((snapshot) => snapshots.push(snapshot));
+      } },
+      modes: { bind(source: AgentSessionModesSource) {
+        modeSnapshots.push(source.read());
+        return source.subscribe((snapshot) => modeSnapshots.push(snapshot));
+      } },
+      request: { kind: 'create', sessionId: 'happy-catalog', cwd: '/repo', configuration: {
+        mode: { value: null, updatedAtMs: 0 }, model: { value: null, updatedAtMs: 0 },
+        permissionIntent: { value: null, updatedAtMs: 0 }, options: { opencodeCliGeneration: { value: 'v2', updatedAtMs: 1 } },
+      } },
+    });
+    try {
+      await vi.waitFor(() => expect(snapshots.at(-1)?.models).toEqual([expect.objectContaining({ id: 'openai/gpt-5.6-luna', name: 'Luna' })]));
+      expect(snapshots.at(-1)?.observedAt).toBeGreaterThan(0);
+      await vi.waitFor(() => expect(modeSnapshots.at(-1)).toMatchObject({ currentModeId: 'build', modes: agentRows }));
+      agentUnavailable = true;
+      emit('agent.updated');
+      await vi.waitFor(() => expect(ctx.logger.warn).toHaveBeenCalledWith(expect.any(String), { operation: 'mode_inventory' }));
+      expect(modeSnapshots.at(-1)?.modes).toEqual(agentRows);
+      agentUnavailable = false;
+      agentRows = [];
+      emit('agent.updated');
+      await vi.waitFor(() => expect(modeSnapshots.at(-1)).toMatchObject({ currentModeId: 'build', modes: [] }));
+      emit('permission.asked', '/repo', { id: 'permission-held', sessionID: 'oc-catalog', action: 'bash', resources: ['git status'] });
+      await vi.waitFor(() => expect(permissionRequested).toBe(true));
+      unavailable = true;
+      emit('provider.updated');
+      await vi.waitFor(() => expect(ctx.logger.warn).toHaveBeenCalled());
+      expect(snapshots.at(-1)?.models).toEqual([expect.objectContaining({ id: 'openai/gpt-5.6-luna' })]);
+      unavailable = false;
+      modelRows = [];
+      emit('model.updated');
+      await vi.waitFor(() => expect(snapshots.at(-1)?.models).toEqual([]));
+      modelRows = [{ id: 'gpt-5.6-luna', providerID: 'openai', name: 'Luna' }];
+      emit('model.updated', '/other-repo');
+      emit('server.connected');
+      await vi.waitFor(() => expect(snapshots.at(-1)?.models).toEqual([expect.objectContaining({ id: 'openai/gpt-5.6-luna' })]));
+      expect(snapshots.at(-1)?.currentModelId).toBeNull();
+    } finally { resolvePermission({ status: 'cancelled' }); await assembly.dispose(); }
+  });
+
+  it.each(['none', 'agent', 'inventory'] as const)('persists zero-turn V2 controls on the exact native session and rejects failed admission (reject=%s)', async (failure) => {
+    // Managed-service HTTP is the external boundary; assembly, client, controller and runtime are real.
+    const requests: Array<{ path: string; body: unknown }> = [];
+    let nativeModel: unknown = { id: 'gpt-5.6-luna', providerID: 'openai', variant: 'low' };
+    let nativeAgent = 'build';
+    const ctx = createContextFixture({
+      managedServerBaseUrl: 'http://127.0.0.1:49211',
+      managedServerRequest: async (input) => {
+        const path = input.pathAndQuery.split('?')[0]!;
+        const body: unknown = input.body ? JSON.parse(new TextDecoder().decode(input.body)) : null;
+        requests.push({ path, body });
+        const rejected = (failure === 'agent' && path.endsWith('/agent')) || (failure === 'inventory' && path === '/api/model');
+        if (path.endsWith('/model') && input.method === 'POST') nativeModel = (body as { model: unknown }).model;
+        if (path.endsWith('/agent') && input.method === 'POST' && !rejected) nativeAgent = (body as { agent: string }).agent;
+        const response = path === '/api/session'
+          ? { data: { id: 'oc-session-zero-turn' } }
+          : path === '/api/provider'
+            ? { data: [{ id: 'openai' }] }
+            : path === '/api/model'
+              ? { data: [{ id: 'gpt-5.6-luna', providerID: 'openai', name: 'Luna' }] }
+              : path === '/api/session/oc-session-zero-turn'
+                ? { data: { id: 'oc-session-zero-turn', model: nativeModel, agent: nativeAgent } }
+                : {};
+        return {
+          ok: !rejected, status: rejected ? 503 : 200, statusText: rejected ? 'Unavailable' : 'OK',
+          headers: { 'content-type': 'application/json' }, body: new Response(JSON.stringify(response)).body,
+        };
+      },
+    });
+    const assembly = await createOpenCodeServerRuntimeAssembly({
+      ctx, directory: '/repo', happierSessionId: 'happy-zero-turn', endpoint: { mode: 'managed-spawn' },
+      request: {
+        kind: 'resume', sessionId: 'happy-zero-turn', cwd: '/repo', providerSessionId: 'oc-session-zero-turn',
+        configuration: {
+          mode: { value: null, updatedAtMs: 0 }, model: { value: null, updatedAtMs: 0 },
+          permissionIntent: { value: null, updatedAtMs: 0 },
+          options: { opencodeCliGeneration: { value: 'v2', updatedAtMs: 1 } },
+        },
+      },
+    });
+    try {
+      if (!('updateConfiguration' in assembly.runtime) || !assembly.runtime.updateConfiguration) throw new Error('Session configuration unavailable');
+      const result = await assembly.runtime.updateConfiguration({
+        mode: { value: 'plan', updatedAtMs: 2 }, model: { value: 'openai/gpt-5.6-luna', updatedAtMs: 2 },
+        permissionIntent: { value: null, updatedAtMs: 0 }, options: { reasoning_effort: { value: 'low', updatedAtMs: 2 } },
+      });
+      expect(result.status).toBe(failure === 'agent' ? 'rejected' : 'applied');
+      expect(nativeAgent).toBe(failure === 'agent' ? 'build' : 'plan');
+      if (failure !== 'agent') {
+        expect(nativeModel).toEqual({ id: 'gpt-5.6-luna', providerID: 'openai', variant: 'low' });
+        expect(requests).toContainEqual({ path: '/api/session/oc-session-zero-turn/model', body: { model: nativeModel } });
+        await expect(assembly.runtime.prepareProviderCliAttach?.()).resolves.toMatchObject({
+          runtimeDescriptorV1: { agent: { providerSessionId: 'oc-session-zero-turn' } },
+        });
+      }
+      expect(requests.some(({ path }) => path.endsWith('/prompt') || path === '/api/session')).toBe(false);
+    } finally { await assembly.dispose(); }
+  });
+
   it('uses the managed-service owner default as the one startup deadline for supervision and health observation', async () => {
     const onWaitUntilHealthy = vi.fn();
     const ctx = createContextFixture({
@@ -176,13 +219,32 @@ describe('OpenCode server managed-service assembly', () => {
     await assembly.dispose();
   });
 
-  it('makes an owned opencode2 server ready through the /api route it actually mounts', async () => {
-    // The V2 server (`packages/server/src/api.ts` at the pinned comparator)
-    // mounts no `/global` group at all, so probing the legacy route would leave
-    // a beta-only install permanently unhealthy and its sessions unopenable.
+  it('keeps explicit V2 authoritative for readiness and the first session request when released opencode exposes both surfaces', async () => {
+    // Released OpenCode at the pinned comparator mounts both health surfaces.
+    // Re-probing that child would select V1 from `/global/health`, despite the
+    // explicit V2 launch contract that also selected `/api/health` readiness.
+    const requests: string[] = [];
     const ctx = createContextFixture({
       managedServerBaseUrl: 'http://127.0.0.1:49210',
-      systemToolExecutablePath: '/usr/local/bin/opencode2',
+      systemToolExecutablePath: '/usr/local/bin/opencode',
+      managedServerRequest: async (input) => {
+        requests.push(input.pathAndQuery);
+        const path = input.pathAndQuery.split('?')[0];
+        const body = path === '/global/health'
+          ? { healthy: true, version: '1.18.25' }
+          : path === '/api/health'
+            ? { healthy: true }
+            : path === '/api/session'
+              ? { data: { id: 'oc-session-v2' } }
+              : {};
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          headers: { 'content-type': 'application/json' },
+          body: new Response(JSON.stringify(body)).body,
+        };
+      },
     });
 
     const assembly = await createOpenCodeServerRuntimeAssembly({
@@ -194,15 +256,31 @@ describe('OpenCode server managed-service assembly', () => {
         kind: 'create',
         sessionId: 'happy-session-opencode2-readiness',
         cwd: '/repo',
+        configuration: {
+          mode: { value: null, updatedAtMs: 0 },
+          model: { value: null, updatedAtMs: 0 },
+          permissionIntent: { value: null, updatedAtMs: 0 },
+          options: {
+            opencodeCliGeneration: { value: 'v2', updatedAtMs: 1 },
+          },
+        },
       },
     });
 
     try {
+      expect(ctx.exec.systemTools.resolve).toHaveBeenCalledWith(expect.objectContaining({
+        toolId: 'opencode-cli-v2',
+      }));
+      expect(vi.mocked(ctx.managedServices.supervise).mock.calls[0]?.[0]?.mode).toMatchObject({
+        launch: { executable: { kind: 'systemTool', id: 'opencode-cli-v2' } },
+      });
       expect(vi.mocked(ctx.managedServices.supervise).mock.calls[0]?.[0]?.healthCheck).toEqual({
         kind: 'http',
-        target: { kind: 'servicePath', path: '/api/health' },
+        target: { kind: 'servicePath', path: '/api/info' },
         timeoutMs: 5_000,
       });
+      expect(requests[0]).toBe('/api/session');
+      expect(requests.some((path) => path.startsWith('/session'))).toBe(false);
     } finally {
       await assembly.dispose();
     }
@@ -238,6 +316,12 @@ describe('OpenCode server managed-service assembly', () => {
       directory: '/repo',
       happierSessionId: 'happy-session-opencode2-requests',
       endpoint: { mode: 'managed-spawn' },
+      env: {
+        HAPPIER_OPENCODE_CONNECTED_SERVICE_SELECTION_IDENTITY: 'direct-api-key-materialization',
+        OPENCODE_AUTH_CONTENT: JSON.stringify({
+          openai: { type: 'api', key: 'sk-native-api-key' },
+        }),
+      },
       request: {
         kind: 'create',
         sessionId: 'happy-session-opencode2-requests',
@@ -248,8 +332,92 @@ describe('OpenCode server managed-service assembly', () => {
     try {
       expect(requests).toContain('/api/session');
       expect(requests.some((path) => path.startsWith('/session'))).toBe(false);
+      expect(assembly.runtime.runtimeCapabilities?.sessionCapabilities?.sessionFork).toEqual({
+        conversation: 'supported',
+        fromMessage: 'unsupported',
+      });
+      expect(assembly.runtime.runtimeCapabilities?.tools).toEqual({
+        delivery: 'native_mcp',
+        support: 'supported',
+      });
+      expect(assembly.runtime.runtimeCapabilities?.sessionCapabilities?.compaction).toEqual({
+        manual: 'supported',
+      });
     } finally {
       await assembly.dispose();
+    }
+  });
+
+  it('launches V2 with the selected request-auth asset and isolated materialized config', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'happier-opencode-v2-request-auth-'));
+    const ctx = createContextFixture({
+      managedServerBaseUrl: 'http://127.0.0.1:49213',
+      systemToolExecutablePath: '/usr/local/bin/opencode2',
+      managedServerRequest: async (input) => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        body: new Response(input.pathAndQuery === '/api/session'
+          ? JSON.stringify({ data: { id: 'oc-session-v2-request-auth' } })
+          : '{}').body,
+      }),
+    });
+    let assembly: Awaited<ReturnType<typeof createOpenCodeServerRuntimeAssembly>> | null = null;
+    try {
+      const materialized = await materializeOpenCodeAuthEnvironment({
+        connectedAccountMaterializationAuthority: 'qualified',
+        materializationId: 'v2-request-auth-selection',
+        rootDir,
+        requestAuth: {
+          capabilityPath: join(rootDir, 'request-auth', 'capability.json'),
+          purposeBindings: [{
+            purpose: {
+              consumer: { pluginId: 'happier.agent.opencode', localId: 'opencode' },
+              purpose: 'openai-codex-model-request',
+            },
+            target: {
+              kind: 'account',
+              account: {
+                service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+                accountId: 'profile-a',
+              },
+            },
+          }],
+        },
+      });
+      assembly = await createOpenCodeServerRuntimeAssembly({
+        ctx,
+        directory: '/repo',
+        happierSessionId: 'happy-session-opencode2-request-auth',
+        endpoint: { mode: 'managed-spawn' },
+        env: materialized.env,
+        request: {
+          kind: 'create',
+          sessionId: 'happy-session-opencode2-request-auth',
+          cwd: '/repo',
+        },
+      });
+
+      const configHome = resolveOpenCodeConnectedConfigHomeDir(rootDir);
+      const superviseSpec = vi.mocked(ctx.managedServices.supervise).mock.calls[0]?.[0];
+      const launchEnv = superviseSpec?.mode.kind === 'spawn' ? superviseSpec.mode.launch.env : null;
+      expect(launchEnv).toMatchObject({
+        OPENCODE_AUTH_CONTENT: expect.stringContaining('happier-request-auth:openai:1'),
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          providers: { openai: {} },
+          plugins: [resolveOpenCodeRequestAuthV2PluginDir(configHome, 'openai')],
+        }),
+        OPENAI_API_KEY: '',
+        ANTHROPIC_API_KEY: '',
+        XDG_CONFIG_HOME: configHome,
+        [OPEN_CODE_REQUEST_AUTH_CAPABILITY_PATH_ENV]: join(rootDir, 'request-auth', 'capability.json'),
+      });
+      await expect(readFile(resolveOpenCodeRequestAuthV2PluginSourcePath(configHome, 'openai'), 'utf8'))
+        .resolves.toContain('id: "happier-request-auth-" + PROVIDER');
+    } finally {
+      await assembly?.dispose();
+      await rm(rootDir, { recursive: true, force: true });
     }
   });
 
@@ -276,6 +444,17 @@ describe('OpenCode server managed-service assembly', () => {
         kind: 'http',
         target: { kind: 'servicePath', path: '/global/health' },
         timeoutMs: 5_000,
+      });
+      expect(assembly.runtime.runtimeCapabilities?.sessionCapabilities?.sessionFork).toEqual({
+        conversation: 'supported',
+        fromMessage: 'unsupported',
+      });
+      expect(assembly.runtime.runtimeCapabilities?.tools).toEqual({
+        delivery: 'native_mcp',
+        support: 'supported',
+      });
+      expect(assembly.runtime.runtimeCapabilities?.sessionCapabilities?.compaction).toEqual({
+        manual: 'supported',
       });
     } finally {
       await assembly.dispose();
@@ -491,12 +670,54 @@ describe('OpenCode server managed-service assembly', () => {
     }
   });
 
+  it('fails closed before supervision when request-auth is pointed at an external server', async () => {
+    const ctx = createContextFixture({
+      managedServerBaseUrl: 'http://127.0.0.1:49201',
+    });
+
+    await expect(createOpenCodeServerRuntimeAssembly({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-session-request-auth-external',
+      endpoint: {
+        mode: 'external-attach',
+        baseUrl: 'http://127.0.0.1:49201',
+      },
+      env: {
+        [OPEN_CODE_REQUEST_AUTH_CAPABILITY_PATH_ENV]: '/private/opencode-request-auth/capability.json',
+      },
+      request: {
+        kind: 'create',
+        sessionId: 'happy-session-request-auth-external',
+        cwd: '/repo',
+      },
+    })).rejects.toThrow('OpenCode request authentication requires a managed server');
+
+    expect(ctx.managedServices.supervise).not.toHaveBeenCalled();
+  });
+
   it('supervises an external loopback server through SVC09 without requiring the host fetch service', async () => {
     const externalBaseUrl = 'http://127.0.0.1:49202';
     const onManagedServerDispose = vi.fn();
+    const requests: string[] = [];
     const ctx = createContextFixture({
       managedServerBaseUrl: externalBaseUrl,
       onManagedServerDispose,
+      managedServerRequest: async (input) => {
+        requests.push(input.pathAndQuery);
+        const body = input.pathAndQuery === '/global/health'
+          ? { healthy: true, version: '1.18.25' }
+          : input.pathAndQuery === '/session?directory=%2Frepo'
+            ? { id: 'oc-session-v1' }
+            : {};
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          headers: { 'content-type': 'application/json' },
+          body: new Response(JSON.stringify(body)).body,
+        };
+      },
     });
     const assembly = await createOpenCodeServerRuntimeAssembly({
       ctx,
@@ -525,13 +746,162 @@ describe('OpenCode server managed-service assembly', () => {
         username: 'opencode',
         passwordSecretId: 'opencodeServerPassword',
       },
-      healthCheck: {
-        kind: 'http',
-        target: { kind: 'servicePath', path: '/global/health' },
-        timeoutMs: 5_000,
-      },
+      healthCheck: { kind: 'none' },
     }), expect.any(Object));
+    expect(requests.slice(0, 2)).toEqual([
+      '/global/health',
+      '/session?directory=%2Frepo',
+    ]);
+    expect(assembly.runtime.runtimeCapabilities?.sessionCapabilities?.compaction).toEqual({
+      manual: 'supported',
+    });
     await assembly.dispose();
     expect(onManagedServerDispose).toHaveBeenCalledOnce();
+  });
+
+  it('keeps explicit V2 for an external dual-surface server', async () => {
+    const externalBaseUrl = 'http://127.0.0.1:49203';
+    const requests: string[] = [];
+    const ctx = createContextFixture({
+      managedServerBaseUrl: externalBaseUrl,
+      managedServerRequest: async (input) => {
+        requests.push(input.pathAndQuery);
+        const path = input.pathAndQuery.split('?')[0];
+        const body = path === '/global/health'
+          ? { healthy: true, version: '1.18.25' }
+          : path === '/api/health'
+            ? { healthy: true }
+            : path === '/api/session'
+              ? { data: { id: 'oc-session-v2' } }
+              : {};
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          headers: { 'content-type': 'application/json' },
+          body: new Response(JSON.stringify(body)).body,
+        };
+      },
+    });
+
+    const assembly = await createOpenCodeServerRuntimeAssembly({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-session-external-v2-dual',
+      endpoint: { mode: 'external-attach', baseUrl: externalBaseUrl, credential: null },
+      request: {
+        kind: 'create',
+        sessionId: 'happy-session-external-v2-dual',
+        cwd: '/repo',
+        configuration: {
+          mode: { value: null, updatedAtMs: 0 },
+          model: { value: null, updatedAtMs: 0 },
+          permissionIntent: { value: null, updatedAtMs: 0 },
+          options: { opencodeCliGeneration: { value: 'v2', updatedAtMs: 1 } },
+        },
+      },
+    });
+
+    // An attached V2 server may be the opencode2 preview (/api/health) or the
+    // released opencode 2.0.15 (/api/info). The first authenticated operation
+    // is the fail-closed reachability check; no single HTTP health path fits both.
+    expect(vi.mocked(ctx.managedServices.supervise).mock.calls[0]?.[0]?.healthCheck).toEqual({ kind: 'none' });
+    expect(requests[0]).toBe('/api/session');
+    expect(requests.some((path) => path.startsWith('/session'))).toBe(false);
+    expect(requests).not.toContain('/global/health');
+    expect(assembly.runtime.runtimeCapabilities?.sessionCapabilities?.compaction).toEqual({
+      manual: 'supported',
+    });
+    await assembly.dispose();
+  });
+
+  it('attaches an explicit V2 session to a pure-V2 external server', async () => {
+    const externalBaseUrl = 'http://127.0.0.1:49204';
+    const requests: string[] = [];
+    const ctx = createContextFixture({
+      managedServerBaseUrl: externalBaseUrl,
+      managedServerRequest: async (input) => {
+        requests.push(input.pathAndQuery);
+        const path = input.pathAndQuery.split('?')[0];
+        const body = path === '/api/session' ? { data: { id: 'oc-session-v2' } } : {};
+        return {
+          ok: path === '/api/health' || path === '/api/session',
+          status: path === '/api/health' || path === '/api/session' ? 200 : 404,
+          statusText: path === '/api/health' || path === '/api/session' ? 'OK' : 'Not Found',
+          headers: { 'content-type': 'application/json' },
+          body: new Response(JSON.stringify(body)).body,
+        };
+      },
+    });
+
+    const assembly = await createOpenCodeServerRuntimeAssembly({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-session-external-v2-only',
+      endpoint: { mode: 'external-attach', baseUrl: externalBaseUrl, credential: null },
+      request: {
+        kind: 'create',
+        sessionId: 'happy-session-external-v2-only',
+        cwd: '/repo',
+        configuration: {
+          mode: { value: null, updatedAtMs: 0 },
+          model: { value: null, updatedAtMs: 0 },
+          permissionIntent: { value: null, updatedAtMs: 0 },
+          options: { opencodeCliGeneration: { value: 'v2', updatedAtMs: 1 } },
+        },
+      },
+    });
+
+    expect(vi.mocked(ctx.managedServices.supervise).mock.calls[0]?.[0]?.healthCheck).toEqual({ kind: 'none' });
+    expect(requests[0]).toBe('/api/session');
+    expect(requests.some((path) => path.startsWith('/session'))).toBe(false);
+    expect(requests).not.toContain('/global/health');
+    expect(assembly.runtime.runtimeCapabilities?.sessionCapabilities?.compaction).toEqual({
+      manual: 'supported',
+    });
+    await assembly.dispose();
+  });
+
+  it('auto-attaches to authenticated released OpenCode 2.0.15 without a V1 readiness gate', async () => {
+    const requests: string[] = [];
+    const ctx = createContextFixture({
+      managedServerBaseUrl: 'http://127.0.0.1:49205',
+      managedServerRequest: async (input) => {
+        requests.push(input.pathAndQuery);
+        const path = input.pathAndQuery.split('?')[0];
+        const found = path === '/api/info' || path === '/api/session';
+        return {
+          ok: found,
+          status: found ? 200 : 404,
+          statusText: found ? 'OK' : 'Not Found',
+          headers: { 'content-type': 'application/json' },
+          body: new Response(JSON.stringify(path === '/api/info'
+            ? { version: '2.0.15', pid: 123, urls: [], paths: { tmp: '/tmp' } }
+            : { data: { id: 'oc-session-v2' } })).body,
+        };
+      },
+    });
+
+    const assembly = await createOpenCodeServerRuntimeAssembly({
+      ctx,
+      directory: '/repo',
+      happierSessionId: 'happy-session-external-released-v2',
+      endpoint: { mode: 'external-attach', baseUrl: 'http://127.0.0.1:49205', credential: null },
+      request: {
+        kind: 'create',
+        sessionId: 'happy-session-external-released-v2',
+        cwd: '/repo',
+        configuration: {
+          mode: { value: null, updatedAtMs: 0 },
+          model: { value: null, updatedAtMs: 0 },
+          permissionIntent: { value: null, updatedAtMs: 0 },
+          options: { opencodeCliGeneration: { value: 'auto', updatedAtMs: 1 } },
+        },
+      },
+    });
+    expect(vi.mocked(ctx.managedServices.supervise).mock.calls[0]?.[0]?.healthCheck).toEqual({ kind: 'none' });
+    expect(requests.slice(0, 4)).toEqual(['/global/health', '/api/health', '/api/info', '/api/session']);
+    expect(requests.some((path) => path.startsWith('/session'))).toBe(false);
+    await assembly.dispose();
   });
 });

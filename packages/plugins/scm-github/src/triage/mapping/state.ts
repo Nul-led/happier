@@ -22,10 +22,14 @@ export function mapGithubPullRequestState(
       : Object.freeze({ presentation: 'active', nativeLabel: 'Open' });
   }
   if (state === 'closed') {
-    // A merged pull request is closed AND merged; folding the two loses the outcome the
-    // user actually asked about.
-    return typeof raw.merged_at === 'string' && raw.merged_at.trim()
-      ? Object.freeze({ presentation: 'closed', nativeLabel: 'Merged' })
+    // A merged pull request completed its purpose: `resolved`, exactly as a completed
+    // issue is. Closed without merging is `closed` (`CONTRACT.md` §4, r0.42).
+    const pullRequest = typeof raw.pull_request === 'object' && raw.pull_request !== null
+      && !Array.isArray(raw.pull_request)
+      ? raw.pull_request as Readonly<Record<string, unknown>> : null;
+    const mergedAt = raw.merged_at ?? pullRequest?.merged_at;
+    return typeof mergedAt === 'string' && mergedAt.trim()
+      ? Object.freeze({ presentation: 'resolved', nativeLabel: 'Merged' })
       : Object.freeze({ presentation: 'closed', nativeLabel: 'Closed' });
   }
   return Object.freeze({ presentation: 'unknown', nativeLabel: state ?? '' });

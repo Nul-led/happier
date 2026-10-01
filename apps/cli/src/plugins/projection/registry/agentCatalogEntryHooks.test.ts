@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,6 +29,16 @@ const runBackendSessionCliCommandMock = vi.hoisted(() =>
 vi.mock('@/cli/runBackendSessionCliCommand', () => ({
   runBackendSessionCliCommand: runBackendSessionCliCommandMock,
 }));
+
+function writePreflightFixtureExecutable(dir: string): string {
+  const quotedRuntime = `'${process.execPath.replace(/'/g, `'\\''`)}'`;
+  return writeExecutableShimSync({
+    dir, fileName: process.platform === 'win32' ? 'external-agent.cmd' : 'external-agent',
+    contents: process.platform === 'win32'
+      ? `@echo off\r\n"${process.execPath}" %*\r\n`
+      : `#!/bin/sh\nexec ${quotedRuntime} "$@"\n`,
+  });
+}
 
 describe('Agent registration catalog projections', () => {
   beforeEach(() => {
@@ -82,6 +92,7 @@ describe('Agent registration catalog projections', () => {
       settleReachability = resolve;
     }));
     const projected = projectAgentConnectedAccountLaunchCatalogEntry({
+      pluginId: 'acme.plugin',
       agentId: 'acme.external' as never,
       isCurrent: () => current,
       hostAccess: {
@@ -100,6 +111,10 @@ describe('Agent registration catalog projections', () => {
         switchContinuity: {
           continuityMode: 'restart_same_home',
           supportedTransitions: ['native_to_connected'],
+          providerStateSharingRequired: {
+            serviceIds: ['acme-account'],
+            supportedTransitions: ['connected_to_native'],
+          },
         },
         requestAuthUses: [{
           purpose: 'model_upstream',
@@ -134,6 +149,10 @@ describe('Agent registration catalog projections', () => {
     expect(projected.connectedAccountSwitchContinuity).toEqual({
       continuityMode: 'restart_same_home',
       supportedTransitions: ['native_to_connected'],
+      providerStateSharingRequired: {
+        serviceIds: ['acme.plugin/acme-account'],
+        supportedTransitions: ['connected_to_native'],
+      },
     });
     await expect(projected.getConnectedServiceStateSharingDescriptor?.()).resolves.toMatchObject({
       providerId: 'acme.external',
@@ -198,6 +217,7 @@ describe('Agent registration catalog projections', () => {
     const replaceFiles = vi.fn(async () => undefined);
     const validateCurrentBeforeMutation = vi.fn(async () => ({ current: true as const }));
     const projected = projectAgentConnectedAccountLaunchCatalogEntry({
+      pluginId: 'acme.plugin',
       agentId: 'acme.external' as never,
       isCurrent: () => true,
       connectedAccountLaunch: {
@@ -267,6 +287,7 @@ describe('Agent registration catalog projections', () => {
 
   it('rejects Connected Account launch environment outside registration-owned host access', () => {
     expect(() => projectAgentConnectedAccountLaunchCatalogEntry({
+      pluginId: 'acme.plugin',
       agentId: 'acme.external' as never,
       isCurrent: () => true,
       hostAccess: { required: [], optional: [] },
@@ -278,6 +299,108 @@ describe('Agent registration catalog projections', () => {
       },
     })).toThrow("Agent 'acme.external' connected-account launch environment 'ACME_API_KEY' is not declared");
   });
+
+  it('uses the same session runtime descriptor for plugin variant and discovery', async () => {
+    const runtimeDescriptorV1 = { v: 1 as const, agentId: 'codex', agent: { backendMode: 'appServer' } };
+    const resolveMode = (input: Parameters<NonNullable<AgentPreflightSessionControlsContributionV1['resolveProbeVariant']>>[0]) =>
+      String(input.runtimeDescriptorV1?.agent.backendMode ?? input.accountSettings?.mode);
+    const projected = projectAgentPreflightSessionControlsCatalogEntry({
+      agentId: 'codex', systemTools: [], retirementSignal: new AbortController().signal, isCurrent: () => true,
+      preflightSessionControls: { resolveProbeVariant: resolveMode,
+        probeModels: context => [{ id: resolveMode(context), name: resolveMode(context) }] },
+    });
+    const input = { runtimeDescriptorV1, accountSettings: { mode: 'acp' } };
+    expect(projected.resolveModelsProbeVariant?.(input)).toBe('appServer');
+    const adapter = await projected.getPreflightSessionControlsProbeAdapter?.();
+    await expect(adapter?.probeModelsRaw?.({ ...input, cwd: process.cwd(), timeoutMs: 1_000 }))
+      .resolves.toEqual([{ id: 'appServer', name: 'appServer' }]);
+  });
+
+  it('materializes prepared command arguments with host environment custody and cleans their files', async () => {
+    const toolRoot = await mkdtemp(join(tmpdir(), 'happier-prepared-preflight-'));
+    await mkdir(join(toolRoot, 'extensions'));
+    await writeFile(join(toolRoot, 'extensions/auth.js'), 'auth fixture');
+    const script = `const fs = require('node:fs'); const path = process.argv[1];
+      process.stdout.write(JSON.stringify({ path, contents: fs.readFileSync(path, 'utf8'), selectedPath: process.argv[2] }));`;
+    const command = {
+      toolId: 'external-agent-cli', args: ['-e', script], environmentKeys: ['AGENT_HOME'],
+      prepareCommand: ({ environment, bypassCache }: { environment: Readonly<Record<string, boolean>>; bypassCache?: boolean }) => ({
+        args: ['-e', script,
+          { kind: 'temporaryTextFile' as const, suffix: '.mjs', contents: JSON.stringify({ force: bypassCache === true, homePresent: environment.AGENT_HOME }) },
+          { kind: 'environmentPath' as const, key: 'AGENT_HOME', relativePath: 'extensions/auth.js' },
+        ],
+      }),
+    };
+    const project = (includePreparation: boolean) => projectAgentPreflightSessionControlsCatalogEntry({
+      agentId: 'acme.external-agent' as never,
+      preflightSessionControls: { models: { command: includePreparation ? command : { ...command, prepareCommand: undefined }, parseOutput: ({ stdout }) => JSON.parse(stdout) } },
+      systemTools: [{ id: 'external-agent-cli', title: 'External Agent CLI', executableNames: [writePreflightFixtureExecutable(toolRoot)] }],
+      retirementSignal: new AbortController().signal, isCurrent: () => true,
+    });
+    try {
+      // The same real executable without preparation cannot discover an artifact.
+      // This is the old static-command path, not a mock of the preparation owner.
+      const staticAdapter = await project(false).getPreflightSessionControlsProbeAdapter?.();
+      await expect(staticAdapter?.probeModelsRaw?.({ cwd: toolRoot, timeoutMs: 5_000, env: { AGENT_HOME: toolRoot } })).resolves.toBeNull();
+      const adapter = await project(true).getPreflightSessionControlsProbeAdapter?.();
+      const result = await adapter?.probeModelsRaw?.({ cwd: toolRoot, timeoutMs: 5_000, bypassCache: true, env: { AGENT_HOME: toolRoot } });
+      expect(result).toMatchObject({ contents: '{"force":true,"homePresent":true}', selectedPath: join(await realpath(toolRoot), 'extensions/auth.js') });
+      const path = (result as { path: string }).path;
+      await expect(access(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await rm(toolRoot, { recursive: true, force: true }); }
+  });
+
+  it.each(['../outside.js', '..\\outside.js', '/outside.js', 'C:\\outside.js'])(
+    'rejects escaping prepared paths and cleans files created before rejection: %s', async (relativePath) => {
+      const toolRoot = await mkdtemp(join(tmpdir(), 'happier-prepared-reject-'));
+      const artifactsRoot = join(toolRoot, 'artifacts');
+      await mkdir(artifactsRoot);
+      for (const key of ['TMPDIR', 'TMP', 'TEMP']) vi.stubEnv(key, artifactsRoot);
+      try {
+        const projected = projectAgentPreflightSessionControlsCatalogEntry({
+          agentId: 'acme.external-agent' as never,
+          preflightSessionControls: { models: { command: {
+            toolId: 'external-agent-cli', args: ['-e', "throw Error('must not execute')"], environmentKeys: ['AGENT_HOME'],
+            prepareCommand: () => ({ args: [
+              { kind: 'temporaryTextFile', suffix: '.mjs', contents: 'ephemeral' },
+              { kind: 'environmentPath', key: 'AGENT_HOME', relativePath },
+            ] }),
+          } } },
+          systemTools: [{ id: 'external-agent-cli', title: 'External Agent CLI', executableNames: [writePreflightFixtureExecutable(toolRoot)] }],
+          retirementSignal: new AbortController().signal, isCurrent: () => true,
+        });
+        const adapter = await projected.getPreflightSessionControlsProbeAdapter?.();
+        await expect(adapter?.probeModelsRaw?.({ cwd: toolRoot, timeoutMs: 5_000, env: { AGENT_HOME: toolRoot } })).resolves.toBeNull();
+        expect(await readdir(artifactsRoot)).toEqual([]);
+      } finally { vi.unstubAllEnvs(); await rm(toolRoot, { recursive: true, force: true }); }
+    },
+  );
+
+  it('retains a prepared file during execution and removes it after cancellation', async () => {
+    const toolRoot = await mkdtemp(join(tmpdir(), 'happier-prepared-cancel-'));
+    const witness = join(toolRoot, 'started.json');
+    const script = `require('node:fs').writeFileSync(${JSON.stringify(witness)}, JSON.stringify(process.argv[1])); setInterval(() => {}, 1000);`;
+    const projected = projectAgentPreflightSessionControlsCatalogEntry({
+      agentId: 'acme.external-agent' as never,
+      preflightSessionControls: { models: { command: {
+        toolId: 'external-agent-cli', args: ['-e', script],
+        prepareCommand: () => ({ args: ['-e', script, { kind: 'temporaryTextFile', suffix: '.mjs', contents: 'ephemeral' }] }),
+      } } },
+      systemTools: [{ id: 'external-agent-cli', title: 'External Agent CLI', executableNames: [writePreflightFixtureExecutable(toolRoot)] }],
+      retirementSignal: new AbortController().signal, isCurrent: () => true,
+    });
+    const controller = new AbortController();
+    try {
+      const adapter = await projected.getPreflightSessionControlsProbeAdapter?.();
+      const pending = adapter?.probeModelsRaw?.({ cwd: toolRoot, timeoutMs: 10_000, signal: controller.signal });
+      await vi.waitFor(async () => { await access(witness); }, { timeout: 5_000 });
+      const path = JSON.parse(await readFile(witness, 'utf8')) as string;
+      await access(path);
+      controller.abort();
+      await expect(pending).resolves.toBeNull();
+      await expect(access(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { controller.abort(); await rm(toolRoot, { recursive: true, force: true }); }
+  }, 15_000);
 
   it('runs a declared preflight command through host environment policy', async () => {
     const toolRoot = await mkdtemp(join(tmpdir(), 'happier-agent-preflight-'));
@@ -321,6 +444,126 @@ describe('Agent registration catalog projections', () => {
         env: { CI: 'ambient', KEEP: 'kept', DROP: 'dropped' },
       })).resolves.toBe('0|1|0');
     } finally {
+      await rm(toolRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('selects a declared preflight command tool from account settings and partitions its cache variant', async () => {
+    const toolRoot = await mkdtemp(join(tmpdir(), 'happier-agent-preflight-tool-selection-'));
+    const autoExecutable = writeExecutableShimSync({
+      dir: toolRoot,
+      fileName: process.platform === 'win32' ? 'external-auto.cmd' : 'external-auto',
+      contents: process.platform === 'win32' ? '@echo off\necho auto' : '#!/bin/sh\nprintf auto',
+    });
+    const v2Executable = writeExecutableShimSync({
+      dir: toolRoot,
+      fileName: process.platform === 'win32' ? 'external-v2.cmd' : 'external-v2',
+      contents: process.platform === 'win32' ? '@echo off\necho v2' : '#!/bin/sh\nprintf v2',
+    });
+    const preflightSessionControls = {
+      models: {
+        commandToolIds: ['external-auto', 'external-v2'],
+        resolveCommandToolId: ({ accountSettings }) => (
+          accountSettings?.generation === 'v2' ? 'external-v2' : 'external-auto'
+        ),
+        command: { toolId: 'external-auto', args: ['models'] },
+        parseOutput: ({ stdout }) => stdout.trim(),
+      },
+    } satisfies AgentPreflightSessionControlsContributionV1;
+    const projected = projectAgentPreflightSessionControlsCatalogEntry({
+      agentId: 'acme.external-agent' as never,
+      preflightSessionControls,
+      systemTools: [
+        { id: 'external-auto', title: 'External Auto', executableNames: [autoExecutable] },
+        { id: 'external-v2', title: 'External V2', executableNames: [v2Executable] },
+      ],
+      retirementSignal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    try {
+      expect(projected.needsAccountSettingsForProbes).toBe(true);
+      expect(projected.resolveModelsProbeVariant?.({
+        accountSettings: { generation: 'v2' },
+      })).toContain('tool:external-v2');
+      const adapter = await projected.getPreflightSessionControlsProbeAdapter?.();
+      await expect(adapter?.probeModelsRaw?.({
+        cwd: toolRoot,
+        timeoutMs: 1_500,
+        backendTarget: undefined,
+        accountSettings: { generation: 'v2' },
+      })).resolves.toBe('v2');
+    } finally {
+      await rm(toolRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when a preflight command tool selector returns an undeclared tool id', async () => {
+    const preflightSessionControls = {
+      models: {
+        commandToolIds: ['external-auto'],
+        resolveCommandToolId: () => 'external-undeclared',
+        command: { toolId: 'external-auto', args: ['models'] },
+      },
+    } satisfies AgentPreflightSessionControlsContributionV1;
+    const projected = projectAgentPreflightSessionControlsCatalogEntry({
+      agentId: 'acme.external-agent' as never,
+      preflightSessionControls,
+      systemTools: [{ id: 'external-auto', title: 'External Auto', executableNames: ['external-auto'] }],
+      retirementSignal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    const adapter = await projected.getPreflightSessionControlsProbeAdapter?.();
+    await expect(adapter?.probeModelsRaw?.({
+      cwd: process.cwd(),
+      timeoutMs: 1_500,
+      backendTarget: undefined,
+      accountSettings: null,
+    })).resolves.toBeNull();
+  });
+
+  it('shares one timeout budget between the primary and fallback model commands', async () => {
+    const toolRoot = await mkdtemp(join(tmpdir(), 'happier-agent-preflight-shared-budget-'));
+    const executable = writeExecutableShimSync({
+      dir: toolRoot,
+      fileName: process.platform === 'win32' ? 'models.cmd' : 'models',
+      contents: process.platform === 'win32' ? '@echo off\necho primary' : '#!/bin/sh\nprintf primary',
+    });
+    let nowMs = 0;
+    const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
+    const fallbackParseOutput = vi.fn(() => 'fallback');
+    const projected = projectAgentPreflightSessionControlsCatalogEntry({
+      agentId: 'acme.external-agent' as never,
+      preflightSessionControls: {
+        models: {
+          command: { toolId: 'external-models', args: ['primary'] },
+          parseOutput: () => {
+            nowMs = 1_500;
+            return null;
+          },
+          fallback: {
+            command: { toolId: 'external-models', args: ['fallback'] },
+            parseOutput: fallbackParseOutput,
+          },
+        },
+      },
+      systemTools: [{ id: 'external-models', title: 'External models', executableNames: [executable] }],
+      retirementSignal: new AbortController().signal,
+      isCurrent: () => true,
+    });
+
+    try {
+      const adapter = await projected.getPreflightSessionControlsProbeAdapter?.();
+      await expect(adapter?.probeModelsRaw?.({
+        cwd: toolRoot,
+        timeoutMs: 1_500,
+        backendTarget: undefined,
+        accountSettings: null,
+      })).resolves.toBeNull();
+      expect(fallbackParseOutput).not.toHaveBeenCalled();
+    } finally {
+      dateNow.mockRestore();
       await rm(toolRoot, { recursive: true, force: true });
     }
   });
@@ -398,7 +641,7 @@ describe('Agent registration catalog projections', () => {
         buildSessionOptions,
       },
       resolvePluginSettings: async () => ({
-        account: { ownedMode: 'safe', secret: undefined },
+        account: { ownedMode: 'safe' },
         daemon: { ownedMode: 'daemon-safe' },
       }),
     });
@@ -412,7 +655,7 @@ describe('Agent registration catalog projections', () => {
     })).resolves.toEqual({ accountSelected: 'safe', daemonSelected: 'daemon-safe' });
     expect(buildSessionOptions).toHaveBeenCalledWith(expect.objectContaining({
       pluginSettings: {
-        account: { ownedMode: 'safe', secret: undefined },
+        account: { ownedMode: 'safe' },
         daemon: { ownedMode: 'daemon-safe' },
       },
     }));

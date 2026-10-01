@@ -1,8 +1,8 @@
 import { projectAgentCapabilitiesV2FromDefinition } from '@happier-dev/plugin-sdk/agents';
 import { definePlugin } from '@happier-dev/plugin-sdk';
 
+import { QWEN_ACP_RUNTIME_DEFINITION } from './agent/acp/definition.js';
 import { AGENT_DEFINITION } from './agent/definition.js';
-import { createQwenAgentRuntime } from './agent/runtime/factory.js';
 
 export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
   id: 'happier.agent.qwen',
@@ -23,7 +23,15 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
     qwen: {
       declaration: {
         title: 'Qwen Code',
-        runtime: { kind: 'custom' },
+        runtime: {
+          kind: 'acp',
+          transport: {
+            kind: 'stdio',
+            executable: { kind: 'systemTool', id: 'qwen-cli' },
+            args: ['--acp'],
+          },
+          definition: QWEN_ACP_RUNTIME_DEFINITION,
+        },
         cli: {
           displayName: 'Qwen CLI',
           executable: {
@@ -50,20 +58,30 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
         catalog: {
           vendorResume: { support: AGENT_DEFINITION.core.resume.vendorResume },
         },
+        // Resume-only: supported Qwen ACP releases answer `session/list`, so
+        // the host's generic ACP source owns discovery and resume in Happier.
+        // This does not claim linked transcript observation or takeover.
+        surfaces: {
+          externalSession: {
+            sources: [{
+              sourceKind: 'qwenAcpSessionList',
+              resumeOnly: true,
+              schema: { fields: [{ kind: 'literal', name: 'kind', value: 'qwenAcpSessionList' }] },
+              key: { segments: [{ kind: 'literal', value: 'qwenAcpSessionList' }] },
+              instances: [{ kind: 'default', constants: {} }],
+            }],
+          },
+        },
         capabilities: projectAgentCapabilitiesV2FromDefinition(AGENT_DEFINITION.core, {
+          surfaces: ['externalSessions'],
           sessions: {
             open: ['create', 'resume'],
             delivery: ['newTurn', 'followUp'],
             cancel: true,
+            configuration: true,
             executionRunContext: { versions: [1] },
           },
         }),
-      },
-      factory: createQwenAgentRuntime,
-      sessionRunnerFactory: {
-        module: './agent/runtime/factory',
-        export: 'createQwenAgentRuntime',
-        runtimeApiVersion: 1,
       },
     },
   },

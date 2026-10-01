@@ -8,6 +8,8 @@ import type {
 import type {
   AgentRuntimeDaemonServiceAuthorityRunnerIdentity,
 } from './sessionBridgeAuthorization';
+import { pluginSourceCustodyV1Equal } from '@happier-dev/protocol';
+import { processIdentityMatches } from '@happier-dev/cli-common/processInstance';
 
 export function authorizeTrackedRunnerAgentDaemonServiceOperation(
   input: Readonly<{
@@ -22,16 +24,16 @@ export function authorizeTrackedRunnerAgentDaemonServiceOperation(
 ): boolean {
   if (
     input.tracked.happySessionId !== input.sessionId
-    || input.tracked.runnerAgentImmutableGenerationId
-      !== input.retainedAgent.immutableGenerationId
-    || (
-      input.tracked.sessionRunnerPid
-      ?? input.tracked.pid
-    ) !== input.runner.pid
-    || input.tracked.processStartTimeMs
-      !== input.runner.processStartTimeMs
-    || input.tracked.processCommandHash
-      !== input.runner.processCommandHash
+    || !input.tracked.runnerAgentSourceCustodyV1
+    || !pluginSourceCustodyV1Equal(
+      input.tracked.runnerAgentSourceCustodyV1,
+      input.retainedAgent.sourceCustody,
+    )
+    || !processIdentityMatches({
+      pid: input.tracked.sessionRunnerPid ?? input.tracked.pid,
+      processStartTimeMs: input.tracked.processStartTimeMs,
+      processCommandHash: input.tracked.processCommandHash,
+    }, input.runner)
   ) {
     return false;
   }

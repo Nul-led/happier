@@ -14,6 +14,10 @@ import {
   getAgentCliRuntimeSpec,
 } from '@happier-dev/agents';
 import { ConversationProvidersContributionProtocolV1 } from '@happier-dev/channels-protocol/v1';
+import {
+  listPluginProjectionFamilyIdsV2,
+  PluginProjectionV2Schema,
+} from '@happier-dev/protocol';
 import { rehydrateCanonicalProtocolComposableSchema } from '@happier-dev/protocol/plugins/actions/protocol-composable-schema';
 import { PluginManifestV2Schema } from '@happier-dev/protocol/plugins/manifest';
 import {
@@ -22,7 +26,10 @@ import {
   TriageSourcesContributionProtocolV1,
 } from '@happier-dev/triage-protocol/v1';
 
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
+
 import { createResolvedContributionRegistry } from './createResolvedContributionRegistry';
+import { buildPluginProjectionV2 } from './projection/v2';
 import { resolveBuiltInContributions } from './resolveBuiltInContributions';
 import * as generatedBundledPluginManifests from './sources/generatedBundledPluginManifests';
 import * as generatedBundledPlugins from './sources/generatedBundledPlugins';
@@ -43,6 +50,67 @@ function readGeneratedBundledPluginsSource(): string {
 }
 
 describe('resolveBuiltInContributions', () => {
+  it('serializes every concrete bundled projection family through the strict current Protocol schema', () => {
+    const pluginMetadata = generatedBundledPluginManifests.BUNDLED_FIRST_PARTY_PLUGIN_METADATA;
+    const projection = buildPluginProjectionV2({
+      registry: createResolvedContributionRegistry({
+        ...resolveBuiltInContributions(),
+        immutableGenerationIdsByPluginId: Object.freeze(Object.fromEntries(
+          pluginMetadata.map(({ pluginId }) => [pluginId, `generation:${pluginId}`]),
+        )),
+        occurrenceIdsByPluginId: Object.freeze(Object.fromEntries(
+          pluginMetadata.map(({ pluginId }) => [pluginId, createPluginRuntimeOccurrenceId(pluginId)]),
+        )),
+      }),
+      generation: 1,
+    });
+
+    expect(Object.keys(projection.familiesById).sort()).toEqual(
+      [...listPluginProjectionFamilyIdsV2()].sort(),
+    );
+    expect(() => PluginProjectionV2Schema.parse(projection)).not.toThrow();
+  });
+
+  it('projects bundled Triage and Inspector app-shell surfaces from their generated manifests', () => {
+    const pluginMetadata = generatedBundledPluginManifests.BUNDLED_FIRST_PARTY_PLUGIN_METADATA;
+    const projection = buildPluginProjectionV2({
+      registry: createResolvedContributionRegistry({
+        ...resolveBuiltInContributions(),
+        immutableGenerationIdsByPluginId: Object.freeze(Object.fromEntries(
+          pluginMetadata.map(({ pluginId }) => [pluginId, `generation:${pluginId}`]),
+        )),
+        occurrenceIdsByPluginId: Object.freeze(Object.fromEntries(
+          pluginMetadata.map(({ pluginId }) => [pluginId, createPluginRuntimeOccurrenceId(pluginId)]),
+        )),
+      }),
+      generation: 1,
+    });
+    const entries = projection.familiesById.pluginUi?.entriesById ?? {};
+
+    expect(entries['surfacePlacement:happier.triage:triage']).toEqual(expect.objectContaining({
+      contributionKind: 'surfacePlacement',
+      container: 'appPage',
+      target: { kind: 'app' },
+      column: expect.objectContaining({ renderer: expect.objectContaining({ contributionId: 'views-column' }) }),
+    }));
+    expect(entries['surfacePlacement:happier.triage:latest']).toEqual(expect.objectContaining({
+      contributionKind: 'surfacePlacement',
+      binding: expect.objectContaining({ kind: 'inline', role: 'widget', targetKind: 'app' }),
+      target: { kind: 'app' },
+      home: { default: 'shown' },
+    }));
+    expect(entries['surfacePlacement:happier.inspector:inspector-page']).toEqual(expect.objectContaining({
+      contributionKind: 'surfacePlacement',
+      container: 'appPage',
+      target: { kind: 'app' },
+    }));
+    expect(entries['surfacePlacement:happier.inspector:inspector-app']).toEqual(expect.objectContaining({
+      contributionKind: 'surfacePlacement',
+      container: 'rightSidebarTab',
+      target: { kind: 'app' },
+    }));
+  });
+
   it('keeps cold manifest discovery off the executable bindings aggregate', () => {
     const resolverSource = readResolverSource();
     const pluginContributionResolverSource = readPluginContributionResolverSource();
@@ -140,6 +208,12 @@ describe('resolveBuiltInContributions', () => {
     const registry = createResolvedContributionRegistry({
       ...contributes,
       immutableGenerationIdsByPluginId,
+      occurrenceIdsByPluginId: Object.freeze(Object.fromEntries(
+        generatedBundledPluginManifests.BUNDLED_FIRST_PARTY_PLUGIN_METADATA.map(({ pluginId }) => [
+          pluginId,
+          createPluginRuntimeOccurrenceId(pluginId),
+        ]),
+      )),
     });
     const readAdmittedTargetedContributions = registry.readAdmittedTargetedContributions;
     if (!readAdmittedTargetedContributions) {

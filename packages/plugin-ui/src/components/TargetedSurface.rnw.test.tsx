@@ -15,7 +15,11 @@ const detailSurface = {
   contributor: {
     pluginId: 'com.acme.source',
     contributionId: 'pull-request-detail',
-    immutableGenerationId: 'source-generation-a',
+    occurrenceId: 'source-occurrence-a',
+    sourceCustody: {
+      kind: 'development',
+      registeredRootId: 'source-root',
+    },
   },
   role: 'detail',
   presentation: 'content',

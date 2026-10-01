@@ -60,6 +60,8 @@ export type TriageMountedPinsV1 = Readonly<{
   /** One restrained confirmation of the last settled write. */
   notice: TriagePinNoticeV1 | null;
   setPinned: (row: TriageListDisplayRowV1) => void;
+  /** Read the pins again at the depth already loaded, after an unreachable Account. */
+  retry: () => void;
 }>;
 
 const UNAVAILABLE_REASON = 'Happier cannot reach your account right now, so pins cannot be changed.';
@@ -226,6 +228,12 @@ export function useTriagePinnedEntries(): TriageMountedPinsV1 {
     }));
   }, [appendFailed, reading]);
 
+  const retry = useCallback((): void => {
+    if (reading) return;
+    // The same depth, re-demanded: `nonce` is what makes it a new read.
+    setDemand((current) => ({ ...current, appending: false, nonce: current.nonce + 1 }));
+  }, [reading]);
+
   const setPinned = useCallback((row: TriageListDisplayRowV1): void => {
     if (busyKey !== null || unavailableReason !== null) return;
     const controller = new AbortController();
@@ -276,5 +284,6 @@ export function useTriagePinnedEntries(): TriageMountedPinsV1 {
     unavailableReason,
     notice,
     setPinned,
-  }), [busyKey, loadMore, loadMorePins, more, notice, pins, setPinned, unavailableReason]);
+    retry,
+  }), [busyKey, loadMore, loadMorePins, more, notice, pins, retry, setPinned, unavailableReason]);
 }

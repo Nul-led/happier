@@ -58,7 +58,7 @@ test('every published example consumes the public SDK entry point and no host in
 test('the SDK consumer validator defaults to current source without npm pack or install', async () => {
   const rejectingNpmBin = await mkdtemp(join(tmpdir(), 'happier-sdk-validator-rejecting-npm-bin-'));
   try {
-    const result = spawnSync(process.execPath, [scriptPath], {
+    const result = spawnSync(process.execPath, ['--import', 'tsx', scriptPath], {
       env: { ...process.env, PATH: await createRejectingNpmPath(rejectingNpmBin) },
       encoding: 'utf8',
     });
@@ -73,7 +73,7 @@ test('the SDK consumer validator rejects a missing supplied tarball before it ca
   const emptyBin = await mkdtemp(join(tmpdir(), 'happier-sdk-validator-empty-bin-'));
   const missingTarball = join(emptyBin, 'candidate.tgz');
   try {
-    const result = spawnSync(process.execPath, [scriptPath, '--tarball', missingTarball], {
+    const result = spawnSync(process.execPath, ['--import', 'tsx', scriptPath, '--tarball', missingTarball], {
       env: {
         ...process.env,
         PATH: emptyBin,
@@ -96,7 +96,7 @@ test('the SDK consumer validator uses a supplied exact tarball instead of packin
   const suppliedTarball = join(emptyBin, 'candidate.tgz');
   try {
     await writeFile(suppliedTarball, 'not-a-real-tarball');
-    const result = spawnSync(process.execPath, [scriptPath, '--tarball', suppliedTarball], {
+    const result = spawnSync(process.execPath, ['--import', 'tsx', scriptPath, '--tarball', suppliedTarball], {
       env: {
         ...process.env,
         PATH: emptyBin,

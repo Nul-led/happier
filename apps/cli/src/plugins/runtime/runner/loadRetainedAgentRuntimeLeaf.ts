@@ -1,5 +1,5 @@
-import { realpath } from 'node:fs/promises';
-import { join, relative, sep } from 'node:path';
+import { lstat, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
@@ -12,10 +12,6 @@ import type {
 import {
     normalizePluginDeclarativeAcpRuntime,
 } from '@/agent/acp/runtime/definition/plugin';
-import {
-    BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-} from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
-import { resolveBundledImmutablePluginArtifact } from '../../store/registry/generationStore';
 
 import type { PluginStorePaths } from '../../store/paths';
 import { readPluginManifest } from '../../manifest/read';
@@ -28,7 +24,6 @@ import {
 } from '../api/registrationRightsHost';
 import {
     assertContainedRegularGenerationFile,
-    readPreparedImmutablePluginGeneration,
     readValidatedAgentSessionRunnerFactories,
 } from '../../store/registry/generationStore';
 import { loadVerifiedPluginModule } from '../loadPluginModule';
@@ -45,6 +40,11 @@ import {
 import {
     createHostDeclarativeAcpAgentRuntimeFactory,
 } from './createHostDeclarativeAcpAgentRuntimeFactory';
+import {
+    attestRetainedPluginSource,
+    resolveRetainedBundledPluginRoot,
+} from '../retainedPluginSourceAttestation';
+import { readRetainedBundledAgentFactory } from '../retainedBundledAgentFactory';
 export type RetainedAgentRuntimeLeaf = Readonly<{
     factory: AgentRuntimeFactory;
     externalSessions?: AgentExternalSessionsContribution;
@@ -53,6 +53,8 @@ export type RetainedAgentRuntimeLeaf = Readonly<{
 export async function loadRetainedAgentRuntimeLeaf(params: Readonly<{
     paths: PluginStorePaths;
     binding: unknown;
+    developmentOccurrenceId?: string;
+    resolveBundledPluginRoot?: typeof resolveRetainedBundledPluginRoot;
 }>): Promise<RetainedAgentRuntimeLeaf> {
     const attested = await verifyRunnerAgentBindingAgainstGeneration(
         params,
@@ -69,36 +71,39 @@ export async function loadRetainedAgentRuntimeLeaf(params: Readonly<{
             ),
         });
     }
-    const { binding, generation, fact } = attested;
-    const generationRootPath = await realpath(generation.rootPath);
-    await assertContainedRegularGenerationFile(
-        generationRootPath,
-        fact.normalizedModulePath,
-        'Runner Agent factory module',
-    );
+    const { binding, fact } = attested;
+    const sourceRootPath = await realpath(attested.rootPath);
+    if (attested.sourceKind === 'managed') {
+        await assertContainedRegularGenerationFile(
+            sourceRootPath,
+            fact.normalizedModulePath,
+            'Runner Agent factory module',
+        );
+    } else {
+        const lexicalPath = join(sourceRootPath, ...fact.normalizedModulePath.split('/'));
+        const facts = await lstat(lexicalPath);
+        if (!facts.isFile() || facts.isSymbolicLink()) {
+            throw new Error('Runner Agent factory module must be a contained regular file');
+        }
+    }
     const modulePath = await realpath(join(
-        generationRootPath,
+        sourceRootPath,
         ...fact.normalizedModulePath.split('/'),
     ));
-    const relativeModulePath = relative(generationRootPath, modulePath);
     if (
-        modulePath === generationRootPath
-        || !isCanonicalAbsolutePathInsideRoot(generationRootPath, modulePath)
+        modulePath === sourceRootPath
+        || !isCanonicalAbsolutePathInsideRoot(sourceRootPath, modulePath)
     ) {
-        throw new Error('Runner Agent factory module escapes its immutable generation');
+        throw new Error('Runner Agent factory module escapes its retained source custody');
     }
     const moduleNamespace = await loadVerifiedPluginModule({
         entryPath: modulePath,
         loadMode: fact.loadMode,
         generationScope: binding,
-        cacheKey: `${binding.immutableGenerationId}:${fact.normalizedModulePath}`,
+        cacheKey: `${attested.cacheIdentity}:${fact.normalizedModulePath}`,
         nativeFileUrlMode: 'canonical',
     });
-    await readPreparedImmutablePluginGeneration({
-        paths: params.paths,
-        immutableGenerationId:
-            binding.immutableGenerationId,
-    });
+    await attested.assertStillAvailable();
     const factory = Object.prototype.hasOwnProperty.call(
         moduleNamespace,
         fact.locator.export,
@@ -158,12 +163,15 @@ export async function verifyRunnerAgentBindingAgainstGeneration(
     params: Readonly<{
         paths: PluginStorePaths;
         binding: unknown;
+        developmentOccurrenceId?: string;
+        resolveBundledPluginRoot?: typeof resolveRetainedBundledPluginRoot;
     }>,
 ): Promise<Readonly<{
     binding: AgentSessionRunnerBindingV1;
-    generation: Awaited<ReturnType<
-        typeof readPreparedImmutablePluginGeneration
-    >>;
+    sourceKind: 'managed' | 'bundled_first_party' | 'development';
+    rootPath: string;
+    cacheIdentity: string;
+    assertStillAvailable(): Promise<void>;
     manifest: Extract<
         Awaited<ReturnType<typeof readPluginManifest>>,
         Readonly<{ ok: true }>
@@ -186,36 +194,50 @@ export async function verifyRunnerAgentBindingAgainstGeneration(
     }>
 )>> {
     const binding = verifyAgentSessionRunnerBindingV1(params.binding);
-    const generation = await readPreparedImmutablePluginGeneration({
-        paths: params.paths,
-        immutableGenerationId: binding.immutableGenerationId,
-    });
-    if (generation.record.pluginId !== binding.pluginId) {
+    if (
+        binding.sourceCustody.kind === 'development'
+        && !params.developmentOccurrenceId?.trim()
+    ) {
         throw new Error(
-            'Runner Agent binding generation identity mismatch',
+            'Development retained Agent binding requires a daemon-attested current occurrence',
         );
     }
-    const validated = await readOptionalValidatedRunnerFactories({
-        paths: params.paths,
-        record: generation.record,
-    });
+    const retainedSource = binding.sourceCustody.kind === 'development'
+        ? null
+        : await attestRetainedPluginSource({
+            paths: params.paths,
+            pluginId: binding.pluginId,
+            custody: binding.sourceCustody,
+            ...(params.resolveBundledPluginRoot
+                ? { resolveBundledPluginRoot: params.resolveBundledPluginRoot }
+                : {}),
+        });
+    const generation = retainedSource?.managedGeneration ?? null;
+    const developmentCustody = binding.sourceCustody.kind === 'development'
+        ? binding.sourceCustody
+        : null;
+    const developmentRoot = developmentCustody
+        ? await realpath(developmentCustody.registeredRootId)
+        : null;
+    if (
+        developmentRoot
+        && developmentRoot !== developmentCustody?.registeredRootId
+    ) {
+        throw new Error(
+            'Runner development source custody no longer names its canonical registered root',
+        );
+    }
+    const rootPath = retainedSource?.rootPath ?? developmentRoot!;
+    const validated = generation
+        ? await readOptionalValidatedRunnerFactories({
+            paths: params.paths,
+            record: generation.record,
+        })
+        : null;
     const hostDeclarativeAcpBinding = 'kind' in binding;
-    // First-party authority for a host-declarative binding comes from host
-    // custody of this exact generation, never from the plugin's own id: an
-    // installed plugin may legitimately carry a `happier.*` id while it is
-    // developed from a local working tree, and this authority reaches the
-    // managed-service invocation owner as `provenance: 'first_party'`.
-    const manifestAuthority = hostDeclarativeAcpBinding
-        ? (
-            resolveBundledImmutablePluginArtifact({
-                bundledArtifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-                pluginId: binding.pluginId,
-                immutableGenerationId: binding.immutableGenerationId,
-            })
-                ? 'bundled_first_party'
-                : 'external'
-        )
-        : validated?.manifestAuthority;
+    const manifestAuthority = retainedSource?.manifestAuthority
+        ?? validated?.manifestAuthority
+        ?? 'external' as const;
     if (!manifestAuthority) {
         throw new Error(
             'Runner Agent binding names an unvalidated Agent factory',
@@ -236,14 +258,13 @@ export async function verifyRunnerAgentBindingAgainstGeneration(
             'Host declarative ACP runner binding conflicts with a plugin factory',
         );
     }
-    const manifest = await readPluginManifest({
-        manifestPath: join(
-            generation.rootPath,
-            ...generation.record.manifestRelativePath.split('/'),
-        ),
-        manifestAuthority,
-        sourceProvenance: generation.record.sourceProvenance,
-    });
+    const manifest = retainedSource
+        ? Object.freeze({ ok: true as const, manifest: retainedSource.manifest })
+        : await readPluginManifest({
+            manifestPath: join(rootPath, '.happier-plugin', 'plugin.json'),
+            manifestAuthority,
+            sourceProvenance: 'localSource',
+        });
     const declaredAgent = manifest.ok
         ? manifest.manifest.contributes.agents.find(
             (candidate) => candidate.id
@@ -298,8 +319,7 @@ export async function verifyRunnerAgentBindingAgainstGeneration(
             pluginId: manifest.manifest.id,
             pluginVersion: manifest.manifest.version,
             ...expectedAgentIdentity,
-            immutableGenerationId:
-                generation.record.immutableGenerationId,
+            sourceCustody: binding.sourceCustody,
         });
         if (!isDeepStrictEqual(expectedBinding, binding)) {
             throw new Error(
@@ -309,18 +329,41 @@ export async function verifyRunnerAgentBindingAgainstGeneration(
         return Object.freeze({
             bindingKind: 'host_declarative_acp_v1' as const,
             binding,
-            generation,
+            sourceKind: binding.sourceCustody.kind,
+            rootPath,
+            cacheIdentity: retainedSource?.cacheIdentity
+                ?? `development:${params.developmentOccurrenceId}`,
+            assertStillAvailable: async () => {
+                if (retainedSource) {
+                    await retainedSource.assertStillAvailable();
+                    return;
+                }
+                if (
+                    binding.sourceCustody.kind !== 'development'
+                    || await realpath(binding.sourceCustody.registeredRootId) !== rootPath
+                ) {
+                    throw new Error('Runner development source custody changed during attestation');
+                }
+            },
             manifest: manifest.manifest,
             manifestAuthority,
             declaredAgent,
             runtime,
         });
     }
-    const fact = validated?.factories.find(
-        (candidate) => candidate.localAgentId
-            === binding.localAgentId,
-    );
-    if (!validated || !fact) {
+    const fact = binding.sourceCustody.kind === 'bundled_first_party'
+        ? readRetainedBundledAgentFactory(manifest.manifest, binding.localAgentId)
+        : validated?.factories.find(
+        (candidate) => candidate.localAgentId === binding.localAgentId,
+    ) ?? (binding.sourceCustody.kind === 'development'
+        ? Object.freeze({
+            localAgentId: binding.localAgentId,
+            locator: binding.locator,
+            normalizedModulePath: binding.normalizedModulePath,
+            loadMode: binding.loadMode,
+        })
+        : undefined);
+    if (!fact) {
         throw new Error(
             'Runner Agent binding names an unvalidated Agent factory',
         );
@@ -331,7 +374,7 @@ export async function verifyRunnerAgentBindingAgainstGeneration(
         pluginVersion: binding.pluginVersion,
         agentId: binding.agentId,
         localAgentId: fact.localAgentId,
-        immutableGenerationId: binding.immutableGenerationId,
+        sourceCustody: binding.sourceCustody,
         locator: fact.locator,
         normalizedModulePath: fact.normalizedModulePath,
         loadMode: fact.loadMode,
@@ -344,7 +387,22 @@ export async function verifyRunnerAgentBindingAgainstGeneration(
     return Object.freeze({
         bindingKind: 'plugin_factory_v1' as const,
         binding,
-        generation,
+        sourceKind: binding.sourceCustody.kind,
+        rootPath,
+        cacheIdentity: retainedSource?.cacheIdentity
+            ?? `development:${params.developmentOccurrenceId}`,
+        assertStillAvailable: async () => {
+            if (retainedSource) {
+                await retainedSource.assertStillAvailable();
+                return;
+            }
+            if (
+                binding.sourceCustody.kind !== 'development'
+                || await realpath(binding.sourceCustody.registeredRootId) !== rootPath
+            ) {
+                throw new Error('Runner development source custody changed during attestation');
+            }
+        },
         fact,
         manifest: manifest.manifest,
         manifestAuthority,

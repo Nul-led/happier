@@ -1,4 +1,5 @@
 import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+import { processIdentityMatches } from '@happier-dev/cli-common/processInstance';
 
 import type { AgentSessionOpenRequest } from '@happier-dev/plugin-sdk/agents/runtime';
 
@@ -13,6 +14,7 @@ import {
 import type {
   AgentSessionRunnerBindingV1,
 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
+import { pluginSourceCustodyV1Equal } from '@happier-dev/protocol';
 import type { TrackedSession } from '@/daemon/types';
 import {
   updateSessionMarkerAgentRuntimeSessionOpenAttestation,
@@ -85,13 +87,16 @@ export async function recordTrackedRunnerAgentSessionOpenAttestation(
   if (
     !sessionId
     || request.sessionId !== sessionId
-    || input.tracked.runnerAgentImmutableGenerationId
-      !== input.retainedAgent.immutableGenerationId
-    || input.tracked.processStartTimeMs
-      !== input.runner.processStartTimeMs
-    || input.tracked.processCommandHash
-      !== input.runner.processCommandHash
-    || runnerPid !== input.runner.pid
+    || !input.tracked.runnerAgentSourceCustodyV1
+    || !pluginSourceCustodyV1Equal(
+      input.tracked.runnerAgentSourceCustodyV1,
+      input.retainedAgent.sourceCustody,
+    )
+    || !processIdentityMatches({
+      pid: runnerPid,
+      processStartTimeMs: input.tracked.processStartTimeMs,
+      processCommandHash: input.tracked.processCommandHash,
+    }, input.runner)
     || !authorityFilePath
     || (
       request.kind === 'resume'

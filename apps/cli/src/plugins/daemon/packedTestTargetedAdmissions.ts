@@ -20,7 +20,7 @@ const ProtocolSchema = z.object({
   id: ProtocolIdSchema,
   version: z.number().int().positive().safe(),
 }).strict();
-const ImmutableGenerationIdSchema = z.string().trim().min(1).max(512);
+const OccurrenceIdSchema = z.string().trim().min(1).max(512);
 const HostPluginIdSchema = asHostProtocolZod(PluginIdSchema);
 const HostPluginContributionLocalIdSchema = asHostProtocolZod(
   PluginContributionLocalIdSchema,
@@ -42,13 +42,13 @@ export const PackedTestTargetedAdmissionReadResponseSchema = z.discriminatedUnio
     target: z.object({
       pluginId: HostPluginIdSchema,
       pointId: HostPluginContributionLocalIdSchema,
-      immutableGenerationId: ImmutableGenerationIdSchema,
+      occurrenceId: OccurrenceIdSchema,
     }).strict(),
     protocol: ProtocolSchema,
     contributors: z.array(z.object({
       pluginId: HostPluginIdSchema,
       contributionId: HostPluginContributionLocalIdSchema,
-      immutableGenerationId: ImmutableGenerationIdSchema,
+      occurrenceId: OccurrenceIdSchema,
     }).strict()).max(256),
   }).strict(),
   z.object({

@@ -33,6 +33,42 @@ describe('primary Agent runtime readiness', () => {
     await rejection;
   });
 
+  it('uses the remaining cold-start budget for primary runtime construction', async () => {
+    vi.useFakeTimers();
+    const registry = {
+      agentRuntimesByAgentId: new Map([['acme', {
+        agentId: 'acme', pluginId: 'com.acme.agent', hasPrimaryRuntime: true,
+        retirementSignal: new AbortController().signal,
+        createRuntime: () => new Promise<never>(() => undefined),
+      }]]),
+    } as unknown as ResolvedExecutablePluginRuntimeRegistry;
+    const readiness = bootstrapPrimaryAgentRuntimesForReadiness({
+      registry,
+      pluginIds: ['com.acme.agent'],
+      startupDeadlineAtMs: Date.now() + 1_000,
+    });
+    const rejection = expect(readiness).rejects.toThrow(/primary Agent runtime readiness timed out/u);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await rejection;
+  });
+
+  it('does not construct a primary runtime after cold startup has expired', async () => {
+    const createRuntime = vi.fn(async () => undefined);
+    const registry = {
+      agentRuntimesByAgentId: new Map([['acme', {
+        agentId: 'acme', pluginId: 'com.acme.agent', hasPrimaryRuntime: true,
+        retirementSignal: new AbortController().signal,
+        createRuntime,
+      }]]),
+    } as unknown as ResolvedExecutablePluginRuntimeRegistry;
+    await expect(bootstrapPrimaryAgentRuntimesForReadiness({
+      registry,
+      pluginIds: ['com.acme.agent'],
+      startupDeadlineAtMs: Date.now() - 1,
+    })).rejects.toThrow(/primary Agent runtime readiness timed out/u);
+    expect(createRuntime).not.toHaveBeenCalled();
+  });
+
   it('shares one absolute readiness timeout across multiple primary runtime factories', async () => {
     vi.useFakeTimers();
     const retirement = new AbortController();

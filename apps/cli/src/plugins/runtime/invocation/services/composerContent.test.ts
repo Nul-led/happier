@@ -31,7 +31,7 @@ const TARGET = Object.freeze({
 
 function invocationSeed(input?: Readonly<{
     signal?: AbortSignal;
-    isGenerationCurrent?: () => boolean;
+    isOccurrenceCurrent?: () => boolean;
 }>): PluginInvocationServicesSeed {
     return Object.freeze({
         plugin: Object.freeze({ id: 'acme.media', version: '1.0.0' }),
@@ -39,11 +39,11 @@ function invocationSeed(input?: Readonly<{
             id: 'stage-photo',
             qualifiedId: 'acme.media/actions/stage-photo',
         }),
-        generation: '7',
+        occurrenceId: '7',
         correlationId: 'composer-content-test',
         surface: 'cli' as const,
         signal: input?.signal ?? new AbortController().signal,
-        isGenerationCurrent: input?.isGenerationCurrent ?? (() => true),
+        isOccurrenceCurrent: input?.isOccurrenceCurrent ?? (() => true),
     });
 }
 
@@ -120,7 +120,7 @@ describe('stable plugin Composer content owner', () => {
                 roots: { pluginData: workspace, workspace, projects: new Map() },
                 scopes: [{ root: 'workspace', access: ['read'] }],
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             }),
         });
 
@@ -190,7 +190,7 @@ describe('stable plugin Composer content owner', () => {
                 roots: { pluginData: workspace, workspace, projects: new Map() },
                 scopes: [{ root: 'workspace', access: ['read'] }],
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             }),
         });
 
@@ -222,7 +222,7 @@ describe('stable plugin Composer content owner', () => {
             roots: { pluginData: workspace, workspace, projects: new Map() },
             scopes: [{ root: 'workspace', access: ['read'] }],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const owner = createStablePluginComposerContentOwner({
             executionTarget: TARGET,
@@ -232,7 +232,7 @@ describe('stable plugin Composer content owner', () => {
         const cancelled = new AbortController();
         const cancelledService = owner.bind({ seed: invocationSeed(), fileSystem });
         const staleService = owner.bind({
-            seed: invocationSeed({ isGenerationCurrent: () => false }),
+            seed: invocationSeed({ isOccurrenceCurrent: () => false }),
             fileSystem,
         });
 
@@ -282,7 +282,7 @@ describe('stable plugin Composer content owner', () => {
                 roots: { pluginData: workspace, workspace, projects: new Map() },
                 scopes: [{ root: 'workspace', access: ['read'] }],
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             }),
         });
 
@@ -390,7 +390,7 @@ describe('stable plugin Composer content owner', () => {
                 roots: { pluginData: workspace, workspace, projects: new Map() },
                 scopes: [{ root: 'workspace', access: ['read'] }],
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             }),
         });
 

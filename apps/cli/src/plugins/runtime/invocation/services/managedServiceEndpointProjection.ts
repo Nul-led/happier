@@ -7,7 +7,9 @@ import { join } from 'node:path';
 
 import {
     managedServiceEndpointHostPolicyForMode,
+    PluginSourceCustodyV1Schema,
     readManagedServiceEndpointUrl,
+    type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 
 import { readPrivateOwnerFileSync } from '@/daemon/privateBearerFile';
@@ -21,7 +23,7 @@ type ManagedServiceEndpointProjectionBaseV1 = Readonly<{
     operationClaimId?: string;
     serverId: string;
     instanceId: string;
-    immutableGenerationId: string;
+    sourceCustody: PluginSourceCustodyV1;
     custodyOwner: 'daemon' | 'sessionRunner';
     endpoint: Readonly<{
         baseUrl: string;
@@ -59,7 +61,7 @@ export type ManagedServiceEndpointProjectionResolveQuery = Readonly<{
     pluginId: string;
     sessionId?: string;
     contributionId?: string;
-    immutableGenerationId?: string;
+    sourceCustody?: PluginSourceCustodyV1;
     selector:
         | Readonly<{ kind: 'baseUrl'; baseUrl: string }>
         | Readonly<{ kind: 'projectionToken'; projectionToken: string }>
@@ -74,6 +76,22 @@ export type ManagedServiceSessionBaseUrlResolver = (input: Readonly<{
     contributionId: string;
 }>) => Promise<string | null>;
 
+/** Host-private exact-session access; credential bytes remain outside plugin callbacks. */
+export type ManagedServiceSessionClientAccessResolver = (input: Readonly<{
+    pluginId: string;
+    sessionId: string;
+    contributionId: string;
+    targetBaseUrl: string;
+    environmentKey: string;
+}>) => Promise<Readonly<{
+    baseUrl: string;
+    request(request: Readonly<{
+        pathAndQuery: string;
+        signal?: AbortSignal;
+    }>): Promise<Readonly<{ ok: boolean }>>;
+    childEnvironment: Readonly<Record<string, string>>;
+}> | null>;
+
 const MAX_PROJECTION_RECORDS = 256;
 const MAX_RECORD_BYTES = 64 * 1024;
 const MAX_IDENTITY_LENGTH = 10_000;
@@ -85,7 +103,7 @@ const PROJECTION_KEYS = Object.freeze([
     'contributionId',
     'serverId',
     'instanceId',
-    'immutableGenerationId',
+    'sourceCustody',
     'custodyOwner',
     'mode',
     'endpoint',
@@ -156,7 +174,7 @@ function projectionIdentity(input: ManagedServiceEndpointProjectionInputV1): str
         input.operationClaimId ?? null,
         input.serverId,
         input.instanceId,
-        input.immutableGenerationId,
+        input.sourceCustody,
         input.custodyOwner,
         input.mode,
         input.endpoint.baseUrl,
@@ -195,7 +213,9 @@ export function parseManagedServiceEndpointProjectionV1(
         : readIdentity(raw.operationClaimId);
     const serverId = readIdentity(raw.serverId);
     const instanceId = readIdentity(raw.instanceId);
-    const immutableGenerationId = readIdentity(raw.immutableGenerationId);
+    const sourceCustody = PluginSourceCustodyV1Schema.safeParse(
+        raw.sourceCustody,
+    );
     const rawProcessRecord = isRecord(raw.process) && hasExactKeys(raw.process, ['pid', 'startIdentity'])
         ? raw.process
         : null;
@@ -215,7 +235,7 @@ export function parseManagedServiceEndpointProjectionV1(
         || (raw.operationClaimId !== undefined && !operationClaimId)
         || !serverId
         || !instanceId
-        || !immutableGenerationId
+        || !sourceCustody.success
         || (raw.custodyOwner !== 'daemon' && raw.custodyOwner !== 'sessionRunner')
         || (raw.mode !== 'managedSpawn' && raw.mode !== 'externalAttach')
         || !normalizedEndpoint
@@ -240,7 +260,7 @@ export function parseManagedServiceEndpointProjectionV1(
         ...(operationClaimId ? { operationClaimId } : {}),
         serverId,
         instanceId,
-        immutableGenerationId,
+        sourceCustody: sourceCustody.data,
         custodyOwner: raw.custodyOwner as 'daemon' | 'sessionRunner',
         endpoint: normalizedEndpoint,
         createdAtMs: raw.createdAtMs as number,

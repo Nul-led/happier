@@ -28,6 +28,7 @@ export type { DescriptorFields } from '../targetedContributionAuthoring.js';
 export type { IsRequiredSurfaceDefinition } from '../targetedContributionAuthoring.js';
 export type { PluginTargetedContributionSelectionV1 } from '../targetedContributionAuthoring.js';
 export { PluginTargetedContributionSelectionV1Schema } from '../targetedContributionAuthoring.js';
+export type { PluginTargetedContributionSourceCustodyV1 } from '../targetedContributionAuthoring.js';
 export type { PublicContributionProtocol } from '../targetedContributionAuthoring.js';
 export type { PublicContributionProtocols } from '../targetedContributionAuthoring.js';
 export type { RequiredSurfaceRoles } from '../targetedContributionAuthoring.js';

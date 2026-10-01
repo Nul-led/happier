@@ -10,6 +10,7 @@ import {
     type TriageSourceViewerFactsV1,
 } from '@happier-dev/triage-protocol/v1';
 import { describe, expect, it, vi } from 'vitest';
+import { PluginError } from '@happier-dev/plugin-sdk';
 
 import {
     listTriageEntries,
@@ -192,6 +193,8 @@ function createHarness(options: Readonly<{
         sourceBFails: false,
         sourceBInvocationRejected: false,
         enumerationRejected: false,
+        /** The exact rejection the aggregate enumeration answers with, when set. */
+        enumerationRejectedWith: null as unknown,
         enumerationRepeatsCursor: false,
         /** A typed failure source A answers with instead of a page, when set. */
         sourceAFailure: null as TriageSourceFailureV1 | null,
@@ -519,6 +522,13 @@ function createHarness(options: Readonly<{
         // The aggregate read itself is refused: no machine is reachable, so even
         // enumerating the configured instances fails. This is the path a daemon
         // that goes away after a first successful pass takes.
+        if (
+            state.enumerationRejectedWith !== null
+            && input.sources.kind === 'allConfigured'
+            && input.limit === 0
+        ) {
+            throw state.enumerationRejectedWith;
+        }
         if (
             state.enumerationRejected
             && input.sources.kind === 'allConfigured'
@@ -1104,6 +1114,55 @@ describe('the mounted PRs & Issues window store', () => {
         expect(snapshot.window).toBeUndefined();
         expect(snapshot.error?.code).toBe('plugin_action_failed');
         store.dispose();
+    });
+
+    it('keeps whether retrying can help, and the host diagnostic, beside the aggregate failure', async () => {
+        // The shell used to print the host's bare code ("unavailable") as the
+        // sentence and offered Refresh whatever the host said. The store keeps
+        // the host's own classification instead: whether a retry can succeed,
+        // and the diagnostic a support reader needs behind a disclosure.
+        const permanent = createHarness();
+        permanent.state.enumerationRejectedWith = new PluginError({
+            code: 'unsupported_method',
+            retryable: false,
+            diagnostics: [{ code: 'host_api_method_not_installed:executeAction', severity: 'error' }],
+        });
+        const permanentStore = createTriageListWindowStore({
+            readEntries: permanent.readEntries,
+            nowMs: () => permanent.clock.nowMs,
+        });
+        await permanentStore.refresh('view');
+        expect(permanentStore.getSnapshot().error).toEqual({
+            code: 'plugin_action_failed',
+            message: 'unsupported_method',
+            retryable: false,
+            detail: 'unsupported_method · host_api_method_not_installed:executeAction',
+        });
+        permanentStore.dispose();
+
+        const transient = createHarness();
+        transient.state.enumerationRejectedWith = new PluginError({ code: 'unavailable', retryable: true });
+        const transientStore = createTriageListWindowStore({
+            readEntries: transient.readEntries,
+            nowMs: () => transient.clock.nowMs,
+        });
+        await transientStore.refresh('view');
+        expect(transientStore.getSnapshot().error).toMatchObject({ retryable: true, detail: 'unavailable' });
+        transientStore.dispose();
+
+        // A failure nobody classified is worth one more try.
+        const unclassified = createHarness();
+        unclassified.state.enumerationRejected = true;
+        const unclassifiedStore = createTriageListWindowStore({
+            readEntries: unclassified.readEntries,
+            nowMs: () => unclassified.clock.nowMs,
+        });
+        await unclassifiedStore.refresh('view');
+        expect(unclassifiedStore.getSnapshot().error).toMatchObject({
+            retryable: true,
+            detail: 'The plugin action could not be dispatched: no machine is reachable.',
+        });
+        unclassifiedStore.dispose();
     });
 
     it('keeps the last known good window when one source fails to refresh', async () => {

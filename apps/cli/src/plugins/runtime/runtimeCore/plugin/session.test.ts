@@ -138,7 +138,7 @@ function createHostFactoryParams() {
     directory: '/tmp/plugin-backend',
     metadata: {} as never,
     machineId: 'machine-1',
-    agentTargetKey: 'backend:claude',
+    agentTargetKey: 'agent:happier.agent.claude/claude',
     session: { sessionId: 'host-session-1' } as never,
     transcriptSession: {} as never,
     messageBuffer: {} as never,
@@ -662,7 +662,7 @@ describe('plugin session runtime adapters', () => {
         v: 1,
         updatedAt: 56,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_work',
           modelId: 'provider-model',
         },
@@ -673,7 +673,7 @@ describe('plugin session runtime adapters', () => {
       v: 1,
       updatedAt: 56,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_work',
         modelId: 'provider-model',
       },
@@ -710,7 +710,7 @@ describe('plugin session runtime adapters', () => {
       v: 1,
       updatedAt: 57,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'legacy-model',
       },
@@ -732,7 +732,7 @@ describe('plugin session runtime adapters', () => {
         v: 1,
         updatedAt: 58,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_work',
           modelId: '',
         },
@@ -748,7 +748,7 @@ describe('plugin session runtime adapters', () => {
         v: 1,
         updatedAt: 59,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_work',
           modelId: 'provider-model',
         },

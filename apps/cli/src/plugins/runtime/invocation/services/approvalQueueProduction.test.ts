@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { normalizeActionsSettingsV1 } from '@happier-dev/protocol';
 
 import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import { createPluginActionCallerMaterializationFixture } from './actionCaller.testkit';
 import { createProductionPluginApprovalQueueOwner } from './approvalQueueProduction';
@@ -35,12 +36,12 @@ describe('production plugin approval queue principal binding', () => {
             contribution: { id: 'action', qualifiedId: 'acme.plugin/actions/action' },
             resolveCurrentPluginMaterializationRef:
                 materialization.resolveCurrentPluginMaterializationRef,
-            generation: 'generation-1',
-            immutableGenerationId: 'immutable-generation-1',
+            occurrenceId: createPluginRuntimeOccurrenceId('acme.plugin'),
+            sourceCustody: { kind: 'development', registeredRootId: 'plugin-root' },
             correlationId: 'correlation-1',
             surface: 'agent',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         await expect(queue.list()).resolves.toEqual({ items: [] });

@@ -197,6 +197,25 @@ describe('Git repository worktree status enrichment', () => {
 });
 
 describe('Git repository detection', () => {
+    it('reports a real ownership refusal as unavailable even when git itself is healthy', async () => {
+        const repoRoot = await initRepoWithCommit('git-plugin-detect-ownership-');
+        const realCommand = createRealGitScmBackendRuntimeServices().runCommand;
+        try {
+            const detection = runWithGitScmCommandRunner(
+                (input) => realCommand({
+                    ...input,
+                    env: { ...input.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: '1' },
+                }),
+                () => detectGitRepo({ cwd: repoRoot }),
+            );
+            await expect(detection).rejects.toMatchObject({
+                errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE,
+            });
+        } finally {
+            await rm(repoRoot, { recursive: true, force: true });
+        }
+    });
+
     // F-SCM-1. `git rev-parse --is-inside-work-tree` exits non-zero for a directory that is not a
     // repository AND for a git that cannot run at all, so the exit code alone cannot tell a real
     // negative from a broken tool. Reported live: a `git` that failed every invocation made the

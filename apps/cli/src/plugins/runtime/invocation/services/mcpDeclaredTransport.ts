@@ -32,7 +32,10 @@ import type {
     McpTool as PluginMcpTool,
 } from '@happier-dev/plugin-sdk/mcp';
 import { PluginError } from '@happier-dev/plugin-sdk';
-import { createPluginInteractionsService } from './interactions';
+import {
+    createInteractionTransientRequesterForInvocation,
+    createPluginInteractionsService,
+} from './interactions';
 import {
     mcpElicitationFormContent,
     mcpElicitationFormQuestions,
@@ -297,16 +300,13 @@ export function createStableDeclaredMcpTransportConnector(params?: Readonly<{
             const interactions = createPluginInteractionsService({
                 currentSession: seed.currentSession ?? null,
                 signal: lifetimeSignal ?? seed.signal,
-                isGenerationCurrent: seed.isGenerationCurrent,
+                isOccurrenceCurrent: seed.isOccurrenceCurrent,
                 ...(seed.readActiveTurnAdmissionWitness
                     ? { readActiveTurnAdmissionWitness: seed.readActiveTurnAdmissionWitness }
                     : {}),
-                requester: Object.freeze({
-                    pluginId: seed.plugin.id,
-                    contributionId: seed.contribution.id,
-                    generationId: seed.generation,
-                    invocationId: seed.correlationId,
-                }),
+                ...(seed.currentSession
+                    ? { requester: createInteractionTransientRequesterForInvocation(seed) }
+                    : {}),
                 permissionOwner: Object.freeze({
                     kind: 'plugin',
                     pluginId: seed.plugin.id,
@@ -316,7 +316,7 @@ export function createStableDeclaredMcpTransportConnector(params?: Readonly<{
             client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
                 if (request.params.mode === 'url') return { action: 'decline' as const };
                 const requestSignal = composeSignals(lifetimeSignal, extra?.signal);
-                if (requestSignal?.aborted || !seed.isGenerationCurrent()) return { action: 'cancel' as const };
+                if (requestSignal?.aborted || !seed.isOccurrenceCurrent()) return { action: 'cancel' as const };
                 try {
                     const questions = mcpElicitationFormQuestions(request.params.requestedSchema);
                     if (questions === null) {
@@ -327,7 +327,7 @@ export function createStableDeclaredMcpTransportConnector(params?: Readonly<{
                         }, {
                             ...(requestSignal ? { signal: requestSignal } : {}),
                         });
-                        if (requestSignal?.aborted || !seed.isGenerationCurrent()) return { action: 'cancel' as const };
+                        if (requestSignal?.aborted || !seed.isOccurrenceCurrent()) return { action: 'cancel' as const };
                         return result.status === 'approved'
                             ? { action: 'accept' as const, content: {} }
                             : result.status === 'declined'
@@ -344,14 +344,14 @@ export function createStableDeclaredMcpTransportConnector(params?: Readonly<{
                     if (
                         result.status !== 'answered'
                         || requestSignal?.aborted
-                        || !seed.isGenerationCurrent()
+                        || !seed.isOccurrenceCurrent()
                     ) return { action: 'cancel' as const };
                     return {
                         action: 'accept' as const,
                         content: mcpElicitationFormContent(request.params.requestedSchema, result.answers),
                     };
                 } catch (error) {
-                    if (requestSignal?.aborted || lifetimeSignal?.aborted || !seed.isGenerationCurrent()) {
+                    if (requestSignal?.aborted || lifetimeSignal?.aborted || !seed.isOccurrenceCurrent()) {
                         return { action: 'cancel' as const };
                     }
                     throw error;

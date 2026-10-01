@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ActivationTarget } from '../activation/targets';
 import type { ContributionRuntimeRegistration } from '../../api/registrationRightsHost';
-import { createTargetAgentRuntimeRegistry } from './targetAgents';
+import { createTargetAgentRuntimeRegistry } from './targetAgents.testkit';
 
 function target(): ActivationTarget {
     // Boundary fixture: targetAgents consumes only the admitted target identity and version.
@@ -25,12 +25,12 @@ function target(): ActivationTarget {
 
 function registration(daemonSpawnHooks: unknown): Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }> {
     return {
         pluginId: 'acme.spawn-hooks',
-        generation: 'generation-7',
+        occurrenceId: 'generation-7',
         registration: {
             family: 'agents',
             localId: 'spawn-agent',
@@ -66,7 +66,7 @@ describe('Agent daemon spawn-hook lease', () => {
             }],
             activationTargets: [target()],
             targetRegistrations: [registration({ resolveRuntimePrerequisites })],
-            isGenerationActive: () => current,
+            isOccurrenceCurrent: () => current,
             retirementSignal: retirement.signal,
             onDuplicate: vi.fn(),
         });
@@ -108,7 +108,7 @@ describe('Agent daemon spawn-hook lease', () => {
                     throw new Error('plugin-private failure');
                 },
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: new AbortController().signal,
             onDuplicate: vi.fn(),
         });
@@ -142,7 +142,7 @@ describe('Agent daemon spawn-hook lease', () => {
             targetRegistrations: [registration({
                 augmentEnv: () => ({ REQUIRED_ENV: 42 }),
             })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: new AbortController().signal,
             onDuplicate: vi.fn(),
         });
@@ -178,7 +178,7 @@ describe('Agent daemon spawn-hook lease', () => {
             agents: [{ id: 'spawn-agent', pluginId: 'acme.spawn-hooks' }],
             activationTargets: [target()],
             targetRegistrations: [registration({ resolveRuntimePrerequisites })],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: new AbortController().signal,
             onDuplicate: vi.fn(),
         });

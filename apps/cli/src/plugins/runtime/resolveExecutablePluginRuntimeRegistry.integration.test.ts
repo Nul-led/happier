@@ -10,6 +10,7 @@ import {
     ProviderConnectionIdSchema,
     ProviderRuntimeBindingBasisV1Schema,
     resolveProviderManagedRuntimeDeclarationV1,
+    type PluginSourceCustodyV1,
     type ProviderRuntimeBindingBasisV1,
 } from '@happier-dev/protocol';
 import type {
@@ -47,7 +48,6 @@ import {
     createLocalPathPluginDistributionIdentity,
     createPluginTrustRecord,
 } from '@/plugins/store/install/trustIdentity';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import type {
     ResolvedAgentRuntimeContribution,
     ResolvedContributionRegistry,
@@ -60,7 +60,7 @@ import {
 } from '@/plugins/testkit/samplePackage';
 
 import {
-    resolveExecutablePluginRuntimeRegistry,
+    resolveExecutablePluginRuntimeRegistry as resolveExecutablePluginRuntimeRegistryProduction,
     type RetainedManagedProviderRuntimeInvocationScope,
 } from './resolveExecutablePluginRuntimeRegistry';
 import type {
@@ -79,6 +79,8 @@ import type { HostSessionRuntimeFactoryParams } from '@/agent/runtime/session/lo
 import { createMutableApiSessionClientFixture } from '@/testkit/backends/sessionFixtures';
 import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
 import { logger } from '@/ui/logger';
+import { createHostPluginNotificationChannels } from '@/notifications/activity/pluginNotificationChannels';
+import { pluginReloadController } from './reload/singleton';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import {
     resetActiveAccountSettingsSnapshotForTests,
@@ -93,6 +95,31 @@ import type {
 import type {
     ManagedProviderOperationAuthority,
 } from '@/daemon/connectedServices/purposeBindings/managedProviderOperationAuthority';
+
+function resolveExecutablePluginRuntimeRegistry(
+    params: NonNullable<Parameters<typeof resolveExecutablePluginRuntimeRegistryProduction>[0]> = {},
+) {
+    return resolveExecutablePluginRuntimeRegistryProduction({
+        ...params,
+        resolveDevelopmentSourceAuthority:
+            params.resolveDevelopmentSourceAuthority
+            ?? (({ pluginId, rootPath }) => ({
+                kind: 'development' as const,
+                registeredRootId: `registry-integration:${pluginId}`,
+                canonicalRoot: rootPath,
+                observedRevision: 1,
+            })),
+    });
+}
+
+function requireManagedImmutableGenerationId(
+    sourceCustody: PluginSourceCustodyV1,
+): string {
+    if (sourceCustody.kind !== 'managed') {
+        throw new Error('Fixture requires managed generation custody');
+    }
+    return sourceCustody.immutableGenerationId;
+}
 
 /**
  * A public-classified address nothing answers on. The canonical locality policy
@@ -312,10 +339,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
         // Provider's declared provenance, so the relabelled records exercised a
         // single loader three times under three names. The real distinct
         // activation sources are covered where they can actually be built: the
-        // installed-package direction by the sibling package-source test below,
-        // and the bundled first-party direction by 'reconstructs an adopted
-        // bundled Provider from exact P bytes ...', which uses a real
-        // BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS record.
+        // installed-package direction by the sibling package-source test below.
         const localContributes = projectLoadedPluginContributes({
             loadResult: await loadInstalledPlugins({ happyHomeDir }),
             provenance: 'external',
@@ -331,7 +355,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
         });
         const generationAuthority = await readCurrentCommittedPluginGenerations(
             resolvePluginStorePaths({ happyHomeDir }),
-            { bundledArtifacts: [] },
+            {},
         );
         if (!generationAuthority) {
             throw new Error('Expected current managed Provider generation authority');
@@ -454,10 +478,12 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
             const committedGeneration = generationAuthority.generations.get(pluginId);
             expect(committedGeneration?.record.immutableGenerationId).toBeTypeOf('string');
             expect(new Set(acquired.map(
-                ({ runtime }) => runtime?.immutableGenerationId,
+                ({ runtime }) => runtime
+                    ? requireManagedImmutableGenerationId(runtime.sourceCustody)
+                    : undefined,
             ))).toEqual(new Set([committedGeneration?.record.immutableGenerationId]));
             expect(new Set(acquired.map(
-                ({ runtime }) => runtime?.activationGeneration,
+                ({ runtime }) => runtime?.activationOccurrenceId,
             )).size).toBe(1);
             expect(runtimeRegistry.activatedPluginIds.has(pluginId)).toBe(true);
             expect(runtimeRegistry.resolveCurrentPluginMaterializationRef?.(pluginId)).toEqual({
@@ -816,8 +842,8 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                 ({ localId }) => localId === 'external-gateway',
             )?.runtime;
             expect(sessionAFirst?.bootstrap).toMatchObject({
-                activationGeneration: externalRuntime?.activationGeneration,
-                immutableGenerationId: externalRuntime?.immutableGenerationId,
+                occurrenceId: runtimeRegistry.readPluginOccurrenceId?.(pluginId),
+                sourceCustody: externalRuntime?.sourceCustody,
             });
             expect(sessionAFirst?.bootstrap).not.toHaveProperty(
                 'manifestDigest',
@@ -896,10 +922,10 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                     runtimeBindingBasis:
                         sessionRuntimeBindingBasis,
                     identity: sessionAFirst.bootstrap.identity,
-                    activationGeneration:
-                        sessionAFirst.bootstrap.activationGeneration,
-                    immutableGenerationId:
-                        sessionAFirst.bootstrap.immutableGenerationId,
+                    occurrenceId:
+                        sessionAFirst.bootstrap.occurrenceId,
+                    sourceCustody:
+                        sessionAFirst.bootstrap.sourceCustody,
                     manifestAuthority:
                         sessionAFirst.bootstrap.manifestAuthority,
                     operationClaimId:
@@ -988,10 +1014,10 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
             expect(retained).not.toBeNull();
             expect(retained?.bootstrap).toMatchObject({
                 identity: retainedScope.identity,
-                activationGeneration:
-                    retainedScope.activationGeneration,
-                immutableGenerationId:
-                    retainedScope.immutableGenerationId,
+                occurrenceId:
+                    retainedScope.occurrenceId,
+                sourceCustody:
+                    retainedScope.sourceCustody,
                 operationClaimId:
                     retainedScope.operationClaimId,
             });
@@ -1077,298 +1103,6 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
         }
     });
 
-    it('reconstructs an adopted bundled Provider from exact P bytes after desired Q removal', async () => {
-        const happyHomeDir = await mkdtemp(
-            join(tmpdir(), 'happier-retained-bundled-provider-home-'),
-        );
-        const pluginId = 'happier.provider.cliproxyapi';
-        const providerLocalId = 'cliproxyapi';
-        const endpointTemplateIds = [
-            'cliproxyapi-openai-responses',
-            'cliproxyapi-openai-chat',
-            'cliproxyapi-anthropic',
-        ] as const;
-        const paths = resolvePluginStorePaths({ happyHomeDir });
-        const bundledArtifact =
-            BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS.find((artifact) => (
-                artifact.record.pluginId === pluginId
-            ));
-        expect(bundledArtifact).toBeDefined();
-        if (!bundledArtifact) {
-            throw new Error('Expected the generated CLIProxyAPI immutable artifact');
-        }
-        const generationAuthority =
-            await readCurrentCommittedPluginGenerations(paths, {
-                bundledArtifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-            });
-        expect(generationAuthority?.generations.get(pluginId)?.record).toEqual(
-            {
-                ...bundledArtifact.record,
-                sourceProvenance: 'localSource',
-            },
-        );
-        if (!generationAuthority) {
-            throw new Error('Expected bundled generation authority');
-        }
-
-        const contributes = await resolveMergedContributionRegistry({
-            happyHomeDir,
-        });
-        const provider = (contributes.providers ?? []).find((candidate) => (
-            candidate.identity.pluginId === pluginId
-            && candidate.identity.localId === providerLocalId
-        ));
-        expect(provider?.definition.managedRuntime?.kind).toBe('managed');
-        if (provider?.definition.managedRuntime?.kind !== 'managed') {
-            throw new Error('Expected bundled CLIProxyAPI managed Provider');
-        }
-        const managedRuntime = resolveProviderManagedRuntimeDeclarationV1({
-            implementationIdentity: {
-                pluginId,
-                localId: providerLocalId,
-            },
-            managedRuntime: provider.definition.managedRuntime,
-        });
-        expect(managedRuntime.endpointTemplateIds).toEqual(endpointTemplateIds);
-
-        const connectedAccounts = Object.freeze({
-            async getBinding() {
-                return null;
-            },
-            async requestSelection() {
-                throw new Error('retained Provider fixture cannot select accounts');
-            },
-            async materialize() {
-                return Object.freeze({
-                    kind: 'httpHeaders' as const,
-                    headers: Object.freeze({}),
-                });
-            },
-            listAccounts: async () => {
-                throw new Error('Connected Account listing is outside this fixture');
-            },
-            materializeListedAccount: async () => {
-                throw new Error('Exact-listed Connected Account materialization is outside this fixture');
-            },
-            watch() {
-                return Object.freeze({ dispose() {} });
-            },
-        }) satisfies StablePluginConnectedAccountsOwner;
-        const cleanupOperationAuthority = vi.fn(async () => undefined);
-        const activateOperationAuthority = vi.fn(async () => Object.freeze({
-            exactPurposeBindingSubjectId:
-                'managed-provider-operation:retained-bundled-fixture',
-            requestAuth: Object.freeze({
-                realm: 'managedProviderStart' as const,
-                capabilityPath: join(
-                    happyHomeDir,
-                    'retained-bundled-request-auth-capability.json',
-                ),
-                requestAuthUses: Object.freeze([Object.freeze({
-                    purpose: 'openai-upstream',
-                    materialization: Object.freeze({
-                        kind: 'httpHeaders' as const,
-                        origin: 'https://chatgpt.com',
-                        headerNames: Object.freeze([
-                            'authorization',
-                            'chatgpt-account-id',
-                        ]),
-                    }),
-                })]),
-                isCurrent: () => true,
-            }),
-            cleanup: cleanupOperationAuthority,
-        }));
-        const registryA = await resolveExecutablePluginRuntimeRegistry({
-            happyHomeDir,
-            contributes,
-            generationAuthority,
-            connectedAccounts,
-            managedProviderOperationAuthority: Object.freeze({
-                activate: activateOperationAuthority,
-            }),
-        });
-        let registryB: Awaited<ReturnType<
-            typeof resolveExecutablePluginRuntimeRegistry
-        >> | null = null;
-        try {
-            const createFresh =
-                registryA.createManagedProviderRuntimeInvocationServices;
-            expect(createFresh).toBeTypeOf('function');
-            if (!createFresh) return;
-            const custodyServices = await createFresh({
-                identity: { pluginId, localId: providerLocalId },
-                purposeBindings: { v: 1, bindings: [] },
-                signal: new AbortController().signal,
-                isCurrent: () => true,
-            });
-            expect(custodyServices).not.toBeNull();
-            if (!custodyServices) return;
-
-            const runtimeBindingBasis = {
-                v: 1 as const,
-                agentTargetKey: 'backend:retained-bundled-fixture',
-                connectionId: ProviderConnectionIdSchema.parse(
-                    'pc_retained_bundled_fixture',
-                ),
-                contributionKey: `${pluginId}/${providerLocalId}`,
-                runtimeCredentialTransport: null,
-                prepared: {
-                    v: 1 as const,
-                    materialization: 'spawnEnv' as const,
-                },
-                adapterVersion: 1,
-                agentSupport: {
-                    acceptsProtocols: ['openai-responses'],
-                    required: { streaming: true },
-                    credentialSupport: {
-                        supportsNoAuth: true,
-                        apiKeyTransports: [],
-                    },
-                    authIsolation: {
-                        suppressConnectedServiceIds: [],
-                        ownedEnvKeys: [],
-                    },
-                    materialization: 'spawnEnv' as const,
-                    applyPolicy: 'restart_session' as const,
-                    supportsFreeformModelIds: true,
-                },
-                deployment: {
-                    kind: 'managedLocal' as const,
-                    implementationIdentity: {
-                        pluginId,
-                        localId: providerLocalId,
-                    },
-                    managedRuntime,
-                    purposeBindings: { v: 1 as const, bindings: [] },
-                },
-                endpoint: {
-                    endpointTemplateId: endpointTemplateIds[0],
-                    protocol: 'openai-responses' as const,
-                    publicHeaders: {},
-                },
-                credentialAuthorization: {
-                    connectionSecurityFingerprint: 'connection-security',
-                    grantFingerprint: 'grant',
-                },
-            } satisfies ProviderRuntimeBindingBasisV1;
-            const retainedScopes:
-                RetainedManagedProviderRuntimeInvocationScope[] = [];
-            const cleanupCustody = vi.fn(async () => undefined);
-            cleanupCustody.mockRejectedValueOnce(
-                new Error('session_custody_cleanup_busy'),
-            );
-            const sessionInvocation = await createFresh({
-                identity: { pluginId, localId: providerLocalId },
-                purposeBindings: { v: 1, bindings: [] },
-                operationClaim: {
-                    kind: 'sessionDemand',
-                    sessionId: 'session-retained-bundled-p',
-                    runtimeBindingBasis,
-                    bindSessionCustody: async (scope) => {
-                        retainedScopes.push(scope);
-                        return Object.freeze({
-                            managedServices: custodyServices.managedServices,
-                            projectEndpointAccess:
-                                custodyServices.projectEndpointAccess,
-                            adoptService: vi.fn(async () => undefined),
-                            cleanup: cleanupCustody,
-                        });
-                    },
-                },
-                signal: new AbortController().signal,
-                isCurrent: () => true,
-            });
-            expect(sessionInvocation?.bootstrap).toMatchObject({
-                identity: { pluginId, localId: providerLocalId },
-                immutableGenerationId:
-                    bundledArtifact.record.immutableGenerationId,
-                manifestAuthority: 'bundled_first_party',
-            });
-            expect(sessionInvocation?.bootstrap).not.toHaveProperty(
-                'manifestDigest',
-            );
-            expect(retainedScopes).toHaveLength(1);
-            const retainedScope = retainedScopes[0];
-            expect(retainedScope).toMatchObject({
-                manifestAuthority: 'bundled_first_party',
-            });
-            if (!sessionInvocation || !retainedScope) {
-                throw new Error('Expected one retained managed Provider custody scope');
-            }
-            const operationAuthorityCleanupCount =
-                cleanupOperationAuthority.mock.calls.length;
-            await expect(sessionInvocation.cleanup()).rejects.toThrow(
-                'session_custody_cleanup_busy',
-            );
-            expect(cleanupOperationAuthority).toHaveBeenCalledTimes(
-                operationAuthorityCleanupCount + 1,
-            );
-            await expect(sessionInvocation.cleanup()).resolves.toBeUndefined();
-            await expect(sessionInvocation.cleanup()).resolves.toBeUndefined();
-            expect(cleanupCustody).toHaveBeenCalledTimes(2);
-            expect(cleanupOperationAuthority).toHaveBeenCalledTimes(
-                operationAuthorityCleanupCount + 1,
-            );
-            await custodyServices.cleanup();
-            registryA.retirePluginConsumers?.([pluginId]);
-
-            registryB = await resolveExecutablePluginRuntimeRegistry({
-                happyHomeDir,
-                contributes: createMergedContributionRegistry({}, {}),
-                generationAuthority,
-                connectedAccounts,
-                managedProviderOperationAuthority: Object.freeze({
-                    activate: activateOperationAuthority,
-                }),
-            });
-            expect(registryB.activatedPluginIds.has(pluginId)).toBe(false);
-            const createRetained = registryB
-                .createRetainedManagedProviderRuntimeInvocationServices;
-            expect(createRetained).toBeTypeOf('function');
-            if (!createRetained) return;
-            const adoptedPublicOutcome = Object.freeze({
-                operationClaimId: retainedScope.operationClaimId,
-                serviceId: 'cliproxyapi-service-p',
-                endpointTemplateIds,
-                endpoints: Object.freeze([
-                    Object.freeze({
-                        endpointTemplateId: endpointTemplateIds[0],
-                        servicePath: '/responses',
-                    }),
-                    Object.freeze({
-                        endpointTemplateId: endpointTemplateIds[1],
-                        servicePath: '/chat',
-                    }),
-                    Object.freeze({
-                        endpointTemplateId: endpointTemplateIds[2],
-                        servicePath: '/',
-                    }),
-                ]),
-                endpointAccess: 'runnerProjected' as const,
-            });
-            const retained = await createRetained({
-                scope: retainedScope,
-                signal: new AbortController().signal,
-                isCurrent: () => true,
-                readAdoptedPublicOutcome: async () => adoptedPublicOutcome,
-                revalidatePolicy: async () => true,
-            });
-            expect(retained?.bootstrap).toMatchObject({
-                identity: retainedScope.identity,
-                activationGeneration: retainedScope.activationGeneration,
-                immutableGenerationId: retainedScope.immutableGenerationId,
-                manifestAuthority: 'bundled_first_party',
-                operationClaimId: retainedScope.operationClaimId,
-            });
-            await retained?.cleanup();
-        } finally {
-            await registryB?.dispose();
-            await registryA.dispose();
-            await rm(happyHomeDir, { recursive: true, force: true });
-        }
-    });
-
     it('reconstructs stable PluginServices from a retained Agent binding instead of the desired runtime callback', async () => {
         const happyHomeDir = await mkdtemp(
             join(tmpdir(), 'happier-retained-agent-services-home-'),
@@ -1376,7 +1110,6 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
         const runtimeRegistry =
             await resolveExecutablePluginRuntimeRegistry({
                 happyHomeDir,
-                pluginIds: ['happier.agent.codex'],
             });
         let releaseManagedDependencyRetention: (() => void) | null = null;
         try {
@@ -1391,6 +1124,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                 ?.sessionRunnerFactoryBinding;
             expect(binding).toBeDefined();
             if (!binding) return;
+            const bindingSourceCustody = JSON.stringify(binding.sourceCustody);
             const createRetained =
                 runtimeRegistry
                     .createRetainedRunnerAgentInvocationServices;
@@ -1422,7 +1156,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                 environment: {},
                 providerBindingActive: false,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
 
             expect(retained.services.availability('exec'))
@@ -1436,7 +1170,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
             await expect(
                 retained.services.storage.daemon.set(
                     'retained-generation-proof',
-                    binding.immutableGenerationId,
+                    bindingSourceCustody,
                 ),
             ).resolves.toBeUndefined();
             await expect(
@@ -1444,7 +1178,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                     'retained-generation-proof',
                 ),
             ).resolves.toBe(
-                binding.immutableGenerationId,
+                bindingSourceCustody,
             );
         } finally {
             releaseManagedDependencyRetention?.();
@@ -1456,7 +1190,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
         }
     });
 
-    it('projects Antigravity localharness through the canonical managed-installable adapter', async () => {
+    it('projects the Antigravity ACP server through the canonical managed-installable adapter', async () => {
         const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-antigravity-managed-home-'));
         const runtimeRegistry = await resolveExecutablePluginRuntimeRegistry({
             happyHomeDir,
@@ -1465,20 +1199,20 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
         try {
             const contribution = (runtimeRegistry.contributes.managedDependencies ?? []).find((entry) => (
                 entry.pluginId === 'happier.agent.antigravity'
-                && entry.definition.id === 'localharness'
+                && entry.definition.id === 'agy-acp-server'
             ));
             expect(contribution?.definition).toMatchObject({
-                id: 'localharness',
+                id: 'agy-acp-server',
                 sources: [expect.objectContaining({
-                    kind: 'managedPypiWheelAsset',
-                    installId: 'dep.antigravity.localharness',
+                    kind: 'pinnedArchive',
+                    installId: 'dep.antigravity.agy-acp-server',
                 })],
-                executable: 'localharness',
+                executable: 'agy_acp_server',
             });
 
             const status = await runtimeRegistry.managedDependencies
                 ?.bind('happier.agent.antigravity')
-                .status('localharness');
+                .status('agy-acp-server');
             expect(status?.state).toEqual(expect.stringMatching(/^(missing|ready|updateAvailable)$/));
         } finally {
             await runtimeRegistry.dispose();
@@ -1605,104 +1339,6 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
         }
     });
 
-    it('materializes CodeRabbit and DeepSec bundled prompt assets once through SVC11', async () => {
-        const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-bundled-prompts-home-'));
-        const exactBundledArtifacts = BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS.filter((artifact) => (
-            artifact.record.pluginId === 'happier.review.coderabbit'
-            || artifact.record.pluginId === 'happier.review.deepsec'
-        ));
-        expect(exactBundledArtifacts).toHaveLength(2);
-        for (const artifact of exactBundledArtifacts) {
-            expect(() => ImmutablePluginGenerationRecordSchema.parse({
-                ...artifact.record,
-                sourceProvenance: 'localSource',
-            })).not.toThrow();
-        }
-        const admitted = await readCurrentCommittedPluginGenerations(
-            resolvePluginStorePaths({ happyHomeDir }),
-            { bundledArtifacts: exactBundledArtifacts },
-        );
-        expect(admitted?.unavailableBundledPackageNames).toEqual(new Set());
-        expect([...admitted?.generations.keys() ?? []].sort()).toEqual([
-            'happier.review.coderabbit',
-            'happier.review.deepsec',
-        ]);
-        const runtimeRegistry = await resolveExecutablePluginRuntimeRegistry({
-            happyHomeDir,
-            pluginIds: ['happier.review.coderabbit', 'happier.review.deepsec'],
-        });
-        try {
-            const deepsecRuntimeLease = runtimeRegistry.agentRuntimesByAgentId.get('deepsec');
-            expect(deepsecRuntimeLease).toMatchObject({
-                pluginId: 'happier.review.deepsec',
-                agentId: 'deepsec',
-                generation: String(runtimeRegistry.generation),
-            });
-            if (!deepsecRuntimeLease?.hasPrimaryRuntime) {
-                throw new Error('DeepSec must register a primary Agent runtime');
-            }
-            const deepsecRuntime = await deepsecRuntimeLease.createRuntime({
-                signal: new AbortController().signal,
-            });
-            expect(deepsecRuntime?.executionRuns?.open).toEqual(expect.any(Function));
-            expect(deepsecRuntime?.sessions).toBeUndefined();
-
-            const coderabbit = await runtimeRegistry.resolvePromptAssetBlocks({ agentId: 'coderabbit' });
-            const deepsec = await runtimeRegistry.resolvePromptAssetBlocks({ agentId: 'deepsec' });
-            const deepsecAudit = await runtimeRegistry.resolvePromptAssetBlocks({
-                agentId: 'deepsec',
-                selectedAsset: {
-                    pluginId: 'happier.review.deepsec',
-                    localId: 'repository-security-audit-prompt',
-                },
-            });
-            expect(coderabbit).toEqual([{
-                id: 'plugin_prompt_asset.happier.review.coderabbit/review-prompt',
-                scope: 'session',
-                text: await readFile(join(
-                    process.cwd(),
-                    '../../packages/plugins/review-coderabbit/resources/review-prompt.md',
-                ), 'utf8'),
-            }]);
-            expect(deepsec.map((block) => block.id)).toEqual([
-                'plugin_prompt_asset.happier.review.deepsec/repository-security-audit-prompt',
-                'plugin_prompt_asset.happier.review.deepsec/review-prompt',
-            ]);
-            expect(new Set(deepsec.map((block) => block.id)).size).toBe(deepsec.length);
-            expect(deepsecAudit).toEqual([{
-                id: 'plugin_prompt_asset.happier.review.deepsec/repository-security-audit-prompt',
-                scope: 'session',
-                text: await readFile(join(
-                    process.cwd(),
-                    '../../packages/plugins/review-deepsec/resources/repository-security-audit-prompt.md',
-                ), 'utf8'),
-            }]);
-            const machineKey = new Uint8Array(32).fill(11);
-            const promptPlan = await resolveEffectiveCodingPromptPlan({
-                credentials: {
-                    token: 'token',
-                    encryption: {
-                        type: 'dataKey',
-                        machineKey,
-                        publicKey: deriveBoxPublicKeyFromSeed(machineKey),
-                    },
-                },
-                settings: {},
-                profileId: null,
-                baseOverride: 'Base prompt',
-                memoryRecallGuidanceEnabled: false,
-                agentId: 'coderabbit',
-                promptAssetBlocks: coderabbit,
-            });
-            expect(promptPlan.plan.blocks.filter((block) => block.id === coderabbit[0]?.id)).toEqual([{
-                ...coderabbit[0]!,
-                text: coderabbit[0]!.text.trim(),
-            }]);
-        } finally {
-            await runtimeRegistry.dispose();
-        }
-    });
-
     it('binds native Agent readiness and declared system-tool resolution through production services', async () => {
         const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-native-agent-services-home-'));
         const toolRoot = await mkdtemp(join(tmpdir(), 'happier-native-agent-services-tool-'));
@@ -1728,16 +1364,18 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                 localId: 'pi',
             }]);
             expect(runtimeRegistry.activatedPluginIds.has('happier.agent.pi')).toBe(true);
+            const piOccurrenceId = runtimeRegistry.readPluginOccurrenceId?.('happier.agent.pi');
+            if (!piOccurrenceId) throw new Error('Expected a current Pi plugin occurrence');
             const services = await runtimeRegistry.createAgentInvocationServices({
                 pluginId: 'happier.agent.pi',
                 pluginVersion: '0.0.0',
                 agentId: 'pi',
-                generation: String(runtimeRegistry.generation),
+                occurrenceId: piOccurrenceId,
                 correlationId: 'pi-native-services',
                 cwd: toolRoot,
                 environment: { PROFILE_CUSTOM: 'profile-value' },
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             await expect(services.exec.agentCli.checkReadiness({
                 candidates: ['claude'],
@@ -1956,15 +1594,25 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                 expect(runtimeRegistry.agentRuntimesByAgentId.get('acme.mcp.session/session-agent')).toMatchObject({
                     pluginId: 'acme.mcp.session',
                     agentId: 'acme.mcp.session/session-agent',
-                    generation: String(runtimeRegistry.generation),
+                    occurrenceId: runtimeRegistry.readPluginOccurrenceId?.('acme.mcp.session'),
                 });
+                const mcpPluginOccurrenceId = runtimeRegistry.readPluginOccurrenceId?.(
+                    'acme.mcp.session',
+                );
+                const mcpPluginSourceCustody = runtimeRegistry.readPluginSourceCustody?.(
+                    'acme.mcp.session',
+                );
+                if (!mcpPluginOccurrenceId || !mcpPluginSourceCustody) {
+                    throw new Error('Expected admitted MCP plugin runtime identity');
+                }
                 const currentSessionUi = createNativeAgentCurrentSessionUiServices({
                     permissionHandler: { handleToolCall },
                     pluginId: 'acme.mcp.session',
                     contributionId: 'session-agent',
                     runtimeId: 'session-agent',
                     sessionId: 'session-1',
-                    generationId: String(runtimeRegistry.generation),
+                    occurrenceId: mcpPluginOccurrenceId,
+                    sourceCustody: mcpPluginSourceCustody,
                     interactionDeadlineMs: 1_000,
                     isCurrent: () => true,
                     signal: new AbortController().signal,
@@ -1973,11 +1621,11 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                     pluginId: 'acme.mcp.session',
                     pluginVersion: '1.0.0',
                     agentId: 'acme.mcp.session/session-agent',
-                    generation: String(runtimeRegistry.generation),
+                    occurrenceId: mcpPluginOccurrenceId,
                     correlationId: 'session-1',
                     cwd: pluginRoot,
                     signal: new AbortController().signal,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                     session: { id: 'session-1', current: currentSessionUi },
                 });
                 const client = await services.mcp.connect(
@@ -2093,7 +1741,11 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                             pluginId: 'acme.mcp.session',
                             pluginVersion: '1.0.0',
                             agentId: 'acme.mcp.session/session-agent',
-                            generation: String(runtimeRegistry.generation),
+                            occurrenceId: 'acme-mcp-session-occurrence',
+                            sourceCustody: {
+                                kind: 'development',
+                                registeredRootId: 'acme-mcp-session-root',
+                            },
                             isCurrent: () => true,
                         },
                         backend: backendContribution,
@@ -2208,7 +1860,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
 
                 const committedBeforeRevocation = await readPluginRegistryCommitRecord(paths);
                 if (!committedBeforeRevocation) throw new Error('Expected current MCP fixture commit before revocation');
-                const remainingPluginGenerations = { ...committedBeforeRevocation.pluginGenerations };
+                const remainingPluginGenerations = { ...committedBeforeRevocation.pluginOccurrenceIds };
                 delete remainingPluginGenerations['acme.mcp.session'];
                 await replacePluginRegistryCommitRecord({
                     paths,
@@ -2218,7 +1870,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                         revision: committedBeforeRevocation.revision + 1,
                         transactionId: 'mcp-session-runtime-revocation',
                         baseRevision: committedBeforeRevocation.revision,
-                        pluginGenerations: remainingPluginGenerations,
+                        pluginOccurrenceIds: remainingPluginGenerations,
                         createdAtMs: 2,
                     },
                 });
@@ -2270,7 +1922,6 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                         target: 'client',
                         client: {
                             artifactId: 'client-preview',
-                            modulePath: './client-preview',
                             exportName: 'activatePreview',
                         },
                         platforms: ['web'],
@@ -2407,7 +2058,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                 revision: seededCommit.revision + 1,
                 transactionId: 'resource-runtime-commit',
                 baseRevision: seededCommit.revision,
-                pluginGenerations: { 'acme.resource.action': prepared.reference },
+                pluginOccurrenceIds: { 'acme.resource.action': prepared.reference },
                 createdAtMs: 1,
                 creator: { pid: 42, instanceId: 'daemon-a' },
             },
@@ -2515,15 +2166,23 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
         } finally {
             await mismatchedRuntime?.dispose();
         }
-        expect(mismatchError).toEqual(expect.objectContaining({
-            message: expect.stringMatching(/committed.*(activation|runtime).*identity/i),
-        }));
+        expect(mismatchError).toBeInstanceOf(Error);
+        expect((mismatchError as Error).message).toMatch(
+            /escapes immutable generation/i,
+        );
 
         const runtimeRegistry = await resolveExecutablePluginRuntimeRegistry({ happyHomeDir });
         try {
-            expect(runtimeRegistry.pluginFinalPolicyCurrentGenerationsById?.get('acme.resource.action'))
+            const resourcePluginOccurrenceId = runtimeRegistry
+                .pluginFinalPolicyCurrentRuntimesById
+                ?.get('acme.resource.action')?.occurrenceId;
+            expect(resourcePluginOccurrenceId).toBeTypeOf('string');
+            expect(runtimeRegistry.pluginFinalPolicyCurrentRuntimesById?.get('acme.resource.action'))
                 .toMatchObject({
-                    immutableGenerationId: generationRecord.immutableGenerationId,
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: generationRecord.immutableGenerationId,
+                    },
                     applied: false,
                 });
             await runtimeRegistry.activateContributionsOnDemand([{
@@ -2531,9 +2190,12 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                 family: 'agents',
                 localId: 'novel-reviewer',
             }]);
-            expect(runtimeRegistry.pluginFinalPolicyCurrentGenerationsById?.get('acme.resource.action'))
+            expect(runtimeRegistry.pluginFinalPolicyCurrentRuntimesById?.get('acme.resource.action'))
                 .toMatchObject({
-                    immutableGenerationId: generationRecord.immutableGenerationId,
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: generationRecord.immutableGenerationId,
+                    },
                     applied: true,
                 });
             expect(runtimeRegistry.targetActionInvocations?.has(
@@ -2547,16 +2209,16 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                 qualifiedId: 'acme.resource.action/actions/open-client-preview',
                 authorization: {
                     generation: {
-                        targetGeneration: generationRecord.immutableGenerationId,
-                        desiredGeneration: generationRecord.immutableGenerationId,
-                        appliedGeneration: generationRecord.immutableGenerationId,
+                        targetGeneration: resourcePluginOccurrenceId,
+                        desiredGeneration: resourcePluginOccurrenceId,
+                        appliedGeneration: resourcePluginOccurrenceId,
                         targetGenerationMode: 'current',
                     },
                     serviceAvailability: [],
                 },
             });
             expect(runtimeRegistry.agentRuntimesByAgentId.get('acme.resource.action/novel-reviewer')).toMatchObject({
-                generation: String(runtimeRegistry.generation),
+                occurrenceId: resourcePluginOccurrenceId,
                 immutableGenerationId,
             });
             const promptAssetBlocks = await runtimeRegistry.resolvePromptAssetBlocks({ agentId: 'acme.resource.action/novel-reviewer' });
@@ -2620,7 +2282,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                     baseRevision: currentCommit.revision,
                     createdAtMs: 2,
                     creator: { pid: 42, instanceId: 'daemon-a' },
-                    pluginGenerations: {},
+                    pluginOccurrenceIds: {},
                 },
             });
             await expect(runtimeRegistry.resolvePromptAssetBlocks({ agentId: 'acme.resource.action/novel-reviewer' }))
@@ -2630,7 +2292,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
             })).resolves.toEqual({
                 status: 'failed',
                 code: 'plugin_generation_stale',
-                message: 'Plugin generation is stale',
+                message: 'Plugin occurrenceId is stale',
                 actionHandlerInvocation: 'notStarted',
             });
             runtimeRegistry.retirePluginConsumers?.(['acme.resource.action']);
@@ -2814,8 +2476,8 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                     service: lease.ref,
                     descriptor: lease.descriptor.authentication.modes[0]!,
                     modeId: 'manual',
-                    generation: lease.generation,
-                    immutableGenerationId: lease.immutableGenerationId,
+                    occurrenceId: lease.occurrenceId,
+                    sourceCustody: lease.sourceCustody,
                 }),
                 operation: Object.freeze({
                     kind: 'submitManual',
@@ -2894,6 +2556,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
     });
 
     it('demands and re-reads an exact current cross-plugin notification channel from a stable action service', async () => {
+        let publishedToController = false;
         const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-runtime-home-'));
         const actionRoot = await mkdtemp(join(tmpdir(), 'happier-notification-action-'));
         const channelRoot = await mkdtemp(join(tmpdir(), 'happier-notification-channel-'));
@@ -3009,6 +2672,13 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
             },
         }, `export function activate(api) {
             api.notifications.registerChannel('external', async (request, context) => {
+                if (request.categoryId === undefined && (context.surface !== 'background'
+                    || context.contribution.id !== 'external')) {
+                    return {
+                        deliveryId: request.deliveryId, channelId: request.channelId,
+                        status: 'failed', code: 'invalid_host_context'
+                    };
+                }
                 try {
                     const endpoint = await context.services.settings.forScope({ kind: 'account' }).get(${JSON.stringify(endpointSettingId)});
                     const token = await context.services.secrets.get(${JSON.stringify(tokenSecretId)}, { reason: 'Authenticate webhook delivery' });
@@ -3118,8 +2788,8 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                 revision: seededCommit.revision + 1,
                 transactionId: 'notification-runtime-commit',
                 baseRevision: seededCommit.revision,
-                pluginGenerations: {
-                    ...seededCommit.pluginGenerations,
+                pluginOccurrenceIds: {
+                    ...seededCommit.pluginOccurrenceIds,
                     'acme.notification.action': preparedAction.reference,
                     'acme.notification.channel': preparedChannel.reference,
                 },
@@ -3158,7 +2828,6 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
             existingAgentIds: new Set(),
         });
         const localGenerationAuthority = await readCurrentCommittedPluginGenerations(paths, {
-            bundledArtifacts: [],
         });
         if (!localGenerationAuthority) throw new Error('Expected current local notification generation authority');
         const runtimeRegistry = await resolveExecutablePluginRuntimeRegistry({
@@ -3232,6 +2901,23 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
             expect(runtimeRegistry.activatedPluginIds.has('acme.notification.channel')).toBe(true);
             expect(JSON.stringify(invocationLogRecords)).toContain('[REDACTED]');
             expect(JSON.stringify(invocationLogRecords)).not.toContain('configured-webhook-token');
+            const published = await pluginReloadController.adoptPreparedRuntimeRegistry({
+                registry: runtimeRegistry,
+                changedPluginIds: ['acme.notification.action', 'acme.notification.channel'],
+                runningSessionDisposition: 'retainRunningSessions',
+            });
+            publishedToController = published.ok;
+            expect(published.ok).toBe(true);
+            const hostChannels = createHostPluginNotificationChannels();
+            await expect(hostChannels.availableHostChannels()).resolves.toEqual([{
+                value: 'acme.notification.channel/external',
+                label: 'External (acme.notification.channel)',
+                kind: 'webhook',
+            }]);
+            await expect(hostChannels.sendHostNotification({
+                channelId: 'acme.notification.channel/external',
+                title: 'Workflow update', body: 'Ready to review', data: { runId: 'host-run' },
+            })).resolves.toBe(true);
 
             setNotificationAccountSnapshot({
                 token: 'invalid-webhook-token',
@@ -3396,10 +3082,17 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                 },
             });
 
+            await pluginReloadController.shutdown();
+            await expect(hostChannels.availableHostChannels()).resolves.toEqual([]);
+            await expect(hostChannels.sendHostNotification({
+                channelId: 'acme.notification.channel/external', title: 'Unavailable',
+            })).resolves.toBe(false);
+
         } finally {
             invocationLogSpy.mockRestore();
             resetActiveAccountSettingsSnapshotForTests();
-            await runtimeRegistry.dispose();
+            if (publishedToController) await pluginReloadController.shutdown();
+            else await runtimeRegistry.dispose();
         }
     });
 
@@ -3809,7 +3502,7 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
             });
             const generationAuthority = await readCurrentCommittedPluginGenerations(
                 resolvePluginStorePaths({ happyHomeDir }),
-                { bundledArtifacts: [] },
+                {},
             );
             if (!generationAuthority) {
                 throw new Error('Expected current Agent collision generation authority');

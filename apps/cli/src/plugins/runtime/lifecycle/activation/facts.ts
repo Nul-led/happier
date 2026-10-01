@@ -29,7 +29,7 @@ export type PluginTargetActivationFact = Readonly<{
     pluginId: string;
     pluginVersion: string;
     source: PluginDiagnosticRecordV1['plugin']['source'];
-    generation: string;
+    occurrenceId: string;
     host: PluginDiagnosticHostV1;
     platform: string;
     occurredAtMs: number;

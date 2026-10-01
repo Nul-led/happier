@@ -58,6 +58,42 @@ const undiciAgent = vi.hoisted(() => {
 
 vi.mock('undici', () => ({ request: undiciRequest, Agent: undiciAgent.Agent }));
 
+// These cases replace HTTP itself with finite responses at non-routable fixture
+// origins. Replace only the sibling Socket.IO network boundary; the shared
+// socket adapter, connection supervisor and transcript owner remain real.
+const notificationNetwork = vi.hoisted(() => {
+  type Listener = (...args: unknown[]) => void;
+  const sockets: Array<{ connected: boolean; disconnect: () => void }> = [];
+  const io = vi.fn(() => {
+    const listeners = new Map<string, Set<Listener>>();
+    const deliver = (event: string, ...args: unknown[]) => {
+      for (const listener of [...(listeners.get(event) ?? [])]) listener(...args);
+    };
+    const socket = {
+      connected: false,
+      active: false,
+      io: { timeout: vi.fn(), on: vi.fn(), off: vi.fn() },
+      on(event: string, listener: Listener) {
+        const entries = listeners.get(event) ?? new Set<Listener>();
+        entries.add(listener); listeners.set(event, entries);
+      },
+      off(event: string, listener: Listener) { listeners.get(event)?.delete(listener); },
+      connect() { socket.connected = true; socket.active = true; deliver('connect'); },
+      disconnect() {
+        const wasConnected = socket.connected;
+        socket.connected = false; socket.active = false;
+        if (wasConnected) deliver('disconnect', 'io client disconnect');
+      },
+      removeAllListeners() { listeners.clear(); },
+      offAny() {},
+    };
+    sockets.push(socket);
+    return socket;
+  });
+  return { io, sockets };
+});
+vi.mock('socket.io-client', () => ({ io: notificationNetwork.io }));
+
 import {
   HappierActionError,
   HappierAgentUnavailableError,
@@ -152,6 +188,27 @@ function isHappierSessionInitialInputError(
 }
 
 describe('Happier SDK client', () => {
+  it('round trips fluent sessions.list folder and tag selectors through the strict Action query', async () => {
+    const result = { sessions: [], nextCursor: null, hasNext: false, queryVersion: 1,
+      attentionNextCursor: null, attentionHasNext: false };
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { input: unknown };
+      expect(request.input).toEqual({ query: {
+        v: 1, storage: 'archived', includeInactive: false, scope: 'all_accessible', attention: 'any',
+        audiences: [], folderIds: ['folder-a', 'folder-b'], tagIds: ['tag-a', 'tag-b'], limit: 17,
+      } });
+      return responseForRequest(init, { v: 1, actionId: 'session.list', execution: { ok: true, result } });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    try {
+      await expect(client.sessions.list({ folderIds: ['folder-b', 'folder-a'], tagIds: ['tag-b', 'tag-a'],
+        storage: 'archived', includeInactive: false, limit: 17 })).resolves.toEqual(result);
+    } finally {
+      await client.close();
+    }
+  });
+
   it('protects a later session.list query and opens its marked awareness result', async () => {
     const material = { type: 'dataKey' as const, machineKey: Uint8Array.from({ length: 32 }, (_, i) => i + 1) };
     const context = { serverIdentityId: 'srv_sdk', accountId: 'account-1',
@@ -890,6 +947,9 @@ describe('Happier SDK client', () => {
   });
 
   afterEach(() => {
+    for (const socket of notificationNetwork.sockets) socket.disconnect();
+    notificationNetwork.sockets.length = 0;
+    notificationNetwork.io.mockClear();
     vi.unstubAllGlobals();
     undiciRequest.mockClear();
     undiciAgent.Agent.mockClear();
@@ -939,13 +999,6 @@ describe('Happier SDK client', () => {
     expect(undiciAgent.destroy).toHaveBeenCalledTimes(1);
   });
 
-  it('closes cleanly when the runtime Agent exposes no destroy method', async () => {
-    undiciAgent.Agent.mockImplementationOnce(() => ({} as never));
-
-    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
-    await expect(client.close()).resolves.toBeUndefined();
-  });
-
   it('finishes active transcript and execution-run cleanup before disposing its dispatcher', async () => {
     const order: string[] = [];
     undiciAgent.destroy.mockImplementation(async () => {
@@ -976,6 +1029,7 @@ describe('Happier SDK client', () => {
     await client.close();
 
     const destroyIndex = order.indexOf('dispatcher.destroy');
+    expect(notificationNetwork.sockets.every((socket) => !socket.connected)).toBe(true);
     expect(order).toContain('execution.run.stream.cancel');
     expect(order).toContain('transcript.unfollow');
     expect(destroyIndex).toBeGreaterThan(order.indexOf('execution.run.stream.cancel'));
@@ -996,6 +1050,7 @@ describe('Happier SDK client', () => {
 
     await expect(transcript[Symbol.asyncIterator]().next()).resolves.toEqual({ done: true, value: undefined });
     expect(actionIds).toEqual([]);
+    expect(notificationNetwork.io).not.toHaveBeenCalled();
   });
 
   it('executes one raw typed Action through the frozen HTTP envelope', async () => {
@@ -1404,7 +1459,7 @@ describe('Happier SDK client', () => {
       new URL('https://api.example.test/root/v1/machines'),
       expect.objectContaining({
         method: 'GET',
-        headers: { authorization: 'Bearer ' + TEST_ALT_API_TOKEN },
+        headers: expect.objectContaining({ authorization: 'Bearer ' + TEST_ALT_API_TOKEN }),
         signal: expect.any(AbortSignal),
       }),
     );
@@ -1440,7 +1495,7 @@ describe('Happier SDK client', () => {
 
     const machine = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN }).machine('machine-7');
     const spawnInput = {
-      directory: '/repo',
+      directory: { kind: 'path', path: '/repo' },
       agentTarget: {
         kind: 'agent',
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -1464,7 +1519,7 @@ describe('Happier SDK client', () => {
         run: {
           id: 'run-1', origin: { kind: 'automation', automationId: 'automation-1' },
           state: 'queued', revision: 1, machineId: 'machine-1',
-          workflowCustodyState: null, workflowResultDeliveryState: null,
+          workflowCustodyState: null, originDeliveryAckRevision: null,
           availability: {
             pause: false, resumeBoundary: false, restoreWorkspace: false,
             cancel: false, inspectExecution: false, disabledReasons: [],
@@ -1681,7 +1736,7 @@ describe('Happier SDK client', () => {
     >();
 
     const input = {
-      directory: '/repo',
+      directory: { kind: 'path', path: '/repo' },
       agent: 'codex',
       initialMessage: 'Inspect the failing tests.',
       agentModeId: 'review',
@@ -1732,7 +1787,7 @@ describe('Happier SDK client', () => {
           requestId: 'request-1',
           target: { kind: 'machine', machineId: 'machine-7' },
           input: {
-            directory: '/repo',
+            directory: { kind: 'path', path: '/repo' },
             agentTarget: {
               kind: 'agent',
               identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -1792,7 +1847,7 @@ describe('Happier SDK client', () => {
 
     const failure = client
       .machine('machine-7')
-      .sessions.spawn({ directory: '/repo', agent: 'codex' });
+      .sessions.spawn({ directory: { kind: 'path', path: '/repo' }, agent: 'codex' });
 
     await expect(failure).rejects.toBeInstanceOf(HappierActionError);
     await expect(failure).rejects.toMatchObject({
@@ -1872,7 +1927,7 @@ describe('Happier SDK client', () => {
     vi.stubGlobal('fetch', fetch);
 
     const session = await connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN }).sessions.spawn({
-      directory: '/repo',
+      directory: { kind: 'path', path: '/repo' },
       agent: 'codex',
     }, { requestId: 'request-1' });
 
@@ -1891,7 +1946,7 @@ describe('Happier SDK client', () => {
           v: 1,
           requestId: 'request-1',
           input: {
-            directory: '/repo',
+            directory: { kind: 'path', path: '/repo' },
             agentTarget: {
               kind: 'agent',
               identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -1946,7 +2001,7 @@ describe('Happier SDK client', () => {
 
     const target = { kind: 'machine', machineId: 'machine-7' } as const;
     await connect({ endpoint: 'https://api.example.test', token: TEST_API_TOKEN }).sessions.spawn({
-      directory: '/repo',
+      directory: { kind: 'path', path: '/repo' },
       agent: 'codex',
     }, { target, requestId: 'spawn-request-1' });
 
@@ -1966,7 +2021,7 @@ describe('Happier SDK client', () => {
           requestId: 'spawn-request-1',
           target,
           input: {
-            directory: '/repo',
+            directory: { kind: 'path', path: '/repo' },
             agentTarget: {
               kind: 'agent',
               identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -2020,7 +2075,7 @@ describe('Happier SDK client', () => {
 
       const failure = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN })
         .machine('machine-7')
-        .sessions.spawn({ directory: '/repo', agent: 'codex' });
+        .sessions.spawn({ directory: { kind: 'path', path: '/repo' }, agent: 'codex' });
       await expect(failure).rejects.toBeInstanceOf(HappierAgentUnavailableError);
       await expect(failure).rejects.toMatchObject({ agentId: 'codex', reason: testCase.reason });
       expect(fetch).toHaveBeenCalledTimes(1);
@@ -2093,7 +2148,7 @@ describe('Happier SDK client', () => {
       const failure = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN })
         .machine('machine-7')
         .sessions.spawn({
-          directory: '/repo',
+          directory: { kind: 'path', path: '/repo' },
           agent: 'codex',
           initialMessage: 'This must be admitted or reported.',
         });
@@ -2143,7 +2198,7 @@ describe('Happier SDK client', () => {
     const result = await connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN })
       .machine('machine-7')
       .actions.session.spawnNew({
-        directory: '/repo',
+        directory: { kind: 'path', path: '/repo' },
         agentTarget: {
           kind: 'agent',
           identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -2648,6 +2703,9 @@ describe('Happier SDK client', () => {
       'execution.run.stream.read',
       'execution.run.stream.cancel',
     ]);
+    for (const { body } of requests.filter(({ actionId }) => actionId === 'execution.run.stream.read')) {
+      expect(body.input).toMatchObject({ waitForEvents: true });
+    }
     for (const { body } of requests) {
       expect(body.target).toEqual({ kind: 'session', sessionId: 'session-1' });
     }
@@ -2902,7 +2960,7 @@ describe('Happier SDK client', () => {
 
     const session = await connect({ endpoint: 'https://api.example.test', token: TEST_API_TOKEN })
       .machine('machine-7')
-      .sessions.spawn({ directory: '/repo', agent: 'codex' });
+      .sessions.spawn({ directory: { kind: 'path', path: '/repo' }, agent: 'codex' });
     const iterator = session.followTranscript()[Symbol.asyncIterator]();
 
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });

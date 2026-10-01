@@ -49,6 +49,7 @@ import type {
 import type {
     ConnectedServiceCredentialRecordV1,
 } from '@happier-dev/protocol/connect/connected-service-schemas';
+import type { ProviderAccountSubscriptionV1 } from '@happier-dev/protocol';
 export type {
     PluginConnectedAccountAuthenticationModeV2,
     PluginConnectedAccountAuthenticationV2,
@@ -538,6 +539,7 @@ export interface ConnectedAccountRuntime {
         options?: Readonly<{ signal?: AbortSignal }>,
     ): Promise<Readonly<{
         observedAtMs: number;
+        subscription?: ProviderAccountSubscriptionV1;
         limits: readonly Readonly<{
             id: string;
             used?: number;

@@ -45,7 +45,11 @@ function retainedAgent() {
     pluginVersion: '1.0.0',
     agentId: 'codex',
     localAgentId: 'codex',
-    immutableGenerationId: 'immutable-1',
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: 'immutable-1',
+      installSource: 'localPath',
+    },
     locator: {
       module: './runtime.mjs',
       export: 'createRuntime',
@@ -103,8 +107,12 @@ function createPrepared(
         pluginVersion: '1.0.0',
         agentId: 'codex',
         backendId: 'codex',
-        generation: 'generation-1',
-        immutableGenerationId: 'immutable-1',
+        occurrenceId: 'occurrence:codex-plugin:1',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'immutable-1',
+          installSource: 'localPath',
+        },
       },
     },
     reservedEnvironmentVariableNames: ['OPENAI_API_KEY'],
@@ -127,13 +135,66 @@ function claimRequest(
     foregroundPid: 1234,
     pluginId: 'codex-plugin',
     agentId: 'codex',
-    generation: 'generation-1',
+    occurrenceId: 'occurrence:codex-plugin:1',
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: 'immutable-1',
+      installSource: 'localPath',
+    },
     capability: token,
     foregroundSatisfiedProfileSecretRequirementNames: [],
   };
 }
 
 describe('foreground Agent runtime admission', () => {
+  it('claims runner-attested bundled custody after a daemon-current bootstrap', async () => {
+    const retirement = new AbortController();
+    const bootstrapCustody = {
+      kind: 'bundled_first_party' as const,
+      packagedRuntime: { kind: 'pinned_runner_snapshot' as const, snapshotId: 'daemon-b' },
+    };
+    const runnerCustody = {
+      kind: 'bundled_first_party' as const,
+      packagedRuntime: { kind: 'pinned_runner_snapshot' as const, snapshotId: 'foreground-codex' },
+    };
+    const prepared = createPrepared(
+      vi.fn(async () => undefined),
+      retirement,
+      vi.fn(async () => ({
+        ok: true as const,
+        environment: {},
+        unsetEnvironmentVariableNames: [],
+        sensitiveEnvironmentVariableNames: [],
+        invocationContext: invocationContext({}),
+        authority: {
+          ...claimAuthority(),
+          retainedAgent: { ...retainedAgent(), sourceCustody: runnerCustody },
+        },
+      })),
+    );
+    const owner = createForegroundAgentRuntimeAdmissionOwner({
+      prepare: async () => ({
+        ok: true as const,
+        prepared: {
+          ...prepared,
+          authorization: {
+            ...prepared.authorization,
+            descriptor: {
+              ...prepared.authorization.descriptor,
+              sourceCustody: bootstrapCustody,
+            },
+          },
+        },
+      }),
+    });
+    await owner.admit(admissionRequest);
+    await expect(owner.claimEnvironment({
+      ...claimRequest(),
+      sourceCustody: bootstrapCustody,
+    })).resolves.toMatchObject({ ok: true });
+    await owner.dispose();
+  });
+
   it('reserves an attempt before asynchronous preparation can admit a duplicate', async () => {
     const retirement = new AbortController();
     let settle!: () => void;
@@ -326,7 +387,12 @@ describe('foreground Agent runtime admission', () => {
       foregroundPid: 1234,
       pluginId: 'codex-plugin',
       agentId: 'codex',
-      generation: 'generation-1',
+      occurrenceId: 'occurrence:codex-plugin:1',
+      sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: 'immutable-1',
+        installSource: 'localPath',
+      },
       capability: 'correct-token',
       foregroundSatisfiedProfileSecretRequirementNames: [],
     })).resolves.toMatchObject({

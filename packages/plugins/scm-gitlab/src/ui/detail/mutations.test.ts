@@ -147,11 +147,17 @@ describe('gitlabOfferedMergeRequestWritesV1', () => {
     })).toEqual([]);
   });
 
-  it('offers the declared reopen on a closed merge request', () => {
+  it('offers the declared reopen on a merge request closed without merging, and nothing once merged', () => {
     expect(gitlabOfferedMergeRequestWritesV1({
       kindId: 'merge-request',
-      state: { presentation: 'closed', nativeLabel: 'Merged' },
+      state: { presentation: 'closed', nativeLabel: 'Closed' },
     })).toEqual(['mergeRequestReopen']);
+    // A merged merge request projects `resolved` (`CONTRACT.md` §4, r0.42) and
+    // cannot be reopened, so a reopen control would be a guaranteed refusal.
+    expect(gitlabOfferedMergeRequestWritesV1({
+      kindId: 'merge-request',
+      state: { presentation: 'resolved', nativeLabel: 'Merged' },
+    })).toEqual([]);
   });
 
   it('branches on the projected state and never on GitLab’s display word', () => {

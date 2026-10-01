@@ -22,7 +22,6 @@ import {
     readCurrentCommittedPluginGenerations,
     readInstallationStateRevision,
 } from '@/plugins/store/registry/generationStore';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import {
     resetActiveAccountSettingsSnapshotForTests,
     setActiveAccountSettingsSnapshot,
@@ -777,7 +776,7 @@ describe('executable plugin Account Collections binding', () => {
             });
             const authority = await readCurrentCommittedPluginGenerations(
                 resolvePluginStorePaths({ happyHomeDir }),
-                { bundledArtifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS },
+                {},
             );
             if (!authority) throw new Error('Expected notification fixture generation authority');
             const generationAuthority = Object.freeze({

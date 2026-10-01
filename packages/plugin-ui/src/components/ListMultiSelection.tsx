@@ -4,11 +4,11 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
   type ReactElement,
   type ReactNode,
 } from 'react';
-import { View } from 'react-native';
 
 import {
   HAPPIER_LIST_MULTI_SELECTION_INERT_ROW_SNAPSHOT,
@@ -23,14 +23,20 @@ import {
 } from '../presentation/collection/multiSelection.js';
 import type { HappierPortableStyle, HappierStyleProp } from '../presentation/portableTypes.js';
 import type { HappierTone } from '../presentation/semantics.js';
-import { Button } from './Button.js';
-import { Row } from './Layout.js';
-import { usePluginTranslation } from './PluginUiProvider.js';
-import { Text } from './Text.js';
+import {
+  HappierSelectionActionBar,
+  type HappierSelectionActionBarHost,
+  type HappierSelectionActionBarOverflowItem,
+} from '../presentation/interaction/SelectionActionBar.js';
+import { HappierText } from '../presentation/text/Text.js';
+import { useOptionalPluginUiPresentationHost } from '../presentationHost/context.js';
+import { Menu } from './Overlay.js';
+import { usePluginTheme, usePluginTranslation } from './PluginUiProvider.js';
 
 const SELECTION_COUNT_TRANSLATION_KEY = 'happier.plugin-ui.list.selectionCount';
 const SELECTION_CLEAR_TRANSLATION_KEY = 'happier.plugin-ui.list.clearSelection';
 const SELECTION_ACTION_BAR_TRANSLATION_KEY = 'happier.plugin-ui.list.selectionActions';
+const SELECTION_MORE_TRANSLATION_KEY = 'happier.plugin-ui.list.moreSelectionActions';
 
 export type ListMultiSelectionKey = HappierListMultiSelectionKey;
 export type ListMultiSelectionSnapshot = HappierListMultiSelectionSnapshot;
@@ -245,70 +251,105 @@ export type ListSelectionActionBarProps = Readonly<{
   style?: HappierStyleProp;
 }>;
 
-const actionBarBoxStyle: HappierPortableStyle = {
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 12,
-  flexWrap: 'wrap',
-};
+/** The plugin runtime's typography, glyphs and menu, handed to the one selection bar owner. */
+function PluginSelectionBarText(props: Readonly<{
+  children: string;
+  style: HappierPortableStyle;
+  numberOfLines?: number;
+  testID?: string;
+  accessibilityLabel?: string;
+  tabularNumbers?: boolean;
+}>): ReactElement {
+  return (
+    <HappierText
+      style={props.style}
+      tabularNumbers={props.tabularNumbers}
+      numberOfLines={props.numberOfLines}
+      testID={props.testID}
+      accessibilityLabel={props.accessibilityLabel}
+    >
+      {props.children}
+    </HappierText>
+  );
+}
+
+function PluginSelectionBarOverflowMenu(props: Readonly<{
+  items: readonly HappierSelectionActionBarOverflowItem[];
+  onSelect: (id: string) => void;
+  accessibilityLabel: string;
+  renderTrigger: (open: () => void) => ReactNode;
+}>): ReactElement {
+  const [open, setOpen] = useState(false);
+  // The plugin Menu owns its trigger (activation, focus return, expanded state), so it draws ⋯ itself.
+  return (
+    <Menu
+      open={open}
+      onOpenChange={setOpen}
+      trigger="⋯"
+      triggerAccessibilityLabel={props.accessibilityLabel}
+      items={props.items.map((item) => ({ id: item.id, label: item.label, disabled: item.disabled }))}
+      onSelect={(id) => {
+        setOpen(false);
+        props.onSelect(id);
+      }}
+    />
+  );
+}
+
+function usePluginSelectionBarHost(): HappierSelectionActionBarHost {
+  const presentationHost = useOptionalPluginUiPresentationHost();
+  return useMemo(() => ({
+    Text: PluginSelectionBarText,
+    OverflowMenu: PluginSelectionBarOverflowMenu,
+    renderGlyph: (glyph: 'dismiss' | 'more', color: string, size: number) => presentationHost
+      ? presentationHost.renderIcon({ name: glyph === 'dismiss' ? 'close' : 'more', size, color })
+      : <HappierText style={{ color, fontSize: size, lineHeight: size + 4 }}>{glyph === 'dismiss' ? '✕' : '⋯'}</HappierText>,
+  }), [presentationHost]);
+}
 
 /**
- * The bulk action bar's CONTRACT, not a product's chrome.
+ * A plugin's bulk action bar: the ONE selection bar (`HappierSelectionActionBar`, ui-primitives-audit
+ * §4) bound to this list's selection store.
  *
- * It renders only while a selection is live, states how many rows the actions
- * will act on, and hands each press the selected keys. It deliberately owns no
- * confirmation, no progress and no result reporting: those are the acting
- * owner's, and building them here would make this a second bulk-action engine
- * beside the one that already runs the work.
- *
- * A host with its own bar — `apps/ui`'s sessions list — consumes the same store
- * and skips this component. One selection owner, two presentations, no second
- * rule.
+ * It renders only while a selection is live, states how many rows the actions will act on, and hands
+ * each press the selected keys. It deliberately owns no confirmation, no progress and no result
+ * reporting: those are the acting owner's. Happier core's own selection surfaces (the session list,
+ * message selection) draw the same presentation owner, so there is one bar, not one per runtime.
  */
 export function ListSelectionActionBar(props: ListSelectionActionBarProps): ReactElement | null {
   const translate = usePluginTranslation();
+  const theme = usePluginTheme();
+  const host = usePluginSelectionBarHost();
   const store = useContext(ListMultiSelectionContext);
   const snapshot = useListMultiSelectionSnapshot();
-  if (store === null || !snapshot.isSelectionMode || snapshot.count === 0) return null;
+  if (store === null) return null;
+  const visible = snapshot.isSelectionMode && snapshot.count > 0;
   const selectedKeys = Array.from(snapshot.selectedKeys);
   return (
-    <View
-      role="toolbar"
-      accessibilityLabel={props.accessibilityLabel ?? translate(
-        SELECTION_ACTION_BAR_TRANSLATION_KEY,
-        'Selection actions',
-      )}
+    <HappierSelectionActionBar
+      visible={visible}
+      label={translate(SELECTION_COUNT_TRANSLATION_KEY, '{count} selected', { count: String(snapshot.count) })}
+      accessibilityLabel={props.accessibilityLabel ?? translate(SELECTION_ACTION_BAR_TRANSLATION_KEY, 'Selection actions')}
       testID={props.testID}
-      style={[actionBarBoxStyle, props.style] as HappierStyleProp}
-    >
-      <Text
-        value={translate(SELECTION_COUNT_TRANSLATION_KEY, '{count} selected', {
-          count: String(snapshot.count),
-        })}
-        variant="caption"
-        tone="secondary"
-      />
-      <Row gap="small" align="center" wrap>
-        {props.actions.map((action) => (
-          <Button
-            key={action.id}
-            title={action.label ?? translate(action.labelKey ?? action.id, action.labelFallback ?? action.id)}
-            variant="secondary"
-            disabled={action.disabled}
-            testID={action.testID}
-            onPress={() => props.onAction(action.id, selectedKeys)}
-          />
-        ))}
-        <Button
-          title={props.dismissLabel ?? translate(SELECTION_CLEAR_TRANSLATION_KEY, 'Clear selection')}
-          variant="plain"
-          onPress={() => {
-            if (props.onDismiss) props.onDismiss();
-            else store.exit();
-          }}
-        />
-      </Row>
-    </View>
+      style={props.style}
+      colors={{ background: theme.colors.text, foreground: theme.colors.canvas, destructive: theme.colors.danger }}
+      host={host}
+      moreLabel={translate(SELECTION_MORE_TRANSLATION_KEY, 'More actions')}
+      actions={props.actions.map((action) => ({
+        id: action.id,
+        label: action.label ?? translate(action.labelKey ?? action.id, action.labelFallback ?? action.id),
+        disabled: action.disabled,
+        testID: action.testID,
+        emphasis: action.tone === 'danger' ? 'destructive' : 'secondary',
+        ...(action.icon ? { renderIcon: () => action.icon } : {}),
+        onPress: () => props.onAction(action.id, selectedKeys),
+      }))}
+      dismiss={props.dismissLabel
+        ? { label: props.dismissLabel, presentation: 'label', onPress: () => (props.onDismiss ? props.onDismiss() : store.exit()) }
+        : {
+          label: translate(SELECTION_CLEAR_TRANSLATION_KEY, 'Clear selection'),
+          onPress: () => (props.onDismiss ? props.onDismiss() : store.exit()),
+        }}
+    />
   );
 }

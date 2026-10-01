@@ -12,7 +12,10 @@ import { join } from 'node:path';
 import {
   DEFAULT_CLAUDE_UNIFIED_TERMINAL_WORKSPACE_TRUST_POLICY,
 } from '../../../../agentSettings/definition.js';
-import { normalizeClaudeUnifiedTerminalWorkspaceTrustPolicy } from '../../../../protocol/remoteSettings.js';
+import {
+  normalizeClaudeUnifiedTerminalHost,
+  normalizeClaudeUnifiedTerminalWorkspaceTrustPolicy,
+} from '../../../../protocol/remoteSettings.js';
 
 import { isolateClaudeRuntimeAuthEnv } from '../../../auth/services/runtime/env.js';
 import { createClaudeNativePermissionEngine } from '../../../permissions/nativePermissionEngine.js';
@@ -55,7 +58,7 @@ async function readSetting(context: AgentSessionRuntimeContext, key: string): Pr
 }
 
 function readHostPreference(value: unknown): TerminalHostPreference {
-  return value === 'tmux' || value === 'zellij' || value === 'auto' ? value : 'auto';
+  return normalizeClaudeUnifiedTerminalHost(value) ?? 'auto';
 }
 
 function readUpdatedPermissions(
@@ -160,6 +163,7 @@ type ClaudeNativeUnifiedTerminalSessionInput = Readonly<{
   request: AgentSessionOpenRequest;
   context: AgentSessionRuntimeContext;
   supportsEffort?: boolean;
+  supportsSystemPromptSnapshotOff?: boolean;
 }>;
 
 function resolvePermissionMode(input: ClaudeNativeUnifiedTerminalSessionInput) {
@@ -257,6 +261,9 @@ export async function openClaudeNativeUnifiedTerminalSession(
     hostPreference: readHostPreference(hostSetting),
     launchEnv,
     supportsEffort: input.supportsEffort === true,
+    supportsSystemPromptSnapshotOff: input.supportsSystemPromptSnapshotOff === true,
+    ...(input.request.startupInstructions
+      ? { startupInstructions: input.request.startupInstructions.instructions } : {}),
     initialModelId,
     ...(initialEffort ? { initialEffort } : {}),
     ...(initialUltracode ? { initialUltracode: true } : {}),
@@ -264,6 +271,7 @@ export async function openClaudeNativeUnifiedTerminalSession(
       ? { providerModel: input.request.providerBinding.model }
       : {}),
     permissionMode: resolvePermissionMode(input),
+    workspaceWrites: input.request.configuration?.workspaceWrites,
     knownProviderSession: resume.knownProviderSession,
     launchIntent: resume.launchIntent,
     resumeChoice: normalizeClaudeUnifiedResumeChoice(resumeChoiceSetting)

@@ -56,12 +56,10 @@ export type {
     UiSurfaceDetailedDefinition,
     UiSurfaceDetailedDefinitionFor,
     UiSurfaceDefinition,
-    UiSurfaceHostedWebBuild,
     UiSurfaceHostedWebDefinition,
     UiSurfaceHostedWebRendererDefinition,
     UiSurfaceHostedHtmlRendererDefinition,
     UiSurfacePlacement,
-    UiSurfaceReactNativeBuild,
     UiSurfaceReactNativeDefinition,
     UiSurfaceReactNativeRendererDefinition,
     UiSurfaceRendererDefinition,
@@ -116,6 +114,7 @@ export { isPluginError, PluginError } from './errors.js';
 export type { PluginErrorData } from './errors.js';
 export type { PluginIdentity } from './identity.js';
 export type { PluginInvocationCaller } from './invocation.js';
+export type { PluginSourceCustodyV1 } from './invocation.js';
 export type { PluginAutomationRunCause } from './invocation.js';
 export type {
     PluginActionOperationContextV1,
@@ -167,9 +166,6 @@ export type {
     DefinedContributionPoints,
 } from './targetedContributionAuthoring.js';
 export { isRecord } from './sessions/fileStores/records.js';
-export { normalizePluginDaemonDatabaseRuntimeProjection } from './definePlugin.js';
-export { normalizePluginAccountCollectionMigrationRuntimeProjection } from './definePlugin.js';
-export { projectPluginAccountCollectionDeclaration } from './definePlugin.js';
 export { parseJsonLine } from './sessions/fileStores/records.js';
 export { parseTimestampMs } from './sessions/fileStores/records.js';
 export { readString } from './sessions/fileStores/records.js';

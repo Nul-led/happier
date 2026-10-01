@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  normalizeClaudeUnifiedTerminalHost,
   CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICES,
   normalizeClaudeUnifiedTerminalResumeChoice,
   normalizeClaudeUnifiedTerminalWorkspaceTrustPolicy,
   parseClaudeRemoteAdvancedOptionsJson,
 } from './remoteSettings.js';
+
+describe('normalizeClaudeUnifiedTerminalHost', () => {
+  it('accepts Herdr through the same canonical host enum as the settings schema', () => {
+    expect(normalizeClaudeUnifiedTerminalHost('herdr')).toBe('herdr');
+    expect(normalizeClaudeUnifiedTerminalHost('unknown')).toBeNull();
+  });
+});
 
 describe('normalizeClaudeUnifiedTerminalResumeChoice', () => {
   it('accepts only canonical Claude unified terminal resume choices', () => {

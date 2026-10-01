@@ -3,6 +3,22 @@ import type { PluginSettingsContribution } from '@happier-dev/plugin-sdk/setting
 import { OPENCODE_SERVER_PASSWORD_SETTING_ID } from '../agent/runtime/server/attachSpec.js';
 
 const OPENCODE_BACKEND_MODE_VALUES = ['server', 'acp'] as const;
+const OPENCODE_CLI_GENERATION_VALUES = ['auto', 'stable', 'v2'] as const;
+
+const OPENCODE_CLI_GENERATION_PRESENTATION = {
+  auto: {
+    title: 'Auto (recommended)',
+    description: 'Prefer stable OpenCode, then use V2 when stable is unavailable.',
+  },
+  stable: {
+    title: 'Stable',
+    description: 'Always launch the opencode command.',
+  },
+  v2: {
+    title: 'V2',
+    description: 'Prefer the opencode2 preview command, then the released opencode command.',
+  },
+} satisfies Record<(typeof OPENCODE_CLI_GENERATION_VALUES)[number], { title: string; description: string }>;
 
 const OPENCODE_BACKEND_MODE_PRESENTATION = {
   server: {
@@ -22,6 +38,37 @@ export const OPENCODE_AGENT_SETTINGS_CONTRIBUTION: PluginSettingsContribution = 
   target: { kind: 'agent', agent: 'opencode' },
   scope: 'account',
   fields: [
+    {
+      id: 'opencodeCliGeneration',
+      title: {
+        key: 'settingsAgents.plugins.opencode.fields.opencodeCliGeneration.title',
+        fallback: 'OpenCode version',
+      },
+      description: {
+        key: 'settingsAgents.plugins.opencode.fields.opencodeCliGeneration.subtitle',
+        fallback: 'Choose which installed OpenCode command Happier launches.',
+      },
+      schema: {
+        type: 'string',
+        description: 'Preferred OpenCode CLI generation',
+        enum: [...OPENCODE_CLI_GENERATION_VALUES],
+      },
+      default: 'auto',
+      presentation: {
+        control: 'select',
+        options: OPENCODE_CLI_GENERATION_VALUES.map((value) => ({
+          value,
+          title: {
+            key: `settingsAgents.plugins.opencode.fields.opencodeCliGeneration.options.${value}.title`,
+            fallback: OPENCODE_CLI_GENERATION_PRESENTATION[value].title,
+          },
+          description: {
+            key: `settingsAgents.plugins.opencode.fields.opencodeCliGeneration.options.${value}.subtitle`,
+            fallback: OPENCODE_CLI_GENERATION_PRESENTATION[value].description,
+          },
+        })),
+      },
+    },
     {
       id: 'opencodeBackendMode',
       title: {
@@ -117,6 +164,18 @@ export const OPENCODE_AGENT_SETTINGS_CONTRIBUTION: PluginSettingsContribution = 
     subagentSections: [],
     sections: [
       {
+        id: 'opencode-cli-generation',
+        title: {
+          key: 'settingsAgents.plugins.opencode.sections.cliGeneration.title',
+          fallback: 'OpenCode version',
+        },
+        description: {
+          key: 'settingsAgents.plugins.opencode.sections.cliGeneration.footer',
+          fallback: 'Auto prefers stable OpenCode. V2 selects the V2 API even when the released command is named opencode. Happier MCP tools work in ACP mode; the V2 server API does not expose dynamic registration.',
+        },
+        fields: ['opencodeCliGeneration'],
+      },
+      {
         id: 'opencode-backend-mode',
         title: {
           key: 'settingsAgents.plugins.opencode.sections.backendMode.title',
@@ -124,7 +183,7 @@ export const OPENCODE_AGENT_SETTINGS_CONTRIBUTION: PluginSettingsContribution = 
         },
         description: {
           key: 'settingsAgents.plugins.opencode.sections.backendMode.footer',
-          fallback: 'Server mode unlocks questions and native forking. ACP mode is a legacy fallback.',
+          fallback: 'Server mode unlocks questions. Native forking is offered only when the connected server supports it; ACP mode is a legacy fallback.',
         },
         fields: ['opencodeBackendMode'],
       },

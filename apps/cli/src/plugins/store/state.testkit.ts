@@ -45,7 +45,10 @@ function createEmptyPluginStateFile(): PluginStateFileV1 {
 }
 
 /** Predecessor-file fixture owner. Production code must use registry/currentState. */
-export function createPluginStateStore(params?: Readonly<{ happyHomeDir?: string }>): Readonly<{
+export function createPluginStateStore(params?: Readonly<{
+  happyHomeDir?: string;
+  retainedCurrentHostGenerationIds?: readonly string[];
+}>): Readonly<{
   paths: PluginStorePaths;
   read: () => Promise<PluginStateFileV1>;
   write: (next: PluginStateFileV1) => Promise<void>;
@@ -72,7 +75,15 @@ export function createPluginStateStore(params?: Readonly<{ happyHomeDir?: string
   }
 
   async function seedCanonicalFixture(next: PluginStateFileV1): Promise<void> {
-    const registryStore = createPluginRegistryStateStore({ happyHomeDir: paths.happyHomeDir });
+    const registryStore = createPluginRegistryStateStore({
+      happyHomeDir: paths.happyHomeDir,
+      ...(params?.retainedCurrentHostGenerationIds
+        ? {
+            retainedCurrentHostGenerationIds:
+              params.retainedCurrentHostGenerationIds,
+          }
+        : {}),
+    });
     await registryStore.initialize();
     const currentCommit = await readPluginRegistryCommitRecord(paths);
     if (!currentCommit) throw new Error('Canonical plugin registry fixture bootstrap did not publish current state');
@@ -94,11 +105,11 @@ export function createPluginStateStore(params?: Readonly<{ happyHomeDir?: string
         source: {
           distribution: trust.distribution,
         },
-        updatePolicy: record.install.updatePolicy ?? 'reviewEveryUpdate',
+        updatePolicy: record.install.updatePolicy ?? 'allowed',
         optionalAccess: record.install.optionalAccess ?? [],
       };
     }
-    const pluginGenerations = Object.fromEntries(Object.entries(currentCommit.pluginGenerations)
+    const pluginOccurrenceIds = Object.fromEntries(Object.entries(currentCommit.pluginOccurrenceIds)
       .filter(([pluginId]) => next.plugins[pluginId] !== undefined));
     const createdAtMs = Date.now();
     const revision: PluginInstallationStateRevision = {
@@ -122,7 +133,7 @@ export function createPluginStateStore(params?: Readonly<{ happyHomeDir?: string
         transactionId,
         baseRevision: currentCommit.revision,
         installationState,
-        pluginGenerations,
+        pluginOccurrenceIds,
         createdAtMs,
       },
     });
@@ -140,7 +151,15 @@ export function createPluginStateStore(params?: Readonly<{ happyHomeDir?: string
     read: readVisible,
     write: async (next) => {
       const parsed = PluginStateFileV1Schema.parse(next);
-      await createPluginRegistryStateStore({ happyHomeDir: paths.happyHomeDir }).initialize();
+      await createPluginRegistryStateStore({
+        happyHomeDir: paths.happyHomeDir,
+        ...(params?.retainedCurrentHostGenerationIds
+          ? {
+              retainedCurrentHostGenerationIds:
+                params.retainedCurrentHostGenerationIds,
+            }
+          : {}),
+      }).initialize();
       await withPluginStoreLock({
         paths,
         lockName: PLUGIN_STATE_LOCK_NAME,
@@ -151,7 +170,15 @@ export function createPluginStateStore(params?: Readonly<{ happyHomeDir?: string
       });
     },
     update: async (transform) => {
-      await createPluginRegistryStateStore({ happyHomeDir: paths.happyHomeDir }).initialize();
+      await createPluginRegistryStateStore({
+        happyHomeDir: paths.happyHomeDir,
+        ...(params?.retainedCurrentHostGenerationIds
+          ? {
+              retainedCurrentHostGenerationIds:
+                params.retainedCurrentHostGenerationIds,
+            }
+          : {}),
+      }).initialize();
       return await withPluginStoreLock({
         paths,
         lockName: PLUGIN_STATE_LOCK_NAME,
@@ -177,9 +204,18 @@ export async function writeCommittedLocalPathPluginFixture(params: Readonly<{
   plugin: PluginStateFileV1['plugins'][string];
   manifestRelativePath?: string;
   createdAtMs?: number;
+  retainedCurrentHostGenerationIds?: readonly string[];
 }>): Promise<Readonly<{ immutableGenerationId: string; rootPath: string }>> {
   const manifestRelativePath = params.manifestRelativePath ?? '.happier-plugin/plugin.json';
-  const store = createPluginStateStore({ happyHomeDir: params.happyHomeDir });
+  const store = createPluginStateStore({
+    happyHomeDir: params.happyHomeDir,
+    ...(params.retainedCurrentHostGenerationIds
+      ? {
+          retainedCurrentHostGenerationIds:
+            params.retainedCurrentHostGenerationIds,
+        }
+      : {}),
+  });
   await store.write({
     t: 'happier_plugin_state_v1',
     schemaVersion: 1,
@@ -196,7 +232,7 @@ export async function writeCommittedLocalPathPluginFixture(params: Readonly<{
     sourceRootPath: params.sourceRootPath,
     manifestRelativePath,
     distribution,
-    updatePolicy: params.plugin.install.updatePolicy ?? 'reviewEveryUpdate',
+    updatePolicy: params.plugin.install.updatePolicy ?? 'allowed',
     createdAtMs: params.createdAtMs ?? Date.now(),
   });
   const prepared = await prepareImmutablePluginGeneration({
@@ -255,8 +291,8 @@ export async function writeCommittedLocalPathPluginFixture(params: Readonly<{
       revision: currentCommit.revision + 1,
       transactionId: `fixture-generation-${randomUUID()}`,
       baseRevision: currentCommit.revision,
-      pluginGenerations: {
-        ...currentCommit.pluginGenerations,
+      pluginOccurrenceIds: {
+        ...currentCommit.pluginOccurrenceIds,
         [params.pluginId]: prepared.reference,
       },
       installationState,

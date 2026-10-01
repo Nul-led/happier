@@ -262,6 +262,25 @@ export async function gitLogList(input: {
     const skip = request.skip ?? 0;
     const query = typeof request.query === 'string' ? request.query.trim() : '';
 
+    if (request.range === 'incoming') {
+        if (query) {
+            return { success: false, errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST, error: 'Incoming log cannot be searched' };
+        }
+        const incoming = await runScmCommand({
+            bin: 'git', cwd: context.cwd,
+            args: [
+                'log', `--max-count=${limit}`, `--skip=${skip}`,
+                '--pretty=format:%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%b%x00',
+                'HEAD..@{upstream}',
+            ],
+            timeoutMs: 15_000,
+            signal: input.signal,
+        });
+        return incoming.success
+            ? { success: true, entries: parseGitLogEntries(incoming.stdout), rangeApplied: true }
+            : { success: false, errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED, error: incoming.stderr || 'Failed to list incoming commits' };
+    }
+
     if (!query) {
         const log = await runScmCommand({
             bin: 'git',

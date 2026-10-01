@@ -6,6 +6,7 @@ import type { HappierAccessibilityLiveRegion, HappierFocusable, HappierPortableS
 import { useOptionalHappierUiAccessibility } from '../../environment/context.js';
 import { HAPPIER_TONE_COLOR_TOKEN, type HappierTone } from '../semantics.js';
 import { HappierText } from '../text/Text.js';
+import { useHappierTypeRoleStyle } from '../text/typeRole.js';
 import { HappierStatusDot } from './StatusDot.js';
 
 export type HappierStatusProps = Readonly<{
@@ -28,6 +29,12 @@ export type HappierStatusProps = Readonly<{
   animationEnabled?: boolean;
   /** Private semantic focus binding supplied by the public Status adapter. */
   controlRef?: (instance: HappierFocusable | null) => void;
+  /**
+   * The next action for a notice ("… cannot be changed · Retry"). It sits
+   * beside the sentence, which wraps rather than truncating, and outside the
+   * live region, so pressing it announces nothing new.
+   */
+  action?: ReactNode;
   testID?: string;
   /** Hosts control whether a dynamically changing status should announce. */
   accessibilityLiveRegion?: HappierAccessibilityLiveRegion;
@@ -42,18 +49,8 @@ export type HappierStatusProps = Readonly<{
   accessibilityLabel?: string;
 }>;
 
-function textStyle(
-  theme: HappierUiTheme,
-  variant: 'label' | 'body',
-  color: string,
-): HappierPortableStyle {
-  const typography = theme.typography[variant];
-  return {
-    fontSize: typography.fontSize,
-    lineHeight: typography.lineHeight,
-    fontWeight: typography.fontWeight as TextStyle['fontWeight'],
-    color,
-  };
+function textStyle(role: HappierPortableStyle, color: string): HappierPortableStyle {
+  return { ...role, color };
 }
 
 /**
@@ -68,20 +65,24 @@ export function HappierStatus(props: HappierStatusProps) {
   const ariaLive = accessibilityLiveRegion === 'none' ? 'off' : accessibilityLiveRegion;
   const highContrast = (props.contrast ?? environmentAccessibility?.contrast) === 'high';
   const toneColor = props.theme.colors[HAPPIER_TONE_COLOR_TOKEN[props.tone]];
+  // A status line is quiet metadata beside the content it describes: body for
+  // its name, caption for its value — never the row-title weight of a label.
+  const bodyStyle = useHappierTypeRoleStyle('body', props.theme);
+  const captionStyle = useHappierTypeRoleStyle('caption', props.theme);
   const label = renderStatusText(
     props.label,
-    textStyle(props.theme, 'label', props.theme.colors.text),
+    textStyle(bodyStyle, props.theme.colors.text),
   );
   const value = props.value === undefined
     ? null
     : renderStatusText(
       props.value,
-      textStyle(props.theme, 'body', highContrast ? props.theme.colors.text : toneColor),
+      textStyle(captionStyle, highContrast ? props.theme.colors.text : toneColor),
       true,
       highContrast ? { color: props.theme.colors.text } : undefined,
     );
 
-  return (
+  const region = (
     <View
       ref={props.controlRef}
       role="status"
@@ -92,7 +93,9 @@ export function HappierStatus(props: HappierStatusProps) {
         : { accessibilityLabel: props.accessibilityLabel, 'aria-label': props.accessibilityLabel })}
       accessibilityLiveRegion={accessibilityLiveRegion}
       aria-live={ariaLive}
-      style={{ flexDirection: 'row', alignItems: 'center', gap: props.theme.spacing.small }}
+      style={props.action === undefined || props.action === null
+        ? { flexDirection: 'row', alignItems: 'center', gap: props.theme.spacing.small }
+        : { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: props.theme.spacing.small }}
     >
       <HappierStatusDot
         color={toneColor}
@@ -107,6 +110,13 @@ export function HappierStatus(props: HappierStatusProps) {
         {label}
         {value}
       </View>
+    </View>
+  );
+  if (props.action === undefined || props.action === null) return region;
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: props.theme.spacing.small }}>
+      {region}
+      {props.action}
     </View>
   );
 }

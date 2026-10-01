@@ -35,7 +35,7 @@ For live source development, continue with `hdev plugins dev` or use the
 documented headless development-source lifecycle:
 
 ```bash
-hdev plugins install . --dev --trust --json
+hdev plugins install . --dev --json
 hdev plugins reload --json
 hdev daemon restart --restart-session-runners --json
 hdev plugins disable examples.session-agent --json
@@ -59,8 +59,7 @@ hdev plugins install ../session-agent.tgz --kind archive --json
 hdev plugins change approve <pendingChangeId> --json
 ```
 
-Archive installation requires a present user to approve trust; `--trust` is
-only for the local source-development route. The approving user must review the
+Archive installation requires a present user to approve trust. The approving user must review the
 prepared facts before replacing `<pendingChangeId>`; Settings → Plugins exposes
 the same decision. This proves the ordinary author-owned build artifact without
 freezing a release candidate or turning the archive into a separate feature
@@ -102,7 +101,7 @@ For the hard-revocation check, leave a confirmation pending and choose
 **Forget trust** for `examples.session-agent` in Settings → Plugins. The active
 generation must retire without publishing a late result, and the Agent must
 remain unavailable until a present user trusts an exact source or archive
-again. Reinstall the development root with the explicit `--dev --trust` command
+again. Reinstall the development root with the explicit `--dev` command
 above, verify a new Session, then finish with disable/enable and uninstall.
 
 The exact shared UI selectors for this Agent are:

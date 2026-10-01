@@ -523,7 +523,7 @@ type _LaunchEnvironmentShapeMustStayDataOnly = AssertTrue<
 >;
 
 type _ConfigurationSnapshotShapeMustStayDataOnly = AssertTrue<
-  Equal<keyof AgentSessionConfigurationSnapshot, 'mode' | 'model' | 'permissionIntent' | 'options'>
+  Equal<keyof AgentSessionConfigurationSnapshot, 'mode' | 'model' | 'permissionIntent' | 'workspaceWrites' | 'options'>
 >;
 
 type _PermissionIntentMustBeTheOneClosedDecision = AssertTrue<
@@ -617,10 +617,12 @@ type _SessionHostServicesMustStayNarrowAndProviderNeutral = AssertTrue<
     | 'features'
     | 'terminalHost'
     | 'models'
+    | 'modes'
     | 'activeInput'
     | 'workflowActivity'
     | 'toolExecution'
     | 'subagents'
+    | 'inputFiles'
     | 'nativeHome'
     | 'happierTools'
   >
@@ -671,7 +673,7 @@ type _SessionHookServiceMustExposeOnlyTheExistingLifecycleOwner = AssertTrue<
 type _SessionTranscriptServiceMustExposeOnlyDurableHostOwnedOperations = AssertTrue<
   Equal<
     keyof AgentSessionHostServices['transcripts'],
-    'fileFollow' | 'markSourceFactConsumed' | 'publishSessionEvent'
+    'fileFollow' | 'followSource' | 'markSourceFactConsumed' | 'publishSessionEvent'
   >
 >;
 

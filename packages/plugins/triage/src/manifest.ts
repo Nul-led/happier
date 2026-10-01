@@ -12,11 +12,13 @@ import {
   TriageReadConfiguredSourceInstancesResultV1Schema,
   TriageSourceAdministrationActionInputV1Schema,
   TriageSourceAdministrationActionResultV1Schema,
+  TriagePullRequestStatusResultV1Schema,
 } from '@happier-dev/triage-protocol/v1';
 
 import { createTriageAdministerSourceInstanceActionHandler } from './actions/administerSourceInstanceAction.js';
 import {
   TRIAGE_READ_ENTRY_DETAIL_ACTION_LOCAL_ID_V1,
+  TRIAGE_READ_PULL_REQUEST_STATUS_ACTION_LOCAL_ID_V1,
   TriageReadEntryDetailInputV1Schema,
   TriageReadEntryDetailResultV1Schema,
 } from './actions/entryDetailProtocol.js';
@@ -34,6 +36,7 @@ import {
 } from './actions/searchEntriesProtocol.js';
 import { createTriageReadEntryDetailActionHandler } from './actions/readEntryDetail.js';
 import { createTriageReobserveEntryActionHandler } from './actions/reobserveEntry.js';
+import { createTriageReadPullRequestStatusActionHandler } from './actions/readPullRequestStatus.js';
 import {
   TRIAGE_REOBSERVE_ENTRY_ACTION_LOCAL_ID_V1,
   TriageReobserveEntryInputV1Schema,
@@ -43,6 +46,18 @@ import {
   createTriageListPinnedEntriesActionHandler,
   createTriageSetEntryPinnedActionHandler,
 } from './actions/userMarks.js';
+import {
+  createTriageReadFixPullRequestsActionHandler,
+  createTriageSetFixPullRequestActionHandler,
+} from './actions/fixPullRequests.js';
+import {
+  TRIAGE_READ_FIX_PULL_REQUESTS_ACTION_LOCAL_ID_V1,
+  TRIAGE_SET_FIX_PULL_REQUEST_ACTION_LOCAL_ID_V1,
+  TriageReadFixPullRequestsInputV1Schema,
+  TriageReadFixPullRequestsResultV1Schema,
+  TriageSetFixPullRequestInputV1Schema,
+  TriageSetFixPullRequestResultV1Schema,
+} from './actions/fixPullRequestsProtocol.js';
 import {
   TRIAGE_LIST_PINNED_ENTRIES_ACTION_LOCAL_ID_V1,
   TRIAGE_SET_ENTRY_PINNED_ACTION_LOCAL_ID_V1,
@@ -116,19 +131,7 @@ import {
 } from './corpus/collections/ids.js';
 import { TRIAGE_DISPLAY_NAME } from './displayName.js';
 import { mintTriageOpaqueIdV1 } from './opaqueId.js';
-import {
-  TRIAGE_ENTRIES_COMPACT_ARTIFACT_ID_V1,
-  TRIAGE_ENTRIES_COMPACT_RENDERER_ID_V1,
-  TRIAGE_ENTRIES_CONTROL_ICON_V1,
-  TRIAGE_ENTRY_PICKER_ARTIFACT_ID_V1,
-  TRIAGE_ENTRY_PICKER_RENDERER_ID_V1,
-  TRIAGE_LIST_PAGE_ARTIFACT_ID_V1,
-  TRIAGE_LIST_PAGE_RENDERER_ID_V1,
-  TRIAGE_SESSION_ENTRIES_ARTIFACT_ID_V1,
-  TRIAGE_SESSION_ENTRIES_RENDERER_ID_V1,
-  TRIAGE_SESSION_ENTRIES_VIEW_ID_V1,
-  TRIAGE_SEARCH_ACTION_ARTIFACT_ID_V1,
-} from './ui/contributions.js';
+import { TRIAGE_ENTRIES_CONTROL_ICON_V1 } from './ui/contributions.js';
 import { TRIAGE_UI_TRANSLATION_BUNDLES } from './ui/translations.js';
 import { PLUGIN_TARGETED_CONTRIBUTION_POINT_DEFINITIONS } from './targetedContributions.js';
 
@@ -182,15 +185,12 @@ function createTriagePlugin() {
           key: 'plugins.triage.action.listEntries.description',
           fallback: 'Reads one bounded ordered window of pull requests, issues and error groups from the configured sources.',
         },
-        scopes: ['global'],
         // The aggregate's own mounted list window invokes this bounded read,
         // and Voice discovers the same declaration through `voice`. It remains
         // neither a placed affordance nor an agent/MCP tool. Direct plugin
         // code is refused: the mounted UI press is present-user authority.
         surfaces: ['ui', 'voice'],
         placementBindings: [],
-        dangerLevel: 'safe',
-        execution: { target: 'daemon' },
         inputSchema: TriageListEntriesInputV1Schema,
         resultSchema: TriageListEntriesResultV1Schema,
         // The one Collection it touches is `source-instances`, read-only.
@@ -203,7 +203,6 @@ function createTriagePlugin() {
         // copy — the same reason `ui.views` declares it directly.
         title: TRIAGE_DISPLAY_NAME,
         description: 'Finds pull requests, issues and error groups matching what the reader typed.',
-        scopes: ['global'],
         // The universal Search surface is the caller, and it is a present-user
         // host surface. Voice is absent because a spoken query is answered by
         // the surface's own sections, not by a second entry point into this
@@ -213,12 +212,10 @@ function createTriagePlugin() {
         // The provider section IS the affordance. A query Action is not also a
         // command-palette entry, and the manifest owner refuses one that is.
         placementBindings: [],
-        dangerLevel: 'safe',
         execution: {
           target: 'client',
           client: {
-            artifactId: TRIAGE_SEARCH_ACTION_ARTIFACT_ID_V1,
-            modulePath: './searchEntries',
+            artifactId: 'triage-search-action-native',
             exportName: 'createTriageSearchEntriesActionHandler',
           },
           platforms: ['web', 'ios', 'android'],
@@ -231,29 +228,48 @@ function createTriagePlugin() {
       [TRIAGE_SET_ENTRY_PINNED_ACTION_LOCAL_ID_V1]: {
         title: 'Pin or unpin an entry',
         description: 'Keeps one pull request, issue or error group at the top of the list, or removes that mark again.',
-        scopes: ['global'],
         // Same mounted UI surface as the list read, and for the same reason: the
         // caller is this plugin's own mounted row affordance, not a placed
         // command, an agent tool or an MCP tool.
         surfaces: ['ui'],
         placementBindings: [],
-        // A pin is durable user state, but the exact inverse is one press away
-        // and nothing outside Happier is touched.
-        dangerLevel: 'safe',
-        execution: { target: 'daemon' },
+        // It keeps the default `safe` danger level: a pin is durable user state,
+        // but the exact inverse is one press away and nothing outside Happier is
+        // touched.
         inputSchema: TriageSetEntryPinnedInputV1Schema,
         resultSchema: TriageSetEntryPinnedResultV1Schema,
         hostAccess: ['account-storage'],
         run: createTriageSetEntryPinnedActionHandler(),
       },
+      [TRIAGE_SET_FIX_PULL_REQUEST_ACTION_LOCAL_ID_V1]: {
+        title: 'Link or unlink a fix pull request',
+        description: 'Records, or removes, the pull request that fixes one issue or error group.',
+        // The caller is this plugin's own mounted detail affordance, like Pin.
+        surfaces: ['ui'],
+        placementBindings: [],
+        // Default `safe`: durable user state whose exact inverse is one press
+        // away, touching nothing outside Happier. It writes only `user-marks`.
+        inputSchema: TriageSetFixPullRequestInputV1Schema,
+        resultSchema: TriageSetFixPullRequestResultV1Schema,
+        hostAccess: ['account-storage'],
+        run: createTriageSetFixPullRequestActionHandler(),
+      },
+      [TRIAGE_READ_FIX_PULL_REQUESTS_ACTION_LOCAL_ID_V1]: {
+        title: 'Read the fix pull requests',
+        description: 'Reads the pull requests linked as fixes for one issue or error group.',
+        surfaces: ['ui'],
+        placementBindings: [],
+        inputSchema: TriageReadFixPullRequestsInputV1Schema,
+        resultSchema: TriageReadFixPullRequestsResultV1Schema,
+        // Reads `user-marks` and `session-links`; writes nothing.
+        hostAccess: ['account-storage'],
+        run: createTriageReadFixPullRequestsActionHandler(),
+      },
       [TRIAGE_LIST_PINNED_ENTRIES_ACTION_LOCAL_ID_V1]: {
         title: 'Read the pinned entries',
         description: 'Reads one bounded page of the entries the user pinned, newest first.',
-        scopes: ['global'],
         surfaces: ['ui'],
         placementBindings: [],
-        dangerLevel: 'safe',
-        execution: { target: 'daemon' },
         inputSchema: TriageListPinnedEntriesInputV1Schema,
         resultSchema: TriageListPinnedEntriesResultV1Schema,
         // The one Collection it touches is `user-marks`, read-only.
@@ -263,7 +279,6 @@ function createTriagePlugin() {
       [TRIAGE_LINK_ENTRY_TO_SESSION_ACTION_LOCAL_ID_V1]: {
         title: 'Link an entry to a session',
         description: 'Records that a pull request, issue or error group is being worked on in one session.',
-        scopes: ['global'],
         // The same mounted UI surface as the list read and the pin: the caller
         // is this plugin's own mounted affordance, not a placed command, an
         // agent tool or an MCP tool. A link is routing state a person
@@ -279,7 +294,6 @@ function createTriagePlugin() {
           body: 'This records the entry as work for the selected session in this Happier Account. You can unlink it later.',
           confirmLabel: 'Link entry',
         },
-        execution: { target: 'daemon' },
         inputSchema: TriageLinkEntryToSessionInputV1Schema,
         resultSchema: TriageLinkEntryToSessionActionResultV1Schema,
         // The one Collection it touches is `session-links`, and it is the sole
@@ -290,7 +304,6 @@ function createTriagePlugin() {
       [TRIAGE_START_ENTRY_SESSION_ACTION_LOCAL_ID_V1]: {
         title: 'Start a session on an entry',
         description: 'Creates or rejoins one session for a pull request, issue or error group, records the link, and opens it.',
-        scopes: ['global'],
         // The same mounted UI surface as the link write beneath it, and for the
         // same reason: the caller is this plugin's own always-mounted header.
         // `plugin` is absent because direct plugin code is not the authority
@@ -308,7 +321,6 @@ function createTriagePlugin() {
           body: 'This creates or rejoins the selected session, records this entry as its work, and opens the session.',
           confirmLabel: 'Start session',
         },
-        execution: { target: 'daemon' },
         inputSchema: TriageStartEntrySessionInputV1Schema,
         resultSchema: TriageStartEntrySessionResultV1Schema,
         // The one Collection it touches is `session-links`, through the same
@@ -319,7 +331,6 @@ function createTriagePlugin() {
       [TRIAGE_START_PULL_REQUEST_REVIEW_ACTION_LOCAL_ID_V1]: {
         title: 'Start a pull request review',
         description: 'Rereads the selected pull request and starts the chosen review engine.',
-        scopes: ['global'],
         surfaces: ['ui'],
         placementBindings: [],
         dangerLevel: 'writesLocal',
@@ -328,7 +339,6 @@ function createTriagePlugin() {
           body: 'This rereads the selected pull request and starts the chosen review engine.',
           confirmLabel: 'Start review',
         },
-        execution: { target: 'daemon' },
         inputSchema: TriageStartPullRequestReviewInputV1Schema,
         resultSchema: TriageStartPullRequestReviewResultV1Schema,
         run: createTriageStartPullRequestReviewActionHandler(),
@@ -336,7 +346,6 @@ function createTriagePlugin() {
       [TRIAGE_UNLINK_ENTRY_FROM_SESSION_ACTION_LOCAL_ID_V1]: {
         title: 'Unlink an entry from a session',
         description: 'Removes the record that a pull request, issue or error group is being worked on in one session.',
-        scopes: ['global'],
         // The reader who linked the wrong entry is the only caller. An agent
         // that could drop the relationship would undo a person's routing
         // decision without them.
@@ -348,7 +357,6 @@ function createTriagePlugin() {
           body: 'This removes the saved relationship from this Happier Account. It does not end or delete the session.',
           confirmLabel: 'Unlink entry',
         },
-        execution: { target: 'daemon' },
         inputSchema: TriageUnlinkEntryFromSessionActionInputV1Schema,
         resultSchema: TriageUnlinkEntryFromSessionActionResultV1Schema,
         hostAccess: ['account-storage'],
@@ -357,7 +365,6 @@ function createTriagePlugin() {
       [TRIAGE_SOURCES_ADMINISTER_ACTION_LOCAL_ID_V1]: {
         title: 'Configure a source',
         description: 'Creates, reconfigures, removes or restores one configured pull-request, issue or error-group source.',
-        scopes: ['global'],
         // A source Settings surface reaches this through the mounted Plugin UI
         // dispatcher, which admits the caller as present-user UI authority. It
         // is deliberately not an agent, MCP or CLI capability: only a person
@@ -372,7 +379,6 @@ function createTriagePlugin() {
           body: 'This creates, reconfigures, removes, or restores the selected source in this Happier Account.',
           confirmLabel: 'Apply change',
         },
-        execution: { target: 'daemon' },
         inputSchema: TriageSourceAdministrationActionInputV1Schema,
         resultSchema: TriageSourceAdministrationActionResultV1Schema,
         // The one Collection it touches is `source-instances`, and it is the sole
@@ -386,7 +392,6 @@ function createTriagePlugin() {
       [TRIAGE_SOURCES_READ_CONFIGURED_ACTION_LOCAL_ID_V1]: {
         title: 'Read the sources you configured',
         description: 'Reads the pull-request, issue and error-group sources the calling source has configured, so it can change or remove one.',
-        scopes: ['global'],
         // Reached two ways: a source Settings mounted surface (present-user UI
         // authority) and another plugin's daemon code through its own
         // ActionsService — the sentry Composer reference resolver reads exactly
@@ -395,8 +400,6 @@ function createTriagePlugin() {
         // contribution and returns nothing else's.
         surfaces: ['ui', 'plugin'],
         placementBindings: [],
-        dangerLevel: 'safe',
-        execution: { target: 'daemon' },
         inputSchema: TriageReadConfiguredSourceInstancesInputV1Schema,
         resultSchema: TriageReadConfiguredSourceInstancesResultV1Schema,
         // The one Collection it touches is `source-instances`, read-only.
@@ -406,14 +409,11 @@ function createTriagePlugin() {
       [TRIAGE_READ_ENTRY_DETAIL_ACTION_LOCAL_ID_V1]: {
         title: 'Read the durable facts of one entry',
         description: 'Reads the configured connection one entry was observed through, and the sessions it is linked to.',
-        scopes: ['global'],
         // The aggregate's own mounted detail region is the only caller, and the
         // handler refuses every other plugin: the value carries the owning
         // source's account binding and its private configuration.
         surfaces: ['ui'],
         placementBindings: [],
-        dangerLevel: 'safe',
-        execution: { target: 'daemon' },
         inputSchema: TriageReadEntryDetailInputV1Schema,
         resultSchema: TriageReadEntryDetailResultV1Schema,
         // `source-instances` and `session-links`, both read-only.
@@ -423,24 +423,29 @@ function createTriagePlugin() {
       [TRIAGE_REOBSERVE_ENTRY_ACTION_LOCAL_ID_V1]: {
         title: 'Re-read an entry after a provider change',
         description: 'Reads the exact selected entry through its configured source after a provider Action settles.',
-        scopes: ['global'],
         surfaces: ['ui'],
         placementBindings: [],
-        dangerLevel: 'safe',
-        execution: { target: 'daemon' },
         inputSchema: TriageReobserveEntryInputV1Schema,
         resultSchema: TriageReobserveEntryResultV1Schema,
         hostAccess: ['account-storage'],
         run: createTriageReobserveEntryActionHandler(),
       },
-      [TRIAGE_READ_SAVED_VIEWS_ACTION_LOCAL_ID_V1]: {
-        title: 'Read the saved views',
-        description: 'Reads the saved filter and order views, and which one is selected.',
-        scopes: ['global'],
+      [TRIAGE_READ_PULL_REQUEST_STATUS_ACTION_LOCAL_ID_V1]: {
+        title: 'Read pull request status',
+        description: 'Reads checks, reviews, mergeability and branches for the exact selected pull request.',
         surfaces: ['ui'],
         placementBindings: [],
         dangerLevel: 'safe',
-        execution: { target: 'daemon' },
+        inputSchema: TriageReobserveEntryInputV1Schema,
+        resultSchema: TriagePullRequestStatusResultV1Schema,
+        hostAccess: ['account-storage'],
+        run: createTriageReadPullRequestStatusActionHandler(),
+      },
+      [TRIAGE_READ_SAVED_VIEWS_ACTION_LOCAL_ID_V1]: {
+        title: 'Read the saved views',
+        description: 'Reads the saved filter and order views, and which one is selected.',
+        surfaces: ['ui'],
+        placementBindings: [],
         inputSchema: TriageReadSavedViewsInputV1Schema,
         resultSchema: TriageReadSavedViewsResultV1Schema,
         hostAccess: ['account-storage'],
@@ -449,7 +454,6 @@ function createTriagePlugin() {
       [TRIAGE_ADMINISTER_SAVED_VIEW_ACTION_LOCAL_ID_V1]: {
         title: 'Save, update, delete or select a view',
         description: 'Creates, renames, removes or selects one saved filter and order view.',
-        scopes: ['global'],
         // The same mounted UI surface as the list read: the caller is this plugin's
         // own mounted lens control, which holds no Settings member of its own.
         surfaces: ['ui'],
@@ -462,7 +466,6 @@ function createTriagePlugin() {
           body: 'This creates, renames, removes, or selects a saved PRs & Issues view in this Happier Account.',
           confirmLabel: 'Apply change',
         },
-        execution: { target: 'daemon' },
         inputSchema: TriageAdministerSavedViewInputV1Schema,
         resultSchema: TriageAdministerSavedViewResultV1Schema,
         hostAccess: ['account-storage'],
@@ -471,13 +474,10 @@ function createTriagePlugin() {
       [TRIAGE_READ_ACTIONS_ACTION_LOCAL_ID_V1]: {
         title: 'Read the configured actions',
         description: 'Reads the configured set of things a reader can start from a pull request, issue or error group.',
-        scopes: ['global'],
         // The caller is this plugin's own mounted action editor, which holds a
         // Host API with actions and no Settings member of its own.
         surfaces: ['ui'],
         placementBindings: [],
-        dangerLevel: 'safe',
-        execution: { target: 'daemon' },
         inputSchema: TriageReadActionsInputV1Schema,
         resultSchema: TriageReadActionsResultV1Schema,
         hostAccess: ['account-storage'],
@@ -486,7 +486,6 @@ function createTriagePlugin() {
       [TRIAGE_ADMINISTER_ACTION_ACTION_LOCAL_ID_V1]: {
         title: 'Add, change, remove or reorder an action',
         description: 'Creates, renames, disables, reconfigures, removes or reorders one configured action.',
-        scopes: ['global'],
         surfaces: ['ui'],
         placementBindings: [],
         // It writes durable Account state, and the exact inverse is one press
@@ -497,7 +496,6 @@ function createTriagePlugin() {
           body: 'This adds, changes, removes, enables, disables, or reorders an entry action in this Happier Account.',
           confirmLabel: 'Apply change',
         },
-        execution: { target: 'daemon' },
         inputSchema: TriageAdministerActionInputV1Schema,
         resultSchema: TriageAdministerActionResultV1Schema,
         hostAccess: ['account-storage'],
@@ -517,7 +515,7 @@ function createTriagePlugin() {
     /**
      * The four mounted surfaces this package actually ships.
      *
-     * Every renderer names an artifact `happier-plugin-ui.config.mjs` produces
+     * Every renderer names an artifact with an exact package export
      * and every view names a renderer declared here. A view without a renderer,
      * or a renderer without an artifact, is admitted by contribution
      * conformance and then mounts nothing — which is the exact way this
@@ -532,33 +530,52 @@ function createTriagePlugin() {
         id: TRIAGE_APP_PAGE_LOCAL_ID_V1,
         container: 'appPage',
         target: { kind: 'app' },
-        renderer: TRIAGE_LIST_PAGE_RENDERER_ID_V1,
+        renderer: 'list-page',
         title: TRIAGE_DISPLAY_NAME,
         icon: 'action',
-        groupHint: 'navigation',
+        placement: { kind: 'rail' },
+        column: { renderer: 'views-column' },
+      }, {
+        id: 'latest',
+        container: 'widget',
+        target: { kind: 'app' },
+        renderer: 'latest-widget',
+        title: { key: 'plugins.triage.widget.latest', fallback: 'New in PRs & Issues' },
+        icon: 'action',
+        home: { default: 'shown' },
       }, {
         // One Session-targeted contribution, mounted by the incumbent
         // right-sidebar Registry entry. Triage declares no mobile view, cockpit
         // destination or platform branch: the same entry serves desktop, the
         // classic mobile panel and the mobile cockpit.
-        id: TRIAGE_SESSION_ENTRIES_VIEW_ID_V1,
+        id: 'session-entries',
         container: 'rightSidebarTab',
         target: { kind: 'session' },
-        renderer: TRIAGE_SESSION_ENTRIES_RENDERER_ID_V1,
+        renderer: 'session-entries-panel',
         title: TRIAGE_DISPLAY_NAME,
         icon: 'action',
       }],
       renderers: [{
-        id: TRIAGE_LIST_PAGE_RENDERER_ID_V1,
+        id: 'list-page',
         kind: 'reactNative',
-        artifact: TRIAGE_LIST_PAGE_ARTIFACT_ID_V1,
+        artifact: 'triage-list-page-native',
         // The page's rows come from this plugin's own list Action; a host that
         // cannot dispatch one would mount an empty shell.
         requiredHostMethods: ['executeAction', 'publishCurrentUiContext'],
       }, {
-        id: TRIAGE_ENTRY_PICKER_RENDERER_ID_V1,
+        id: 'views-column',
         kind: 'reactNative',
-        artifact: TRIAGE_ENTRY_PICKER_ARTIFACT_ID_V1,
+        artifact: 'triage-views-column-native',
+        requiredHostMethods: ['openSurface'],
+      }, {
+        id: 'latest-widget',
+        kind: 'reactNative',
+        artifact: 'triage-latest-widget-native',
+        requiredHostMethods: ['executeAction', 'openSurface'],
+      }, {
+        id: 'entry-picker',
+        kind: 'reactNative',
+        artifact: 'triage-entry-picker-native',
         // Its rows come from the list Action, and Attach/Remove is a
         // `readComposer` → plan → `applyComposer` round trip on the draft this
         // mount was stamped with; `useComposerView` also observes that draft
@@ -588,19 +605,22 @@ function createTriagePlugin() {
         // its only update path after mount — without it the label freezes at its
         // mount-time value and goes on claiming attachments the message will not
         // carry, which is the one thing this renderer exists to prevent.
-        id: TRIAGE_ENTRIES_COMPACT_RENDERER_ID_V1,
+        id: 'entries-compact',
         kind: 'reactNative',
-        artifact: TRIAGE_ENTRIES_COMPACT_ARTIFACT_ID_V1,
+        artifact: 'triage-entries-compact-native',
         requiredHostMethods: ['readComposer', 'watchComposer'],
       }, {
         // Its links are read through the Data-owned Collection pager, which
         // reports a typed failure rather than needing a declared method gate.
-        id: TRIAGE_SESSION_ENTRIES_RENDERER_ID_V1,
+        id: 'session-entries-panel',
         kind: 'reactNative',
-        artifact: TRIAGE_SESSION_ENTRIES_ARTIFACT_ID_V1,
+        artifact: 'triage-session-entries-native',
         // A resolved linked row opens the canonical Triage destination through
-        // the generic host navigation seam; unresolved rows remain read-only.
-        requiredHostMethods: ['openSurface'],
+        // the generic host navigation seam. `executeAction` backs the rest of the
+        // tab: the shared PRs & Issues window its rows join, linking from the
+        // header "+" (`sessions/link-entry-v1`) and Unlink where the Account is
+        // not directly reachable.
+        requiredHostMethods: ['executeAction', 'openSurface'],
       }],
     },
     composer: {
@@ -615,7 +635,7 @@ function createTriagePlugin() {
           // schema rather than a restatement, so the attachment and the resolver
           // cannot disagree about what a persisted attachment is.
           value: TriageComposerEntryAttachmentValueV1Schema,
-          picker: { renderer: TRIAGE_ENTRY_PICKER_RENDERER_ID_V1 },
+          picker: { renderer: 'entry-picker' },
           // The attached record is identity only, so the entry is read fresh under
           // the user's own connection immediately before every dispatch. Without
           // this role the draft would carry an id the model cannot read, so the
@@ -643,7 +663,7 @@ function createTriagePlugin() {
             presentation: 'popover',
             layout: 'list',
           },
-          compactRenderer: { renderer: TRIAGE_ENTRIES_COMPACT_RENDERER_ID_V1 },
+          compactRenderer: { renderer: 'entries-compact' },
           // Required whenever a compact renderer is declared: a narrow composer
           // must still be able to reach the control from the overflow.
           overflow: {

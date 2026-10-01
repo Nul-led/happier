@@ -143,7 +143,6 @@ describe('Channels connections Resource invalidation', () => {
       providerPluginId: 'example.channel.provider',
       providerContributionSelection: {
         contributionId: 'connections-resource-provider',
-        immutableGenerationId: 'connections-resource-generation',
       },
       providerSetupInput: { source: 'connections-resource' },
       credentialRef: null,

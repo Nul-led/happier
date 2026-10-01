@@ -1,9 +1,13 @@
 import { followTranscriptSourceWithFiniteActions } from '@happier-dev/agents/runtime/facets/transcriptSource';
+import { createHappierSocket } from '@happier-dev/sync-client';
+import { createManagedConnectionSupervisor, DEFAULT_MANAGED_CONNECTION_POLICY } from '@happier-dev/connection-supervisor';
+import { buildAccountStoredContentCompatibilitySocketAuthV1, CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
 
 import type { PublicActionInputById, PublicActionResultById } from './actions/generated.js';
 import { waitForClientCleanupGrace } from './cleanupGrace.js';
 import { HappierTransportError } from './errors.js';
 import type { ActionExecute, ActionExecutionOptions } from './types.js';
+import { createSessionChangeWakeup } from './live/sessionChangeWakeup.js';
 
 /** A raw row emitted by the canonical finite `transcript.follow` Action. */
 export type HappierTranscriptItem = PublicActionResultById['transcript.follow']['items'][number];
@@ -23,7 +27,6 @@ export type FollowTranscriptOptions = Readonly<{
   maxBytes?: number;
   maxItems?: number;
   idleTtlMs?: number;
-  pollIntervalMs?: number;
   signal?: AbortSignal;
 }>;
 
@@ -35,13 +38,11 @@ type Deferred<T> = Readonly<{
 type ExecutionRunStreamReadInput = PublicActionInputById['execution.run.stream.read'];
 type ExecutionRunStreamReadResult = PublicActionResultById['execution.run.stream.read'];
 
-const DEFAULT_STREAM_POLL_INTERVAL_MS = 250;
-
 export async function startExecutionRunStream(params: Readonly<{
   runId: string;
   start: () => Promise<PublicActionResultById['execution.run.stream.start']>;
   read: (
-    input: Readonly<Pick<ExecutionRunStreamReadInput, 'runId' | 'streamId' | 'cursor'>>,
+    input: Readonly<Pick<ExecutionRunStreamReadInput, 'runId' | 'streamId' | 'cursor' | 'waitForEvents'>>,
     signal: AbortSignal,
   ) => Promise<ExecutionRunStreamReadResult>;
   cancel: (input: Readonly<Pick<ExecutionRunStreamReadInput, 'runId' | 'streamId'>>) => Promise<void>;
@@ -115,6 +116,7 @@ export async function startExecutionRunStream(params: Readonly<{
           runId: params.runId,
           streamId: started.streamId,
           cursor,
+          waitForEvents: true,
         }, signal);
         // The stream id is the response's correlation key, not merely a
         // schema-valid string. Keep the started identity authoritative and
@@ -135,10 +137,14 @@ export async function startExecutionRunStream(params: Readonly<{
         events = page.events;
         terminal = page.done;
         if (!terminal && events.length === 0) {
-          await waitForPoll(DEFAULT_STREAM_POLL_INTERVAL_MS, signal);
+          throw new HappierTransportError('The execution-run producer does not support waiting for streamed events.', {
+            code: 'execution_run_stream_update_required',
+          });
         }
       } catch (error) {
+        const observationCancelled = cancelled || signal.aborted;
         await cancel().catch(() => undefined);
+        if (observationCancelled) return { done: true, value: undefined };
         throw error;
       }
     }
@@ -165,20 +171,6 @@ export async function startExecutionRunStream(params: Readonly<{
   });
 }
 
-function waitForPoll(milliseconds: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-  return new Promise((resolve) => {
-    const timer = setTimeout(finish, milliseconds);
-    const onAbort = () => finish();
-    function finish(): void {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
 function sessionIsActive(value: unknown): boolean {
   if (value === null || typeof value !== 'object') return false;
   const session = (value as { session?: unknown }).session;
@@ -194,6 +186,7 @@ export function createTranscriptIterable(params: Readonly<{
   closeSignal: AbortSignal;
   registerCloseCleanup?: (cleanup: () => Promise<void>) => () => void;
   options?: FollowTranscriptOptions;
+  notifications: Readonly<{ endpoint: string; token: string }>;
 }>): AsyncIterable<HappierTranscriptItem> {
   const iteratorController = new AbortController();
   const signal = params.options?.signal === undefined
@@ -205,6 +198,7 @@ export function createTranscriptIterable(params: Readonly<{
   let failure: unknown;
   let runner: Promise<void> | undefined;
   let resolveConsumerDemand: (() => void) | undefined;
+  let needsRead = true;
 
   const notifyConsumerDemand = () => {
     const resolve = resolveConsumerDemand;
@@ -244,49 +238,76 @@ export function createTranscriptIterable(params: Readonly<{
       settle();
       return runner;
     }
+    const wakeup = createSessionChangeWakeup(null, params.sessionId, signal);
+    const supervisor = createManagedConnectionSupervisor({ ...DEFAULT_MANAGED_CONNECTION_POLICY,
+      createTransport: () => {
+        const viewer = createHappierSocket({ ...params.notifications,
+          clientType: 'session-scoped', sessionId: params.sessionId, clientPurpose: 'sdk-transcript',
+          authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION) });
+        wakeup.observeSocket(viewer.socket);
+        return viewer.transport;
+      },
+      probeReadiness: async () => ({ status: 'ready' }),
+      onConnected: () => { needsRead = true; wakeup.wake(); },
+      onAuthFailed: () => iteratorController.abort(new HappierTransportError('Session observation authentication failed.', { code: 'auth_failed' })),
+    });
+    const stopObservation = () => { void supervisor.stop().catch(() => undefined); };
+    signal.addEventListener('abort', stopObservation, { once: true });
     const leaseId = globalThis.crypto.randomUUID();
     const unregisterCloseCleanup = params.registerCloseCleanup?.(async () => {
       iteratorController.abort();
       await runner;
     });
-    runner = followTranscriptSourceWithFiniteActions<HappierTranscriptItem>({
+    runner = supervisor.start().then(async () => {
+      await wakeup.wait(); // Consume the initial connection before the first drain.
+      return followTranscriptSourceWithFiniteActions<HappierTranscriptItem>({
       initialCursor: params.options?.cursor ?? 'tail',
       leaseId,
-      follow: async ({ cursor, leaseId: activeLeaseId }) => params.execute('transcript.follow', {
+      follow: async ({ cursor, leaseId: activeLeaseId }) => {
+        if (!needsRead) return { items: [], nextCursor: cursor, truncated: false };
+        const page = await params.execute('transcript.follow', {
         sessionId: params.sessionId,
         cursor,
         leaseId: activeLeaseId,
         ...(params.options?.maxBytes === undefined ? {} : { maxBytes: params.options.maxBytes }),
         ...(params.options?.maxItems === undefined ? {} : { maxItems: params.options.maxItems }),
         ...(params.options?.idleTtlMs === undefined ? {} : { idleTtlMs: params.options.idleTtlMs }),
-      }, { signal }),
+        }, { signal });
+        needsRead = page.truncated;
+        return page;
+      },
       release: async ({ leaseId: activeLeaseId }) => {
         await params.release({
           sessionId: params.sessionId,
           leaseId: activeLeaseId,
         });
       },
-      isSessionActive: async () => sessionIsActive(await params.execute(
+      isSessionActive: async () => {
+        const active = sessionIsActive(await params.execute(
         'session.status.get',
         { sessionId: params.sessionId },
         { signal },
-      )),
-      waitForNextPoll: async () => waitForPoll(
-        params.options?.pollIntervalMs ?? DEFAULT_STREAM_POLL_INTERVAL_MS,
-        signal,
-      ),
+        ));
+        if (!active) needsRead = true; // Preserve the incumbent final drain.
+        return active;
+      },
+      waitForNextPoll: async () => { await wakeup.wait(); needsRead = true; },
       shouldContinue: () => !signal.aborted,
       onItems: async ({ items }) => {
         for (const item of items) emit(item);
         await waitForConsumerDemand();
       },
+      });
     }).then(
       () => settle(),
       (error) => {
         failure = error;
         settle();
       },
-    ).finally(() => unregisterCloseCleanup?.());
+    ).finally(async () => {
+      wakeup.dispose(); signal.removeEventListener('abort', stopObservation);
+      await supervisor.stop(); unregisterCloseCleanup?.();
+    });
     return runner;
   };
 

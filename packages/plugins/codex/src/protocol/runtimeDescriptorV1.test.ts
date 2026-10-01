@@ -39,6 +39,7 @@ describe('Codex runtime descriptor v1', () => {
       backendMode: 'appServer',
       providerSessionId: ' thread-1 ',
       appServerEndpoint: null,
+      appServerTransport: null,
       home: 'connectedService',
       connectedServiceId: 'openai-codex',
       connectedServiceProfileId: null,
@@ -129,6 +130,21 @@ describe('Codex runtime descriptor v1', () => {
       .toBe('unix:///tmp/happier-codex/app-server.sock');
     expect(readCanonicalCodexAgentRuntimeDescriptorV1(descriptor)?.appServerEndpoint)
       .toBe('unix:///tmp/happier-codex/app-server.sock');
+  });
+
+  it('round-trips daemon-proxy ownership through the canonical runtime handle', () => {
+    const descriptor = buildCodexAgentRuntimeDescriptorV1({
+      backendMode: 'appServer',
+      providerSessionId: 'thread-381',
+      appServerTransport: 'daemonProxy',
+      home: 'user',
+    });
+
+    expect(descriptor.agent.appServerTransport).toBe('daemonProxy');
+    expect(descriptor.agent.agentExtra?.runtimeHandle?.appServerTransport)
+      .toBe('daemonProxy');
+    expect(readCanonicalCodexAgentRuntimeDescriptorV1(descriptor)?.appServerTransport)
+      .toBe('daemonProxy');
   });
 
   it('keeps legacy vendorSessionId read-compat byte-exact and drops blank ids', () => {

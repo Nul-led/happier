@@ -13,7 +13,8 @@ import {
   Metadata,
   Progress,
 } from './index.js';
-import { PluginUiProvider } from './PluginUiProvider.js';
+import { PluginUiProvider, PluginUiProviderInternal } from './PluginUiProvider.js';
+import type { PluginUiPresentationHost } from '../presentationHost/context.js';
 import {
   HappierProgress,
   HappierLink,
@@ -31,6 +32,16 @@ function mountFoundation(children: React.ReactNode, hostApi = createHostApiStub(
 }
 
 describe('foundation presentation families', () => {
+  it('keeps a capacity meter silent while a named progress bar reports its value', () => {
+    const context = createSurfaceContext();
+    const mount = mountThroughReactNativeWeb(<>
+      <HappierProgress value={0.42} label="Capacity" semantics="none" testID="capacity" theme={context.theme} />
+      <HappierProgress value={0.42} label="Installing" testID="progress" theme={context.theme} />
+    </>);
+    expect(mount.container.querySelector('[data-testid="capacity"]')?.getAttribute('role')).toBeNull();
+    expect(mount.container.querySelector('[data-testid="progress"]')?.getAttribute('aria-valuenow')).toBe('42');
+    mount.unmount();
+  });
   it('keeps shared progress non-interactive through the RNW style contract', () => {
     const context = createSurfaceContext();
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -92,6 +103,56 @@ describe('foundation presentation families', () => {
     expect(mount.container.innerHTML).not.toContain('happier-plugin-');
 
     mount.unmount();
+  });
+
+  it('steps heading levels down the ramp and renders the same-realm host type roles', () => {
+    const typography = {
+      heading: { fontSize: 22, lineHeight: 28, fontWeight: '700', fontFamily: 'HostDisplay', letterSpacing: -0.4 },
+      title: { fontSize: 17, lineHeight: 22, fontWeight: '600', fontFamily: 'HostText' },
+      label: { fontSize: 15, lineHeight: 20, fontWeight: '600', fontFamily: 'HostText' },
+      body: { fontSize: 13, lineHeight: 17, fontWeight: '400', fontFamily: 'HostText' },
+      caption: { fontSize: 12, lineHeight: 16, fontWeight: '400', fontFamily: 'HostText', fontVariant: ['tabular-nums'] as const },
+    } as const;
+    const host = {
+      typography,
+      renderMarkdown: () => null,
+      renderPopover: () => null,
+    } as unknown as PluginUiPresentationHost;
+    const context = createSurfaceContext();
+    // The rendered element's own style: jsdom resolves heading elements
+    // (`<h1>`, `<h2>`) against its user-agent sheet rather than RNW's inline
+    // declaration, so computed font metrics are not the rendered ones there.
+    const read = (container: HTMLElement, testID: string) => (
+      container.querySelector<HTMLElement>(`[data-testid="${testID}"]`)!.style
+    );
+
+    const hosted = mountThroughReactNativeWeb(
+      <PluginUiProviderInternal hostApi={createHostApiStub(context)} context={context} presentationHost={host}>
+        <Heading value="Page" level={1} testID="h1" />
+        <Heading value="Pane" level={2} testID="h2" />
+        <Heading value="Group" level={3} testID="h3" />
+        <Label value="Field" testID="label" />
+      </PluginUiProviderInternal>,
+    );
+    expect(read(hosted.container, 'h1').fontSize).toBe('22px');
+    expect(read(hosted.container, 'h1').fontFamily).toBe('HostDisplay');
+    expect(read(hosted.container, 'h1').letterSpacing).toBe('-0.4px');
+    expect(read(hosted.container, 'h2').fontSize).toBe('17px');
+    expect(read(hosted.container, 'h3').fontSize).toBe('15px');
+    expect(read(hosted.container, 'label').fontFamily).toBe('HostText');
+    hosted.unmount();
+
+    // Without same-realm host facts (a hosted-web realm or a bare provider) the
+    // public snapshot's metrics apply, still as a descending ramp.
+    const snapshot = mountFoundation(
+      <>
+        <Heading value="Pane" level={2} testID="h2" />
+        <Heading value="Group" level={3} testID="h3" />
+      </>,
+    );
+    expect(read(snapshot.container, 'h2').fontSize).toBe(`${context.theme.typography.title.fontSize}px`);
+    expect(read(snapshot.container, 'h3').fontSize).toBe(`${context.theme.typography.label.fontSize}px`);
+    snapshot.unmount();
   });
 
   it('resolves every author-owned foundation chrome label through the plugin catalog', () => {

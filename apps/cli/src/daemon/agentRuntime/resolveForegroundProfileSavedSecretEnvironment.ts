@@ -5,6 +5,7 @@ import {
   readSecretReferenceOverlayV1Reference,
   type AIBackendProfile,
   type LaunchProfileV2,
+  type AiLaunchProfileSourceV1,
   type SecretReferenceOverlayV1,
 } from '@happier-dev/protocol';
 
@@ -13,6 +14,7 @@ import {
   createSavedSecretMaterializerV1,
   type SavedSecretCatalogResourceInputV1,
 } from '@/settings/secrets/savedSecretCatalog';
+import type { SavedSecretOperationAdmissionFailureReason } from '@/settings/secrets/hydrateSavedSecretCatalog';
 
 export class ForegroundProfileSecretRecoveryRequiredError extends Error {
   readonly requirementNames: readonly string[];
@@ -51,13 +53,20 @@ export class LaunchSecretReferenceOverlayError extends Error {
 }
 
 export function readLaunchSecretReferenceOverlayProviderErrorCodeV1(
-  reason: LaunchSecretReferenceOverlayFailureReasonV1,
+  reason: LaunchSecretReferenceOverlayFailureReasonV1 | SavedSecretOperationAdmissionFailureReason,
 ): 'provider_settings_invalid' | 'provider_secret_missing'
   | 'provider_secret_unavailable' | 'provider_binding_changed' {
   switch (reason) {
     case 'undeclared_requirement':
       return 'provider_settings_invalid';
+    // Operation admission names why a reference is unusable; launch still
+    // refuses every non-transient, non-binding case as a missing secret.
     case 'reference_missing':
+    case 'reference_forbidden':
+    case 'reference_deleted':
+    case 'reference_mode_incompatible':
+    case 'reference_repair_required':
+    case 'reference_corrupt':
       return 'provider_secret_missing';
     case 'reference_unavailable':
       return 'provider_secret_unavailable';
@@ -152,14 +161,14 @@ export function resolveSecretReferenceOverlayEnvironment(params: Readonly<{
  */
 export function resolveEffectiveLaunchProfileSecretBindings(
   params: Readonly<{
-    profile: AIBackendProfile | LaunchProfileV2;
+    profile: (AIBackendProfile | LaunchProfileV2) & AiLaunchProfileSourceV1;
     accountSettings: Readonly<Record<string, unknown>>;
     secretReferenceOverlay?: SecretReferenceOverlayV1 | undefined;
   }>,
 ): Readonly<Record<string, Readonly<{ ref: string; revision?: number }>>> {
   const { secretBindingsByProfileId } =
     readProfilesFromAccountSettings(params.accountSettings);
-  const profileBindings = secretBindingsByProfileId[params.profile.id] ?? {};
+  const profileBindings = { ...params.profile.secretBindings, ...secretBindingsByProfileId[params.profile.id] };
   const declared = listDeclaredSecretRequirements(params.profile);
   const declaredNames = new Set(declared.map((requirement) => requirement.name));
 

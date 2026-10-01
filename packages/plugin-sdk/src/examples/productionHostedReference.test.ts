@@ -26,7 +26,8 @@ const surface: SurfaceContext = createSurfaceContextFixture({
     targetedContributions: {
         target: {
             pluginId: 'examples.production-hosted-reference',
-            immutableGenerationId: 'review-panel-test',
+            occurrenceId: 'review-panel-test',
+            sourceCustody: { kind: 'development', registeredRootId: 'review-panel-test-root' },
         },
         points: [],
     },

@@ -1,10 +1,7 @@
 import axios from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  PluginInstallReviewPrincipalDigestSchema,
-  PluginPermissionSubjectV1Schema,
-} from '@happier-dev/protocol';
+import { PluginPermissionSubjectV1Schema } from '@happier-dev/protocol';
 
 import { createDefaultPluginInstallationPublisherHeader } from '@/plugins/installations/publisherProof';
 import { createServerPluginPermissionGrantRequester } from './pluginPermissionGrantRequester';
@@ -29,8 +26,6 @@ describe('server plugin permission grant requester', () => {
       accessDeclarationDigest: 'c'.repeat(64),
       selectedAuthorityDigest: 'd'.repeat(64),
       selectedRawAccessDigest: 'e'.repeat(64),
-      installedGenerationId: 'generation-1',
-      installReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema.parse('a'.repeat(64)),
     });
     const request = {
       pluginId: 'acme.voice',

@@ -1,9 +1,8 @@
-import { GH_INSTALLABLE_DESCRIPTOR } from '@happier-dev/protocol/installables';
+import { BUILT_IN_INSTALLABLE_CONTRIBUTIONS } from '@happier-dev/protocol/installables';
 
 import { BUNDLED_FIRST_PARTY_AGENT_REGISTRATION_BINDINGS } from './sources/generatedBundledPlugins';
-import { BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS } from './sources/generatedBundledPluginManifests';
 import { projectBuiltInAgents } from './builtIn/agents';
-import { loadBundledPluginLocators } from './builtIn/locators';
+import { loadCurrentBundledPluginLocatorResult } from './builtIn/locators';
 import { projectLoadedPluginContributes } from './resolvePluginContributions';
 import type { ResolvedContributionInputs, ResolvedInstallableContribution } from './types';
 
@@ -20,11 +19,14 @@ type ResolvedBuiltInContributionInputs = ResolvedContributionInputs & Required<
  * and presentation facts remain on the public manifest projection.
  */
 export function resolveBuiltInContributions(): ResolvedBuiltInContributionInputs {
-    const loadedPlugins = loadBundledPluginLocators(BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS);
+    const bundled = loadCurrentBundledPluginLocatorResult();
     const projected = projectLoadedPluginContributes({
         loadResult: {
-            loadedPlugins,
-            diagnosticsByPluginId: {},
+            loadedPlugins: bundled.loadedPlugins,
+            diagnosticsByPluginId: Object.fromEntries(bundled.pluginFailures.map((failure) => [
+                failure.pluginId,
+                [failure.diagnostic],
+            ])),
         },
         provenance: 'first_party',
     });
@@ -39,12 +41,12 @@ export function resolveBuiltInContributions(): ResolvedBuiltInContributionInputs
         providers: projected.providers ?? EMPTY_CONTRIBUTIONS,
         catalogEntries: EMPTY_CONTRIBUTIONS,
         managedDependencies: Object.freeze([
-            {
+            ...BUILT_IN_INSTALLABLE_CONTRIBUTIONS.map(({ descriptor, owner }) => ({
                 provenance: 'first_party',
                 source: { kind: 'bundled' },
-                pluginId: 'happier.core',
-                definition: GH_INSTALLABLE_DESCRIPTOR,
-            } satisfies ResolvedInstallableContribution,
+                pluginId: owner.ownerId,
+                definition: descriptor,
+            } satisfies ResolvedInstallableContribution)),
             ...(projected.managedDependencies ?? EMPTY_CONTRIBUTIONS),
         ]),
     });

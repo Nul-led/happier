@@ -16,6 +16,12 @@ import {
   resolveHappierLayoutGap,
   type HappierLayoutGap,
 } from '../presentation/layout/Layout.js';
+import {
+  HappierListDetailLayout,
+  type HappierListDetailLayoutProps,
+  type HappierListDetailLayoutState,
+} from '../presentation/collection/ListDetailLayout.js';
+import { HappierColumn, HappierColumns } from '../presentation/layout/Columns.js';
 import { usePluginTheme } from './PluginUiProvider.js';
 import {
   type PluginUiFocusTarget,
@@ -23,6 +29,28 @@ import {
 } from './Focus.js';
 
 export type LayoutGap = HappierLayoutGap;
+export type ListDetailLayoutState = HappierListDetailLayoutState;
+
+export type ListDetailLayoutProps = Omit<HappierListDetailLayoutProps, 'gap'> & Readonly<{
+  gap?: LayoutGap;
+}>;
+
+export type ColumnsProps = Readonly<{
+  children?: ReactNode;
+  columns?: 1 | 2 | 3 | 4;
+  minColumnWidth?: number;
+  gap?: LayoutGap;
+  rowGap?: LayoutGap;
+  testID?: string;
+  style?: HappierStyleProp;
+}>;
+
+export type ColumnProps = Readonly<{
+  children?: ReactNode;
+  span?: 1 | 2 | 3 | 4;
+  testID?: string;
+  style?: HappierStyleProp;
+}>;
 
 /**
  * The measurement one layout box reports after the platform has laid it out.
@@ -100,6 +128,27 @@ export function Stack({ gap = 'medium', focusTarget, ...props }: StackProps): Re
 export function Row({ gap = 'medium', focusTarget, ...props }: RowProps): ReactElement {
   const focusBinding = usePluginUiFocusTargetBindingInternal(focusTarget);
   return <HappierStack {...props} controlRef={focusBinding} direction="horizontal" gap={useGap(gap)} />;
+}
+
+export function ListDetailLayout({ gap = 'none', ...props }: ListDetailLayoutProps): ReactElement {
+  return <HappierListDetailLayout {...props} gap={useGap(gap)} />;
+}
+
+export function Columns({ minColumnWidth, gap = 'medium', rowGap = 'medium', ...props }: ColumnsProps): ReactElement {
+  return (
+    <HappierColumns
+      {...props}
+      minColumnWidthPx={minColumnWidth}
+      columnGap={useGap(gap)}
+      rowGap={useGap(rowGap)}
+      paddingHorizontal={0}
+      paddingVertical={0}
+    />
+  );
+}
+
+export function Column(props: ColumnProps): ReactElement {
+  return <HappierColumn {...props} />;
 }
 
 export function ScrollArea({ children, safeArea = false, ...props }: ScrollAreaProps): ReactElement {

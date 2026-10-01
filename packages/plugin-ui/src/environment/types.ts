@@ -35,6 +35,94 @@ export type HappierUiEnvironment = Readonly<{
   insets: HappierUiInsets;
 }>;
 
+/**
+ * The type roles a same-realm host renders plugin and shared text with.
+ *
+ * `PluginUiThemeV1.typography` is the versioned public snapshot (and the only
+ * one a hosted-web frame in its own realm can receive); it carries size, line
+ * height and weight for five roles. A same-realm host can say more: the real
+ * role style objects its own screens use — family, tracking, tabular figures —
+ * and a `heading` step above `title`. When a host installs these facts every
+ * shared text owner reads them; without them the snapshot's metrics apply, so
+ * the two never disagree on size (the host projects both from one role table).
+ */
+export type HappierTypeRole = 'heading' | 'title' | 'label' | 'body' | 'caption';
+
+export type HappierTypeRoleStyle = Readonly<{
+  fontSize: number;
+  lineHeight: number;
+  fontWeight?: string;
+  fontFamily?: string;
+  letterSpacing?: number;
+  fontVariant?: readonly 'tabular-nums'[];
+}>;
+
+/** The font face a same-realm host draws one weight with (a family that encodes it, or a numeric weight). */
+export type HappierFontFace = Readonly<{
+  fontFamily?: string;
+  fontWeight?: string;
+}>;
+
+export type HappierUiTypography = Readonly<Record<HappierTypeRole, HappierTypeRoleStyle>> & Readonly<{
+  /**
+   * The face for each weight the configuration-page anatomy uses
+   * (`HAPPIER_PAGE_TEXT`), so a plugin page title, section title and row title
+   * draw in the host's exact family. Absent, a numeric weight applies.
+   */
+  weights?: Readonly<Record<'regular' | 'medium' | 'semiBold' | 'bold', HappierFontFace>>;
+}>;
+
+/**
+ * The colour roles of Happier's configuration-page anatomy (page header,
+ * section sheets, rows, field boxes, switches, segmented choices and visual
+ * tiles).
+ *
+ * Like {@link HappierUiTypography} this is a same-realm host fact, never wire:
+ * `PluginUiThemeV1` is a versioned public snapshot and carries no sheet tint,
+ * row seam, switch or field-box roles. A host that installs these renders a
+ * plugin page in exactly its own colours; without them each role resolves from
+ * the snapshot (`resolveHappierUiPalette`), so a hosted-web frame still draws
+ * the same anatomy in its theme's nearest roles.
+ */
+export type HappierUiPalette = Readonly<{
+  /** A configuration page's ground (the paper the sheets sit on). */
+  page: string;
+  /** A page section's sheet and its hairline edge. */
+  sheet: string;
+  sheetBorder: string;
+  /** The full-width hairline between the rows of a sheet. */
+  rowDivider: string;
+  /**
+   * The separator between groups of a sheet's rows (`HappierPageSheetGroup`): content width and
+   * lighter than `rowDivider`, so a group edge reads as a pause inside the section, not an edge.
+   */
+  groupDivider: string;
+  /** The outline of a field box, an unselected tile and other bordered controls. */
+  controlBorder: string;
+  /** The inside of a field box (a page select trigger or text field). */
+  fieldBackground: string;
+  /** The placeholder / "Choose…" text of an empty field box. */
+  placeholder: string;
+  /** The ring or fill that marks the chosen tile. */
+  selection: string;
+  switchTrackOn: string;
+  switchTrackOff: string;
+  switchThumb: string;
+  /** A segmented control's track and its selected segment. */
+  segmentTrack: string;
+  segmentThumb: string;
+  /**
+   * A navigation column's open row (the plane's selected chip) and a row under the pointer. The
+   * column's plane itself is the host's (`appShellColumnSurface`); a column never paints its own.
+   */
+  navigationSelected: string;
+  navigationHover: string;
+  /** Quiet retained-content freshness line, projected from the host's inset surface. */
+  freshnessBackground?: string;
+  /** Same-realm compact search radius; unhosted search uses its public theme's control radius. */
+  searchFieldRadiusPx?: number;
+}>;
+
 export type HappierUiTextDirection = 'ltr' | 'rtl';
 
 export type HappierUiLocalization = Readonly<{

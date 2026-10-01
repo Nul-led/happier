@@ -1,7 +1,16 @@
-import { MAX_AGENT_ROUTING_ID_BYTES } from '@happier-dev/protocol';
+import {
+    MAX_AGENT_ROUTING_ID_BYTES,
+    PluginSourceCustodyV1Schema,
+    type PluginSourceCustodyV1,
+} from '@happier-dev/protocol';
 import { MAX_PLUGIN_IDENTIFIER_BYTES } from '@happier-dev/protocol/plugins/plugin-id';
 import type { AgentSessionRunnerFactoryLocatorV1 } from '@happier-dev/plugin-sdk/agents/runtime';
 import { z } from 'zod';
+import { asHostProtocolZod } from '../protocolComposableZodAdapter';
+
+const HostPluginSourceCustodyV1Schema = asHostProtocolZod(
+    PluginSourceCustodyV1Schema,
+);
 
 // Contribution authority carries the literal `/agents/` namespace. Local ids
 // permit `/`, which the canonical formatter percent-encodes, so reserve the
@@ -18,7 +27,7 @@ export const AgentSessionRunnerFactoryBindingV1Schema = z.object({
     // Canonical host routing id; qualified for an installed Agent.
     agentId: z.string().trim().min(1).max(MAX_AGENT_ROUTING_ID_BYTES),
     localAgentId: z.string().trim().min(1).max(MAX_PLUGIN_IDENTIFIER_BYTES),
-    immutableGenerationId: z.string().trim().min(1).max(512),
+    sourceCustody: HostPluginSourceCustodyV1Schema,
     locator: z.object({
         module: z.string().regex(/^\.[/][A-Za-z0-9._/-]+$/u),
         export: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/u),
@@ -45,7 +54,7 @@ export const HostDeclarativeAcpRunnerBindingV1Schema = z.object({
     agentId: z.string().trim().min(1).max(MAX_AGENT_ROUTING_ID_BYTES),
     qualifiedAgentId: z.string().trim().min(1).max(MAX_AGENT_CONTRIBUTION_QUALIFIED_ID_LENGTH),
     localAgentId: z.string().trim().min(1).max(MAX_PLUGIN_IDENTIFIER_BYTES),
-    immutableGenerationId: z.string().trim().min(1).max(512),
+    sourceCustody: HostPluginSourceCustodyV1Schema,
 }).strict();
 
 export const AgentSessionRunnerBindingV1Schema = z.union([
@@ -59,7 +68,7 @@ export type AgentSessionRunnerFactoryBindingV1 = Readonly<{
     pluginVersion: string;
     agentId: string;
     localAgentId: string;
-    immutableGenerationId: string;
+    sourceCustody: PluginSourceCustodyV1;
     locator: AgentSessionRunnerFactoryLocatorV1;
     normalizedModulePath: string;
     loadMode: 'immutable-js' | 'source-ts';
@@ -75,7 +84,7 @@ export type HostDeclarativeAcpRunnerBindingV1 = Readonly<{
     /** Always-qualified activation/service authority contribution key. */
     qualifiedAgentId: string;
     localAgentId: string;
-    immutableGenerationId: string;
+    sourceCustody: PluginSourceCustodyV1;
 }>;
 
 export type AgentSessionRunnerBindingV1 =

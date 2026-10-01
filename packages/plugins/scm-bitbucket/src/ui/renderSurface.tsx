@@ -78,6 +78,7 @@ import {
   type BitbucketDetailOverviewV1,
 } from '../triage/source/detail.js';
 
+import { TriageDetailPanel } from '@happier-dev/triage-sources/ui';
 import {
   BitbucketCommentResolutionControls,
   BitbucketMutationControls,
@@ -192,18 +193,15 @@ function PagedFooter({
 
 /* -------------------------------------------------------------------- Overview */
 
-function OverviewPanel({
-  input,
-  locale,
-  nowMs,
-}: Readonly<{
-  input: TriageDetailSurfaceInputV1;
-  locale: string;
-  nowMs: number;
-}>): React.ReactElement {
-  const text = usePluginTranslation();
-  const controller = useBitbucketOverview(input);
-  const overviewResult = controller.result?.kind === 'overview' ? controller.result : null;
+/**
+ * The mounted input with the latest overview read applied, and its projection:
+ * the facts the overview shows and the write controls dispatch against.
+ */
+function bitbucketEffectiveOverview(
+  input: TriageDetailSurfaceInputV1,
+  result: ReturnType<typeof useBitbucketOverview>['result'],
+) {
+  const overviewResult = result?.kind === 'overview' ? result : null;
   const freshObservation = overviewResult?.observation.kind === 'present'
     ? overviewResult.observation
     : null;
@@ -229,6 +227,31 @@ function OverviewPanel({
     },
   };
   const overview: BitbucketDetailOverviewV1 = projectBitbucketDetailOverview(effectiveInput);
+  return { overviewResult, effectiveInput, overview };
+}
+
+/** The write controls as the Triage detail header's `actions` panel (r0.42). */
+function BitbucketActionsPanel({ input }: Readonly<{ input: TriageDetailSurfaceInputV1 }>): React.ReactElement | null {
+  const controller = useBitbucketOverview(input);
+  const { effectiveInput, overview } = bitbucketEffectiveOverview(input, controller.result);
+  return <BitbucketMutationControls input={effectiveInput} overview={overview} />;
+}
+
+function OverviewPanel({
+  input,
+  locale,
+  nowMs,
+  withWrites = true,
+}: Readonly<{
+  input: TriageDetailSurfaceInputV1;
+  locale: string;
+  nowMs: number;
+  /** False when the Triage detail places the write controls in its header (r0.42). */
+  withWrites?: boolean;
+}>): React.ReactElement {
+  const text = usePluginTranslation();
+  const controller = useBitbucketOverview(input);
+  const { overviewResult, effectiveInput, overview } = bitbucketEffectiveOverview(input, controller.result);
   const description = overviewResult === null ? overview.summary : overviewResult.description;
   const statusFields = overview.fields.filter(
     (field): field is Extract<BitbucketDetailFieldV1, { kind: 'status' }> => field.kind === 'status',
@@ -299,7 +322,7 @@ function OverviewPanel({
           * already states what this pull request currently is. A tab of their own would put a
           * destructive control behind a click that says nothing about what is behind it.
           */}
-        <BitbucketMutationControls input={effectiveInput} overview={overview} />
+        {withWrites ? <BitbucketMutationControls input={effectiveInput} overview={overview} /> : null}
         <Divider />
         <Metadata
           title="Observation"
@@ -816,6 +839,31 @@ function BitbucketDetailBody({
     comments: <CommentsPanel input={input} locale={locale} nowMs={nowMs} />,
   };
 
+  // The Triage detail asked for one panel (r0.42): its frame draws the tabs.
+  // Comments fold into Activity; the diff is Files and builds are Checks.
+  if (input.panel !== undefined) {
+    return (
+      <Screen safeArea>
+        <TriageDetailPanel
+          panel={input.panel}
+          ariaLabel={text('plugins.bitbucket.ui.detailLabel', 'Bitbucket pull request detail')}
+          panels={{
+            overview: <OverviewPanel input={input} locale={locale} nowMs={nowMs} withWrites={false} />,
+            activity: (
+              <Stack gap="large" style={{ flex: 1, minHeight: 0 }}>
+                <Stack style={{ flex: 1, minHeight: 0 }}>{panels.comments}</Stack>
+                <Stack style={{ flex: 1, minHeight: 0 }}>{panels.activity}</Stack>
+              </Stack>
+            ),
+            files: panels.diff,
+            checks: panels.builds,
+            actions: <BitbucketActionsPanel input={input} />,
+          }}
+        />
+      </Screen>
+    );
+  }
+
   return (
     <Screen safeArea>
       <Tabs
@@ -868,7 +916,6 @@ function BitbucketDetailSurface(context: RenderContext): React.ReactElement {
 }
 
 /**
- * The exact export name the build target's Module Federation identity names. Renaming it breaks
- * the native artifact contract, not just this file.
+ * The manifest names this exact universal CommonJS export.
  */
 export const renderSurface = defineUiSurface(BitbucketDetailSurface);

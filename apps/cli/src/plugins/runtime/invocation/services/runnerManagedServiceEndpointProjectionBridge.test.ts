@@ -6,7 +6,7 @@ import {
     type RunnerManagedServiceEndpointProjectionOwner,
 } from './runnerManagedServiceEndpointProjectionBridge';
 
-const immutableGenerationId = 'immutable-generation-1';
+const immutableGenerationId = 'immutable-occurrenceId-1';
 const projectionToken = 'b'.repeat(64);
 
 function createProjection() {

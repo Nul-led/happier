@@ -139,6 +139,8 @@ export type ExecLoopbackWebSocketShutdownV1 = Readonly<{
 }>;
 
 export type ExecLoopbackWebSocketLimitsV1 = Readonly<{
+    /** null delegates message byte policy to the containing host operation. */
+    messageByteLimits?: null;
     maxMessageBytes?: number;
     maxPendingMessages?: number;
     maxBufferedBytes?: number;
@@ -217,15 +219,7 @@ export type ExecClientDiagnosticSanitizerV1 = Readonly<{
     maxDepth?: number;
 }>;
 
-export type ExecClientRpcLogV1 = Readonly<{
-    kind: 'file';
-    path: string;
-    maxBytes?: number;
-    rotateCount?: number;
-}>;
-
 export type ExecClientDiagnosticsV1 = Readonly<{
-    rpcLog?: ExecClientRpcLogV1;
     sanitizer?: ExecClientDiagnosticSanitizerV1;
 }>;
 

@@ -8,6 +8,8 @@ import type { ResolvedActivatedHookRegistration } from '@/plugins/projection/reg
 import type { ContributionRuntimeRegistration } from '@/plugins/runtime/api/registrationRightsHost';
 import type { ResolvedPluginHookHandler } from '@/plugins/runtime/types';
 import type { PluginCompatibilityDiagnostic } from '@/plugins/validation/diagnostics/types';
+import type { PluginSourceCustody } from '@/plugins/runtime/sourceAuthority';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import type { ActivationTarget } from '../activation/targets';
 import { clonePluginPlainData } from '../../plainData';
@@ -27,7 +29,7 @@ import { createUnavailablePluginServices } from '../../invocation/services/unava
 
 type TargetRegistration = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }>;
 
@@ -116,10 +118,11 @@ export type TargetHookHandlerRegistry = Readonly<{
  * throwing `activate()`. It must never take every other plugin's hooks down.
  */
 export function createTargetHookHandlerRegistry(params: Readonly<{
-    generation: number;
     activationTargets: readonly ActivationTarget[];
     targetRegistrations: readonly TargetRegistration[];
-    isGenerationActive(): boolean;
+    isOccurrenceCurrent(): boolean;
+    readPluginOccurrenceId(pluginId: string): PluginRuntimeOccurrenceId | null;
+    readPluginSourceCustody(pluginId: string): PluginSourceCustody | null;
     invocationServices?: TargetInvocationServiceOwner;
 }>): TargetHookHandlerRegistry {
     const handlersByHookId = new Map<string, ResolvedPluginHookHandler[]>();
@@ -142,8 +145,8 @@ export function createTargetHookHandlerRegistry(params: Readonly<{
     for (const entry of params.targetRegistrations) {
         if (entry.registration.family !== 'hooks') continue;
         const localId = entry.registration.localId;
-        if (entry.generation !== String(params.generation)) {
-            refuse(entry.pluginId, localId, `Target hook '${entry.pluginId}/hooks/${localId}' was published for the wrong generation`);
+        if (params.readPluginOccurrenceId(entry.pluginId) !== entry.occurrenceId) {
+            refuse(entry.pluginId, localId, `Target hook '${entry.pluginId}/hooks/${localId}' was published for a retired occurrence`);
             continue;
         }
         const target = params.activationTargets.find((candidate) => candidate.pluginId === entry.pluginId);
@@ -215,7 +218,7 @@ export function createTargetHookHandlerRegistry(params: Readonly<{
             daemonEntryPath,
             registration,
             handler: async (event, context) => {
-                if (!params.isGenerationActive()) {
+                if (!params.isOccurrenceCurrent()) {
                     throw new Error(`Plugin '${target.pluginId}' hook handler is no longer active`);
                 }
                 const dispatcherContext = readTargetHookDispatcherContext(context);
@@ -233,24 +236,28 @@ export function createTargetHookHandlerRegistry(params: Readonly<{
                             const seed: PluginInvocationServicesSeed = Object.freeze({
                                 plugin,
                                 contribution,
-                                generation: entry.generation,
+                                occurrenceId: entry.occurrenceId,
+                                sourceCustody: params.readPluginSourceCustody(target.pluginId) ?? undefined,
                                 correlationId: randomUUID(),
                                 surface: 'agent',
                                 signal,
                                 bypassActionInterception: true,
                                 redactionLifetimeSignal: lifetime.redactionLifetimeSignal,
-                                isGenerationCurrent: params.isGenerationActive,
+                                isOccurrenceCurrent: () => (
+                                    params.isOccurrenceCurrent()
+                                    && params.readPluginOccurrenceId(target.pluginId) === entry.occurrenceId
+                                ),
                             });
                             const serviceBinding = hostAccessRequests.length === 0
                                 ? invocationServices.createOrdinaryServiceBinding(
-                                    entry.generation,
+                                    entry.occurrenceId,
                                     `${contribution.qualifiedId}:binding`,
                                     [],
                                     contribution.qualifiedId,
                                 )
                                 : invocationServices.resolveInvocationHostPolicy?.({
                                     pluginId: plugin.id,
-                                    generation: entry.generation,
+                                    occurrenceId: entry.occurrenceId,
                                     qualifiedId: contribution.qualifiedId,
                                 }, {
                                     hostAccessRequests,
@@ -276,14 +283,14 @@ export function createTargetHookHandlerRegistry(params: Readonly<{
                         ui: createPluginInvocationPresentation({
                             currentSession: null,
                             signal,
-                            isGenerationCurrent: params.isGenerationActive,
+                            isOccurrenceCurrent: params.isOccurrenceCurrent,
                         }),
                     });
                     const result = await invokeHookWithCancellation(
                         () => handler(readHookPayload(event), invocationContext),
                         signal,
                     );
-                    if (!params.isGenerationActive()) {
+                    if (!params.isOccurrenceCurrent()) {
                         throw new Error(`Plugin '${target.pluginId}' hook handler is no longer active`);
                     }
                     return result;

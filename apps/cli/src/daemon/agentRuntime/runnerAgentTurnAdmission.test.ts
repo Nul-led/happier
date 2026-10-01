@@ -18,7 +18,11 @@ function retainedAgent(input: Readonly<{
     pluginVersion: input.pluginVersion,
     agentId: 'acme',
     localAgentId: 'acme',
-    immutableGenerationId: input.immutableGenerationId,
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: input.immutableGenerationId,
+      installSource: 'localPath',
+    },
     locator: {
       module: './agent/factory.js',
       export: 'createAgentRuntime',
@@ -44,7 +48,11 @@ describe('runner Agent new-turn admission', () => {
       agentId: 'acme',
       qualifiedAgentId: 'happier.agent.acme/agents/acme',
       localAgentId: 'acme',
-      immutableGenerationId: 'generation-g',
+      sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: 'generation-g',
+        installSource: 'localPath',
+      },
     });
 
     await expect(authorizeRunnerAgentNewTurn({

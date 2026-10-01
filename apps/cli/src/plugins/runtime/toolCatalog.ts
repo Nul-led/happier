@@ -14,7 +14,7 @@ import type { ResolvedExecutablePluginRuntimeRegistry } from './resolveExecutabl
 
 type PluginToolCatalogRuntimeRegistry = Pick<
   ResolvedExecutablePluginRuntimeRegistry,
-  'contributes' | 'targetActionInvocations'
+  'contributes' | 'targetActionInvocations' | 'readPluginOccurrenceId'
 >;
 
 export type ProjectedPluginToolCatalogEntry = Readonly<{
@@ -38,7 +38,7 @@ export type ProjectedPluginToolCatalogEntry = Readonly<{
    * produces this field; a catalog snapshot owner binds the admitted Action
    * contributor before handing the Tool to a long-lived consumer.
    */
-  expectedContributorImmutableGenerationId?: string;
+  expectedContributorOccurrenceId?: string;
 }>;
 
 function readLocalizedText(
@@ -105,28 +105,26 @@ export function projectExecutablePluginToolCatalog(
 }
 
 /**
- * Binds a transport-facing Tool catalog to the immutable Action contributor
- * generation owned by this exact executable-registry snapshot. Long-lived
+ * Binds a transport-facing Tool catalog to the Action contributor occurrence
+ * owned by this exact executable-registry snapshot. Long-lived
  * MCP consumers must carry this fence back to the same registry before an
  * Action handler can begin.
  */
-export function projectGenerationBoundExecutablePluginToolCatalog(
+export function projectOccurrenceBoundExecutablePluginToolCatalog(
   runtimeRegistry: PluginToolCatalogRuntimeRegistry,
 ): readonly ProjectedPluginToolCatalogEntry[] {
-  const immutableGenerationIdsByPluginId =
-    runtimeRegistry.contributes.immutableGenerationIdsByPluginId ?? {};
   return Object.freeze(projectExecutablePluginToolCatalog(runtimeRegistry).flatMap((tool) => {
     const actionPluginId = runtimeRegistry.contributes.actionsById
       ?.get(tool.actionId)
       ?.pluginId
       ?.trim();
-    const immutableGenerationId = actionPluginId
-      ? immutableGenerationIdsByPluginId[actionPluginId]?.trim()
+    const occurrenceId = actionPluginId
+      ? runtimeRegistry.readPluginOccurrenceId?.(actionPluginId)?.trim()
       : undefined;
-    return immutableGenerationId
+    return occurrenceId
       ? [Object.freeze({
           ...tool,
-          expectedContributorImmutableGenerationId: immutableGenerationId,
+          expectedContributorOccurrenceId: occurrenceId,
         })]
       : [];
   }));

@@ -105,7 +105,7 @@ describe('managed SVC09 Windows job custody', () => {
         const exec = createStablePluginExecService({
             allowedExecutables: [{ kind: 'systemTool', id: 'fixture.server' }],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable,
             resolvePath: async () => {
                 throw new Error('must not resolve a path');
@@ -116,10 +116,10 @@ describe('managed SVC09 Windows job custody', () => {
             resolveProcessCustodyRuntimeExecutable: () => null,
         });
         const servers = host.bind({
-            generation: 'generation-win-custody-absent',
+            occurrenceId: 'occurrenceId-win-custody-absent',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
@@ -137,7 +137,7 @@ describe('managed SVC09 Windows job custody', () => {
         const exec = createStablePluginExecService({
             allowedExecutables: [{ kind: 'systemTool', id: 'fixture.server' }],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable: async () => {
                 throw new Error('preauthorized launch must not resolve an executable');
             },
@@ -160,11 +160,11 @@ describe('managed SVC09 Windows job custody', () => {
             createInstanceId: () => 'opaque-custody-live',
         });
         const servers = host.bind({
-            generation: 'generation-win-custody-live',
+            occurrenceId: 'occurrenceId-win-custody-live',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
             sessionId: 'session-win-custody-live',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
@@ -213,7 +213,7 @@ describe('managed SVC09 Windows job custody', () => {
         const exec = createStablePluginExecService({
             allowedExecutables: [{ kind: 'systemTool', id: 'fixture.server' }],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable: async () => {
                 throw new Error('preauthorized launch must not resolve an executable');
             },
@@ -234,18 +234,18 @@ describe('managed SVC09 Windows job custody', () => {
             durability,
         });
         const servers = host.bind({
-            generation: 'generation-win-custody-unproven',
+            occurrenceId: 'occurrenceId-win-custody-unproven',
             pluginId: 'fixture.plugin',
             contributionId: 'fixture.agent',
             sessionId: 'session-win-custody-unproven',
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             exec,
         });
 
         await expect(servers.supervise(windowsManagedSpec())).rejects.toMatchObject({
             code: 'plugin_managed_server_custody_failed',
         });
-        // Cleanup still enforces containment on the generation-unique job name
+        // Cleanup still enforces containment on the occurrenceId-unique job name
         // (a no-op when the job never existed), but no custody was published.
         expect(durability.publishEndpointProjection).not.toHaveBeenCalled();
         expect(terminateProcessCustodyByJob).toHaveBeenCalledTimes(1);

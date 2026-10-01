@@ -1,10 +1,7 @@
 import { useState, type ReactElement } from 'react';
 import { Image as ReactNativeImage, View } from 'react-native';
 
-import type {
-  HappierUiPlatformFacts,
-  HappierUiTheme,
-} from '../../environment/types.js';
+import type { HappierUiTheme } from '../../environment/types.js';
 import { HappierText } from '../text/Text.js';
 import { readHappierRenderableImageSource } from './renderableImage.js';
 
@@ -50,30 +47,6 @@ export function resolveHappierImageFallback(fallback: string): string {
 }
 
 /**
- * A brand mark is an explicit presentation variant of a bounded image. It
- * keeps opaque marks unchanged while giving transparent marks a semantic,
- * opaque backing; generic images intentionally remain bare.
- */
-type HappierBrandMarkBacking = Readonly<{
-  backgroundColor: string;
-  foregroundColor: string;
-}>;
-
-function resolveHappierBrandMarkBacking(
-  theme: HappierUiTheme,
-  colorScheme: HappierUiPlatformFacts['colorScheme'],
-): HappierBrandMarkBacking {
-  const isDark = colorScheme === 'dark';
-  return {
-    // `text` and `surface` are a canonical contrast pair. On dark hosts the
-    // light foreground becomes the backing for transparent black marks; on
-    // light hosts the ordinary surface already supplies that backing.
-    backgroundColor: isDark ? theme.colors.text : theme.colors.surface,
-    foregroundColor: isDark ? theme.colors.surface : theme.colors.text,
-  };
-}
-
-/**
  * One bounded PNG/fallback renderer.
  *
  * Byte acquisition AND materialization stay with the adapter that admits the
@@ -89,20 +62,16 @@ export function HappierImage(props: Readonly<{
   fallback: string;
   theme: HappierUiTheme;
   testID?: string;
-  /** Internal explicit presentation supplied only by the brand-mark composition. */
-  backing?: HappierBrandMarkBacking;
+  /** Internal: manifest-owned single-color glyph, never a backing tile. */
+  monochrome?: boolean;
+  /** Internal: marks and their text fallback remain bare; ordinary media keeps its placeholder. */
+  brandMark?: boolean;
   /** Internal: an adjacent canonical label makes this fallback initial decorative. */
   fallbackAccessibilityHidden?: boolean;
   /** Internal author diagnostic emitted by the Resource-owning component. */
   onDecodeError?: () => void;
 }>): ReactElement {
   const pixels = resolveHappierImagePixels(props.size);
-  const backingStyle = props.backing
-    ? {
-      backgroundColor: props.backing.backgroundColor,
-      borderRadius: props.theme.radii.control,
-    }
-    : undefined;
   const source = readHappierRenderableImageSource(props.bytes);
   const [failedSource, setFailedSource] = useState<typeof source>();
   const renderableSource = source === failedSource ? undefined : source;
@@ -118,7 +87,11 @@ export function HappierImage(props: Readonly<{
         accessible={Boolean(props.accessibilityLabel)}
         testID={props.testID}
         resizeMode="contain"
-        style={{ width: pixels, height: pixels, ...backingStyle }}
+        style={{
+          width: pixels,
+          height: pixels,
+          ...(props.monochrome ? { tintColor: props.theme.colors.text } : {}),
+        }}
       />
     );
   }
@@ -137,12 +110,14 @@ export function HappierImage(props: Readonly<{
         height: pixels,
         alignItems: 'center',
         justifyContent: 'center',
-        borderRadius: props.theme.radii.control,
-        ...(backingStyle ?? { backgroundColor: props.theme.colors.control }),
+        ...(props.brandMark ? {} : {
+          borderRadius: props.theme.radii.control,
+          backgroundColor: props.theme.colors.control,
+        }),
       }}
     >
-      <HappierText {...(props.backing
-        ? { style: { color: props.backing.foregroundColor } }
+      <HappierText {...(props.brandMark
+        ? { style: { color: props.theme.colors.text } }
         : { tone: 'secondary' })}
       >
         {resolveHappierImageFallback(props.fallback)}
@@ -158,7 +133,8 @@ export type HappierBrandMarkProps = Readonly<{
   size?: HappierImageSize;
   showName?: boolean;
   theme: HappierUiTheme;
-  colorScheme: HappierUiPlatformFacts['colorScheme'];
+  /** Projected package declaration; colored artwork is otherwise unchanged. */
+  monochrome?: boolean;
   testID?: string;
   /** An adjacent host-owned label already names the brand; keep the mark decorative. */
   externallyLabelled?: boolean;
@@ -173,7 +149,6 @@ export type HappierBrandMarkProps = Readonly<{
 export function HappierBrandMark(props: HappierBrandMarkProps): ReactElement {
   const showName = props.showName === true;
   const fallback = resolveHappierBrandFallback(props.displayName);
-  const backing = resolveHappierBrandMarkBacking(props.theme, props.colorScheme);
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }} testID={props.testID}>
       <HappierImage
@@ -181,7 +156,8 @@ export function HappierBrandMark(props: HappierBrandMarkProps): ReactElement {
         size={props.size}
         fallback={fallback}
         theme={props.theme}
-        backing={backing}
+        brandMark
+        monochrome={props.monochrome}
         accessibilityLabel={showName || props.externallyLabelled ? undefined : props.displayName}
         fallbackAccessibilityHidden={showName || props.externallyLabelled}
         onDecodeError={props.onDecodeError}

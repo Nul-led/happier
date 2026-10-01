@@ -46,7 +46,7 @@ type EventPublicationIdentity = Readonly<{
     pluginVersion: string;
     contributionId: string;
     contributionQualifiedId: string;
-    generation: string;
+    occurrenceId: string;
     correlationId: string;
     surface: PluginInvocationServicesSeed['surface'];
 }>;
@@ -585,7 +585,7 @@ function readJsonPayload(payload: unknown): JsonValue {
 export type DeclaredEventSubscriptionRegistration = Readonly<{
     pluginId: string;
     pluginVersion: string;
-    generation: string;
+    occurrenceId: string;
     localId: string;
     handler(payload: JsonValue, context: PluginInvocationContext): unknown;
 }>;
@@ -606,12 +606,12 @@ function resolveDeclaredSubscriptionRef(
 export function bindDeclaredEventSubscriptions(params: Readonly<{
     host: PluginInvocationEventsHost;
     registrations: readonly DeclaredEventSubscriptionRegistration[];
-    isGenerationCurrent(registration: DeclaredEventSubscriptionRegistration): boolean;
+    isOccurrenceCurrent(registration: DeclaredEventSubscriptionRegistration): boolean;
     isEffectCapable?(registration: DeclaredEventSubscriptionRegistration): boolean;
     createContext(input: Readonly<{
         pluginId: string;
         pluginVersion: string;
-        generation: string;
+        occurrenceId: string;
         localId: string;
         sessionId?: string;
         signal: AbortSignal;
@@ -641,14 +641,14 @@ export function bindDeclaredEventSubscriptions(params: Readonly<{
                     pluginVersion: registration.pluginVersion,
                     contributionId: registration.localId,
                     contributionQualifiedId: `${registration.pluginId}/events/${encodeURIComponent(registration.localId)}`,
-                    generation: registration.generation,
+                    occurrenceId: registration.occurrenceId,
                     correlationId: `${registration.pluginId}/events/${registration.localId}`,
                     surface: 'cli' as const,
                 });
                 const isCurrent = (): boolean => (
                     !disposed
                     && !controller.signal.aborted
-                    && params.isGenerationCurrent(registration)
+                    && params.isOccurrenceCurrent(registration)
                 );
                 const isEffectCapable = (): boolean => (
                     isCurrent()
@@ -674,7 +674,7 @@ export function bindDeclaredEventSubscriptions(params: Readonly<{
                         const invocation = params.createContext({
                             pluginId: registration.pluginId,
                             pluginVersion: registration.pluginVersion,
-                            generation: registration.generation,
+                            occurrenceId: registration.occurrenceId,
                             localId: registration.localId,
                             ...(event.scope.kind === 'session'
                                 ? { sessionId: event.scope.sessionId }
@@ -705,14 +705,14 @@ export function bindDeclaredEventSubscriptions(params: Readonly<{
                 pluginVersion: registration.pluginVersion,
                 contributionId: registration.localId,
                 contributionQualifiedId: `${registration.pluginId}/events/${encodeURIComponent(registration.localId)}`,
-                generation: registration.generation,
+                occurrenceId: registration.occurrenceId,
                 correlationId: `${registration.pluginId}/events/${registration.localId}`,
                 surface: 'cli' as const,
             });
             const isCurrent = (): boolean => (
                 !disposed
                 && !controller.signal.aborted
-                && params.isGenerationCurrent(registration)
+                && params.isOccurrenceCurrent(registration)
             );
             const isEffectCapable = (): boolean => (
                 isCurrent()
@@ -737,7 +737,7 @@ export function bindDeclaredEventSubscriptions(params: Readonly<{
                     const invocation = params.createContext({
                         pluginId: registration.pluginId,
                         pluginVersion: registration.pluginVersion,
-                        generation: registration.generation,
+                        occurrenceId: registration.occurrenceId,
                         localId: registration.localId,
                         signal: controller.signal,
                     });
@@ -783,8 +783,8 @@ export function createPluginInvocationPluginEventsService(params: Readonly<{
     seed: PluginInvocationServicesSeed;
 }> & PluginInvocationEventsHost): PluginEvents {
     const ensureCurrent = (signal?: AbortSignal): void => {
-        if (signal?.aborted || params.seed.signal.aborted || !params.seed.isGenerationCurrent()) {
-            throw eventError('plugin_events_generation_retired', 'Plugin event invocation generation is no longer current');
+        if (signal?.aborted || params.seed.signal.aborted || !params.seed.isOccurrenceCurrent()) {
+            throw eventError('plugin_events_generation_retired', 'Plugin event invocation occurrenceId is no longer current');
         }
     };
     const identity = Object.freeze({
@@ -792,7 +792,7 @@ export function createPluginInvocationPluginEventsService(params: Readonly<{
         pluginVersion: params.seed.plugin.version,
         contributionId: params.seed.contribution.id,
         contributionQualifiedId: params.seed.contribution.qualifiedId,
-        generation: params.seed.generation,
+        occurrenceId: params.seed.occurrenceId,
         correlationId: params.seed.correlationId,
         surface: params.seed.surface,
     });
@@ -855,18 +855,18 @@ export function createPluginInvocationPluginEventsService(params: Readonly<{
                 ref: normalizedRef,
                 identity,
                 listener: listener as (event: DeliveredPluginEvent) => void | Promise<void>,
-                isCurrent: () => !params.seed.signal.aborted && params.seed.isGenerationCurrent(),
+                isCurrent: () => !params.seed.signal.aborted && params.seed.isOccurrenceCurrent(),
             });
             const abort = () => { void disposable.dispose(); };
             params.seed.signal.addEventListener('abort', abort, { once: true });
-            if (params.seed.signal.aborted || !params.seed.isGenerationCurrent()) {
+            if (params.seed.signal.aborted || !params.seed.isOccurrenceCurrent()) {
                 params.seed.signal.removeEventListener('abort', abort);
                 try {
                     void disposable.dispose();
                 } catch {
-                    // The generation fence is authoritative even if best-effort cleanup fails.
+                    // The occurrenceId fence is authoritative even if best-effort cleanup fails.
                 }
-                throw eventError('plugin_events_generation_retired', 'Plugin event invocation generation is no longer current');
+                throw eventError('plugin_events_generation_retired', 'Plugin event invocation occurrenceId is no longer current');
             }
             let disposed = false;
             return Object.freeze({
@@ -890,8 +890,8 @@ export function createPluginInvocationHostEventsService(params: Readonly<{
             target: HostEventTargetV1<Id>,
             listener: (event: HostEventEnvelopeV1<Id>) => void | Promise<void>,
         ): Disposable {
-            if (params.seed.signal.aborted || !params.seed.isGenerationCurrent()) {
-                throw eventError('plugin_events_generation_retired', 'Plugin event invocation generation is no longer current');
+            if (params.seed.signal.aborted || !params.seed.isOccurrenceCurrent()) {
+                throw eventError('plugin_events_generation_retired', 'Plugin event invocation occurrenceId is no longer current');
             }
             if (typeof listener !== 'function') {
                 throw eventError('plugin_host_events_invalid_listener', 'Host Event listener must be callable');
@@ -900,18 +900,18 @@ export function createPluginInvocationHostEventsService(params: Readonly<{
                 target,
                 ...(params.seed.session ? { currentSessionId: params.seed.session.id } : {}),
                 listener: (event) => listener(event as HostEventEnvelopeV1<Id>),
-                isCurrent: () => !params.seed.signal.aborted && params.seed.isGenerationCurrent(),
+                isCurrent: () => !params.seed.signal.aborted && params.seed.isOccurrenceCurrent(),
             });
             const abort = () => { void disposable.dispose(); };
             params.seed.signal.addEventListener('abort', abort, { once: true });
-            if (params.seed.signal.aborted || !params.seed.isGenerationCurrent()) {
+            if (params.seed.signal.aborted || !params.seed.isOccurrenceCurrent()) {
                 params.seed.signal.removeEventListener('abort', abort);
                 try {
                     void disposable.dispose();
                 } catch {
-                    // The generation fence is authoritative even if best-effort cleanup fails.
+                    // The occurrenceId fence is authoritative even if best-effort cleanup fails.
                 }
-                throw eventError('plugin_events_generation_retired', 'Plugin event invocation generation is no longer current');
+                throw eventError('plugin_events_generation_retired', 'Plugin event invocation occurrenceId is no longer current');
             }
             let disposed = false;
             return Object.freeze({

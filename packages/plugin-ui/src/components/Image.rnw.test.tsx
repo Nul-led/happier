@@ -103,11 +103,11 @@ describe('bounded package image and brand fallback', () => {
     }
   });
 
-  it('backs an admitted transparent brand mark with the host semantic surface in light, dark, and high-contrast contexts', async () => {
+  it('keeps an admitted brand transparent in light, dark, and high-contrast contexts', async () => {
     const cases = [
-      { colorScheme: 'light' as const, contrast: 'normal' as const, background: 'surface' as const },
-      { colorScheme: 'dark' as const, contrast: 'normal' as const, background: 'text' as const },
-      { colorScheme: 'dark' as const, contrast: 'high' as const, background: 'text' as const },
+      { colorScheme: 'light' as const, contrast: 'normal' as const },
+      { colorScheme: 'dark' as const, contrast: 'normal' as const },
+      { colorScheme: 'dark' as const, contrast: 'high' as const },
     ];
 
     for (const current of cases) {
@@ -123,9 +123,7 @@ describe('bounded package image and brand fallback', () => {
       expect(sourceImage?.getAttribute('src')).toBe(
         `data:image/png;base64,${Buffer.from(TRANSPARENT_BRAND_BYTES).toString('base64')}`,
       );
-      expect(getComputedStyle(image!).backgroundColor).toBe(
-        renderedColor('backgroundColor', context.theme.colors[current.background]),
-      );
+      expect(getComputedStyle(image!).backgroundColor).toBe('rgba(0, 0, 0, 0)');
       mount.unmount();
     }
   });
@@ -171,12 +169,10 @@ describe('bounded package image and brand fallback', () => {
     const fallback = mount.container.querySelector<HTMLElement>('[aria-label="Telegram Channels"]');
     expect(mount.container.textContent).toBe('T');
     expect(fallback).not.toBeNull();
-    expect(getComputedStyle(fallback!).backgroundColor).toBe(
-      renderedColor('backgroundColor', context.theme.colors.text),
-    );
+    expect(getComputedStyle(fallback!).backgroundColor).toBe('rgba(0, 0, 0, 0)');
     expect(fallback?.firstElementChild).not.toBeNull();
     expect(getComputedStyle(fallback!.firstElementChild!).color).toBe(
-      renderedColor('backgroundColor', context.theme.colors.surface),
+      renderedColor('backgroundColor', context.theme.colors.text),
     );
     mount.unmount();
   });

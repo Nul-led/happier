@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { CORPUS_SESSION_LINKS_FIELD } from '../../corpus/collections/ids.js';
-import { testkitEntryRef } from '../../corpus/testkit/observations.test-support.js';
+import { testkitEntryRef, testkitPresentOutcome, testkitSnapshot, TESTKIT_SOURCE_INSTANCE_ID } from '../../corpus/testkit/observations.test-support.js';
+import { foldTriageListWindow, TRIAGE_LIST_DEFAULT_LENS_V1 } from '../../projection/listWindow.js';
 import { MAX_TRIAGE_SESSION_LINKED_ENTRY_ROWS_V1 } from './linkedEntriesQuery.js';
 import {
     projectTriageSessionLinkedEntries,
@@ -52,6 +53,33 @@ function hydration(
 }
 
 describe('the Session cockpit linked-entry projection', () => {
+    it('joins by the complete canonical reference to the existing window content winner', () => {
+        const window = foldTriageListWindow({
+            observations: [{ entryRef: ENTRY_REF, sourceInstanceId: TESTKIT_SOURCE_INSTANCE_ID, observedAtMs: 10,
+                outcome: testkitPresentOutcome({ snapshot: testkitSnapshot({ title: 'A real title', state: { presentation: 'resolved', nativeLabel: 'Merged' }, facts: [
+                    { id: 'github/number', importance: 'primary', value: { kind: 'text', value: '#17' } },
+                    { id: 'github/comments', importance: 'secondary', value: { kind: 'number', value: 7, format: 'compact' } },
+                    { id: 'github/author', importance: 'secondary', value: { kind: 'actor', value: 'octocat' } },
+                ] }) }) }],
+            lanes: [], activeSourceInstanceIds: [TESTKIT_SOURCE_INSTANCE_ID], configuredSourcesStatus: 'complete',
+            lens: TRIAGE_LIST_DEFAULT_LENS_V1, assembledAtMs: 10,
+        });
+        const view = projectTriageSessionLinkedEntries({
+            query: state({ rows: [queryRow('known', 10), queryRow('unknown', 9)] }),
+            hydration: hydration([
+                ['known', { kind: 'ready', revision: 1, displayPath: 'old/path', entryRef: ENTRY_REF }],
+                ['unknown', { kind: 'ready', revision: 1, displayPath: 'other/path', entryRef: { ...ENTRY_REF, collisionScope: 'another/repo' } }],
+            ]),
+            entries: window.rows,
+        });
+        if (view.kind !== 'linked') throw new Error('expected links');
+        expect(view.rows[0]?.presentation).toMatchObject({ kind: 'linked', entry: {
+            kind: 'pullRequest', title: 'A real title', number: '17', repository: 'repository',
+            lifecycle: 'merged', stateLabel: 'Merged', comments: 7, author: { name: 'octocat', avatarUrl: null },
+            sourceInstanceId: TESTKIT_SOURCE_INSTANCE_ID,
+        } });
+        expect(view.rows[1]?.presentation).toMatchObject({ kind: 'linked', displayPath: 'other/path', entry: null });
+    });
     it('renders the link from its own frozen display path', () => {
         const view = projectTriageSessionLinkedEntries({
             query: state({ rows: [queryRow('link-a', 10)] }),
@@ -73,6 +101,7 @@ describe('the Session cockpit linked-entry projection', () => {
                     // reference the private read already returned, a reader who
                     // linked the wrong entry has nothing to undo it with.
                     entryRef: ENTRY_REF,
+                    entry: null,
                 },
             }],
             more: false,

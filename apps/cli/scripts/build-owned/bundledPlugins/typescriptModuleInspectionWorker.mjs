@@ -3,7 +3,6 @@ import { pathToFileURL } from 'node:url';
 
 const OUTPUT_MARKER = '__HAPPIER_GENERATOR_MODULE_JSON__';
 
-await import('@happier-dev/agents');
 const { tsImport } = await import('tsx/esm/api');
 
 function serializeModule(imported) {

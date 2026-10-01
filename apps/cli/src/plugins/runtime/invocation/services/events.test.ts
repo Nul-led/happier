@@ -34,11 +34,11 @@ function seed(pluginId: string, controller = new AbortController()): PluginInvoc
     return Object.freeze({
         plugin: Object.freeze({ id: pluginId, version: '1.0.0' }),
         contribution: Object.freeze({ id: 'run', qualifiedId: `${pluginId}/actions/run` }),
-        generation: '7',
+        occurrenceId: '7',
         correlationId: `${pluginId}-correlation`,
         surface: 'cli',
         signal: controller.signal,
-        isGenerationCurrent: () => !controller.signal.aborted,
+        isOccurrenceCurrent: () => !controller.signal.aborted,
     });
 }
 
@@ -66,7 +66,7 @@ describe('stable invocation events service', () => {
             pluginVersion: '1.0.0',
             contributionId: 'deliver',
             contributionQualifiedId: 'acme.notifications/actions/deliver',
-            generation: 'current-generation-00000042',
+            occurrenceId: 'current-occurrenceId-00000042',
             correlationId: '01JZQQQQQQQQQQQQQQQQQQQQQQ',
             surface: 'cli' as const,
         };
@@ -128,7 +128,7 @@ describe('stable invocation events service', () => {
         ).toBeLessThan(STABLE_PLUGIN_EVENT_QUEUE_LIMITS.pendingBytesPerSubscription);
     });
 
-    it('binds declared subscription registrations with schema filtering, priority order, and generation disposal', async () => {
+    it('binds declared subscription registrations with schema filtering, priority order, and occurrenceId disposal', async () => {
         const broker = createStablePluginEventsBroker();
         const declarationsByPluginId = new Map<string, readonly ParsedPluginEventContributionV1[]>([
             ['acme.publisher', publisherDeclarations],
@@ -158,10 +158,10 @@ describe('stable invocation events service', () => {
                 activePluginIds: new Set(['acme.publisher', 'acme.first', 'acme.second']),
             },
             registrations: [
-                { pluginId: 'acme.second', pluginVersion: '1', generation: '7', localId: 'watch', handler: async () => { order.push('second'); } },
-                { pluginId: 'acme.first', pluginVersion: '1', generation: '7', localId: 'watch', handler: async (_payload, context) => { order.push(context.contribution.qualifiedId); } },
+                { pluginId: 'acme.second', pluginVersion: '1', occurrenceId: '7', localId: 'watch', handler: async () => { order.push('second'); } },
+                { pluginId: 'acme.first', pluginVersion: '1', occurrenceId: '7', localId: 'watch', handler: async (_payload, context) => { order.push(context.contribution.qualifiedId); } },
             ],
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
             createContext: ({ pluginId }) => Object.freeze({
                 context: contextFor(pluginId),
                 complete() {},
@@ -187,7 +187,7 @@ describe('stable invocation events service', () => {
         await binding.dispose();
     });
 
-    it('binds a static Host Event handler through the same broker and generation lifecycle', async () => {
+    it('binds a static Host Event handler through the same broker and occurrenceId lifecycle', async () => {
         const broker = createStablePluginEventsBroker();
         const handler = vi.fn();
         let current = true;
@@ -208,11 +208,11 @@ describe('stable invocation events service', () => {
             registrations: [{
                 pluginId: 'acme.subscriber',
                 pluginVersion: '1',
-                generation: '7',
+                occurrenceId: '7',
                 localId: 'watch-turn',
                 handler,
             }],
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
             createContext: (input) => {
                 expect(input.sessionId).toBe('session-1');
                 return Object.freeze({
@@ -390,7 +390,7 @@ describe('stable invocation events service', () => {
         )).toThrowError(expect.objectContaining({ code: 'plugin_events_reserved' }));
     });
 
-    it('auto-disposes subscriptions with the invocation generation', async () => {
+    it('auto-disposes subscriptions with the invocation occurrenceId', async () => {
         const broker = createStablePluginEventsBroker();
         const controller = new AbortController();
         const publisher = services({ broker, pluginId: 'acme.publisher' });
@@ -522,7 +522,7 @@ describe('stable invocation events service', () => {
                 pluginVersion: '1.0.0',
                 contributionId: 'run',
                 contributionQualifiedId: 'acme.publisher/actions/run',
-                generation: '7',
+                occurrenceId: '7',
                 correlationId: 'acme.publisher-correlation',
                 surface: 'cli',
             },
@@ -662,7 +662,7 @@ describe('stable invocation events service', () => {
         expect(runtimeObserver).not.toHaveBeenCalled();
     });
 
-    it('binds dynamic Host Event subscriptions to invocation session and generation lifetime', async () => {
+    it('binds dynamic Host Event subscriptions to invocation session and occurrenceId lifetime', async () => {
         const broker = createStablePluginEventsBroker();
         const controller = new AbortController();
         let generationCurrent = true;
@@ -671,7 +671,7 @@ describe('stable invocation events service', () => {
             seed: Object.freeze({
                 ...seed('acme.subscriber', controller),
                 session: Object.freeze({ id: 'session-1' }),
-                isGenerationCurrent: () => generationCurrent,
+                isOccurrenceCurrent: () => generationCurrent,
             }),
         });
         const listener = vi.fn();

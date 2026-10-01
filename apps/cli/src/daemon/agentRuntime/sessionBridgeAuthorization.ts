@@ -24,6 +24,7 @@ import {
   AgentSessionRunnerBindingV1Schema,
   type AgentSessionRunnerBindingV1,
 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
+import { retainedAgentSourceMatchesRunner } from '@/plugins/runtime/retainedPluginSourceAttestation';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import {
   readCurrentPluginHardRevocationRevision,
@@ -34,6 +35,7 @@ import {
   type VerifiedProcessLiveness,
 } from '@/daemon/processLivenessVerifier';
 import { hashProcessCommand } from '@/daemon/sessionRegistry';
+import { processGenerationProvesReuse, processIdentityMatches } from '@happier-dev/cli-common/processInstance';
 import {
   resolveSessionRunnerEntrypointIdentityFromProcessCommand,
 } from '@/daemon/sessionRunnerRuntime/resolveRunnerEntrypointIdentity';
@@ -243,6 +245,9 @@ export async function publishAgentRuntimeDaemonServiceAuthority(
       capability:
         input.capability ?? randomBytes(32).toString('base64url'),
     });
+  if (!retainedAgentSourceMatchesRunner(document.runner.snapshotIdentity, document.retainedAgent)) {
+    throw new Error('Runner Agent bundled source custody does not match its runner snapshot');
+  }
   await withAuthorityMutationLock(input.path, async () => {
     await replacePrivateBearerFile({
       path: input.path,
@@ -279,11 +284,7 @@ export async function readAgentRuntimeDaemonServiceAuthority(
   if (!value) return null;
   if (
     value.sessionId !== input.sessionId.trim()
-    || value.runner.pid !== input.runner.pid
-    || value.runner.processStartTimeMs
-      !== input.runner.processStartTimeMs
-    || value.runner.processCommandHash
-      !== input.runner.processCommandHash
+    || !processIdentityMatches(input.runner, value.runner)
     || value.runner.snapshotIdentity
       !== input.runner.snapshotIdentity
     || !isDeepStrictEqual(value.retainedAgent, input.retainedAgent)
@@ -310,7 +311,13 @@ async function readStrictAgentRuntimeDaemonServiceAuthorityDocument(
       AgentRuntimeDaemonServiceAuthorityDocumentV2Schema.safeParse(
         JSON.parse(await readPrivateBearerFile(input.path)),
       );
-    if (!document.success) return null;
+    if (
+      !document.success
+      || !retainedAgentSourceMatchesRunner(
+        document.data.runner.snapshotIdentity,
+        document.data.retainedAgent,
+      )
+    ) return null;
     return document.data;
   } catch {
     return null;
@@ -325,13 +332,18 @@ async function verifyAuthorityRunnerLiveness(
     processStartTimeMs: runner.processStartTimeMs,
     verifyIdentity: async (pid) => {
       const identity = await readProcessIdentityByPid(pid);
+      if (!identity || identity.pid !== pid) return 'unknown';
+      if (processGenerationProvesReuse(runner.processStartTimeMs, identity.processStartTimeMs)) {
+        return 'proven_reused';
+      }
       if (
-        !identity
-        || identity.pid !== runner.pid
-        || identity.processStartTimeMs !== runner.processStartTimeMs
-        || hashProcessCommand(identity.command) !== runner.processCommandHash
+        !processIdentityMatches(runner, {
+          pid: identity.pid,
+          processStartTimeMs: identity.processStartTimeMs,
+          processCommandHash: hashProcessCommand(identity.command),
+        })
       ) {
-        return 'mismatch';
+        return 'unknown';
       }
       const snapshot =
         resolveSessionRunnerEntrypointIdentityFromProcessCommand(
@@ -340,7 +352,7 @@ async function verifyAuthorityRunnerLiveness(
       return snapshot.status === 'known'
         && snapshot.comparableId === runner.snapshotIdentity
         ? 'verified'
-        : 'mismatch';
+        : 'unknown';
     },
   });
 }
@@ -405,7 +417,11 @@ export async function readLiveRunnerAgentDaemonServiceAuthorityRetainedGeneratio
     ) {
       continue;
     }
-    retained.add(document.retainedAgent.immutableGenerationId);
+    if (document.retainedAgent.sourceCustody.kind === 'managed') {
+      retained.add(
+        document.retainedAgent.sourceCustody.immutableGenerationId,
+      );
+    }
   }
   return retained;
 }
@@ -432,11 +448,11 @@ export async function readCurrentRunnerAgentRuntimeDaemonServiceAuthority(
     await readProcessIdentityByPid(process.pid);
   if (
     !processIdentity
-    || processIdentity.pid !== process.pid
-    || processIdentity.processStartTimeMs
-      !== document.runner.processStartTimeMs
-    || hashProcessCommand(processIdentity.command)
-      !== document.runner.processCommandHash
+    || !processIdentityMatches(document.runner, {
+      pid: processIdentity.pid,
+      processStartTimeMs: processIdentity.processStartTimeMs,
+      processCommandHash: hashProcessCommand(processIdentity.command),
+    })
   ) {
     return null;
   }
@@ -466,23 +482,11 @@ export async function readAgentRuntimeDaemonServiceAuthorityForVerifiedMarker(
   }>,
 ): Promise<AgentRuntimeDaemonServiceAuthorityDocumentV2 | null> {
   try {
-    const authorityDir = await ensurePrivateAuthorityDir(input);
-    if (
-      !isExpectedAuthorityPath(input)
-      || dirname(resolve(input.path)) !== authorityDir
-    ) {
-      return null;
-    }
-    const parsed = AgentRuntimeDaemonServiceAuthorityDocumentV2Schema.safeParse(
-      JSON.parse(await readPrivateBearerFile(input.path)),
-    );
-    if (!parsed.success) return null;
-    const document = parsed.data;
+    const document = await readStrictAgentRuntimeDaemonServiceAuthorityDocument(input);
+    if (!document) return null;
     if (
       document.sessionId !== input.sessionId
-      || document.runner.pid !== input.runner.pid
-      || document.runner.processStartTimeMs !== input.runner.processStartTimeMs
-      || document.runner.processCommandHash !== input.runner.processCommandHash
+      || !processIdentityMatches(document.runner, input.runner)
       || !document.retainedAgent
     ) {
       return null;

@@ -9,6 +9,7 @@ import { readOpenCodeEventReconnectBackoffMs } from './openCodeEventReconnect.js
 import { asRecord, normalizeString, readNonBlankOpaqueIdentifier } from './openCodeParsing.js';
 import {
   buildOpenCodeV2ModelRef,
+  buildOpenCodeV2PermissionRuleset,
   buildOpenCodeV2Prompt,
   combineOpenCodeV2Providers,
   normalizeOpenCodeV2Messages,
@@ -17,8 +18,16 @@ import {
   readOpenCodeV2Data,
   readOpenCodeV2DataArray,
   readOpenCodeV2MessagePage,
+  readOpenCodeV2ActiveSessionStatusMap,
+  readOpenCodeV2SessionListPage,
   readOpenCodeV2SessionStatus,
 } from './openCodeV2Wire.js';
+import { normalizeOpenCodeV2Event } from './openCodeV2EventAdapter.js';
+import {
+  buildOpenCodeV2FormAnswer,
+  projectOpenCodeV2Form,
+  type OpenCodeV2FormProjection,
+} from './openCodeV2Forms.js';
 import { subscribeSseJson } from './openCodeSse.js';
 import type { OpenCodePromptPart } from './promptParts.js';
 import type {
@@ -59,9 +68,8 @@ export type OpenCodeGlobalEvent = Readonly<{
 
 export type OpenCodeGlobalEventDelivery = Readonly<{
   /**
-   * Global replay events remain untrusted observations. The directory-scoped `/event` route emits
-   * a connection boundary before subscribing to the instance bus, so only that route can produce
-   * `accepted-live` after its boundary.
+   * Global replay events remain untrusted observations. The V1 directory stream and V2 owned
+   * session stream establish connection boundaries before their events become `accepted-live`.
    */
   provenance: 'connection-boundary' | 'untrusted-observation' | 'accepted-live';
   connectionGeneration: number;
@@ -77,20 +85,26 @@ export type OpenCodeServerPermissionReply = 'once' | 'always' | 'reject';
 export type OpenCodeMcpStatus = Readonly<
   | { status: 'connected' }
   | { status: 'disabled' }
+  | { status: 'pending' }
   | { status: 'failed'; error: string }
-  | { status: 'needs_auth' }
+  | { status: 'needs_auth'; error?: string }
   | { status: 'needs_client_registration'; error: string }
 >;
 
 function readOpenCodeMcpStatus(response: unknown, serverName: string): OpenCodeMcpStatus {
   const statusMap = asRecord(response);
-  const rawStatus = asRecord(statusMap?.[serverName]);
+  const server = asRecord(statusMap?.[serverName]);
+  const rawStatus = asRecord(server?.status) ?? server;
   if (!rawStatus) {
     throw new Error(`OpenCode MCP registration response omitted status for "${serverName}"`);
   }
   const status = normalizeString(rawStatus.status);
-  if (status === 'connected' || status === 'disabled' || status === 'needs_auth') {
+  if (status === 'connected' || status === 'disabled' || status === 'pending') {
     return { status };
+  }
+  if (status === 'needs_auth') {
+    const error = normalizeString(rawStatus.error);
+    return error ? { status, error } : { status };
   }
   if (status === 'failed' || status === 'needs_client_registration') {
     const error = normalizeString(rawStatus.error);
@@ -108,7 +122,22 @@ export type OpenCodeServerClient = Readonly<{
     name: string;
     config: unknown;
   }>): Promise<OpenCodeMcpStatus>;
-  sessionCreate(input: Readonly<{ directory: string }>): Promise<Readonly<{ id: string }>>;
+  mcpRemove(input: Readonly<{ directory: string; name: string }>): Promise<void>;
+  sessionCreate(input: Readonly<{
+    directory: string;
+    permissions?: readonly unknown[];
+  }>): Promise<Readonly<{ id: string }>>;
+  sessionUpdatePermissions(input: Readonly<{
+    sessionId: string;
+    permissions: readonly unknown[];
+  }>): Promise<void>;
+  sessionSetAgent(input: Readonly<{ sessionId: string; agent: string }>): Promise<void>;
+  sessionReadAgent(input: Readonly<{ sessionId: string }>): Promise<string | null>;
+  sessionSetModel(input: Readonly<{
+    sessionId: string;
+    model?: OpenCodeServerPromptModel | null;
+    variant?: string | null;
+  }>): Promise<void>;
   sessionFork(input: Readonly<{
     sessionId: string;
     messageId?: string;
@@ -120,6 +149,7 @@ export type OpenCodeServerClient = Readonly<{
     text: string;
     parts?: readonly OpenCodePromptPart[];
     model?: OpenCodeServerPromptModel | null;
+    agent?: string | null;
     variant?: string | null;
     config?: Readonly<Record<string, unknown>> | null;
   }>): Promise<unknown>;
@@ -130,6 +160,9 @@ export type OpenCodeServerClient = Readonly<{
     auto: boolean;
   }>): Promise<void>;
   sessionStatus(input: Readonly<{ directory?: string | null; sessionId: string }>): Promise<unknown>;
+  sessionChildInventory(input: Readonly<{ parentSessionId: string }>): Promise<
+    readonly Readonly<{ info: unknown; status: 'running' | 'completed' }>[] | null
+  >;
   sessionMessages(input: Readonly<{ directory?: string | null; sessionId: string }>): Promise<readonly unknown[]>;
   sessionTodo(input: Readonly<{ directory?: string | null; sessionId: string }>): Promise<readonly unknown[]>;
   permissionList(): Promise<readonly unknown[]>;
@@ -157,11 +190,13 @@ export type OpenCodeServerClient = Readonly<{
   }>): Promise<void>;
   appSkills(input: Readonly<{ directory: string }>): Promise<unknown>;
   subscribeGlobalEvents(input: Readonly<{
+    sessionId?: string | null;
     signal: AbortSignal;
-    onEvent: (event: OpenCodeGlobalEvent, delivery: OpenCodeGlobalEventDelivery) => void;
+    onEvent: (event: OpenCodeGlobalEvent, delivery: OpenCodeGlobalEventDelivery) => void | Promise<void>;
     onUnavailable?: (error: unknown) => void;
   }>): Promise<void>;
   globalConfigGet(): Promise<Readonly<Record<string, unknown>>>;
+  agentsList(): Promise<readonly Readonly<{ id: string; name: string; description?: string; mode?: string; hidden?: boolean }>[]>;
   providersList(): Promise<readonly Readonly<{
     id: string;
     env?: readonly string[];
@@ -203,9 +238,8 @@ export class OpenCodeServerHttpError extends Error {
 /**
  * An operation the reachable OpenCode server's protocol does not declare.
  *
- * These are absences, not refusals: the pinned V2 protocol
- * (`comparators/opencode/packages/protocol/src/api.ts`) has no MCP group, no
- * session fork route, no todo read route and no `/global/config`, so there is
+ * These are absences, not refusals: the released V2 protocol has no
+ * todo read route or `/global/config`, so there is
  * nothing to call and nothing to retry. Reporting that as an ordinary request
  * failure would let callers treat a missing capability as a broken server.
  *
@@ -215,7 +249,6 @@ export class OpenCodeServerHttpError extends Error {
  */
 export type OpenCodeServerUnsupportedOperation =
   | 'mcp_registration'
-  | 'session_fork'
   | 'session_todo'
   | 'session_prompt_config'
   | 'global_config';
@@ -306,6 +339,7 @@ async function requestJson(params: Readonly<{
   body?: unknown;
   operation?: OpenCodeServerRequestOperation;
   expectJson?: boolean;
+  timeoutMs?: number;
 }>): Promise<unknown> {
   const response = await params.fetch({
     url: params.query
@@ -314,6 +348,7 @@ async function requestJson(params: Readonly<{
     method: params.method,
     headers: { 'content-type': 'application/json' },
     ...(params.body === undefined ? {} : { body: JSON.stringify(params.body) }),
+    ...(params.timeoutMs === undefined ? {} : { timeoutMs: params.timeoutMs }),
   });
   if (!response.ok) {
     const responseBodyPreview = await readResponseBodyPreview(response);
@@ -402,7 +437,9 @@ function readProviderList(raw: unknown): readonly Readonly<{
   models?: Readonly<Record<string, unknown>>;
 }>[] {
   const record = asRecord(raw);
-  const all = Array.isArray(record?.all) ? record.all : [];
+  if (!Array.isArray(record?.all)) throw new Error('Invalid OpenCode provider inventory');
+  const all = record.all;
+  if (all.length > 0 && !all.some((provider) => readProviderId(provider))) throw new Error('Invalid OpenCode provider inventory');
   const connectedRaw = Array.isArray(record?.connected) ? record.connected : null;
   const connectedIds = connectedRaw
     ? connectedRaw
@@ -452,13 +489,13 @@ export async function subscribeOpenCodeGlobalEvents(params: Readonly<{
   headers?: Readonly<Record<string, string>>;
   fetch: OpenCodeNativeFetch;
   signal: AbortSignal;
-  onEvent: (event: OpenCodeGlobalEvent, delivery: OpenCodeGlobalEventDelivery) => void;
+  onEvent: (event: OpenCodeGlobalEvent, delivery: OpenCodeGlobalEventDelivery) => void | Promise<void>;
   onUnavailable?: (error: unknown) => void;
 }>): Promise<void> {
   await subscribeOpenCodeEvents({
     ...params,
     eventPath: '/global/event',
-    liveProvenance: 'untrusted-observation',
+    liveProvenance: 'accepted-live',
     streamEndedMessage: 'OpenCode global event stream ended',
     decodeEvent(rawEvent) {
       const eventRecord = asRecord(rawEvent);
@@ -482,7 +519,7 @@ async function subscribeOpenCodeInstanceEvents(params: Readonly<{
   directory?: string | null;
   fetch: OpenCodeNativeFetch;
   signal: AbortSignal;
-  onEvent: (event: OpenCodeGlobalEvent, delivery: OpenCodeGlobalEventDelivery) => void;
+  onEvent: (event: OpenCodeGlobalEvent, delivery: OpenCodeGlobalEventDelivery) => void | Promise<void>;
   onUnavailable?: (error: unknown) => void;
 }>): Promise<void> {
   await subscribeOpenCodeEvents({
@@ -500,30 +537,42 @@ async function subscribeOpenCodeInstanceEvents(params: Readonly<{
 }
 
 /**
- * The OpenCode V2 beta instance stream.
+ * The released OpenCode V2 instance stream.
  *
  * One V1 property changes: scoping moves from the `directory` query parameter
  * onto each event's `location`. Normalizing that here keeps the runtime domain
  * (`{ type, properties }`, directory-scoped, `server.connected`-gated)
- * identical for both dialects — including the reconnect contract, because the
- * V2 route is as live-only as the V1 one (see `OPEN_CODE_V2_EVENT_PATH`).
+ * identical for both dialects. Released `/api/event` carries both durable and
+ * live frames; each `server.connected` boundary triggers the runtime's
+ * authoritative transcript/status/request-inventory resynchronization.
  */
-async function subscribeOpenCodeV2InstanceEvents(params: Readonly<{
+export async function subscribeOpenCodeV2InstanceEvents(params: Readonly<{
   baseUrl?: string;
   headers?: Readonly<Record<string, string>>;
   directory?: string | null;
   fetch: OpenCodeNativeFetch;
   signal: AbortSignal;
-  onEvent: (event: OpenCodeGlobalEvent, delivery: OpenCodeGlobalEventDelivery) => void;
+  onEvent: (event: OpenCodeGlobalEvent, delivery: OpenCodeGlobalEventDelivery) => void | Promise<void>;
   onUnavailable?: (error: unknown) => void;
+  liveProvenance?: 'untrusted-observation' | 'accepted-live';
+  onFormProjection?: (projection: OpenCodeV2FormProjection) => void;
 }>): Promise<void> {
   const directory = normalizeString(params.directory) || null;
   await subscribeOpenCodeEvents({
     ...params,
     eventPath: OPEN_CODE_V2_EVENT_PATH,
-    liveProvenance: 'accepted-live',
+    liveProvenance: params.liveProvenance ?? 'accepted-live',
     streamEndedMessage: 'OpenCode V2 instance event stream ended',
-    decodeEvent: (rawEvent) => normalizeOpenCodeV2InstanceEvent(rawEvent, directory),
+    decodeEvent: (rawEvent) => {
+      const record = asRecord(rawEvent);
+      const eventDirectory = normalizeString(asRecord(record?.location)?.directory);
+      if (directory && eventDirectory && eventDirectory !== directory) return null;
+      const type = normalizeString(record?.type);
+      if (!type) return null;
+      const normalized = normalizeOpenCodeV2Event(type, record?.data);
+      if (normalized.formProjection) params.onFormProjection?.(normalized.formProjection);
+      return { type: normalized.type, properties: normalized.properties };
+    },
   });
 }
 
@@ -536,7 +585,7 @@ async function subscribeOpenCodeEvents(params: Readonly<{
   decodeEvent: (rawEvent: unknown) => OpenCodeGlobalEvent | null;
   fetch: OpenCodeNativeFetch;
   signal: AbortSignal;
-  onEvent: (event: OpenCodeGlobalEvent, delivery: OpenCodeGlobalEventDelivery) => void;
+  onEvent: (event: OpenCodeGlobalEvent, delivery: OpenCodeGlobalEventDelivery) => void | Promise<void>;
   onUnavailable?: (error: unknown) => void;
 }>): Promise<void> {
   let connectionGeneration = 0;
@@ -561,20 +610,20 @@ async function subscribeOpenCodeEvents(params: Readonly<{
         headers,
         fetch: params.fetch,
         signal: params.signal,
-        onMessage: (rawEvent) => {
+        onMessage: async (rawEvent) => {
           const event = params.decodeEvent(rawEvent);
           if (!event) return;
           const eventType = normalizeString(event.payload?.type ?? event.type);
           if (eventType === 'server.connected') {
             connectionBoundarySeen = true;
-            params.onEvent(event, {
+            await params.onEvent(event, {
               provenance: 'connection-boundary',
               connectionGeneration: currentConnectionGeneration,
             });
             return;
           }
           if (!connectionBoundarySeen) return;
-          params.onEvent(event, {
+          await params.onEvent(event, {
             provenance: params.liveProvenance,
             connectionGeneration: currentConnectionGeneration,
           });
@@ -629,6 +678,23 @@ async function waitForOpenCodeEventReconnectBackoff(params: Readonly<{
   });
 }
 
+async function waitForOpenCodeMcpStatusRefresh(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw signal.reason ?? new Error('OpenCode MCP registration was aborted');
+  await new Promise<void>((resolve, reject) => {
+    const finish = (error?: unknown) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (error !== undefined) reject(error);
+      else resolve();
+    };
+    const onAbort = () => finish(signal?.reason ?? new Error('OpenCode MCP registration was aborted'));
+    const timer = setTimeout(() => finish(), delayMs);
+    timer.unref?.();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
 /**
  * The one OpenCode HTTP client.
  *
@@ -651,6 +717,8 @@ export function createOpenCodeServerClient(input: Readonly<{
   transport: OpenCodeServerTransport;
   directory?: string | null;
   dialect: OpenCodeServerDialect;
+  signal?: AbortSignal;
+  httpTimeoutMs?: number;
 }>): OpenCodeServerClient {
   const params: Readonly<{
     fetch: OpenCodeRuntimeFetch;
@@ -661,7 +729,10 @@ export function createOpenCodeServerClient(input: Readonly<{
     streamFetch: input.transport.fetch,
     directory: input.directory,
   };
+  const lifecycleSignal = input.signal;
+  const httpTimeoutMs = input.httpTimeoutMs ?? 60_000;
   const isV2 = input.dialect === 'v2';
+  const formProjections = new Map<string, OpenCodeV2FormProjection>();
   const resolveDirectory = (value?: string | null): string | null => (
     normalizeString(value) || normalizeString(params.directory) || null
   );
@@ -696,20 +767,38 @@ export function createOpenCodeServerClient(input: Readonly<{
   };
 
   return {
-    /**
-     * Dynamic MCP registration uses the legacy root route, which the stable
-     * binary mounts as `McpApi`. The pinned V2 protocol declares no MCP group
-     * at all (`packages/protocol/src/groups/`), so a V2 server has no dynamic
-     * registration route to call — that is reported as an absent capability,
-     * not as a failed request, so a V2 session loses only its Happier
-     * MCP-backed tools rather than the ability to prompt.
-     */
     async mcpAdd(input) {
       if (isV2) {
-        throw unsupported(
-          'mcp_registration',
-          'OpenCode V2 servers expose no dynamic MCP registration route',
-        );
+        const serverName = normalizeString(input.name);
+        if (!serverName) throw new Error('OpenCode MCP registration requires a server name');
+        await requestJson({
+          fetch: params.fetch,
+          method: 'PUT',
+          path: `/api/experimental/mcp/${encodeURIComponent(serverName)}`,
+          query: locationQuery(input.directory),
+          body: { config: input.config },
+          expectJson: false,
+        });
+        const deadline = Date.now() + httpTimeoutMs;
+        while (true) {
+          const remainingMs = Math.max(1, deadline - Date.now());
+          const response = await requestJson({
+            fetch: params.fetch,
+            method: 'GET',
+            path: '/api/mcp',
+            query: locationQuery(input.directory),
+            timeoutMs: remainingMs,
+          });
+          const server = readOpenCodeV2DataArray(response).find((entry) => (
+            normalizeString(asRecord(entry)?.name) === serverName
+          ));
+          const status = readOpenCodeMcpStatus({ [serverName]: server }, serverName);
+          if (status.status !== 'pending' || Date.now() >= deadline) return status;
+          await waitForOpenCodeMcpStatusRefresh(
+            Math.min(100, Math.max(1, deadline - Date.now())),
+            lifecycleSignal,
+          );
+        }
       }
       const serverName = normalizeString(input.name);
       if (!serverName) throw new Error('OpenCode MCP registration requires a server name');
@@ -734,6 +823,27 @@ export function createOpenCodeServerClient(input: Readonly<{
       }
       return readOpenCodeMcpStatus(await response.json(), serverName);
     },
+    async mcpRemove(input) {
+      const serverName = normalizeString(input.name);
+      if (!serverName) throw new Error('OpenCode MCP disconnect requires a server name');
+      if (isV2) {
+        await requestJson({
+          fetch: params.fetch,
+          method: 'DELETE',
+          path: `/api/experimental/mcp/${encodeURIComponent(serverName)}`,
+          query: locationQuery(input.directory),
+          expectJson: false,
+        });
+        return;
+      }
+      await requestJson({
+        fetch: params.fetch,
+        method: 'POST',
+        path: `/mcp/${encodeURIComponent(serverName)}/disconnect`,
+        query: directoryQuery(input.directory),
+        expectJson: false,
+      });
+    },
     async sessionCreate(input) {
       if (isV2) {
         const directory = resolveDirectory(input.directory);
@@ -741,7 +851,12 @@ export function createOpenCodeServerClient(input: Readonly<{
           fetch: params.fetch,
           method: 'POST',
           path: '/api/session',
-          body: directory ? { location: { directory } } : {},
+          body: {
+            ...(directory ? { location: { directory } } : {}),
+            ...(input.permissions ? {
+              permissions: buildOpenCodeV2PermissionRuleset(input.permissions),
+            } : {}),
+          },
         });
         return { id: readSessionId(readOpenCodeV2Data(response)) };
       }
@@ -750,16 +865,31 @@ export function createOpenCodeServerClient(input: Readonly<{
         method: 'POST',
         path: '/session',
         query: directoryQuery(input.directory),
-        body: {},
+        body: input.permissions ? { permission: input.permissions } : {},
       });
       return { id: readSessionId(response) };
     },
+    async sessionUpdatePermissions(input) {
+      await requestJson({
+        fetch: params.fetch,
+        method: 'PATCH',
+        path: `${isV2 ? '/api' : ''}/session/${encodeURIComponent(input.sessionId)}`,
+        ...(isV2 ? {} : { query: directoryQuery(params.directory) }),
+        body: isV2
+          ? { permissions: buildOpenCodeV2PermissionRuleset(input.permissions) }
+          : { permission: input.permissions },
+        expectJson: false,
+      });
+    },
     async sessionFork(input) {
       if (isV2) {
-        throw unsupported(
-          'session_fork',
-          'OpenCode V2 servers expose no session fork route',
-        );
+        const response = await requestJson({
+          fetch: params.fetch,
+          method: 'POST',
+          path: `/api/session/${encodeURIComponent(input.sessionId)}/fork`,
+          body: input.messageId ? { before: input.messageId } : {},
+        });
+        return { id: readSessionId(readOpenCodeV2Data(response)) };
       }
       const response = await requestJson({
         fetch: params.fetch,
@@ -769,6 +899,42 @@ export function createOpenCodeServerClient(input: Readonly<{
         body: input.messageId ? { messageID: input.messageId } : {},
       });
       return { id: readSessionId(response) };
+    },
+    async sessionSetAgent(input) {
+      if (!isV2) return;
+      await requestJson({
+        fetch: params.fetch, method: 'POST',
+        path: `/api/session/${encodeURIComponent(input.sessionId)}/agent`,
+        body: { agent: input.agent }, expectJson: false,
+      });
+    },
+    async sessionReadAgent(input) {
+      const response = await requestJson({
+        fetch: params.fetch, method: 'GET',
+        path: `${isV2 ? '/api' : ''}/session/${encodeURIComponent(input.sessionId)}`,
+        ...(isV2 ? {} : { query: directoryQuery(params.directory) }),
+      });
+      return normalizeString(asRecord(isV2 ? readOpenCodeV2Data(response) : response)?.agent) || null;
+    },
+    async sessionSetModel(input) {
+      if (!isV2) return;
+      let model = input.model;
+      if (!model) {
+        // Effort-only controls refine this exact native session, not a global model default.
+        const response = await requestJson({
+          fetch: params.fetch, method: 'GET', path: `/api/session/${encodeURIComponent(input.sessionId)}`,
+        });
+        const nativeModel = asRecord(asRecord(readOpenCodeV2Data(response))?.model);
+        const providerID = normalizeString(nativeModel?.providerID);
+        const modelID = normalizeString(nativeModel?.id);
+        if (!providerID || !modelID) throw new Error('OpenCode session model is unavailable for reasoning selection');
+        model = { providerID, modelID };
+      }
+      await requestJson({
+        fetch: params.fetch, method: 'POST',
+        path: `/api/session/${encodeURIComponent(input.sessionId)}/model`,
+        body: { model: buildOpenCodeV2ModelRef({ ...model, variant: input.variant }) }, expectJson: false,
+      });
     },
     async sessionPromptAsync(input) {
       if (isV2) {
@@ -782,37 +948,17 @@ export function createOpenCodeServerClient(input: Readonly<{
             'OpenCode V2 servers accept no per-prompt configuration override',
           );
         }
-        if (input.model) {
-          await requestJson({
-            fetch: params.fetch,
-            method: 'POST',
-            path: `/api/session/${encodeURIComponent(input.sessionId)}/model`,
-            body: {
-              model: buildOpenCodeV2ModelRef({
-                providerID: input.model.providerID,
-                modelID: input.model.modelID,
-                variant: promptConfig.variant,
-              }),
-            },
-            expectJson: false,
-          });
-        } else if (promptConfig.variant) {
-          // A variant only exists as a field of `Model.Ref`, so V2 cannot carry
-          // one for a session left on its default model. Dropping it silently
-          // would run the turn at an effort the user did not choose, so say so
-          // instead. This cannot fire on a prompt with no variant selected.
-          throw unsupported(
-            'session_prompt_config',
-            'OpenCode V2 servers carry a model variant only with an explicit model; select a model to use this reasoning effort',
-          );
-        }
+        if (input.agent) await this.sessionSetAgent({ sessionId: input.sessionId, agent: input.agent });
+        if (input.model || promptConfig.variant) await this.sessionSetModel({
+          sessionId: input.sessionId, model: input.model, variant: promptConfig.variant,
+        });
         const response = await requestOptionalJson({
           fetch: params.fetch,
           method: 'POST',
           path: `/api/session/${encodeURIComponent(input.sessionId)}/prompt`,
           body: {
             ...(input.messageId ? { id: input.messageId } : {}),
-            prompt: buildOpenCodeV2Prompt({
+            ...buildOpenCodeV2Prompt({
               text: input.text,
               ...(input.parts ? { parts: input.parts } : {}),
             }),
@@ -829,6 +975,7 @@ export function createOpenCodeServerClient(input: Readonly<{
         body: {
           ...(input.messageId ? { messageID: input.messageId } : {}),
           ...(input.model ? { model: input.model } : {}),
+          ...(input.agent ? { agent: input.agent } : {}),
           ...promptConfig,
           parts: input.parts ?? [{ type: 'text', text: input.text }],
         },
@@ -847,13 +994,11 @@ export function createOpenCodeServerClient(input: Readonly<{
     },
     async sessionSummarize(input) {
       if (isV2) {
-        // `session.compact` declares no payload at all: the session's own model
-        // does the work, so passing one would be an invented field.
-        await requestJson({
+        await requestOptionalJson({
           fetch: params.fetch,
           method: 'POST',
           path: `/api/session/${encodeURIComponent(input.sessionId)}/compact`,
-          expectJson: false,
+          body: {},
         });
         return;
       }
@@ -888,6 +1033,45 @@ export function createOpenCodeServerClient(input: Readonly<{
         query: directoryQuery(input.directory),
       });
       return asRecord(response)?.[input.sessionId] ?? {};
+    },
+    async sessionChildInventory(input) {
+      if (!isV2) return null;
+      const sessions: unknown[] = [];
+      const seenCursors = new Set<string>();
+      let cursor: string | null = null;
+      for (;;) {
+        const page = readOpenCodeV2SessionListPage(await requestJson({
+          fetch: params.fetch,
+          method: 'GET',
+          path: '/api/session',
+          query: cursor === null
+            ? directoryQuery()
+            : { cursor },
+        }));
+        sessions.push(...page.sessions);
+        if (page.nextCursor === null || page.sessions.length === 0) break;
+        if (seenCursors.has(page.nextCursor)) break;
+        seenCursors.add(page.nextCursor);
+        cursor = page.nextCursor;
+      }
+      const children = sessions.filter((raw) => (
+        readNonBlankOpaqueIdentifier(asRecord(raw)?.parentID) === input.parentSessionId
+      ));
+      if (children.length === 0) return [];
+      const active = readOpenCodeV2ActiveSessionStatusMap(await requestJson({
+        fetch: params.fetch,
+        method: 'GET',
+        path: '/api/session/active',
+      }));
+      return children.map((info) => {
+        const childSessionId = readNonBlankOpaqueIdentifier(asRecord(info)?.id);
+        return {
+          info,
+          status: childSessionId && active[childSessionId]
+            ? 'running' as const
+            : 'completed' as const,
+        };
+      });
     },
     async sessionMessages(input) {
       if (isV2) {
@@ -962,12 +1146,15 @@ export function createOpenCodeServerClient(input: Readonly<{
         const response = await requestJson({
           fetch: params.fetch,
           method: 'GET',
-          path: '/api/question/request',
+          path: '/api/form',
           query: locationQuery(),
         });
-        // `Question.Request` already names `id`, `sessionID` and `questions[]`
-        // the way the domain reads them; only the route moved.
-        return readOpenCodeV2DataArray(response);
+        return readOpenCodeV2DataArray(response).flatMap((entry) => {
+          const projection = projectOpenCodeV2Form(entry);
+          if (!projection) return [];
+          formProjections.set(projection.request.id, projection);
+          return [projection.request];
+        });
       }
       const response = await requestJson({
         fetch: params.fetch,
@@ -983,7 +1170,7 @@ export function createOpenCodeServerClient(input: Readonly<{
       if (!requestId) return;
       const message = normalizeString(input.message);
       const body = {
-        reply: input.reply,
+        ...(isV2 ? { decision: input.reply } : { reply: input.reply }),
         ...(message ? { message } : {}),
       };
       if (isV2) {
@@ -1008,11 +1195,13 @@ export function createOpenCodeServerClient(input: Readonly<{
     async questionReply(input) {
       if (isV2) {
         const sessionId = requireReplySessionId(input.sessionId, 'question');
+        const projection = formProjections.get(input.requestId);
+        if (!projection) throw new Error('OpenCode V2 form reply requires its authoritative form projection');
         await requestJson({
           fetch: params.fetch,
           method: 'POST',
-          path: `/api/session/${encodeURIComponent(sessionId)}/question/${encodeURIComponent(input.requestId)}/reply`,
-          body: { answers: input.answers },
+          path: `/api/session/${encodeURIComponent(sessionId)}/form/${encodeURIComponent(input.requestId)}/reply`,
+          body: { answer: buildOpenCodeV2FormAnswer(projection.bindings, input.answers, projection.hiddenBindings) },
           expectJson: false,
         });
         return;
@@ -1030,8 +1219,8 @@ export function createOpenCodeServerClient(input: Readonly<{
         const sessionId = requireReplySessionId(input.sessionId, 'question');
         await requestJson({
           fetch: params.fetch,
-          method: 'POST',
-          path: `/api/session/${encodeURIComponent(sessionId)}/question/${encodeURIComponent(input.requestId)}/reject`,
+          method: 'DELETE',
+          path: `/api/session/${encodeURIComponent(sessionId)}/form/${encodeURIComponent(input.requestId)}`,
           expectJson: false,
         });
         return;
@@ -1073,15 +1262,16 @@ export function createOpenCodeServerClient(input: Readonly<{
       return await response.json();
     },
     async subscribeGlobalEvents(subscription) {
-      const subscribe = input.dialect === 'v2'
-        ? subscribeOpenCodeV2InstanceEvents
-        : subscribeOpenCodeInstanceEvents;
+      const subscribe = input.dialect === 'v2' ? subscribeOpenCodeV2InstanceEvents : subscribeOpenCodeInstanceEvents;
       await subscribe({
         fetch: params.streamFetch,
         directory: resolveDirectory(),
         signal: subscription.signal,
         onEvent: subscription.onEvent,
         onUnavailable: subscription.onUnavailable,
+        ...(input.dialect === 'v2' ? { onFormProjection: (projection: OpenCodeV2FormProjection) => {
+          formProjections.set(projection.request.id, projection);
+        } } : {}),
       });
     },
     async globalConfigGet() {
@@ -1101,6 +1291,22 @@ export function createOpenCodeServerClient(input: Readonly<{
       });
       return asRecord(response) ?? {};
     },
+    async agentsList() {
+      const response = await requestJson({
+        fetch: params.fetch, method: 'GET', path: isV2 ? '/api/agent' : '/agent',
+        ...(isV2 ? { query: locationQuery() } : {}),
+      });
+      const rows = isV2 ? readOpenCodeV2Data(response) : response;
+      if (!Array.isArray(rows)) throw new Error('Invalid OpenCode agent inventory');
+      return rows.flatMap((row) => {
+        const record = asRecord(row);
+        const id = normalizeString(record?.id) || normalizeString(record?.name);
+        const name = normalizeString(record?.name) || id;
+        const description = normalizeString(record?.description);
+        const mode = normalizeString(record?.mode);
+        return id && name ? [{ id, name, ...(description ? { description } : {}), ...(mode ? { mode } : {}), ...(typeof record?.hidden === 'boolean' ? { hidden: record.hidden } : {}) }] : [];
+      });
+    },
     async providersList() {
       if (isV2) {
         // V2 split the single V1 `/provider` answer in two: `Provider.Info` no
@@ -1118,10 +1324,10 @@ export function createOpenCodeServerClient(input: Readonly<{
           path: '/api/model',
           query: locationQuery(),
         });
-        return combineOpenCodeV2Providers(
-          readOpenCodeV2DataArray(providers),
-          readOpenCodeV2DataArray(models),
-        );
+        const providerRows = asRecord(providers)?.data;
+        const modelRows = asRecord(models)?.data;
+        if (!Array.isArray(providerRows) || !Array.isArray(modelRows)) throw new Error('Invalid OpenCode provider inventory');
+        return combineOpenCodeV2Providers(providerRows, modelRows);
       }
       const response = await requestJson({
         fetch: params.fetch,

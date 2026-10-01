@@ -64,6 +64,11 @@ export type UserPluginChangeDecision = 'approve' | 'reject';
 
 export type UserPluginChangeDecisionResult = PluginChangeDecisionResult | UserPluginChangeStatusResult;
 
+type InstallationReviewResult = Extract<
+  PluginChangeRequestResult,
+  Readonly<{ kind: 'reviewRequired'; reviewKind: 'installation' }>
+>;
+
 type PluginChangeConfirmation = (
   message: string,
   options?: Readonly<{ signal?: AbortSignal }>,
@@ -72,40 +77,55 @@ type PluginChangeConfirmation = (
 type ExplicitNonInteractiveTrustTarget = Readonly<{
   kind: 'path';
   locator: string;
+  development: boolean;
 }>;
 
-type LocalDevelopmentPluginInstallRequest = Readonly<{
-  kind: 'installPath';
-  locator: string;
-  development: true;
-  sdkRegistryOrigin?: string;
-}>;
+type ExplicitDevelopmentPathRequest = Extract<
+  PluginChangeRequest,
+  Readonly<{ kind: 'development' | 'installPath' }>
+>;
 
 function isExplicitNonInteractiveTrustRequest(
   request: PluginChangeRequest,
-): request is LocalDevelopmentPluginInstallRequest {
-  return request.kind === 'installPath' && request.development;
+): request is ExplicitDevelopmentPathRequest {
+  return request.kind === 'development'
+    || request.kind === 'installPath';
 }
 
 async function resolveExplicitNonInteractiveTrustTarget(
   request: PluginChangeRequest,
 ): Promise<ExplicitNonInteractiveTrustTarget | null> {
   if (!isExplicitNonInteractiveTrustRequest(request)) return null;
+  const locator = request.kind === 'development'
+    ? request.sourceRootPath
+    : request.locator;
   try {
-    const source = await resolveLocalPathPluginSource({ locator: request.locator });
+    const source = await resolveLocalPathPluginSource({ locator });
     if (source.ok) {
-      return { kind: 'path', locator: source.sourceSpec.locator };
+      return {
+        kind: 'path',
+        locator: source.sourceSpec.locator,
+        development: request.kind === 'development',
+      };
     }
   } catch {
     // Fall through to the raw canonical path. The daemon retains source
     // validation authority and returns its own typed source diagnostics.
   }
   try {
-    return { kind: 'path', locator: await realpath(request.locator) };
+    return {
+      kind: 'path',
+      locator: await realpath(locator),
+      development: request.kind === 'development',
+    };
   } catch {
     // The daemon remains the authority for source validity. Retaining the
     // client-resolved locator lets its typed validation report a missing path.
-    return { kind: 'path', locator: request.locator };
+    return {
+      kind: 'path',
+      locator,
+      development: request.kind === 'development',
+    };
   }
 }
 
@@ -117,12 +137,12 @@ function reviewNamesExactExplicitNonInteractiveTrustSource(
 }
 
 function reviewIsExactExplicitNonInteractiveTrustInstall(
-  review: Extract<PluginChangeRequestResult, Readonly<{ kind: 'reviewRequired' }>>['review'],
+  review: InstallationReviewResult['review'],
   target: ExplicitNonInteractiveTrustTarget,
 ): boolean {
   return reviewNamesExactExplicitNonInteractiveTrustSource(review, target)
     && review.updateChannel.kind === 'path'
-    && review.updateChannel.development
+    && review.updateChannel.development === target.development
     && review.updateChannel.locator === target.locator;
 }
 
@@ -139,7 +159,7 @@ async function cancelMismatchedExplicitNonInteractiveTrustReview(
   return {
     kind: 'failed',
     code: 'plugin_explicit_trust_target_mismatch',
-    message: 'The daemon review did not match the exact local development source requested with --trust.',
+    message: 'The daemon review did not match the exact local path named by the install command.',
   };
 }
 
@@ -313,8 +333,9 @@ export async function listUserPluginChanges(
 /**
  * Decides a daemon-owned pending plugin change by its opaque id. Callers do
  * not choose a daemon trust operation or supply review facts: the current
- * pending review determines whether approval trusts a source root or performs
- * Install & Trust. An explicit rejection never fabricates user evidence.
+ * pending review determines whether approval trusts a project source or grants
+ * a disclosed authority expansion. An explicit rejection never fabricates
+ * user evidence.
  */
 export async function decideUserPluginChange(
   input: Readonly<{
@@ -350,25 +371,20 @@ export async function decideUserPluginChange(
   const status = input.signal
     ? await readStatus({ pendingChangeId }, { signal: input.signal })
     : await readStatus({ pendingChangeId });
-  if (status.kind !== 'sourceRootReviewRequired' && status.kind !== 'reviewRequired') {
+  if (status.kind !== 'reviewRequired') {
     return status;
   }
 
   const decision: PluginChangeDecision = input.decision === 'reject'
     ? { pendingChangeId, decision: 'cancel' }
-    : status.kind === 'sourceRootReviewRequired'
-      ? {
-          pendingChangeId,
-          decision: 'trustSourceRoot',
-        }
-      : {
-          pendingChangeId,
-          decision: 'installAndTrust',
-          // A noninteractive explicit decision never widens the review by
-          // selecting optional host-owned resources. The interactive review
-          // path remains the owner of optional-resource selection.
-          optionalSelections: [],
-        };
+    : {
+        pendingChangeId,
+        decision: 'installAndTrust',
+        // A noninteractive explicit decision never widens the review by
+        // selecting optional host-owned resources. The interactive review
+        // path remains the owner of optional-resource selection.
+        optionalSelections: [],
+      };
   const decideChange = dependencies.decideChange ?? decideDaemonPluginChange;
   return decision.decision === 'cancel'
     ? await decideChange(decision)
@@ -378,7 +394,7 @@ export async function decideUserPluginChange(
 }
 
 function formatPublisher(
-  publisher: Extract<PluginChangeRequestResult, { kind: 'reviewRequired' }>['review']['publisherIdentity'],
+  publisher: InstallationReviewResult['review']['publisherIdentity'],
 ): string {
   return publisher.status === 'unavailable'
     ? 'Unavailable'
@@ -386,7 +402,7 @@ function formatPublisher(
 }
 
 function formatSignature(
-  signature: Extract<PluginChangeRequestResult, { kind: 'reviewRequired' }>['review']['signature'],
+  signature: InstallationReviewResult['review']['signature'],
 ): string {
   if (signature.status === 'notProvided') return 'Not provided';
   return signature.status === 'verified'
@@ -395,7 +411,7 @@ function formatSignature(
 }
 
 function formatProvenance(
-  provenance: Extract<PluginChangeRequestResult, { kind: 'reviewRequired' }>['review']['provenance'],
+  provenance: InstallationReviewResult['review']['provenance'],
 ): string {
   switch (provenance.status) {
     case 'notProvided': return 'Not provided';
@@ -406,7 +422,7 @@ function formatProvenance(
 }
 
 function formatCuration(
-  curation: Extract<PluginChangeRequestResult, { kind: 'reviewRequired' }>['review']['curation'],
+  curation: InstallationReviewResult['review']['curation'],
 ): string {
   switch (curation.status) {
     case 'notApplicable': return 'Not a marketplace-curated install';
@@ -418,7 +434,7 @@ function formatCuration(
 }
 
 function formatUpdateChannel(
-  channel: Extract<PluginChangeRequestResult, { kind: 'reviewRequired' }>['review']['updateChannel'],
+  channel: InstallationReviewResult['review']['updateChannel'],
 ): string {
   if (channel.kind === 'path') {
     return `${channel.development ? 'Development path' : 'Path'}: ${channel.locator}`;
@@ -434,7 +450,7 @@ function formatUpdateChannel(
 }
 
 function formatRawCredentialSourceClass(
-  sourceClass: Extract<PluginChangeRequestResult, { kind: 'reviewRequired' }>['review']['rawCredentialAccess'][number]['sourceClass'],
+  sourceClass: InstallationReviewResult['review']['rawCredentialAccess'][number]['sourceClass'],
 ): string {
   return sourceClass.kind === 'savedSecret'
     ? `savedSecret(${sourceClass.secretKinds.join(', ')})`
@@ -442,7 +458,7 @@ function formatRawCredentialSourceClass(
 }
 
 function formatRawCredentialAccess(
-  access: Extract<PluginChangeRequestResult, { kind: 'reviewRequired' }>['review']['rawCredentialAccess'][number],
+  access: InstallationReviewResult['review']['rawCredentialAccess'][number],
 ): readonly string[] {
   return [
     `- ${access.contribution.pluginId}/${access.contribution.localId} · ${access.credentialSlot.title} `
@@ -454,7 +470,7 @@ function formatRawCredentialAccess(
 }
 
 function formatRequestInterceptorPolicy(
-  policy: Extract<PluginChangeRequestResult, { kind: 'reviewRequired' }>['review']['requestInterceptors'][number],
+  policy: InstallationReviewResult['review']['requestInterceptors'][number],
 ): string {
   return `- ${policy.id}: origins ${policy.origins.join(', ')}; methods ${
     policy.methods === undefined ? 'all HTTP methods' : policy.methods.join(', ')
@@ -462,8 +478,11 @@ function formatRequestInterceptorPolicy(
 }
 
 export function formatPluginInstallationReviewForTerminal(
-  review: Extract<PluginChangeRequestResult, { kind: 'reviewRequired' }>['review'],
+  review: InstallationReviewResult['review'],
+  authorityExpansion: InstallationReviewResult['authorityExpansion'] = [],
 ): string {
+  const deltaOnly = authorityExpansion.length > 0;
+  const expanded = new Set(authorityExpansion);
   const accessLines = (
     label: string,
     access: typeof review.requiredHostAccess,
@@ -486,7 +505,9 @@ export function formatPluginInstallationReviewForTerminal(
   const rawCredentialAccess = review.rawCredentialAccess;
   const requestInterceptors = review.requestInterceptors;
   return [
-    `Install & Trust ${review.displayName} ${review.version}?`,
+    deltaOnly
+      ? `Allow declared authority update for ${review.displayName} ${review.version}?`
+      : `Install & Trust ${review.displayName} ${review.version}?`,
     'Identity:',
     `- Plugin: ${review.pluginId}`,
     `- Package: ${review.packageIdentity.name ?? 'Unavailable'} ${review.packageIdentity.version}`,
@@ -496,39 +517,49 @@ export function formatPluginInstallationReviewForTerminal(
     ...(review.source.kind === 'archive' && /^https?:\/\//u.test(review.source.locator)
       ? ['URL retention: Happier saves the full archive URL on this machine, including any credentials, for future updates. Expired or revoked URLs can make updates fail.']
       : []),
-    'Verification signals:',
-    `- Source integrity: ${review.source.kind === 'path'
+    ...(!deltaOnly ? ['Verification signals:'] : []),
+    ...(!deltaOnly ? [`- Source integrity: ${review.source.kind === 'path'
       ? 'None'
       : review.source.integrityBasis === 'expected'
         ? 'Matched expected integrity'
         : 'Observed from staged bytes; not independently verified'}`,
-    '- Manifest, contributions, and UI artifact declarations: validated in the staged candidate',
-    `- Signature: ${formatSignature(review.signature)}`,
-    `- Provenance: ${formatProvenance(review.provenance)}`,
-    `- Curation: ${formatCuration(review.curation)}`,
-    `Executable realms: ${review.executableRealms.length > 0 ? review.executableRealms.join(', ') : 'None'}`,
-    `Contributions: ${contributions}`,
-    ...(requestInterceptors.length > 0
+      '- Manifest, contributions, and UI artifact declarations: validated in the staged candidate',
+      `- Signature: ${formatSignature(review.signature)}`,
+      `- Provenance: ${formatProvenance(review.provenance)}`,
+      `- Curation: ${formatCuration(review.curation)}`] : []),
+    ...(!deltaOnly
+      ? [`Executable realms: ${review.executableRealms.length > 0 ? review.executableRealms.join(', ') : 'None'}`]
+      : []),
+    ...(!deltaOnly ? [`Contributions: ${contributions}`] : []),
+    ...((!deltaOnly || expanded.has('requestInterceptor')) && requestInterceptors.length > 0
       ? [
           'Request interceptor policies:',
           ...requestInterceptors.map(formatRequestInterceptorPolicy),
         ]
       : []),
-    `UI artifacts: ${uiArtifacts}`,
-    'Trust boundary: daemon and React Native code runs with the current app or process authority and can directly use files, network, environment, and processes.',
-    'The host access listed below describes Happier-mediated services. It is not a sandbox for executable plugin code.',
-    ...accessLines('Required disclosures and cooperative services', review.requiredHostAccess),
-    ...accessLines('Optional host-owned resources (off by default)', review.optionalHostAccess),
-    ...(rawCredentialAccess.length > 0
+    ...(!deltaOnly ? [`UI artifacts: ${uiArtifacts}`] : []),
+    ...(!deltaOnly ? [
+      'Trust boundary: daemon and React Native code runs with the current app or process authority and can directly use files, network, environment, and processes.',
+      'The host access listed below describes Happier-mediated services. It is not a sandbox for executable plugin code.',
+    ] : []),
+    ...(!deltaOnly || expanded.has('requiredHostAccess') || expanded.has('connectedAccountPurpose')
+      ? accessLines('Required disclosures and cooperative services', review.requiredHostAccess)
+      : []),
+    ...(!deltaOnly || expanded.has('selectedOptionalHostAccess')
+      ? accessLines('Optional host-owned resources (off by default)', review.optionalHostAccess)
+      : []),
+    ...((!deltaOnly || expanded.has('rawCredentialAccess')) && rawCredentialAccess.length > 0
       ? [
           'Raw Voice credential access:',
           ...rawCredentialAccess.flatMap(formatRawCredentialAccess),
         ]
       : []),
-    'Compatibility and updates:',
-    `- Happier: ${review.compatibility.happier ?? 'Not provided'}`,
-    `- Plugin runtime API: ${review.compatibility.runtimeApiVersion}`,
-    ...(blockedNewerVersions.length > 0
+    ...(!deltaOnly ? [
+      'Compatibility and updates:',
+      `- Happier: ${review.compatibility.happier ?? 'Not provided'}`,
+      `- Plugin runtime API: ${review.compatibility.runtimeApiVersion}`,
+    ] : []),
+    ...(!deltaOnly && blockedNewerVersions.length > 0
       ? [
           '- Newer versions blocked before download:',
           ...blockedNewerVersions.map((blocked) => (
@@ -538,7 +569,6 @@ export function formatPluginInstallationReviewForTerminal(
           )),
         ]
       : []),
-    `- Update policy: ${review.updatePolicy}`,
   ].join('\n');
 }
 
@@ -568,8 +598,8 @@ export async function requestUserPluginChange(
   if (input.approval === 'explicitNonInteractiveTrust' && !explicitTrustTarget) {
     return {
       kind: 'failed',
-      code: 'plugin_explicit_trust_requires_development_path',
-      message: '--trust is only valid for a local plugin install with --dev.',
+      code: 'plugin_explicit_trust_requires_path',
+      message: 'Explicit path trust is only valid for a local plugin path.',
     };
   }
   try {
@@ -597,22 +627,32 @@ export async function requestUserPluginChange(
 
   const decideChange = dependencies.decideChange ?? decideDaemonPluginChange;
   if (input.approval === 'explicitNonInteractiveTrust') {
-    if (result.kind === 'sourceRootReviewRequired') {
+    let settledProjectTrust = false;
+    if (result.kind === 'reviewRequired' && result.reviewKind === 'projectTrust') {
       if (!reviewNamesExactExplicitNonInteractiveTrustSource(result.review, explicitTrustTarget!)) {
         return await cancelMismatchedExplicitNonInteractiveTrustReview(
           result.pendingChangeId,
           decideChange,
         );
       }
-      const sourceRootDecision: PluginChangeDecision = {
+      const projectTrustDecision: PluginChangeDecision = {
         pendingChangeId: result.pendingChangeId,
-        decision: 'trustSourceRoot',
+        decision: 'installAndTrust',
+        optionalSelections: [],
       };
       result = input.signal
-        ? await decideChange(sourceRootDecision, { signal: input.signal })
-        : await decideChange(sourceRootDecision);
+        ? await decideChange(projectTrustDecision, { signal: input.signal })
+        : await decideChange(projectTrustDecision);
+      settledProjectTrust = true;
     }
-    if (result.kind !== 'reviewRequired') return result;
+    if (result.kind !== 'reviewRequired' || result.reviewKind !== 'installation') return result;
+    if (
+      settledProjectTrust
+      && result.reason === 'authorityExpansion'
+      && result.authorityExpansion.length > 0
+    ) {
+      return result;
+    }
     if (!reviewIsExactExplicitNonInteractiveTrustInstall(result.review, explicitTrustTarget!)) {
       return await cancelMismatchedExplicitNonInteractiveTrustReview(
         result.pendingChangeId,
@@ -623,7 +663,7 @@ export async function requestUserPluginChange(
     const decision: PluginChangeDecision = {
       pendingChangeId: reviewedResult.pendingChangeId,
       decision: 'installAndTrust',
-      // An explicit CLI trust flag does not select optional host-owned
+      // An explicit CLI path install does not select optional host-owned
       // resources. Those remain available only to the reviewed prompt path.
       optionalSelections: [],
     };
@@ -643,31 +683,40 @@ export async function requestUserPluginChange(
     default: 'no',
       ...(options?.signal ? { signal: options.signal } : {}),
   }));
-  if (result.kind === 'sourceRootReviewRequired') {
-    const sourceRootConfirmation = await requestConfirmation(
+  if (result.kind === 'reviewRequired' && result.reviewKind === 'projectTrust') {
+    const projectTrustConfirmation = await requestConfirmation(
       confirm,
       [
-        'Trust this plugin development source root?',
+        'Trust this plugin project source?',
         `Source: ${result.review.source.locator}`,
         'The daemon will evaluate trusted code from this root to derive the plugin manifest and activation entry.',
       ].join('\n'),
       input.signal,
     );
-    if (sourceRootConfirmation.kind === 'aborted' || !sourceRootConfirmation.approved) {
+    if (projectTrustConfirmation.kind === 'aborted' || !projectTrustConfirmation.approved) {
       return await decideChange({
         pendingChangeId: result.pendingChangeId,
         decision: 'cancel',
       });
     }
-    const sourceRootDecision: PluginChangeDecision = {
+    const projectTrustDecision: PluginChangeDecision = {
       pendingChangeId: result.pendingChangeId,
-      decision: 'trustSourceRoot',
+      decision: 'installAndTrust',
+      optionalSelections: [],
     };
     result = input.signal
-      ? await decideChange(sourceRootDecision, { signal: input.signal })
-      : await decideChange(sourceRootDecision);
+      ? await decideChange(projectTrustDecision, { signal: input.signal })
+      : await decideChange(projectTrustDecision);
+    if (
+      result.kind !== 'reviewRequired'
+      || result.reviewKind !== 'installation'
+      || result.reason !== 'authorityExpansion'
+      || result.authorityExpansion.length === 0
+    ) {
+      return result;
+    }
   }
-  if (result.kind !== 'reviewRequired') return result;
+  if (result.kind !== 'reviewRequired' || result.reviewKind !== 'installation') return result;
   const reviewedResult = result;
   const cancelPendingChange = async (): Promise<PluginChangeDecisionResult> => await decideChange({
     pendingChangeId: reviewedResult.pendingChangeId,
@@ -675,7 +724,10 @@ export async function requestUserPluginChange(
   });
   const packageConfirmation = await requestConfirmation(
     confirm,
-    formatPluginInstallationReviewForTerminal(reviewedResult.review),
+    formatPluginInstallationReviewForTerminal(
+      reviewedResult.review,
+      reviewedResult.authorityExpansion,
+    ),
     input.signal,
   );
   if (packageConfirmation.kind === 'aborted') return await cancelPendingChange();
@@ -683,7 +735,11 @@ export async function requestUserPluginChange(
   let optionalSelections: readonly PluginResourceSelection[] | undefined;
   if (approved) {
     const selections: PluginResourceSelection[] = [];
-    for (const request of reviewedResult.review.optionalHostAccess) {
+    const optionalAccessToReview = reviewedResult.reason === 'authorityExpansion'
+      && !reviewedResult.authorityExpansion.includes('selectedOptionalHostAccess')
+      ? []
+      : reviewedResult.review.optionalHostAccess;
+    for (const request of optionalAccessToReview) {
       const optionalConfirmation = await requestConfirmation(
         confirm,
         `Allow optional ${request.capability} access: ${request.reason}?`,

@@ -115,6 +115,26 @@ function createCapturingExec(
 }
 
 describe('createCodexAppServerClient', () => {
+    it('uses the supported Codex daemon proxy transport without probing or starting another app-server', async () => {
+        const capture = createCapturingExec();
+
+        const client = await createCodexNativeAppServerClient({
+            exec: capture.exec,
+            processEnv: {},
+            transport: { kind: 'daemonProxy' },
+        });
+        try {
+            expect(capture.specs).toHaveLength(1);
+            expect(capture.specs[0]).toMatchObject({
+                launch: { args: ['app-server', 'proxy'] },
+            });
+            expect(capture.exec.run).not.toHaveBeenCalled();
+            expect(capture.requests[0]).toMatchObject({ method: 'initialize' });
+        } finally {
+            await client.dispose();
+        }
+    });
+
     it('speaks JSON-RPC directly over the shared app-server Unix WebSocket', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-codex-websocket-test-'));
         const socketPath = process.platform === 'win32'
@@ -286,7 +306,7 @@ describe('createCodexAppServerClient', () => {
                 env: { OPENAI_API_KEY: 'native-key' },
             },
             framing: 'jsonLines',
-            maxFrameBytes: 32 * 1024 * 1024,
+            maxFrameBytes: 128 * 1024 * 1024,
             requestTimeoutMs: 60_000,
         }]);
         expect(requests[0]).toEqual({

@@ -47,7 +47,8 @@ async function runRepoLocalCapturingSpawn(fixture) {
   const registerPath = join(fixture.root, 'register.mjs');
   const childProcessStub = `data:text/javascript,${encodeURIComponent(`
 import { writeFileSync } from 'node:fs';
-export function spawnSync(_command, _args, options = {}) {
+import { EventEmitter } from 'node:events';
+export function spawn(_command, _args, options = {}) {
   const env = options.env ?? {};
   writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify({
     component: env.HAPPIER_STACK_SERVER_COMPONENT ?? null,
@@ -55,12 +56,15 @@ export function spawnSync(_command, _args, options = {}) {
     legacy: env.HAPPY_DB_PROVIDER ?? null,
     databaseUrl: env.DATABASE_URL ?? null,
   }), 'utf8');
-  return { status: 0 };
+  const child = new EventEmitter();
+  child.kill = () => true;
+  queueMicrotask(() => child.emit('close', 0, null));
+  return child;
 }
 `)}`;
   await writeFile(loaderPath, `
 export async function resolve(specifier, context, defaultResolve) {
-  if (specifier === 'node:child_process' && context.parentURL?.endsWith('/scripts/repo_local.mjs')) {
+  if (specifier === 'node:child_process' && context.parentURL?.endsWith('/utils/execution_host/foreground_child.mjs')) {
     return { url: ${JSON.stringify(childProcessStub)}, shortCircuit: true };
   }
   return defaultResolve(specifier, context, defaultResolve);

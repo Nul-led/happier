@@ -12,12 +12,12 @@ describe('plugin invocation interactions and presentation split', () => {
         const interactions = createPluginInteractionsService({
             currentSession: null,
             signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const presentation = createPluginInvocationPresentation({
             currentSession: null,
             signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(presentation).not.toHaveProperty('requestApproval');
@@ -105,7 +105,7 @@ describe('plugin invocation interactions and presentation split', () => {
                     },
                 },
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => current,
+                isOccurrenceCurrent: () => current,
             });
 
             await expect(testCase.invoke(interactions)).resolves.toEqual(testCase.hostResult);
@@ -126,7 +126,7 @@ describe('plugin invocation interactions and presentation split', () => {
                 },
             },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         const pending = interactions.confirm({ kind: 'confirmation', message: 'Continue?' }, { signal: caller.signal });

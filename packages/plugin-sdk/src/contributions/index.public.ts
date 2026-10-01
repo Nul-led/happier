@@ -33,6 +33,7 @@ export type {
     DescriptorFields,
     IsRequiredSurfaceDefinition,
     PluginTargetedContributionSelectionV1,
+    PluginTargetedContributionSourceCustodyV1,
     PublicContributionProtocol,
     PublicContributionProtocols,
     RequiredSurfaceRoles,

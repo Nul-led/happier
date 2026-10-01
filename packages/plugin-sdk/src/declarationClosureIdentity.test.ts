@@ -640,7 +640,7 @@ describe('normal SDK declaration closure identities', () => {
         expect(declaration).not.toMatch(/\b(?:z\.Zod|Zod[A-Za-z])/u);
     });
 
-    it('keeps public UI and testkit author declarations independent from private Protocol and Zod types', async () => {
+    it('keeps public UI and testkit author declarations on the canonical custody seam and free of Zod types', async () => {
         const sources = await Promise.all([
             './ui.ts',
             './ui/compatibility.ts',
@@ -651,8 +651,6 @@ describe('normal SDK declaration closure identities', () => {
             './testing/uiHost.ts',
             './testing/host.ts',
             './ui/build/toolchainCompatibility.ts',
-            './ui/reactNativeBuild.ts',
-            './ui/reactNativeWebBuild.ts',
         ].map(async (relativeSourceUrl) => ([
             relativeSourceUrl,
             await readFile(new URL(relativeSourceUrl, import.meta.url), 'utf8'),
@@ -665,7 +663,16 @@ describe('normal SDK declaration closure identities', () => {
             } catch (error) {
                 throw new Error(`${relativeSourceUrl}: ${error instanceof Error ? error.message : String(error)}`);
             }
-            expect(declaration, relativeSourceUrl).not.toMatch(/@happier-dev\/protocol(?:\/|['"])/u);
+            if (relativeSourceUrl === './testing/uiHost.ts') {
+                const declarationSourceFile = parseSource('testing/uiHost.d.ts', declaration);
+                expect(importedName(
+                    declarationSourceFile,
+                    '@happier-dev/protocol',
+                    'PluginSourceCustodyV1',
+                )).toBe('PluginSourceCustodyV1');
+            } else {
+                expect(declaration, relativeSourceUrl).not.toMatch(/@happier-dev\/protocol(?:\/|['"])/u);
+            }
             expect(declaration, relativeSourceUrl).not.toMatch(/\bzod\b/u);
             expect(declaration, relativeSourceUrl).not.toMatch(/\b(?:z\.Zod|Zod[A-Za-z])/u);
         }
@@ -908,18 +915,36 @@ describe('normal SDK declaration closure identities', () => {
         expect(declaration).not.toMatch(/\bHookSchema\b/u);
     });
 
-    it('projects invocation provenance through SDK-local author declarations', async () => {
+    it('projects invocation provenance through canonical custody and SDK-local execution declarations', async () => {
         const [executionOriginSource, invocationSource] = await Promise.all([
             readFile(new URL('./executionOrigin.ts', import.meta.url), 'utf8'),
             readFile(new URL('./invocation.ts', import.meta.url), 'utf8'),
         ]);
 
-        for (const [fileName, sourceText] of [
-            ['executionOrigin.ts', executionOriginSource],
-            ['invocation.ts', invocationSource],
+        const executionOriginDeclaration = emittedIsolatedDeclaration(
+            'executionOrigin.ts',
+            executionOriginSource,
+        );
+        expect(executionOriginDeclaration).not.toMatch(/@happier-dev\/protocol(?:\/|['"])/u);
+
+        const invocationDeclaration = emittedIsolatedDeclaration(
+            'invocation.ts',
+            invocationSource,
+        );
+        const invocationDeclarationSource = parseSource(
+            'invocation.d.ts',
+            invocationDeclaration,
+        );
+        expect(importedName(
+            invocationDeclarationSource,
+            '@happier-dev/protocol',
+            'ProtocolPluginSourceCustodyV1',
+        )).toBe('PluginSourceCustodyV1');
+
+        for (const [fileName, declaration] of [
+            ['executionOrigin.ts', executionOriginDeclaration],
+            ['invocation.ts', invocationDeclaration],
         ] as const) {
-            const declaration = emittedIsolatedDeclaration(fileName, sourceText);
-            expect(declaration, fileName).not.toMatch(/@happier-dev\/protocol(?:\/|['"])/u);
             expect(declaration, fileName).not.toMatch(/\bzod\b/u);
             expect(declaration, fileName).not.toMatch(/\bVoiceSchema\b/u);
         }

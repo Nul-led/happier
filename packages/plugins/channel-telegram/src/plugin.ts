@@ -14,6 +14,7 @@ import {
   TELEGRAM_AUTOMATION_MESSAGE_SOURCE_CONTRACT_VERSION,
   TELEGRAM_BOT_CONNECTED_ACCOUNT_ID,
   TELEGRAM_BOT_CREDENTIAL_PURPOSE,
+  TELEGRAM_BRAND_RESOURCE_ID,
   TELEGRAM_CHANNEL_ACTION_IDS,
   TELEGRAM_CHANNEL_PLUGIN_ID,
   TELEGRAM_CHANNEL_PROVIDER_CONTRIBUTION_ID,
@@ -58,6 +59,7 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
   engines: { happier: '^0.0.0' },
   runtime: { apiVersion: 1 },
   entrypoints: { daemon: './.happier-plugin/daemon.js' },
+  brand: { iconResourceId: TELEGRAM_BRAND_RESOURCE_ID },
   hostAccess: {
     required: [
       {
@@ -81,6 +83,13 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
       },
     ],
     optional: [],
+  },
+  resources: {
+    [TELEGRAM_BRAND_RESOURCE_ID]: {
+      kind: 'asset',
+      path: 'assets/brand.png',
+      contentType: 'image/png',
+    },
   },
   ui: {
     translations: TELEGRAM_UI_TRANSLATION_BUNDLES,
@@ -119,10 +128,8 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
     [TELEGRAM_CHANNEL_ACTION_IDS.setup]: {
       title: 'Set up Telegram Channels',
       description: 'Verifies the selected Telegram bot for Channels setup.',
-      execution: { target: 'daemon' },
       inputSchema: TELEGRAM_CREDENTIAL_REF_INPUT_SCHEMA,
       resultSchema: providers.operations.setup.declaration.resultSchema.jsonSchema,
-      scopes: ['global'],
       // Core owns the present-user setup flow and persistence. This provider
       // returns only setup facts, so direct UI invocation would strand them.
       surfaces: providers.operations.setup.declaration.surfaces,
@@ -157,11 +164,9 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
     },
     [TELEGRAM_CHANNEL_ACTION_IDS.setupRemediation]: {
       title: 'Remove Telegram webhook',
-      execution: { target: 'daemon' },
       description: 'Remove the selected bot’s webhook so Happier can use checkpointed polling.',
       inputSchema: TELEGRAM_CREDENTIAL_REF_INPUT_SCHEMA,
       resultSchema: providers.operations.setupRemediation.declaration.resultSchema.jsonSchema,
-      scopes: ['global'],
       surfaces: providers.operations.setupRemediation.declaration.surfaces,
       hostAccess: ['telegram-bot-api', TELEGRAM_BOT_CREDENTIAL_PURPOSE],
       connectedAccountPurposeBindings: [{
@@ -200,10 +205,8 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
     [TELEGRAM_CHANNEL_ACTION_IDS.connectionTest]: {
       title: 'Test Telegram Channel connection',
       description: 'Tests the selected Telegram Channel connection.',
-      execution: { target: 'daemon' },
       inputSchema: providers.operations.connectionTest.declaration.input.schema.jsonSchema,
       resultSchema: providers.operations.connectionTest.declaration.resultSchema.jsonSchema,
-      scopes: ['global'],
       surfaces: providers.operations.connectionTest.declaration.surfaces,
       hostAccess: ['telegram-bot-api', TELEGRAM_BOT_CREDENTIAL_PURPOSE],
       connectedAccountPurposeBindings: [{
@@ -216,10 +219,8 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
     [TELEGRAM_CHANNEL_ACTION_IDS.endpointResolve]: {
       title: 'Resolve Telegram chat destination',
       description: 'Resolves a Telegram direct chat, group, supergroup, or topic for delivery; broadcast channels are unsupported.',
-      execution: { target: 'daemon' },
       inputSchema: providers.operations.endpointResolve.declaration.input.schema.jsonSchema,
       resultSchema: providers.operations.endpointResolve.declaration.resultSchema.jsonSchema,
-      scopes: ['global'],
       surfaces: providers.operations.endpointResolve.declaration.surfaces,
       hostAccess: ['telegram-bot-api', TELEGRAM_BOT_CREDENTIAL_PURPOSE],
       connectedAccountPurposeBindings: [{
@@ -232,10 +233,8 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
     [TELEGRAM_CHANNEL_ACTION_IDS.observationsPoll]: {
       title: 'Poll Telegram Channel observations',
       description: 'Polls the selected Telegram bot for new Channel observations.',
-      execution: { target: 'daemon' },
       inputSchema: providers.operations.observationsPoll.declaration.input.schema.jsonSchema,
       resultSchema: providers.operations.observationsPoll.declaration.resultSchema.jsonSchema,
-      scopes: ['global'],
       surfaces: providers.operations.observationsPoll.declaration.surfaces,
       hostAccess: ['telegram-bot-api', TELEGRAM_BOT_CREDENTIAL_PURPOSE],
       connectedAccountPurposeBindings: [{
@@ -248,10 +247,8 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
     [TELEGRAM_CHANNEL_ACTION_IDS.messageDeliver]: {
       title: 'Deliver a Telegram Channel message',
       description: 'Delivers a message to the selected Telegram Channel destination.',
-      execution: { target: 'daemon' },
       inputSchema: providers.operations.messageDeliver.declaration.input.schema.jsonSchema,
       resultSchema: providers.operations.messageDeliver.declaration.resultSchema.jsonSchema,
-      scopes: ['global'],
       surfaces: providers.operations.messageDeliver.declaration.surfaces,
       hostAccess: ['telegram-bot-api', TELEGRAM_BOT_CREDENTIAL_PURPOSE],
       connectedAccountPurposeBindings: [{
@@ -264,10 +261,7 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
     [TELEGRAM_AUTOMATION_MESSAGE_SETUP_ACTION_ID]: {
       title: 'Choose a Telegram chat to watch',
       description: 'Resolves a Telegram chat to immutable source facts for an Automation Event.',
-      execution: { target: 'daemon' },
-      scopes: ['global'],
       surfaces: ['plugin'],
-      dangerLevel: 'safe',
       inputSchema: TELEGRAM_AUTOMATION_MESSAGE_SETUP_INPUT_SCHEMA,
       resultSchema: TELEGRAM_AUTOMATION_MESSAGE_SETUP_RESULT_SCHEMA,
       hostAccess: ['telegram-bot-api', TELEGRAM_BOT_CREDENTIAL_PURPOSE],
@@ -281,8 +275,6 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
     [TELEGRAM_AUTOMATION_MESSAGE_ADMIT_ACTION_ID]: {
       title: 'Admit Telegram Automation Event',
       description: 'Admits one frozen Telegram Automation Event obligation through the current source definitions.',
-      execution: { target: 'daemon' },
-      scopes: ['global'],
       surfaces: providers.operations.automationEventAdmit.declaration.surfaces,
       dangerLevel: providers.operations.automationEventAdmit.declaration.dangerLevel,
       inputSchema: providers.operations.automationEventAdmit.declaration.input.schema.jsonSchema,

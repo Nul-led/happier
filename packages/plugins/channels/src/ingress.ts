@@ -767,19 +767,17 @@ function readFrozenIngressTarget(value: JsonValue | undefined): FrozenIngressTar
     const executionOrigin = PluginMachineExecutionOriginV1Schema.safeParse(own(value, 'executionOrigin'));
     if (!isJsonRecord(selection)) return undefined;
     const contributionId = own(selection, 'contributionId');
-    const immutableGenerationId = own(selection, 'immutableGenerationId');
     if (
       !candidate.success
       || typeof providerPluginId !== 'string'
       || typeof contributionId !== 'string'
-      || typeof immutableGenerationId !== 'string'
       || !executionOrigin.success
     ) return undefined;
     return {
       kind,
       candidate: candidate.data,
       providerPluginId,
-      providerContributionSelection: { contributionId, immutableGenerationId },
+      providerContributionSelection: { contributionId },
       executionOrigin: executionOrigin.data,
     };
   }
@@ -2694,8 +2692,7 @@ function arePersistedProviderContributionSelectionsEqual(
   left: PersistedConversationProviderContributionSelection,
   right: PersistedConversationProviderContributionSelection,
 ): boolean {
-  return left.contributionId === right.contributionId
-    && left.immutableGenerationId === right.immutableGenerationId;
+  return left.contributionId === right.contributionId;
 }
 
 async function revalidateFirstDispatchAuthority(input: Readonly<{

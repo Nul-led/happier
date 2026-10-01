@@ -27,14 +27,12 @@ type RegisteredVoiceProviderRuntime = Parameters<VoiceProvidersRegistrationApi['
 const clientTarget = Object.freeze({
     realm: 'client' as const,
     artifactId: 'voice-runtime-web',
-    modulePath: './voiceRuntime',
     exportName: 'activate',
     platform: 'web' as const,
 });
 const clientRightTarget = Object.freeze({
     realm: 'client' as const,
     artifactId: clientTarget.artifactId,
-    modulePath: clientTarget.modulePath,
     exportName: clientTarget.exportName,
     platforms: Object.freeze(['web' as const]),
 });
@@ -50,7 +48,6 @@ const conversationDeclaration = VoiceProviderContributionSchema.parse({
     },
     client: {
         artifactId: clientRightTarget.artifactId,
-        modulePath: clientRightTarget.modulePath,
         exportName: clientRightTarget.exportName,
     },
 });
@@ -189,7 +186,6 @@ describe('plugin registration scope targets', () => {
     it.each([
         ['realm', { realm: 'daemon' as const }],
         ['artifact', { ...clientRightTarget, artifactId: 'other-artifact' }],
-        ['module', { ...clientRightTarget, modulePath: './otherModule' }],
         ['export', { ...clientRightTarget, exportName: 'otherExport' }],
         ['platform', { ...clientRightTarget, platforms: ['ios' as const] }],
     ])('rejects a right assigned to the wrong %s before staging', (_label, target) => {
@@ -996,9 +992,15 @@ describe('plugin registration scope targets', () => {
         const prepareReviewWorkspace = vi.fn();
         const verifyPreparedReviewWorkspace = vi.fn();
         const resolveWorkspaceTransfer = vi.fn();
+        const branch = {
+            async operationSkip() { return { success: true, stdout: 'skipped' }; },
+            async conflictAcceptSide() { return { success: true, stdout: 'accepted' }; },
+            async conflictMarkResolved() { return { success: true, stdout: 'resolved' }; },
+        } satisfies NonNullable<BackendRuntime['handlers']['branch']>;
         const runtime = {
             handlers: {
                 detection,
+                branch,
                 workspaceIntegration: {
                     prepareReviewWorkspace,
                     verifyPreparedReviewWorkspace,
@@ -1031,6 +1033,14 @@ describe('plugin registration scope targets', () => {
         expect(Object.isFrozen(registration.value.handlers)).toBe(true);
         expect(Object.isFrozen(registration.value.handlers.detection)).toBe(true);
         expect(Object.isFrozen(registration.value.handlers.workspaceIntegration)).toBe(true);
+        const context = { cwd: '/workspace', projectKey: 'project', detection: { isRepo: true, rootPath: '/workspace', mode: '.git' as const } };
+        const signal = new AbortController().signal;
+        expect(await registration.value.handlers.branch?.operationSkip?.({ request: { operation: 'rebase' }, context, signal }))
+            .toEqual({ success: true, stdout: 'skipped' });
+        expect(await registration.value.handlers.branch?.conflictAcceptSide?.({ request: { path: 'file', side: 'ours' }, context, signal }))
+            .toEqual({ success: true, stdout: 'accepted' });
+        expect(await registration.value.handlers.branch?.conflictMarkResolved?.({ request: { paths: ['file'] }, context, signal }))
+            .toEqual({ success: true, stdout: 'resolved' });
         expect(registration.value.handlers.workspaceIntegration?.prepareReviewWorkspace)
             .toBeTypeOf('function');
         expect(registration.value.handlers.workspaceIntegration?.verifyPreparedReviewWorkspace)
@@ -1201,7 +1211,16 @@ describe('plugin registration scope targets', () => {
         } satisfies NonNullable<HostingProviderRuntime['adapter']['routing']> & {
             baseUrl: string;
         };
-        const adapter: HostingProviderRuntime['adapter'] = { routing };
+        const adapter: HostingProviderRuntime['adapter'] = {
+            routing,
+            pullRequests: {
+                supportsDraftCreate: true,
+                getPullRequestAuthProfileKey: () => 'forge',
+                listPullRequests: async () => [],
+                getPullRequest: async () => null,
+                createPullRequest: async () => { throw new Error('not invoked'); },
+            },
+        };
         const runtime = { adapter } satisfies HostingProviderRuntime;
         const scope = createPluginRegistrationScope({
             pluginId: 'acme.scm-hosting',
@@ -1222,6 +1241,7 @@ describe('plugin registration scope targets', () => {
         }
         expect(Object.isFrozen(registration.value)).toBe(true);
         expect(Object.isFrozen(registration.value.adapter)).toBe(true);
+        expect(registration.value.adapter.pullRequests?.supportsDraftCreate).toBe(true);
         routing.buildCompareUrl = vi.fn(() => 'https://late.example');
         expect(registration.value.adapter.routing?.buildCompareUrl({} as never))
             .toBe('https://replacement.example');

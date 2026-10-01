@@ -64,7 +64,6 @@ describe('HappierImage byte source derivation', () => {
           displayName="GitHub"
           bytes={createAdmittedBrandPngFixture()}
           theme={context.theme}
-          colorScheme={context.colorScheme}
           onDecodeError={onDecodeError}
         />,
       );
@@ -88,7 +87,7 @@ describe('HappierImage byte source derivation', () => {
           bytes={bytes}
           fallback="PX"
           theme={context.theme}
-          backing={{ backgroundColor: '#101010', foregroundColor: '#f0f0f0' }}
+          brandMark
           onDecodeError={onDecodeError}
         />,
       );
@@ -150,9 +149,7 @@ describe('HappierImage byte source derivation', () => {
           bytes={counted.proxy}
           fallback="AB"
           theme={context.theme}
-          // The brand composition's explicit colors; it keeps this assertion on
-          // the source decision rather than on `HappierText`'s theme context.
-          backing={{ backgroundColor: '#101010', foregroundColor: '#f0f0f0' }}
+          brandMark
         />,
       );
     });

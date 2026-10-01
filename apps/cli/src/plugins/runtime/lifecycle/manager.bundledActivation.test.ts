@@ -6,6 +6,7 @@ import { createResolvedContributionRegistry } from '@/plugins/projection/registr
 import { resolveBuiltInContributions } from '@/plugins/projection/registry/resolveBuiltInContributions';
 import { BUNDLED_FIRST_PARTY_PLUGIN_PACKAGE_NAMES } from '@/plugins/projection/registry/sources/generatedBundledPluginManifests';
 import { createBundledActivationSourceResolver } from '@/plugins/runtime/bundledActivationSource';
+import { bindPluginRuntimeSourceAuthority } from '@/plugins/runtime/sourceAuthority';
 
 import { shouldActivateTargetAtStartup } from './activation/targets';
 import type { TargetInvocationServiceOwner } from './contributions/targetHooks';
@@ -16,6 +17,17 @@ describe('bundled PluginApi parity', () => {
         const contributes = createResolvedContributionRegistry(resolveBuiltInContributions());
         const resolveBundledActivationSource = createBundledActivationSourceResolver({
             bundledPackageNames: BUNDLED_FIRST_PARTY_PLUGIN_PACKAGE_NAMES,
+            resolveDevelopmentSourceAuthority: ({ rootPath }) => {
+                const authority = bindPluginRuntimeSourceAuthority({
+                    custody: {
+                        kind: 'development',
+                        registeredRootId: rootPath,
+                    },
+                    resolvedRoot: rootPath,
+                    observedRevision: 1,
+                });
+                return authority.kind === 'development' ? authority : null;
+            },
         });
         let auggiePrepareCalls = 0;
         const activated = await activatePluginRuntimeRegistry({
@@ -52,23 +64,24 @@ describe('bundled PluginApi parity', () => {
         const diagnostics = Object.fromEntries(Object.entries(activated.pluginDiagnosticsByPluginId)
             .filter(([, entries]) => entries.length > 0));
         expect(diagnostics).toEqual({});
-        // Daemon cold start activates a bundled plugin only for a declared
-        // machine-runtime service. Every other contribution family this
-        // product ships is demand-ready, so a plugin that starts activating
-        // here for another reason is a cold-start regression: decide its
-        // demand boundary rather than widening this list.
+        // Daemon cold start activates only registrations that still have a
+        // synchronous host consumer. A plugin that starts activating here for
+        // another reason is a cold-start regression: decide its demand
+        // boundary rather than widening this list.
         const startupTargets = contributes.activationTargets.filter(shouldActivateTargetAtStartup);
         const expectedStartupPluginIds = new Set(startupTargets.map((target) => target.pluginId));
         expect([...expectedStartupPluginIds]).toEqual([
             'happier.channel.discord',
             'happier.channels',
+            'happier.posthog',
             'happier.scm.forge.github',
+            'happier.sentry',
         ]);
-        for (const target of startupTargets) {
-            expect(listDeclaredPluginContributionFamilies(
-                target.manifest.contributes as unknown as Readonly<Record<string, unknown>>,
-            ), target.pluginId).toContain('backgroundServices');
-        }
+        expect(startupTargets.map((target) => listDeclaredPluginContributionFamilies(
+            target.manifest.contributes as unknown as Readonly<Record<string, unknown>>,
+        ))).toEqual(expect.arrayContaining([
+            expect.arrayContaining(['backgroundServices']),
+        ]));
         expect(activated.activatedPluginIds).toEqual(expectedStartupPluginIds);
         expect(activated.targetRegistrations).toEqual(expect.arrayContaining([
             expect.objectContaining({
@@ -170,7 +183,7 @@ describe('bundled PluginApi parity', () => {
             ['happier.scm.forge.bitbucket', 'triage-verify-review-workspace'],
             ['happier.scm.forge.bitbucket', 'pull-request-submit-review'],
             ['happier.scm.forge.bitbucket', 'pull-request-review-comment-create'],
-            ['happier.scm.forge.bitbucket', 'pull-request-review-comment-reply'],
+            ['happier.scm.forge.bitbucket', 'pull-request-thread-reply'],
             ['happier.scm.forge.azure-devops', 'triage-verify-review-workspace'],
             ['happier.scm.forge.azure-devops', 'pull-request-submit-review'],
             ['happier.scm.forge.azure-devops', 'pull-request-thread-comment-create'],

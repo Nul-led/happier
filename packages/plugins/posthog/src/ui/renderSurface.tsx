@@ -22,7 +22,7 @@
 
 import * as React from 'react';
 import type { RenderContext } from '@happier-dev/plugin-sdk/ui';
-import { useTriageEvidenceDisclosure } from '@happier-dev/triage-sources/ui';
+import { TriageDetailPanel, useTriageEvidenceDisclosure } from '@happier-dev/triage-sources/ui';
 import {
     Badge,
     Banner,
@@ -1040,6 +1040,21 @@ function PosthogDetailBody({
         activity: <ActivityTab input={input} locale={locale} nowMs={nowMs} />,
     };
 
+    // The Triage detail asked for one panel (r0.42): its frame draws the tabs.
+    // Stack trace, occurrences and affected sessions are this source's own
+    // tabs, declared after the shared ones.
+    if (input.panel !== undefined) {
+        return (
+            <Screen safeArea>
+                <TriageDetailPanel
+                    panel={input.panel}
+                    ariaLabel={text('plugins.posthog.ui.tabsLabel', 'PostHog issue detail')}
+                    panels={panels}
+                />
+            </Screen>
+        );
+    }
+
     return (
         <Screen safeArea>
             <Tabs
@@ -1095,8 +1110,5 @@ function PosthogDetailSurface(context: RenderContext): React.ReactElement {
     return <PosthogDetailBody input={admitted.input} signal={context.signal} />;
 }
 
-/**
- * The exact export name the build target's Module Federation identity names. Renaming it
- * breaks the native artifact contract, not just this file.
- */
+/** The manifest names this exact universal CommonJS export. */
 export const renderSurface = defineUiSurface(PosthogDetailSurface);

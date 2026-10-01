@@ -39,6 +39,10 @@ type NativeUsageObservation = Omit<
 
 export type CodexAppServerEvent =
   | (CodexAppServerEventBase & Readonly<{
+      kind: 'context-compaction'; compactionId: string; turnId?: string;
+      phase: 'started' | 'completed'; trigger: 'unknown';
+    }>)
+  | (CodexAppServerEventBase & Readonly<{
       kind: 'message-delta';
       turnId: string;
       delta: unknown;

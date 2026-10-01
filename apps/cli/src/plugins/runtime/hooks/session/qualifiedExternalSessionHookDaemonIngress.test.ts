@@ -45,7 +45,7 @@ function durableLink(linkGeneration = '1') {
         resource: {
             pluginId: qualifiedIdentity.agent.pluginId,
             agentLocalId: qualifiedIdentity.agent.localId,
-            pluginGeneration: 'plugin-generation-1',
+            occurrenceId: 'plugin-occurrence-1',
             resourceKey: 'fixture-resource',
         },
         link: {
@@ -126,9 +126,12 @@ function runtime(nowMs: number) {
         identity: {
             pluginId: 'happier.agent.fixture',
             agentId: 'fixture',
-            generation: 'plugin-generation-1',
+            occurrenceId: 'plugin-occurrence-1',
             contributionQualifiedId: 'happier.agent.fixture/agents/fixture',
-            immutableGenerationId: null,
+            sourceCustody: {
+                kind: 'development',
+                registeredRootId: 'fixture-source-root',
+            },
         },
         isCurrent: () => true,
         retirementSignal: new AbortController().signal,
@@ -138,7 +141,7 @@ function runtime(nowMs: number) {
     return {
         hooks,
         externalSessions,
-        generation: 'plugin-generation-1',
+        occurrenceId: 'plugin-generation-1',
         retirementSignal: retirement.signal,
         isCurrent: () => true,
         release: vi.fn(async () => undefined),
@@ -174,7 +177,7 @@ function setup(resolveDurableCurrentLink: ReturnType<typeof vi.fn>) {
         qualifiedContributionId: qualifiedIdentity.agent,
         variantId: 'fixture-hooks-v1',
         eventId: 'session-stop',
-        pluginGeneration: 'plugin-generation-1',
+        pluginOccurrenceId: 'plugin-generation-1',
         retirementSignal: new AbortController().signal,
     });
     ingress.enable(principal.principalRef);

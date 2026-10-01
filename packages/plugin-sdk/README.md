@@ -139,11 +139,12 @@ happier plugins create my-hosted-plugin --ui hostedWeb
 ```
 
 The React Native selection creates one public `@happier-dev/plugin-ui` surface
-and its declared web, iOS, and Android artifacts. The hosted selection creates
-an isolated Vite artifact and the canonical guest bootstrap client. The
-selection itself does not advertise a packaged runtime platform; the host may
-load that artifact only after its platform-specific frame adapter is present
-and verified.
+and one universal CommonJS artifact used on web, iOS, and Android. The hosted
+selection creates an isolated static directory and the canonical guest
+bootstrap client; its optional TypeScript entry is compiled by the same SDK
+esbuild owner. The selection itself does not advertise a packaged runtime
+platform; the host may load hosted content only after its platform-specific
+frame adapter is present and verified.
 The generated package scripts use the managed lower-level author checks. Build,
 test, and exercise the same project through source development:
 
@@ -538,6 +539,16 @@ For Session-capable Agents the host derives finite Runs from the registered
 Session factory. Plugin authors do not register or own a second Run lifecycle.
 
 ## Task guides
+
+In the current development SDK, a custom Session can bind live mode facts with
+`context.session.services.modes.bind(source)`, alongside the existing `models`
+service. The source exposes `read()` and `subscribe()`; the returned binding
+retires with the Session. Publish native accepted current facts, not desired
+configuration intent. `modes: null` means unknown or unbound; `modes: []` means
+an observed withdrawal. The host owns the active Session's UI metadata projection.
+Known modes remain selectable when `currentModeId` is unknown. The canonical
+projection is `sessionModesV2`; strict V1 compatibility is emitted only for a
+known accepted current mode.
 
 The ordinary author journey continues in the task-first guides under
 `apps/docs/content/docs/plugins/guides/`:

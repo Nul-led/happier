@@ -52,7 +52,7 @@ export type PluginInvocationLogRecord = Readonly<{
     context: Readonly<{
         plugin: Readonly<{ id: string; version: string }>;
         contribution: Readonly<{ id: string; qualifiedId: string }>;
-        generation: string;
+        occurrenceId: string;
         correlationId: string;
         surface: PluginInvocationServicesSeed['surface'];
         sessionId?: string;
@@ -75,7 +75,7 @@ export type PluginInvocationLogSink = Readonly<{
 
 export type PluginInvocationSecretRedactionScope = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     correlationId: string;
 }>;
 
@@ -85,11 +85,11 @@ export type PluginInvocationSecretRedactor = Readonly<{
     registerExact(scope: PluginInvocationSecretRedactionScope, value: string): void;
     redact(scope: PluginInvocationSecretRedactionScope, value: string): string;
     completeInvocation(scope: PluginInvocationSecretRedactionScope): void;
-    retireGeneration(generation: string, pluginId: string): void;
+    retireGeneration(occurrenceId: string, pluginId: string): void;
 }>;
 
 function secretRedactionScopeKey(scope: PluginInvocationSecretRedactionScope): string {
-    return `${scope.generation}\u0000${scope.pluginId}\u0000${scope.correlationId}`;
+    return `${scope.occurrenceId}\u0000${scope.pluginId}\u0000${scope.correlationId}`;
 }
 
 type PluginInvocationSecretRedactionState = {
@@ -183,9 +183,9 @@ export function createPluginInvocationSecretRedactor(): PluginInvocationSecretRe
             return state.redactor.redact(value);
         },
         completeInvocation,
-        retireGeneration(generation, pluginId): void {
+        retireGeneration(occurrenceId, pluginId): void {
             for (const state of [...statesByScope.values()]) {
-                if (state.scope.generation === generation && state.scope.pluginId === pluginId) {
+                if (state.scope.occurrenceId === occurrenceId && state.scope.pluginId === pluginId) {
                     completeInvocation(state.scope);
                 }
             }
@@ -354,13 +354,13 @@ export function createPluginInvocationLogger(params: Readonly<{
             id: boundHostIdentity(params.seed.contribution.id),
             qualifiedId: boundHostIdentity(params.seed.contribution.qualifiedId),
         }),
-        generation: boundHostIdentity(params.seed.generation),
+        occurrenceId: boundHostIdentity(params.seed.occurrenceId),
         correlationId: boundHostIdentity(params.seed.correlationId),
         surface: params.seed.surface,
     });
     const redactionScope = Object.freeze({
         pluginId: params.seed.plugin.id,
-        generation: params.seed.generation,
+        occurrenceId: params.seed.occurrenceId,
         correlationId: params.seed.correlationId,
     });
     const redact = params.secretRedactor
@@ -371,13 +371,13 @@ export function createPluginInvocationLogger(params: Readonly<{
         input: Readonly<{ message?: string; fields?: Readonly<Record<string, JsonValue>>; diagnostic?: PluginDiagnosticData }>,
     ): void => {
         try {
-            if (params.seed.signal.aborted || !params.seed.isGenerationCurrent()) return;
+            if (params.seed.signal.aborted || !params.seed.isOccurrenceCurrent()) return;
             const message = input.message === undefined
                 ? undefined
                 : truncateRedactedText(input.message, PLUGIN_LOG_MAX_MESSAGE_BYTES, redact);
             const fields = input.fields === undefined ? undefined : sanitizeRecord(input.fields, redact);
             const diagnostic = input.diagnostic === undefined ? undefined : sanitizeDiagnostic(input.diagnostic, redact);
-            if (params.seed.signal.aborted || !params.seed.isGenerationCurrent()) return;
+            if (params.seed.signal.aborted || !params.seed.isOccurrenceCurrent()) return;
             const nextSequence = sequence + 1;
             const record = boundRecord({
                 version: 1,
@@ -390,7 +390,7 @@ export function createPluginInvocationLogger(params: Readonly<{
                 occurredAtMs: params.now?.() ?? Date.now(),
                 sequence: nextSequence,
             }, redact);
-            if (params.seed.signal.aborted || !params.seed.isGenerationCurrent()) return;
+            if (params.seed.signal.aborted || !params.seed.isOccurrenceCurrent()) return;
             sequence = nextSequence;
             params.sink.write(record);
         } catch {

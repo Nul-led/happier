@@ -113,6 +113,7 @@ const expectedContributionExports = [
     'IsRequiredSurfaceDefinition',
     'PluginTargetedContributionSelectionV1',
     'PluginTargetedContributionSelectionV1Schema',
+    'PluginTargetedContributionSourceCustodyV1',
     'PublicContributionProtocol',
     'PublicContributionProtocols',
     'RequiredSurfaceRoles',

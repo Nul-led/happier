@@ -57,6 +57,12 @@ export const CURSOR_PLUGIN = definePlugin({
             manual: { kind: 'vendor_recipe' },
             guideUrl: 'https://cursor.com/docs/cli/installation',
             docsUrl: 'https://cursor.com/docs/cli',
+            // https://cursor.com/docs/cli/installation ("agent update"); `agent` and `cursor-agent`
+            // are the same installed executable under ~/.local/share/cursor-agent/versions/.
+            nativeUpdate: {
+              args: ['update'],
+              installPaths: ['.local/share/cursor-agent'],
+            },
           },
           auth: {
             support: 'status_only',

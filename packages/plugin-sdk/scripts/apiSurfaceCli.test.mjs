@@ -318,6 +318,18 @@ const INVENTORY = Object.freeze({
       realm: 'any',
     }),
     ...[
+      'normalizePluginAccountCollectionMigrationRuntimeProjection',
+      'normalizePluginDaemonDatabaseRuntimeProjection',
+      'projectPluginAccountCollectionDeclaration',
+    ].map((exportName) => Object.freeze({
+      specifier: './host/registration',
+      exportName,
+      kind: 'value',
+      sourceModule: 'src/definePlugin.ts',
+      sourceExport: exportName,
+      realm: 'any',
+    })),
+    ...[
       'PluginRegistrationRight',
       'PluginAgentRuntimeRegistration',
       'PluginRuntimeRegistration',
@@ -420,6 +432,12 @@ async function createPackageFixture(root = undefined) {
     '',
   ].join('\n'));
   await writeFixtureFile(root, 'src/actions/service.ts', 'export interface ActionsService {}\n');
+  await writeFixtureFile(root, 'src/definePlugin.ts', [
+    'export function normalizePluginAccountCollectionMigrationRuntimeProjection() {}',
+    'export function normalizePluginDaemonDatabaseRuntimeProjection() {}',
+    'export function projectPluginAccountCollectionDeclaration() {}',
+    '',
+  ].join('\n'));
   await writeFixtureFile(root, 'src/host/registration/index.ts', [
     "export type { PluginAgentRuntimeRegistration } from './scope.js';",
     "export type { PluginRegistrationRight } from './scope.js';",
@@ -427,6 +445,9 @@ async function createPackageFixture(root = undefined) {
     "export { createExecutionRunHostBackendFromSessionRuntime } from '../../agentRuntime/executionRun.js';",
     "export { createPluginActionHandlerNotStartedError } from './actionHandlerInvocation.js';",
     "export { createPluginRegistrationScope } from './scope.js';",
+    "export { normalizePluginAccountCollectionMigrationRuntimeProjection } from '../../definePlugin.js';",
+    "export { normalizePluginDaemonDatabaseRuntimeProjection } from '../../definePlugin.js';",
+    "export { projectPluginAccountCollectionDeclaration } from '../../definePlugin.js';",
     "export { readPluginActionInputParser, readPluginActionResultParser } from './actionInputParser.js';",
     '',
   ].join('\n'));
@@ -1076,6 +1097,25 @@ test('SDK Voice runtime public signature closes through the author inventory', a
       && symbol.kind === 'type'
     )),
     true,
+  );
+});
+
+test('SDK workflow Action ingress projection closes through the author inventory', async () => {
+  const report = await readCurrentPackageSourceReport();
+
+  assert.deepEqual(
+    report.inventory.symbols.find((symbol) => (
+      symbol.specifier === './actions'
+      && symbol.exportName === 'PluginActionWorkflowIngressBlockV1'
+    )),
+    {
+      specifier: './actions',
+      exportName: 'PluginActionWorkflowIngressBlockV1',
+      kind: 'type',
+      sourceModule: 'src/actions/actionTypeMap.generated.ts',
+      sourceExport: 'PluginActionWorkflowIngressBlockV1',
+      realm: 'any',
+    },
   );
 });
 
@@ -4261,6 +4301,9 @@ test('current Actions canonical source does not reach its generated entrypoint b
       'export function readPluginActionInputParser() {}',
       'export function readPluginActionResultParser() {}',
       'export function createPluginRegistrationScope() {}',
+      'export function normalizePluginAccountCollectionMigrationRuntimeProjection() {}',
+      'export function normalizePluginDaemonDatabaseRuntimeProjection() {}',
+      'export function projectPluginAccountCollectionDeclaration() {}',
       '',
     ].join('\n'));
     await writeFixtureFile(root, 'src/apiSurfaceLockProbe.ts', [
@@ -4278,6 +4321,9 @@ test('current Actions canonical source does not reach its generated entrypoint b
       "export { readPluginActionInputParser } from '../../apiSurfaceReachabilityProbe.js';",
       "export { readPluginActionResultParser } from '../../apiSurfaceReachabilityProbe.js';",
       "export { createPluginRegistrationScope } from '../../apiSurfaceReachabilityProbe.js';",
+      "export { normalizePluginAccountCollectionMigrationRuntimeProjection } from '../../apiSurfaceReachabilityProbe.js';",
+      "export { normalizePluginDaemonDatabaseRuntimeProjection } from '../../apiSurfaceReachabilityProbe.js';",
+      "export { projectPluginAccountCollectionDeclaration } from '../../apiSurfaceReachabilityProbe.js';",
       '',
     ].join('\n'));
     await writeFixtureFile(root, 'src/host/fs/json-owner-file-lock/index.public.ts', [

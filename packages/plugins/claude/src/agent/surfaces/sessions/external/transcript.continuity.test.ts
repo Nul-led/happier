@@ -133,6 +133,66 @@ async function rewriteInPlace(path: string, position: number, replacement: strin
 }
 
 describe('Claude external transcript continuity evidence', () => {
+    it.each(['page', 'pageNewer', 'tail', 'readAfter', 'sourceReset'] as const)('preserves an incomplete tail through %s cursor capture', async (capture) => {
+        const fixture = await createTranscript(2, 40);
+        const earlierCursor = await mintTailCursor(fixture);
+        if (capture === 'sourceReset') await writeFile(fixture.transcriptPath, transcriptLine(300, 40));
+        const line = transcriptLine(1000, 40);
+        await appendFile(fixture.transcriptPath, line.slice(0, -2));
+        const cursor = capture === 'page' || capture === 'pageNewer'
+            ? (await pageClaudeExternalSessionTranscript({
+                source: fixture.source, env: fixture.env, providerSessionId: fixture.remoteSessionId,
+                direction: capture === 'page' ? 'older' : 'newer', maxBytes: 64 * 1024, maxItems: 10,
+            })).tailCursor
+            : capture === 'tail'
+                ? await mintTailCursor(fixture)
+                : (await readAfter(fixture, earlierCursor)).nextCursor;
+        expect(cursor).toEqual(expect.any(String));
+        await appendFile(fixture.transcriptPath, line.slice(-2));
+        const advanced = await readAfter(fixture, String(cursor));
+        expect(advanced.readAfterOutcome).toBeUndefined();
+        expect(advanced.items).toHaveLength(1);
+        expect(advanced.truncated).toBe(false);
+        expect(advanced.hasMore).toBe(false);
+    });
+
+    it('refuses a tail whose boundary exceeds the existing reader budget', async () => {
+        const fixture = await createTranscript(1, 40);
+        await appendFile(fixture.transcriptPath, '{"text":"' + 'x'.repeat(8 * 1024 * 1024));
+        const request = {
+            source: fixture.source, env: fixture.env, providerSessionId: fixture.remoteSessionId,
+            maxBytes: 1024, maxItems: 10,
+        };
+        await expect(pageClaudeExternalSessionTranscript({ ...request, direction: 'older' })).rejects.toThrow();
+    });
+
+    it('keeps valid oversize tail records when the boundary read uses smaller chunks', async () => {
+        const fixture = await createTranscript(1, 128 * 1024);
+        const cursor = await mintTailCursor(fixture);
+        await appendFile(fixture.transcriptPath, transcriptLine(1000, 40));
+        const advanced = await readAfter(fixture, cursor);
+        expect(advanced.items).toHaveLength(1);
+        expect(advanced).toMatchObject({ truncated: false, hasMore: false });
+        expect(advanced.readAfterOutcome).toBeUndefined();
+    });
+
+    it.each([false, true])('reports bounded continuation with result budgeting %s', async (withBudget) => {
+        const fixture = await createTranscript(1, 40);
+        const cursor = await mintTailCursor(fixture);
+        await appendFile(fixture.transcriptPath, transcriptLine(1000, 40) + transcriptLine(1001, 40));
+        const page = await readAfterClaudeExternalSessionTranscript({
+            source: fixture.source, env: fixture.env, providerSessionId: fixture.remoteSessionId,
+            cursor, maxBytes: 64 * 1024, maxItems: 1,
+            ...(withBudget ? { resultBudget: { fits: () => true } } : {}),
+        });
+        expect(page.items).toHaveLength(1);
+        expect(page).toMatchObject({ truncated: false, hasMore: true });
+        const remainder = await readAfter(fixture, String(page.nextCursor));
+        expect(remainder.items).toHaveLength(1);
+        expect(remainder.items[0]?.id).not.toBe(page.items[0]?.id);
+        expect(remainder).toMatchObject({ truncated: false, hasMore: false });
+    });
+
     it('continues across an append', async () => {
         const fixture = await createTranscript(40, 400);
         const cursor = await mintTailCursor(fixture);

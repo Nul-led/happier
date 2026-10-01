@@ -65,7 +65,8 @@ function channelsCallerContext(input: Readonly<{
     caller: {
       kind: 'plugin' as const,
       pluginId: 'happier.channels',
-      immutableGenerationId: 'channels-generation-1',
+      occurrenceId: 'channels-generation-1',
+      sourceCustody: { kind: 'managed', immutableGenerationId: 'channels-generation-1', installSource: 'npm' },
       contribution: { id: 'provider-setup', qualifiedId: 'happier.channels/actions/provider-setup' },
       materialization: {
         machineId: 'discord-actions-fixture-machine',

@@ -50,9 +50,9 @@ function seed(overrides: Partial<Parameters<ReturnType<typeof createStablePlugin
     return {
         plugin: { id: 'caller.plugin', version: '1.0.0' },
         contribution: { id: 'run', qualifiedId: 'caller.plugin/actions/run' },
-        generation: 'generation-7', correlationId: 'correlation-1', surface: 'agent' as const,
+        occurrenceId: 'occurrenceId-7', correlationId: 'correlation-1', surface: 'agent' as const,
         session: { id: 'session-1' }, signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         ...overrides,
     };
 }
@@ -63,7 +63,7 @@ function runtime(
 ): StablePluginMcpServerRegistration {
     const tool: PluginMcpTool = { name: 'echo', inputSchema: { type: 'object' } };
     return {
-        generation: 'generation-7', qualifiedId, isCurrent: () => true,
+        occurrenceId: 'occurrenceId-7', qualifiedId, isCurrent: () => true,
         listTools: async () => ({ items: [tool] }),
         callTool: async ({ name, input }) => ({ name, input }),
         listResources: async () => ({ items: [] }),
@@ -96,7 +96,6 @@ describe('stable plugin MCP host', () => {
         let revoked = false;
         const activateOnDemand = vi.fn(async () => {});
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'tools')],
             discoverySources: [],
             activateOnDemand,
@@ -141,7 +140,6 @@ describe('stable plugin MCP host', () => {
             expect(effect.ref).toEqual({ pluginId: 'acme.one', localId: 'tools' });
         });
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'tools')],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -175,7 +173,6 @@ describe('stable plugin MCP host', () => {
         let revoked = false;
         const callTool = vi.fn(async () => ({ ok: true }));
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'remote', { kind: 'static' })],
             discoverySources: [], activateOnDemand: async () => {},
             readServer: () => null, readDiscoverySource: () => null,
@@ -206,7 +203,6 @@ describe('stable plugin MCP host', () => {
         const subscriptionDispose = vi.fn(async () => {});
         const transportDispose = vi.fn(async () => {});
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'remote', { kind: 'static' })],
             discoverySources: [], activateOnDemand: async () => {},
             readServer: () => null, readDiscoverySource: () => null,
@@ -242,7 +238,6 @@ describe('stable plugin MCP host', () => {
         const publicListener = vi.fn();
         const emitWarning = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'dynamic')],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -286,7 +281,6 @@ describe('stable plugin MCP host', () => {
     it('keeps public MCP DTO deltas while rejecting unknown nested fields', async () => {
         let includeUnknownField = false;
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'dynamic')],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -349,7 +343,6 @@ describe('stable plugin MCP host', () => {
     it('disposes a resource subscription when its caller signal aborts', async () => {
         const subscriptionDispose = vi.fn(async () => {});
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'remote', { kind: 'static' })],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -383,7 +376,6 @@ describe('stable plugin MCP host', () => {
             return { items: [{ uri: 'file:///guide', name: 'guide' }] };
         });
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'dynamic')],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -415,7 +407,6 @@ describe('stable plugin MCP host', () => {
         const publicListener = vi.fn();
         const emitWarning = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'dynamic')],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -457,7 +448,6 @@ describe('stable plugin MCP host', () => {
         const emitWarning = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
         let subscriptionIndex = 0;
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'dynamic')],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -518,7 +508,6 @@ describe('stable plugin MCP host', () => {
         let registrationCurrent = true;
         const subscriptionDispose = vi.fn(async () => {});
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'dynamic')],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -558,7 +547,6 @@ describe('stable plugin MCP host', () => {
         const publicListener = vi.fn();
         const emitWarning = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'dynamic')],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -610,7 +598,6 @@ describe('stable plugin MCP host', () => {
 
     it('constrains a bound service to the selected server refs and operations', async () => {
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'selected'), server('acme.two', 'hidden')],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -645,7 +632,6 @@ describe('stable plugin MCP host', () => {
         const demands: string[] = [];
         const registrations = new Map<string, StablePluginMcpServerRegistration>();
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'tools'), server('acme.two', 'tools')],
             discoverySources: [],
             async activateOnDemand(ref, family) {
@@ -673,7 +659,6 @@ describe('stable plugin MCP host', () => {
 
     it('lists bounded declared summaries with honest dynamic and transport availability', async () => {
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'dynamic'), server('acme.one', 'remote', { kind: 'static' })],
             discoverySources: [], activateOnDemand: async () => {},
             readServer: (ref) => ref.localId === 'dynamic' ? runtime('acme.one/dynamic') : null,
@@ -710,7 +695,6 @@ describe('stable plugin MCP host', () => {
             dispose: async () => {},
         }));
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'remote', { kind: 'static' })],
             discoverySources: [], activateOnDemand: async () => {},
             readServer: () => null, readDiscoverySource: () => null,
@@ -735,7 +719,6 @@ describe('stable plugin MCP host', () => {
 
     it('keeps session-scoped servers and host-mediated elicitation on one exact session', async () => {
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'session-tools', { sessionScope: 'session' })],
             discoverySources: [], activateOnDemand: async () => {},
             readServer: () => runtime('acme.one/session-tools'), readDiscoverySource: () => null,
@@ -769,7 +752,7 @@ describe('stable plugin MCP host', () => {
             listTools: async (_request) => ({ items: tooManyTools }),
         });
         const host = createStablePluginMcpHost({
-            generation: 'generation-7', servers: [server('acme.one', 'tools')], discoverySources: [],
+            servers: [server('acme.one', 'tools')], discoverySources: [],
             activateOnDemand: async () => {}, readServer: () => registration, readDiscoverySource: () => null,
         });
         const client = await host.bind(seed()).connect(
@@ -794,12 +777,12 @@ describe('stable plugin MCP host', () => {
         let activated = false;
         let registration: StablePluginMcpDiscoveryRegistration | null = null;
         const host = createStablePluginMcpHost({
-            generation: 'generation-7', servers: [], discoverySources: [discovery('acme.one', 'detector')],
+            servers: [], discoverySources: [discovery('acme.one', 'detector')],
             async activateOnDemand(ref, family) {
                 activated = true;
                 demands.push(`${ref.pluginId}/${family}/${ref.localId}`);
                 registration = {
-                    generation: 'generation-7', qualifiedId: 'acme.one/detector', isCurrent: () => true,
+                    occurrenceId: 'occurrenceId-7', qualifiedId: 'acme.one/detector', isCurrent: () => true,
                     discover: async () => ({
                         items: [{
                             source: { pluginId: 'spoofed.plugin', localId: 'other' },
@@ -829,13 +812,12 @@ describe('stable plugin MCP host', () => {
 
     it('keeps MCP server and discovery-source authorization family-specific', async () => {
         const registration: StablePluginMcpDiscoveryRegistration = {
-            generation: 'generation-7',
+            occurrenceId: 'occurrenceId-7',
             qualifiedId: 'acme.one/detector',
             isCurrent: () => true,
             discover: async () => ({ items: [] }),
         };
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'tools')],
             discoverySources: [discovery('acme.one', 'detector')],
             activateOnDemand: async () => {},
@@ -883,7 +865,7 @@ describe('stable plugin MCP host', () => {
         await host.dispose();
     });
 
-    it('fences cancellation, client disposal, generation retirement, and transport cleanup', async () => {
+    it('fences cancellation, client disposal, occurrenceId retirement, and transport cleanup', async () => {
         let releaseCall!: () => void;
         const waiting = new Promise<void>((resolve) => { releaseCall = resolve; });
         const transportDispose = vi.fn(async () => {});
@@ -894,11 +876,11 @@ describe('stable plugin MCP host', () => {
         });
         let generationCurrent = true;
         const host = createStablePluginMcpHost({
-            generation: 'generation-7', servers: [server('acme.one', 'remote', { kind: 'static' })], discoverySources: [],
+            servers: [server('acme.one', 'remote', { kind: 'static' })], discoverySources: [],
             activateOnDemand: async () => {}, readServer: () => null, readDiscoverySource: () => null,
             connectDeclaredTransport: async () => transportClient,
         });
-        const service = host.bind(seed({ isGenerationCurrent: () => generationCurrent }));
+        const service = host.bind(seed({ isOccurrenceCurrent: () => generationCurrent }));
         const client = await service.connect(
             { pluginId: 'acme.one', localId: 'remote' }, { elicitation: { mode: 'reject' } },
         );
@@ -922,7 +904,6 @@ describe('stable plugin MCP host', () => {
         const session = new AbortController();
         const transportDispose = vi.fn(async () => {});
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'remote', { kind: 'static', sessionScope: 'session' })],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -953,7 +934,6 @@ describe('stable plugin MCP host', () => {
         const removeEventListener = vi.spyOn(session.signal, 'removeEventListener');
         const transportDispose = vi.fn(async () => {});
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'remote', { kind: 'static', sessionScope: 'session' })],
             discoverySources: [],
             activateOnDemand: async () => {},
@@ -998,7 +978,6 @@ describe('stable plugin MCP host', () => {
             directory: '/secret/path',
         };
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'tools')],
             discoverySources: [discovery('acme.one', 'detector')],
             activateOnDemand: async () => {},
@@ -1007,7 +986,7 @@ describe('stable plugin MCP host', () => {
                 callTool: async () => accessorResult as never,
             }),
             readDiscoverySource: () => ({
-                generation: 'generation-7', qualifiedId: 'acme.one/detector', isCurrent: () => true,
+                occurrenceId: 'occurrenceId-7', qualifiedId: 'acme.one/detector', isCurrent: () => true,
                 discover: async () => ({ items: [injectedDiscovery] }),
             }),
         });
@@ -1038,7 +1017,6 @@ describe('stable plugin MCP host', () => {
             },
         });
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'tools')],
             discoverySources: [discovery('acme.one', 'detector')],
             activateOnDemand: async () => {},
@@ -1046,7 +1024,7 @@ describe('stable plugin MCP host', () => {
                 listTools: async () => accessorEnvelope as never,
             }),
             readDiscoverySource: () => ({
-                generation: 'generation-7', qualifiedId: 'acme.one/detector', isCurrent: () => true,
+                occurrenceId: 'occurrenceId-7', qualifiedId: 'acme.one/detector', isCurrent: () => true,
                 discover: async () => accessorEnvelope as never,
             }),
         });
@@ -1077,7 +1055,6 @@ describe('stable plugin MCP host', () => {
             });
         });
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'tools')],
             discoverySources: [discovery('acme.one', 'detector')],
             activateOnDemand: async () => {},
@@ -1085,7 +1062,7 @@ describe('stable plugin MCP host', () => {
                 listTools: async () => ({ items: overLimitItems }) as never,
             }),
             readDiscoverySource: () => ({
-                generation: 'generation-7', qualifiedId: 'acme.one/detector', isCurrent: () => true,
+                occurrenceId: 'occurrenceId-7', qualifiedId: 'acme.one/detector', isCurrent: () => true,
                 discover: async () => ({ items: overLimitItems }) as never,
             }),
         });
@@ -1110,7 +1087,7 @@ describe('stable plugin MCP host', () => {
         let nextResult = resultForPayload(resultByteLimit - emptyBytes);
         const callTool = vi.fn(async () => ({ ok: true }));
         const host = createStablePluginMcpHost({
-            generation: 'generation-7', servers: [server('acme.one', 'tools')], discoverySources: [],
+            servers: [server('acme.one', 'tools')], discoverySources: [],
             activateOnDemand: async () => {},
             readServer: () => runtime('acme.one/tools', {
                 listTools: async (_request) => nextResult,
@@ -1153,7 +1130,7 @@ describe('stable plugin MCP host', () => {
         let result: unknown = { ok: true };
         const callTool = vi.fn(async () => result as never);
         const host = createStablePluginMcpHost({
-            generation: 'generation-7', servers: [server('acme.one', 'tools')], discoverySources: [],
+            servers: [server('acme.one', 'tools')], discoverySources: [],
             activateOnDemand: async () => {},
             readServer: () => runtime('acme.one/tools', { callTool }), readDiscoverySource: () => null,
         });
@@ -1177,7 +1154,6 @@ describe('stable plugin MCP host', () => {
     it('scopes server, tool, and discovery cursors to the exact bound owner', async () => {
         const tool: PluginMcpTool = { name: 'echo', inputSchema: { type: 'object' } };
         const host = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'one'), server('acme.one', 'two')],
             discoverySources: [discovery('acme.one', 'detector')],
             activateOnDemand: async () => {},
@@ -1185,7 +1161,7 @@ describe('stable plugin MCP host', () => {
                 listTools: async () => ({ items: [tool], nextCursor: 'peer-tool-cursor' }),
             }),
             readDiscoverySource: () => ({
-                generation: 'generation-7', qualifiedId: 'acme.one/detector', isCurrent: () => true,
+                occurrenceId: 'occurrenceId-7', qualifiedId: 'acme.one/detector', isCurrent: () => true,
                 discover: async () => ({
                     items: [{
                         source: { pluginId: 'acme.one', localId: 'detector' },
@@ -1226,7 +1202,7 @@ describe('stable plugin MCP host', () => {
     it('does not start pre-aborted demand and disposes a transport acquired after caller detachment', async () => {
         const activateOnDemand = vi.fn(async () => {});
         const dynamicHost = createStablePluginMcpHost({
-            generation: 'generation-7', servers: [server('acme.one', 'tools')], discoverySources: [],
+            servers: [server('acme.one', 'tools')], discoverySources: [],
             activateOnDemand, readServer: () => runtime('acme.one/tools'), readDiscoverySource: () => null,
         });
         const alreadyAborted = new AbortController();
@@ -1241,7 +1217,7 @@ describe('stable plugin MCP host', () => {
         const transportPromise = new Promise<PluginMcpClient>((resolve) => { resolveTransport = resolve; });
         const transportDispose = vi.fn(async () => {});
         const staticHost = createStablePluginMcpHost({
-            generation: 'generation-7', servers: [server('acme.one', 'remote', { kind: 'static' })], discoverySources: [],
+            servers: [server('acme.one', 'remote', { kind: 'static' })], discoverySources: [],
             activateOnDemand: async () => {}, readServer: () => null, readDiscoverySource: () => null,
             connectDeclaredTransport: async () => await transportPromise,
         });
@@ -1267,7 +1243,7 @@ describe('stable plugin MCP host', () => {
 
     it('redacts peer failures at the stable service boundary', async () => {
         const host = createStablePluginMcpHost({
-            generation: 'generation-7', servers: [server('acme.one', 'tools')], discoverySources: [],
+            servers: [server('acme.one', 'tools')], discoverySources: [],
             activateOnDemand: async () => {},
             readServer: () => runtime('acme.one/tools', {
                 callTool: async () => { throw new Error('token=super-secret'); },
@@ -1287,7 +1263,7 @@ describe('stable plugin MCP host', () => {
     it('preserves the ordinary MCP method-not-found code without exposing remote error text', async () => {
         const remoteError = Object.assign(new Error('authorization=secret'), { code: -32601 });
         const host = createStablePluginMcpHost({
-            generation: 'generation-7', servers: [server('acme.one', 'remote', { kind: 'static' })], discoverySources: [],
+            servers: [server('acme.one', 'remote', { kind: 'static' })], discoverySources: [],
             activateOnDemand: async () => {}, readServer: () => null, readDiscoverySource: () => null,
             connectDeclaredTransport: async () => connectedClient({
                 listResources: async () => { throw remoteError; },
@@ -1312,7 +1288,7 @@ describe('stable plugin MCP host', () => {
         const clientWait = new Promise<void>((resolve) => { releaseClient = resolve; });
         const clientDispose = vi.fn(async () => { await clientWait; });
         const clientHost = createStablePluginMcpHost({
-            generation: 'generation-7', servers: [server('acme.one', 'remote', { kind: 'static' })], discoverySources: [],
+            servers: [server('acme.one', 'remote', { kind: 'static' })], discoverySources: [],
             activateOnDemand: async () => {}, readServer: () => null, readDiscoverySource: () => null,
             connectDeclaredTransport: async () => connectedClient({
                 listTools: async () => ({ items: [] }), callTool: async () => null, dispose: clientDispose,
@@ -1331,7 +1307,7 @@ describe('stable plugin MCP host', () => {
         expect(clientDispose).toHaveBeenCalledOnce();
 
         const failedManualHost = createStablePluginMcpHost({
-            generation: 'generation-7', servers: [server('acme.one', 'failed', { kind: 'static' })], discoverySources: [],
+            servers: [server('acme.one', 'failed', { kind: 'static' })], discoverySources: [],
             activateOnDemand: async () => {}, readServer: () => null, readDiscoverySource: () => null,
             connectDeclaredTransport: async () => connectedClient({
                 listTools: async () => ({ items: [] }), callTool: async () => null,
@@ -1348,7 +1324,6 @@ describe('stable plugin MCP host', () => {
         const slowWait = new Promise<void>((resolve) => { releaseSlow = resolve; });
         let connectionIndex = 0;
         const aggregateHost = createStablePluginMcpHost({
-            generation: 'generation-7',
             servers: [server('acme.one', 'first', { kind: 'static' }), server('acme.one', 'second', { kind: 'static' })],
             discoverySources: [], activateOnDemand: async () => {}, readServer: () => null, readDiscoverySource: () => null,
             connectDeclaredTransport: async () => {

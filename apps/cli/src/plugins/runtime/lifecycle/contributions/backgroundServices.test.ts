@@ -38,7 +38,7 @@ function registration(
     return Object.freeze({
         pluginId: 'acme.indexer',
         pluginVersion: '1.0.0',
-        generation: 'generation-one',
+        occurrenceId: 'generation-one',
         localId,
         runner,
     });
@@ -71,7 +71,7 @@ describe('background service runner host', () => {
         expect(diagnostics).toEqual([{
             code: 'background_service_unavailable',
             pluginId: 'acme.indexer',
-            generation: 'generation-one',
+            occurrenceId: 'generation-one',
             localId: 'network-supervisor',
             reason: {
                 code: 'plugin_host_access_service_unavailable',
@@ -255,7 +255,7 @@ describe('background service runner host', () => {
         expect(policyCalls).toEqual([{
             target: {
                 pluginId,
-                generation: '1',
+                occurrenceId: '1',
                 qualifiedId: `${pluginId}/backgroundServices/gateway-supervisor`,
             },
             context: expect.objectContaining({
@@ -386,7 +386,7 @@ describe('background service runner host', () => {
             expect(policyCalls).toEqual([{
                 target: {
                     pluginId,
-                    generation: '1',
+                    occurrenceId: '1',
                     qualifiedId: `${pluginId}/backgroundServices/account-state-supervisor`,
                 },
                 context: expect.objectContaining({
@@ -570,7 +570,7 @@ describe('background service runner host', () => {
                         ui: createPluginInvocationPresentation({
                             currentSession: null,
                             signal: input.signal,
-                            isGenerationCurrent: input.isGenerationCurrent,
+                            isOccurrenceCurrent: input.isOccurrenceCurrent,
                         }),
                     }),
                     complete() {},
@@ -616,7 +616,7 @@ describe('background service runner host', () => {
                         invokedAtMs: 1,
                         signal: input.signal,
                         services: createUnavailablePluginServices(),
-                        ui: createPluginInvocationPresentation({ currentSession: null, signal: input.signal, isGenerationCurrent: input.isGenerationCurrent }),
+                        ui: createPluginInvocationPresentation({ currentSession: null, signal: input.signal, isOccurrenceCurrent: input.isOccurrenceCurrent }),
                     }),
                     complete() {},
                 });
@@ -652,7 +652,7 @@ describe('background service runner host', () => {
                         invokedAtMs: 1,
                         signal: input.signal,
                         services: createUnavailablePluginServices(),
-                        ui: createPluginInvocationPresentation({ currentSession: null, signal: input.signal, isGenerationCurrent: input.isGenerationCurrent }),
+                        ui: createPluginInvocationPresentation({ currentSession: null, signal: input.signal, isOccurrenceCurrent: input.isOccurrenceCurrent }),
                     }),
                     complete() {},
                 });
@@ -727,11 +727,11 @@ describe('background service runner host', () => {
                     id: input.localId,
                     qualifiedId: `${input.pluginId}/backgroundServices/${input.localId}`,
                 }),
-                generation: input.generation,
+                occurrenceId: input.occurrenceId,
                 correlationId: 'background-indexer',
                 surface: 'background' as const,
                 signal: input.signal,
-                isGenerationCurrent: input.isGenerationCurrent,
+                isOccurrenceCurrent: input.isOccurrenceCurrent,
             });
             return Object.freeze({
                 context: Object.freeze({
@@ -742,9 +742,9 @@ describe('background service runner host', () => {
                     signal: seed.signal,
                     services: owner.createServices(
                         seed,
-                        owner.createOrdinaryServiceBinding(seed.generation, 'background-binding'),
+                        owner.createOrdinaryServiceBinding(seed.occurrenceId, 'background-binding'),
                     ),
-                    ui: createPluginInvocationPresentation({ currentSession: null, signal: seed.signal, isGenerationCurrent: seed.isGenerationCurrent }),
+                    ui: createPluginInvocationPresentation({ currentSession: null, signal: seed.signal, isOccurrenceCurrent: seed.isOccurrenceCurrent }),
                 }),
                 complete() {},
             });
@@ -752,11 +752,11 @@ describe('background service runner host', () => {
         const publisherSeed = Object.freeze({
             plugin: Object.freeze({ id: 'acme.sessions', version: '1.0.0' }),
             contribution: Object.freeze({ id: 'publish', qualifiedId: 'acme.sessions/actions/publish' }),
-            generation: 'generation-one',
+            occurrenceId: 'generation-one',
             correlationId: 'publisher',
             surface: 'cli' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const publisher = owners.createServices(
             publisherSeed,

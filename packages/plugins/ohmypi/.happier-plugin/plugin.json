@@ -526,6 +526,19 @@
   },
   "id": "happier.agent.ohmypi",
   "runtime": {
+    "agentFactories": [
+      {
+        "loadMode": "immutable-js",
+        "localAgentId": "ohmypi",
+        "locator": {
+          "export": "createOhMyPiAgentRuntime",
+          "externalSessionsExport": "ohMyPiExternalSessionsContribution",
+          "module": "./agent/runtime/engine",
+          "runtimeApiVersion": 1
+        },
+        "normalizedModulePath": ".happier-plugin/agent/runtime/engine.js"
+      }
+    ],
     "apiVersion": 1
   },
   "schemaVersion": 2,

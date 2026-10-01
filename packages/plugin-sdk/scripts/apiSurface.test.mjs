@@ -114,6 +114,17 @@ const HOST_REGISTRATION_EXECUTION_RUN_SYMBOL = Object.freeze({
   sourceExport: 'createExecutionRunHostBackendFromSessionRuntime',
 });
 
+const HOST_REGISTRATION_DEFINE_PLUGIN_SYMBOLS = Object.freeze([
+  'normalizePluginAccountCollectionMigrationRuntimeProjection',
+  'normalizePluginDaemonDatabaseRuntimeProjection',
+  'projectPluginAccountCollectionDeclaration',
+].map((exportName) => Object.freeze({
+  ...HOST_REGISTRATION_SYMBOL,
+  exportName,
+  sourceModule: 'src/definePlugin.ts',
+  sourceExport: exportName,
+})));
+
 const HOST_REGISTRATION_TYPE_SYMBOLS = Object.freeze([
   'PluginRegistrationRight',
   'PluginAgentRuntimeRegistration',
@@ -164,6 +175,7 @@ const HOST_SYMBOLS = Object.freeze([
   HOST_REGISTRATION_ACTION_INPUT_PARSER_SYMBOL,
   HOST_REGISTRATION_ACTION_RESULT_PARSER_SYMBOL,
   HOST_REGISTRATION_SYMBOL,
+  ...HOST_REGISTRATION_DEFINE_PLUGIN_SYMBOLS,
   ...HOST_REGISTRATION_TYPE_SYMBOLS,
   HOST_FILE_LOCK_RECLAIM_SYMBOL,
   HOST_FILE_LOCK_SYMBOL,
@@ -505,6 +517,9 @@ test('projects symbols without posture metadata while preserving structured depr
             sourceExport: 'createPluginRegistrationScope',
             realm: 'any',
           },
+          ...HOST_REGISTRATION_DEFINE_PLUGIN_SYMBOLS.map((symbol) => ({
+            ...symbol,
+          })),
           ...HOST_REGISTRATION_TYPE_SYMBOLS.map((symbol) => ({
             ...symbol,
           })),
@@ -579,6 +594,21 @@ test('projects symbols without posture metadata while preserving structured depr
     },
     {
       exportName: 'createPluginRegistrationScope',
+      replacement: undefined,
+      removalCondition: undefined,
+    },
+    {
+      exportName: 'normalizePluginAccountCollectionMigrationRuntimeProjection',
+      replacement: undefined,
+      removalCondition: undefined,
+    },
+    {
+      exportName: 'normalizePluginDaemonDatabaseRuntimeProjection',
+      replacement: undefined,
+      removalCondition: undefined,
+    },
+    {
+      exportName: 'projectPluginAccountCollectionDeclaration',
       replacement: undefined,
       removalCondition: undefined,
     },

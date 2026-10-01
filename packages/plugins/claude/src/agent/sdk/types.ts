@@ -100,6 +100,8 @@ export type QueryPrompt = string | AsyncIterable<SDKMessage>;
 export interface QueryOptions extends ClaudeRemoteAdvancedOptions {
     abort?: AbortSignal;
     appendSystemPrompt?: string;
+    /** Installed Claude native startup transport; never puts this text in argv. */
+    appendSystemPromptFile?: boolean;
     customSystemPrompt?: string;
     cwd?: string;
     effort?: string;

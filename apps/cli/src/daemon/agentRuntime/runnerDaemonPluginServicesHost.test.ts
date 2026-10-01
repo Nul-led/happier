@@ -55,7 +55,11 @@ const binding = createAgentSessionRunnerFactoryBinding({
     pluginVersion: '1.0.0',
     agentId: 'fixture.agent',
     localAgentId: 'agent',
-    immutableGenerationId: 'generation-1',
+    sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: 'generation-1',
+        installSource: 'localPath',
+    },
     locator: {
         module: './agent.js',
         export: 'createRuntime',
@@ -153,8 +157,12 @@ function managedProviderBootstrap() {
             },
             pluginId: 'provider.plugin',
             providerLocalId: 'gateway',
-            activationGeneration: '17',
-            immutableGenerationId: 'provider-generation-17',
+            occurrenceId: 'occurrence:provider.plugin:17',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'provider-generation-17',
+                installSource: 'npm',
+            },
             manifestAuthority: 'external',
             operationClaimId: 'session-provider-claim-1',
         },
@@ -1043,7 +1051,7 @@ describe('runner daemon PluginServices host', () => {
         const exec = createStablePluginExecService({
             allowedExecutables: [executable],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable: async () => {
                 throw new Error('an exact system-tool resolution must remain available');
             },
@@ -1175,7 +1183,7 @@ describe('runner daemon PluginServices host', () => {
             allowedEnvKeys: ['SAFE_ENV'],
             environment: { SAFE_ENV: 'host' },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable,
             async resolvePath() {
                 throw new Error('cwd was not expected');
@@ -1222,11 +1230,11 @@ describe('runner daemon PluginServices host', () => {
                 plugin: { id: 'fixture.plugin', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef:
                     fixturePluginMaterialization.resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'generation-1',
                 surface: 'cli',
                 session: { id: 'session-1' },
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: actionExecute },
             invokeContributedAction: vi.fn(),
@@ -1240,11 +1248,11 @@ describe('runner daemon PluginServices host', () => {
                     },
                     resolveCurrentPluginMaterializationRef:
                         fixturePluginMaterialization.resolveCurrentPluginMaterializationRef,
-                    generation: 'generation-1',
+                    occurrenceId: 'generation-1',
                     surface: 'cli',
                     session: { id: 'session-1' },
                     signal: new AbortController().signal,
-                    isGenerationCurrent: () => false,
+                    isOccurrenceCurrent: () => false,
                 },
                 actionExecutor: {
                     execute: vi.fn(async () => ({

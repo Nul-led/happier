@@ -19,6 +19,8 @@ import {
     createAccountEncryptionCurrentnessFixture,
     createSessionRecordFixture,
 } from '@/testkit/backends/sessionFixtures';
+import { readCurrentCommittedPluginGenerations } from '@/plugins/store/registry/generationStore';
+import { resolvePluginStorePaths } from '@/plugins/store/paths';
 
 const PLUGIN_ID = 'acme.external.lane05-session-action';
 const ACTION_ID = 'forward-to-session-run';
@@ -191,7 +193,7 @@ describe('installed external plugin Lane 05 Session Action', () => {
                         manifestVersion: '1.0.0',
                         installedPath: null,
                         trust,
-                        updatePolicy: 'reviewEveryUpdate',
+                        updatePolicy: 'allowed',
                         optionalAccess: [],
                     },
                     state: { enabled: true },
@@ -211,10 +213,19 @@ describe('installed external plugin Lane 05 Session Action', () => {
             });
             expect(contributes.activationTargets.find((target) => target.pluginId === PLUGIN_ID))
                 .toMatchObject({ provenance: 'external' });
+            const generationAuthority = await readCurrentCommittedPluginGenerations(
+                resolvePluginStorePaths({ happyHomeDir }),
+                {},
+            );
+            if (!generationAuthority) {
+                throw new Error('Expected committed external plugin generation authority');
+            }
             registry = await runWithServerHttpBaseUrl(homeUrl, async () => (
                 await resolveExecutablePluginRuntimeRegistry({
                     happyHomeDir,
                     contributes,
+                    generationAuthority,
+                    pluginIds: [PLUGIN_ID],
                     resolveCurrentMachineId: () => 'machine-lane05-plugin',
                     machineAdmissionTransport: async (request) => {
                         admissions.push(request);

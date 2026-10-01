@@ -50,6 +50,15 @@ exit 0
     'utf-8',
   );
   await chmod(join(fakeBinDir, 'launchctl'), 0o755);
+  await writeFile(
+    join(fakeBinDir, 'systemctl'),
+    `#!/bin/sh
+printf '%s\n' "$*" >> ${JSON.stringify(fakeLaunchctlLogPath)}
+exit 0
+`,
+    'utf-8',
+  );
+  await chmod(join(fakeBinDir, 'systemctl'), 0o755);
 
   const env = prependPathEntries(
     {
@@ -73,11 +82,18 @@ exit 0
   assert.equal(payload.ok, true);
   assert.equal(payload.action, 'repair');
 
-  const plistPath = join(tmp, 'Library', 'LaunchAgents', 'dev.happier.stack.repair-test.plist');
-  const plist = await readFile(plistPath, 'utf-8');
-  assert.match(plist, /dev\.happier\.stack\.repair-test/);
+  const serviceDefinitionPath = process.platform === 'darwin'
+    ? join(tmp, 'Library', 'LaunchAgents', 'dev.happier.stack.repair-test.plist')
+    : join(tmp, '.config', 'systemd', 'user', 'dev.happier.stack.repair-test.service');
+  const serviceDefinition = await readFile(serviceDefinitionPath, 'utf-8');
+  assert.match(serviceDefinition, /dev\.happier\.stack\.repair-test/);
 
-  const launchctlLog = await readFile(fakeLaunchctlLogPath, 'utf-8');
-  assert.match(launchctlLog, /^bootstrap gui\//m);
-  assert.match(launchctlLog, /^kickstart -k gui\//m);
+  const serviceLog = await readFile(fakeLaunchctlLogPath, 'utf-8');
+  if (process.platform === 'darwin') {
+    assert.match(serviceLog, /^bootstrap gui\//m);
+    assert.match(serviceLog, /^kickstart -k gui\//m);
+  } else {
+    assert.match(serviceLog, /^--user enable dev\.happier\.stack\.repair-test\.service$/m);
+    assert.match(serviceLog, /^--user restart dev\.happier\.stack\.repair-test\.service$/m);
+  }
 });

@@ -4,10 +4,12 @@ import { delimiter, join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
+import axios, { AxiosHeaders } from 'axios';
 import {
     accountSettingsParse,
     ProviderConnectionIdSchema,
     type ProviderRuntimeBindingBasisV1,
+    type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import type {
     ManagedDependenciesService,
@@ -63,12 +65,6 @@ import {
     createLocalPathPluginDistributionIdentity,
     createPluginTrustRecord,
 } from '@/plugins/store/install/trustIdentity';
-import {
-    resolveMergedContributionRegistry,
-} from '@/plugins/projection/registry/createResolvedContributionRegistry';
-import {
-    BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-} from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import {
     PluginStateRecordSchema,
@@ -80,8 +76,17 @@ import {
     readCurrentCommittedPluginGenerations,
 } from '@/plugins/store/registry/generationStore';
 import {
+    resolveMergedContributionRegistry,
+} from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import {
+    createManagedPluginSourceCustody,
+} from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
+import {
     createUnavailablePluginServices,
 } from '@/plugins/runtime/invocation/services/unavailable';
+import {
+    resolveRetainedAgentSessionRealtimeVoiceAuthority,
+} from '@/agent/runtime/session/realtime/resolveAgentSessionRealtimeVoiceAuthority';
 import {
     loadRetainedAgentRuntimeLeaf,
 } from '@/plugins/runtime/runner/loadRetainedAgentRuntimeLeaf';
@@ -96,18 +101,36 @@ import type {
     ExternalSessionFollowHostOperation,
 } from '@/session/external/followHostOperation';
 
-import { resolveExecutablePluginRuntimeRegistry } from './resolveExecutablePluginRuntimeRegistry';
 import {
-    prepareBundledExecutableGenerationAdmission,
-    selectBundledExecutableImmutableArtifacts,
-} from './bundledActivationSource';
+    resolveExecutablePluginRuntimeRegistry as resolveExecutablePluginRuntimeRegistryProduction,
+} from './resolveExecutablePluginRuntimeRegistry';
 import { createPluginReloadController } from './reload/controller';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
 import { createAccountEncryptionCurrentnessFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
-import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import {
+    normalizeServerHttpBaseUrl,
+    runWithServerHttpBaseUrl,
+} from '@/api/client/serverHttpBaseUrl';
+import { configuration } from '@/configuration';
 import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { resetActiveAccountSettingsSnapshotForTests, setActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
+
+function resolveExecutablePluginRuntimeRegistry(
+    params: NonNullable<Parameters<typeof resolveExecutablePluginRuntimeRegistryProduction>[0]> = {},
+) {
+    return resolveExecutablePluginRuntimeRegistryProduction({
+        ...params,
+        resolveDevelopmentSourceAuthority:
+            params.resolveDevelopmentSourceAuthority
+            ?? (({ pluginId, rootPath }) => ({
+                kind: 'development' as const,
+                registeredRootId: `retained-routing-integration:${pluginId}`,
+                canonicalRoot: rootPath,
+                observedRevision: 1,
+            })),
+    });
+}
 
 const externalSessionsBoundary = vi.hoisted(() => ({
     ensureExternalSessionLink: vi.fn(async () => ({
@@ -130,6 +153,7 @@ vi.mock('@/persistence', async (importOriginal) => ({
 
 const PLUGIN_ID = 'acme.retained-service-routing';
 const AGENT_ID = 'routing-agent';
+const QUALIFIED_AGENT_ID = `${PLUGIN_ID}/${AGENT_ID}`;
 const SESSION_ID = 'session-retained-routing';
 const DEPENDENCY_ID = 'routing-tool';
 const MCP_SERVER_ID = 'routing-tools';
@@ -194,7 +218,7 @@ async function createTrustedLocalLinkInstall(input: Readonly<{
                 distribution,
                 approvedAtMs: Date.now(),
             }),
-            updatePolicy: 'reviewEveryUpdate' as const,
+            updatePolicy: 'allowed' as const,
             optionalAccess: Object.freeze([]),
         }),
     });
@@ -399,7 +423,6 @@ function pluginManifest(input: Readonly<{
                 },
                 client: {
                     artifactId: 'routing-realtime-client',
-                    modulePath: './voice.mjs',
                     exportName: 'activate',
                 },
             }],
@@ -628,7 +651,10 @@ async function writePluginSource(input: Readonly<{
                     'deny-retained-http',
                     async (request) => {
                         if (request.url.endsWith('/blocked')) {
-                            return { decision: 'deny' };
+                            return {
+                                decision: 'deny',
+                                code: 'retained_policy_blocked',
+                            };
                         }
                         if (
                             request.headers.authorization !== '[redacted]'
@@ -658,6 +684,7 @@ async function installCurrentSource(input: Readonly<{
     happyHomeDir: string;
     pluginRoot: string;
     version: string;
+    retainedCurrentHostGenerationIds?: readonly string[];
 }>): Promise<void> {
     const identity = await createTrustedLocalLinkInstall(input);
     const catalogRecord = PluginStateRecordSchema.parse({
@@ -682,6 +709,12 @@ async function installCurrentSource(input: Readonly<{
         pluginId: PLUGIN_ID,
         sourceRootPath: input.pluginRoot,
         plugin: catalogRecord,
+        ...(input.retainedCurrentHostGenerationIds
+            ? {
+                retainedCurrentHostGenerationIds:
+                    input.retainedCurrentHostGenerationIds,
+            }
+            : {}),
     });
 }
 
@@ -689,25 +722,12 @@ async function readCurrentFixtureGenerationAuthority(input: Readonly<{
     happyHomeDir: string;
     expectedVersion: 'H' | 'I';
 }>) {
-    const contributes = await resolveMergedContributionRegistry({
-        happyHomeDir: input.happyHomeDir,
-    });
-    const bundledArtifacts = selectBundledExecutableImmutableArtifacts({
-        artifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-        activationTargets: contributes.activationTargets,
-    });
-    await prepareBundledExecutableGenerationAdmission({
-        artifacts: bundledArtifacts,
-    });
     const generationAuthority =
         await readCurrentCommittedPluginGenerations(
             resolvePluginStorePaths({
                 happyHomeDir: input.happyHomeDir,
             }),
-            {
-                bundledArtifacts,
-                isolateInvalidInstalledGenerations: true,
-            },
+            { isolateInvalidInstalledGenerations: true },
         );
     if (!generationAuthority?.generations.has(PLUGIN_ID)) {
         throw new Error(
@@ -865,11 +885,23 @@ function providerScope(): RunnerManagedProviderCustodyScopeV1 {
         runtimeBindingBasis: providerRuntimeBindingBasis(),
         pluginId: 'acme.provider-p',
         providerLocalId: 'gateway',
-        activationGeneration: 'provider-p-activation',
-        immutableGenerationId: 'provider-p-generation',
+        occurrenceId: 'provider-p-occurrence',
+        sourceCustody: createManagedPluginSourceCustody(
+            'provider-p-generation',
+            'npm',
+        ),
         manifestAuthority: 'external',
         operationClaimId: 'session-demand:provider-p',
     });
+}
+
+function requireManagedImmutableGenerationId(
+    sourceCustody: PluginSourceCustodyV1,
+): string {
+    if (sourceCustody.kind !== 'managed') {
+        throw new Error('Fixture requires managed generation custody');
+    }
+    return sourceCustody.immutableGenerationId;
 }
 
 function providerClaim(
@@ -883,7 +915,9 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
         const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-retained-list-home-'));
         const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-retained-list-plugin-'));
         const home = fastify();
-        const homeUrl = 'http://retained-list-home.test';
+        const homeUrl = new URL(
+            normalizeServerHttpBaseUrl(configuration.apiServerUrl),
+        ).origin;
         const credentials = { token: 'retained-list-alice', encryption: null } as const;
         const restoreHttp = installAxiosFastifyAdapter({ app: home, origin: homeUrl });
         const publishPolicy = (token: string, enabled: boolean, version: number) => setActiveAccountSettingsSnapshot({
@@ -894,38 +928,66 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
             settingsSecretsReadKeys: [],
             settings: accountSettingsParse({ actionsSettingsV1: { v: 1, actions: { 'session.list': { enabled } } } }),
         });
-        const query = {
-            v: 1 as const, storage: 'active' as const, includeInactive: false,
-            scope: 'my_work' as const, attention: 'any' as const,
-            audiences: [], tagIds: [], limit: 10,
-        };
         const domainRequests: string[] = [];
-        home.get('/v1/account/encryption/currentness', async () => createAccountEncryptionCurrentnessFixture());
-        home.post('/v2/sessions/query', async (request) => {
+        const originalAxiosGet = axios.get.bind(axios);
+        const currentnessGet = vi.spyOn(axios, 'get').mockImplementation(
+            async (url, config) => String(url).endsWith(
+                '/v1/account/encryption/currentness',
+            )
+                ? {
+                    data: createAccountEncryptionCurrentnessFixture({ mode: 'plain' }),
+                    status: 200,
+                    statusText: 'OK',
+                    headers: Object.freeze({}),
+                    config: { headers: new AxiosHeaders() },
+                }
+                : await originalAxiosGet(url, config),
+        );
+        home.get(`/v2/sessions/${SESSION_ID}`, async (request) => {
             domainRequests.push(String(request.headers.authorization));
-            expect(request.body).toEqual(query);
             return {
-                sessions: [createSessionRecordFixture({
-                    id: 'runtime-alice-session', encryptionMode: 'plain',
-                    metadata: JSON.stringify({ summary: { text: 'Runtime Account work' } }),
-                })],
-                nextCursor: null, hasNext: false,
-                attentionNextCursor: 'cursor_v1_attention-next', attentionHasNext: true,
+                session: createSessionRecordFixture({
+                    id: SESSION_ID,
+                    encryptionMode: 'plain',
+                    metadata: JSON.stringify({
+                        summary: { text: 'Runtime Account work' },
+                    }),
+                }),
             };
         });
         let registry: Awaited<ReturnType<typeof resolveExecutablePluginRuntimeRegistry>> | null = null;
         vi.stubEnv('HAPPIER_ACCOUNT_SETTINGS_MODE', 'never');
         vi.stubEnv('HAPPIER_ACTIONS_SETTINGS_V1', '');
         resetInMemoryAccountSettingsContextForTests();
+        externalSessionsBoundary.readStoredCredentials.mockResolvedValue(
+            credentials,
+        );
         publishPolicy(credentials.token, true, 1);
         try {
             await writePluginSource({ pluginRoot, version: 'G', accountServiceId: 'account-g', toolName: process.execPath });
             await installCurrentSource({ happyHomeDir, pluginRoot, version: '1.0.0' });
-            registry = await resolveExecutablePluginRuntimeRegistry({
+            const resolvedContributes = await resolveMergedContributionRegistry({
                 happyHomeDir,
             });
+            const contributes = Object.freeze({
+                ...resolvedContributes,
+                // Production obtains this from the current Machine
+                // materialization. The fixture projects that same host-owned
+                // fact; retained plugin input cannot supply or replace it.
+                materializationIdsByPluginId: Object.freeze({
+                    ...(resolvedContributes.materializationIdsByPluginId ?? {}),
+                    [PLUGIN_ID]: 'materialization-retained-list-current',
+                }),
+            });
+            registry = await runWithServerHttpBaseUrl(homeUrl, () => (
+                resolveExecutablePluginRuntimeRegistry({
+                    happyHomeDir,
+                    contributes,
+                    resolveCurrentMachineId: () => 'machine-retained-list',
+                })
+            ));
             await registry.activateContributionsOnDemand([{ pluginId: PLUGIN_ID, family: 'agents', localId: AGENT_ID }]);
-            const binding = registry.agentRuntimesByAgentId.get(AGENT_ID)?.sessionRunnerFactoryBinding;
+            const binding = registry.agentRuntimesByAgentId.get(QUALIFIED_AGENT_ID)?.sessionRunnerFactoryBinding;
             if (!binding || !registry.createRetainedRunnerAgentCurrentGlobalActionsService) throw new Error('Retained Agent binding unavailable');
             let current = true;
             // Input/turn witnesses carry causal facts only; alternating human inputs never supply credentials.
@@ -938,21 +1000,19 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 binding, sessionId: SESSION_ID, correlationId: 'retained-list',
                 signal: new AbortController().signal,
                 readActiveTurnAdmissionWitness: () => witness,
-                isGenerationCurrent: () => current,
+                isOccurrenceCurrent: () => current,
             });
-            const invoke = () => runWithServerHttpBaseUrl('http://unrelated-home.test', () => actions.execute('session.list', { query, view: 'awareness' }));
+            const invoke = () => runWithServerHttpBaseUrl(homeUrl, () => actions.execute('session.list', { view: 'awareness' }));
             const awarenessResult = await invoke();
             expect(awarenessResult).toMatchObject({
                 view: 'awareness',
-                sessions: [{ sessionId: 'runtime-alice-session' }],
+                sessions: [{ sessionId: SESSION_ID }],
             });
             expect(Object.keys(awarenessResult).sort()).toEqual([
                 'hasNext', 'nextCursor', 'projectionVersion', 'sessions', 'view',
             ]);
-            externalSessionsBoundary.readStoredCredentials.mockResolvedValue({ token: 'retained-list-bob', encryption: null });
-            publishPolicy('retained-list-bob', false, 1);
             witness = { ...LATER_WITNESS, inputId: 'bob-input', callerPermissionMode: 'default' };
-            await expect(invoke()).resolves.toMatchObject({ sessions: [{ sessionId: 'runtime-alice-session' }] });
+            await expect(invoke()).resolves.toMatchObject({ sessions: [{ sessionId: SESSION_ID }] });
             expect(domainRequests).toEqual([`Bearer ${credentials.token}`, `Bearer ${credentials.token}`]);
             publishPolicy(credentials.token, false, 2);
             await expect(invoke()).rejects.toMatchObject({ code: 'action_disabled' });
@@ -962,6 +1022,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
             expect(domainRequests).toHaveLength(2);
         } finally {
             restoreHttp();
+            currentnessGet.mockRestore();
             vi.unstubAllEnvs();
             resetActiveAccountSettingsSnapshotForTests();
             resetInMemoryAccountSettingsContextForTests();
@@ -1155,11 +1216,11 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 expect.arrayContaining([
                     expect.objectContaining({
                         pluginId: PLUGIN_ID,
-                        id: AGENT_ID,
+                        id: QUALIFIED_AGENT_ID,
                     }),
                 ]),
             );
-            const gAgent = gRegistry.agentRuntimesByAgentId.get(AGENT_ID);
+            const gAgent = gRegistry.agentRuntimesByAgentId.get(QUALIFIED_AGENT_ID);
             expect(gAgent).toMatchObject({
                 hasPrimaryRuntime: true,
                 sessionRunnerFactoryBinding: {
@@ -1169,6 +1230,8 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
             const binding = gAgent?.sessionRunnerFactoryBinding;
             expect(binding).toBeDefined();
             if (!binding) return;
+            const bindingImmutableGenerationId =
+                requireManagedImmutableGenerationId(binding.sourceCustody);
             const runner = Object.freeze({
                 pid: process.pid,
                 processStartTimeMs: 1,
@@ -1191,9 +1254,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 qualifiedDependencyIds: [
                     `${PLUGIN_ID}/${DEPENDENCY_ID}`,
                 ],
-                sourceGenerationIds: [
-                    binding.immutableGenerationId,
-                ],
+                sourceCustodies: [binding.sourceCustody],
             });
             expect(gRegistry.generation).toBe(1);
 
@@ -1212,7 +1273,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 environment: Readonly<Record<string, string>>;
                 providerBindingActive: boolean;
                 signal: AbortSignal;
-                isGenerationCurrent(): boolean;
+                isOccurrenceCurrent(): boolean;
                 managedDependencyRetention:
                     typeof managedDependencyRetention;
             }>) => {
@@ -1250,7 +1311,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                         environment: {},
                         providerBindingActive: false,
                         signal: input.signal,
-                        isGenerationCurrent: () =>
+                        isOccurrenceCurrent: () =>
                             invocationAuthorityCurrent,
                         managedDependencyRetention,
                     });
@@ -1272,7 +1333,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                                     sessionId: input.sessionId,
                                     correlationId: input.invocationId,
                                     signal: input.signal,
-                                    isGenerationCurrent: () =>
+                                    isOccurrenceCurrent: () =>
                                         invocationAuthorityCurrent,
                                 })).list(query);
                             } finally {
@@ -1295,7 +1356,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                                     sessionId: input.sessionId,
                                     correlationId: input.invocationId,
                                     signal: input.signal,
-                                    isGenerationCurrent: () =>
+                                    isOccurrenceCurrent: () =>
                                         invocationAuthorityCurrent,
                                 })).discover(provider, query, options);
                             } finally {
@@ -1319,7 +1380,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                                     sessionId: input.sessionId,
                                     correlationId: input.invocationId,
                                     signal: input.signal,
-                                    isGenerationCurrent: () =>
+                                    isOccurrenceCurrent: () =>
                                         invocationAuthorityCurrent,
                                 })).connect(ref, options);
                                 let disposal: Promise<void> | null = null;
@@ -1372,7 +1433,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                                 sessionId: input.sessionId,
                                 correlationId: input.invocationId,
                                 signal: input.signal,
-                                isGenerationCurrent: () =>
+                                isOccurrenceCurrent: () =>
                                     invocationAuthorityCurrent,
                             }));
                         } finally {
@@ -1476,7 +1537,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                                     correlationId:
                                         input.invocationId,
                                     signal: input.signal,
-                                    isGenerationCurrent: () =>
+                                    isOccurrenceCurrent: () =>
                                         invocationAuthorityCurrent,
                                 });
                                 const executeCurrentAction =
@@ -1620,6 +1681,10 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                     happyHomeDir,
                     expectedVersion: 'H',
                 });
+            const pinnedRequests: Array<Readonly<{
+                url: string;
+                headers: Readonly<Record<string, string>>;
+            }>> = [];
             const resolvedHRegistry =
                 await resolveExecutablePluginRuntimeRegistry({
                 happyHomeDir,
@@ -1632,6 +1697,29 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                     currentGlobalFollowOwner,
                 currentGlobalExternalSessionsRouter:
                     reloadController.currentGlobalExternalSessions,
+                networkDependencies: {
+                    resolveNetworkAddresses: async () =>
+                        Object.freeze(['93.184.216.34']),
+                    openPinnedStream: async (request) => {
+                        pinnedRequests.push(Object.freeze({
+                            url: request.url,
+                            headers: request.headers,
+                        }));
+                        const body = new TextEncoder().encode('allowed');
+                        let delivered = false;
+                        return Object.freeze({
+                            status: 200,
+                            headers: Object.freeze({}),
+                            contentLength: body.byteLength,
+                            read: async () => {
+                                if (delivered) return null;
+                                delivered = true;
+                                return body;
+                            },
+                            cancel() {},
+                        });
+                    },
+                },
                 resolveExternalSessionCurrentMachineId: () =>
                     'machine-current-global-routing',
             });
@@ -1651,10 +1739,10 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                     sessionId: SESSION_ID,
                     correlationId: 'current-global-owner-preservation',
                     signal: new AbortController().signal,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                 });
             const firstCurrentPage = await actualHCurrentExternalSessions.list({
-                agentId: AGENT_ID,
+                agentId: QUALIFIED_AGENT_ID,
             });
             const firstCurrentRef = firstCurrentPage.items[0]?.ref;
             const firstCurrentCursor = firstCurrentPage.nextCursor;
@@ -1663,17 +1751,19 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
             }
             expect(firstCurrentRef.remoteSessionId).toBe('current-G');
             await expect(actualHCurrentExternalSessions.list({
-                agentId: AGENT_ID,
+                agentId: QUALIFIED_AGENT_ID,
                 cursor: firstCurrentCursor,
             })).resolves.toMatchObject({
                 items: [{
                     ref: {
-                        agentId: AGENT_ID,
+                        agentId: QUALIFIED_AGENT_ID,
                         remoteSessionId: 'current-G-page-2',
                     },
                 }],
                 nextCursor: null,
             });
+            expect(currentGlobalFollowSubscriptionDispose)
+                .not.toHaveBeenCalled();
             const hFollowTranscript = vi.fn(async () => Object.freeze({
                 status: 'unavailable' as const,
                 code: 'plugin_external_follow_unavailable',
@@ -1706,7 +1796,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                         return Object.freeze({
                             items: Object.freeze([Object.freeze({
                                 ref: Object.freeze({
-                                    agentId: AGENT_ID,
+                                    agentId: QUALIFIED_AGENT_ID,
                                     sourceId: 'default',
                                     remoteSessionId: 'current-H',
                                 }),
@@ -1763,19 +1853,27 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 localId: AGENT_ID,
             }]);
             const hAgent =
-                hRegistry.agentRuntimesByAgentId.get(AGENT_ID);
+                hRegistry.agentRuntimesByAgentId.get(QUALIFIED_AGENT_ID);
             expect(hRegistry.generation).toBe(1);
             expect(hAgent).toMatchObject({
                 pluginVersion: '2.0.0',
-                immutableGenerationId: expect.any(String),
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: expect.any(String),
+                    installSource: 'localPath',
+                },
             });
-            if (!hAgent?.immutableGenerationId) {
+            if (!hAgent) {
                 throw new Error(
-                    'Current H immutable generation is unavailable',
+                    'Current H Agent runtime is unavailable',
                 );
             }
-            expect(hAgent?.immutableGenerationId)
-                .not.toBe(binding.immutableGenerationId);
+            const hAgentImmutableGenerationId =
+                requireManagedImmutableGenerationId(
+                    hAgent.sourceCustody,
+                );
+            expect(hAgentImmutableGenerationId)
+                .not.toBe(bindingImmutableGenerationId);
             const voiceProvider = Object.freeze({
                 pluginId: PLUGIN_ID,
                 localId: VOICE_PROVIDER_ID,
@@ -1793,12 +1891,12 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
             expect(
                 hRegistry.resolveVoiceProviderRuntimeLifecycle?.(
                     voiceProvider,
-                )?.generation,
-            ).toBe(hAgent.immutableGenerationId);
+                )?.occurrenceId,
+            ).toBe(hRegistry.readPluginOccurrenceId?.(PLUGIN_ID));
             expect(JSON.parse(await readFile(join(
                 resolvePluginStorePaths({ happyHomeDir })
                     .generationsDir,
-                binding.immutableGenerationId,
+                bindingImmutableGenerationId,
                 '.happier-plugin',
                 'plugin.json',
             ), 'utf8')) as unknown).toMatchObject({
@@ -1824,9 +1922,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 qualifiedDependencyIds: [
                     `${PLUGIN_ID}/${DEPENDENCY_ID}`,
                 ],
-                sourceGenerationIds: [
-                    hAgent.immutableGenerationId,
-                ],
+                sourceCustodies: [hAgent.sourceCustody],
             });
             expect(hReservation?.retention)
                 .not.toEqual(managedDependencyRetention);
@@ -1903,16 +1999,16 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                     }),
                 }),
             );
-            expect(terminalFetch).toHaveBeenCalledOnce();
-            expect(terminalFetch).toHaveBeenCalledWith(
-                'https://policy.example.test/allowed',
+            expect(terminalFetch).not.toHaveBeenCalled();
+            expect(pinnedRequests).toEqual([
                 expect.objectContaining({
+                    url: 'https://policy.example.test/allowed',
                     headers: {
                         authorization: 'Bearer runner-caller-value',
                         'x-tenant-label': 'rewritten-by-current-policy',
                     },
                 }),
-            );
+            ]);
 
             await expect(
                 runnerServices.sessions.external.capabilities(),
@@ -1927,11 +2023,11 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 },
             });
             await expect(runnerServices.sessions.external.list({
-                agentId: AGENT_ID,
+                agentId: QUALIFIED_AGENT_ID,
             })).resolves.toMatchObject({
                 items: [{
                     ref: {
-                        agentId: AGENT_ID,
+                        agentId: QUALIFIED_AGENT_ID,
                         remoteSessionId: 'current-H',
                     },
                     title: 'Current H',
@@ -1940,14 +2036,18 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
             expect(createHCurrentExternalSessions).toHaveBeenCalledWith(
                 expect.objectContaining({
                     binding: expect.objectContaining({
-                        immutableGenerationId:
-                            binding.immutableGenerationId,
+                        sourceCustody: {
+                            kind: 'managed',
+                            immutableGenerationId:
+                                bindingImmutableGenerationId,
+                            installSource: 'localPath',
+                        },
                     }),
                     sessionId: SESSION_ID,
                 }),
             );
             await expect(runnerServices.sessions.external.list({
-                agentId: AGENT_ID,
+                agentId: QUALIFIED_AGENT_ID,
                 sourceId: 'unavailable',
             })).rejects.toMatchObject({
                 code: 'plugin_external_sources_unavailable',
@@ -2089,7 +2189,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 localId: MCP_DISCOVERY_SOURCE_ID,
             })).resolves.toEqual({
                 items: [{
-                    provider: {
+                    source: {
                         pluginId: PLUGIN_ID,
                         localId: MCP_DISCOVERY_SOURCE_ID,
                     },
@@ -2171,26 +2271,34 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 followOperation: { execute: exactGFollow },
                 followTargetOperation: null,
             });
-            const snapshotRetainedGVoice = (
-                hRegistry as typeof hRegistry & Readonly<{
-                    snapshotRetainedRunnerAgentSessionRealtimeVoiceAuthority?: (
-                        retainedAgent: typeof binding,
-                    ) => ReturnType<NonNullable<
-                        Parameters<
-                            typeof createRunnerAgentDaemonFacetService
-                        >[0]['snapshotVoiceAuthority']
-                    >>;
-                }>
-            ).snapshotRetainedRunnerAgentSessionRealtimeVoiceAuthority;
             const exactGVoiceLookup = vi.fn<
                 NonNullable<
                     Parameters<
                         typeof createRunnerAgentDaemonFacetService
                     >[0]['snapshotVoiceAuthority']
                 >
-            >(async ({ retainedAgent }) =>
-                await snapshotRetainedGVoice?.(retainedAgent) ?? null,
-            );
+            >(async ({ retainedAgent }) => {
+                const voiceAuthority =
+                    resolveRetainedAgentSessionRealtimeVoiceAuthority({
+                        runtimeRegistry: hRegistry,
+                        retainedAgent,
+                    });
+                const declaration = voiceAuthority?.resolveDeclaration(
+                    voiceProvider,
+                );
+                const providerGeneration =
+                    voiceAuthority?.resolveProviderOccurrenceId(voiceProvider);
+                return voiceAuthority && declaration && providerGeneration
+                    ? Object.freeze({
+                        agentSourceCustody: retainedAgent.sourceCustody,
+                        providers: Object.freeze([Object.freeze({
+                            provider: voiceProvider,
+                            providerGeneration,
+                            declaration,
+                        })]),
+                    })
+                    : null;
+            });
             let retireExactGVoice!: () => void;
             const exactGVoiceRetirement = new Promise<void>((resolve) => {
                 retireExactGVoice = resolve;
@@ -2240,28 +2348,31 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
             const retainedVoiceAuthority =
                 positiveFacets.agentSessionRealtimeVoiceAuthority;
             expect(retainedVoiceAuthority).not.toBeNull();
-            expect(retainedVoiceAuthority?.generation)
-                .toBe(binding.immutableGenerationId);
+            expect(retainedVoiceAuthority?.occurrenceId)
+                .toBe(JSON.stringify(binding.sourceCustody));
             expect(retainedVoiceAuthority?.resolveDeclaration(
                 voiceProvider,
             )).toMatchObject({
                 id: VOICE_PROVIDER_ID,
-                title: 'Routing realtime G',
+                title: 'Routing realtime H',
             });
-            expect(retainedVoiceAuthority?.resolveProviderGeneration(
+            expect(retainedVoiceAuthority?.resolveProviderOccurrenceId(
                 voiceProvider,
-            )).toBe(binding.immutableGenerationId);
+            )).toBe(hRegistry.readPluginOccurrenceId?.(PLUGIN_ID));
             expect(retainedVoiceAuthority?.isCurrent(voiceProvider)).toBe(true);
+            const hVoiceProviderOccurrenceId =
+                hRegistry.readPluginOccurrenceId?.(PLUGIN_ID);
             expect(facetResponses).toContainEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({
                     kind: 'voice.authority.snapshot',
-                    agentGeneration: binding.immutableGenerationId,
+                    agentSourceCustody: binding.sourceCustody,
                     providers: [expect.objectContaining({
                         provider: voiceProvider,
-                        providerGeneration: binding.immutableGenerationId,
+                        providerGeneration:
+                            hVoiceProviderOccurrenceId,
                         declaration: expect.objectContaining({
-                            title: 'Routing realtime G',
+                            title: 'Routing realtime H',
                         }),
                     })],
                 }),
@@ -2270,7 +2381,8 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 .toHaveBeenCalledWith(expect.objectContaining({
                     retainedAgent: binding,
                     provider: voiceProvider,
-                    providerGeneration: binding.immutableGenerationId,
+                    providerGeneration:
+                        hVoiceProviderOccurrenceId,
                 })));
             const retainedLeaf = await loadRetainedAgentRuntimeLeaf({
                 paths: resolvePluginStorePaths({ happyHomeDir }),
@@ -2335,7 +2447,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                     pluginId: PLUGIN_ID,
                     contributionId: AGENT_ID,
                     generationId:
-                        binding.immutableGenerationId,
+                        bindingImmutableGenerationId,
                     sessionId: SESSION_ID,
                 }),
             );
@@ -2388,8 +2500,10 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 });
             expect(exactGVoiceLookup.mock.calls.every(
                 ([calledAuthority]) => calledAuthority.retainedAgent
-                    .immutableGenerationId
-                    === binding.immutableGenerationId,
+                    .sourceCustody.kind === 'managed'
+                    && calledAuthority.retainedAgent.sourceCustody
+                        .immutableGenerationId
+                        === bindingImmutableGenerationId,
             )).toBe(true);
 
             const providerSupervise = vi.fn<
@@ -2416,7 +2530,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                     });
                 },
                 readCurrentProviderPluginHardRevocationRevision: () => 0,
-                readCurrentProviderImmutableGenerationIntegrityCurrentness:
+                readCurrentProviderSourceCustodyIntegrityCurrentness:
                     () => true,
             });
             const pScope = providerScope();
@@ -2446,14 +2560,17 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
             expect(admittedProviderScopes).toEqual([
                 expect.objectContaining({
                     pluginId: 'acme.provider-p',
-                    immutableGenerationId:
-                        'provider-p-generation',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId:
+                            'provider-p-generation',
+                        installSource: 'npm',
+                    },
                 }),
             ]);
-            expect(admittedProviderScopes[0]?.immutableGenerationId)
-                .not.toBe(binding.immutableGenerationId);
+            expect(admittedProviderScopes[0]?.sourceCustody)
+                .not.toEqual(binding.sourceCustody);
 
-            expect(createRetainedInvocation).toHaveBeenCalledOnce();
             expect(connectedAccountGetBinding).toHaveBeenCalledTimes(4);
             expect(exactGFollow).toHaveBeenCalledOnce();
             expect(providerSupervise).toHaveBeenCalledOnce();
@@ -2477,6 +2594,9 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 happyHomeDir,
                 pluginRoot,
                 version: '3.0.0',
+                retainedCurrentHostGenerationIds: [
+                    bindingImmutableGenerationId,
+                ],
             });
             const iGenerationAuthority =
                 await readCurrentFixtureGenerationAuthority({
@@ -2544,17 +2664,16 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                     items: [{ name: `${MCP_SERVER_ID}-I` }],
                 });
             await expect(establishedHMcpClient.listTools())
-                .resolves.toMatchObject({
-                    items: [{ name: `${MCP_SERVER_ID}-H` }],
+                .rejects.toMatchObject({
+                    code: 'plugin_final_generation_retired',
                 });
             await Promise.all([
                 currentIMcpClient.dispose(),
                 establishedHMcpClient.dispose(),
             ]);
             expect(hRegistry.retirementSignal?.aborted).toBe(true);
-            await vi.waitFor(() => expect(
-                currentGlobalFollowSubscriptionDispose,
-            ).toHaveBeenCalledOnce());
+            expect(currentGlobalFollowSubscriptionDispose)
+                .not.toHaveBeenCalled();
             await expect(runnerServices.storage.daemonSession.get(
                 'retained-before-h',
             )).resolves.toEqual({ generation: 'G' });
@@ -2637,7 +2756,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 code: 'plugin_services_turn_authority_unavailable',
             });
             await expect(runnerServices.sessions.external.list({
-                agentId: AGENT_ID,
+                agentId: QUALIFIED_AGENT_ID,
             })).rejects.toMatchObject({
                 code: 'plugin_services_turn_authority_unavailable',
             });
@@ -2664,7 +2783,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
             const retainedManifestPath = join(
                 resolvePluginStorePaths({ happyHomeDir })
                     .generationsDir,
-                binding.immutableGenerationId,
+                bindingImmutableGenerationId,
                 '.happier-plugin',
                 'plugin.json',
             );
@@ -2690,7 +2809,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 environment: {},
                 providerBindingActive: false,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 managedDependencyRetention,
             })).rejects.toMatchObject({
                 code:
@@ -2704,7 +2823,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
             const retainedGenerationRoot = join(
                 resolvePluginStorePaths({ happyHomeDir })
                     .generationsDir,
-                binding.immutableGenerationId,
+                bindingImmutableGenerationId,
             );
             const temporarilyRemovedGenerationRoot =
                 `${retainedGenerationRoot}.removed-for-test`;
@@ -2721,7 +2840,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                     environment: {},
                     providerBindingActive: false,
                     signal: new AbortController().signal,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                     managedDependencyRetention,
                 })).rejects.toMatchObject({
                     code:

@@ -87,7 +87,7 @@ describe('production Plugin ActionsService transcript follow lifetime', () => {
             }),
         });
         const binding = createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-            'generation-1',
+            'occurrenceId-1',
             'binding-1',
         );
         const firstRetirement = new AbortController();
@@ -98,13 +98,13 @@ describe('production Plugin ActionsService transcript follow lifetime', () => {
                 id: 'follow',
                 qualifiedId: 'acme.transcript/actions/follow',
             },
-            generation: 'generation-1',
+            occurrenceId: 'occurrenceId-1',
             correlationId,
             surface: 'background',
             resolveCurrentPluginMaterializationRef:
                 transcriptMaterialization.resolveCurrentPluginMaterializationRef,
             signal,
-            isGenerationCurrent: () => !signal.aborted,
+            isOccurrenceCurrent: () => !signal.aborted,
         }, binding);
         const first = createServices('invocation-1', firstRetirement.signal);
         const second = createServices('invocation-2', secondRetirement.signal);

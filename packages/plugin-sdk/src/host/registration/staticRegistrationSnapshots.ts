@@ -440,11 +440,15 @@ export function snapshotScmHostingProviderRuntime(
     for (const [capabilityName, methodNames] of Object.entries(SCM_HOSTING_CAPABILITY_METHODS)) {
         const capability = readMember(adapter, capabilityName);
         if (capability === undefined) continue;
-        capabilities[capabilityName] = snapshotRequiredMethodGroup(
+        const methods = snapshotRequiredMethodGroup(
             capability,
             methodNames,
             `SCM hosting Provider adapter.${capabilityName}`,
         );
+        capabilities[capabilityName] = capabilityName === 'pullRequests'
+            && readMember(requireObject(capability, 'SCM hosting Provider pullRequests'), 'supportsDraftCreate') === true
+            ? Object.freeze({ ...methods, supportsDraftCreate: true })
+            : methods;
     }
     return Object.freeze({
         adapter: Object.freeze(capabilities),
@@ -457,7 +461,7 @@ const SCM_BACKEND_HANDLER_METHODS = Object.freeze({
     changeSet: ['include', 'exclude', 'discard'],
     commit: ['create', 'backout'],
     remote: ['add', 'setUrl', 'remove', 'fetch', 'pull', 'push', 'publish'],
-    branch: ['list', 'create', 'checkout', 'merge', 'rebase', 'operationContinue', 'operationAbort'],
+    branch: ['list', 'create', 'checkout', 'merge', 'rebase', 'operationContinue', 'operationSkip', 'operationAbort', 'conflictAcceptSide', 'conflictMarkResolved'],
     worktree: ['create', 'remove', 'prune'],
     lifecycle: ['init', 'clone', 'removeIndexLock'],
     hosting: [
@@ -471,7 +475,7 @@ const SCM_BACKEND_HANDLER_METHODS = Object.freeze({
         'pullRequestPrepareWorktree',
         'pullRequestRunStacked',
     ],
-    stash: ['drop', 'pop', 'apply', 'show'],
+    stash: ['create', 'drop', 'pop', 'apply', 'show'],
     workspaceIntegration: [
         'inspectWorkspaceLocation',
         'reconcilePostMaterialization',

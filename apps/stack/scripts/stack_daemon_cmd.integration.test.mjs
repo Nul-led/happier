@@ -11,6 +11,7 @@ import { runNodeCapture as runNode } from './testkit/core/run_node_capture.mjs';
 import { spawnTestProcess } from './testkit/core/spawn_test_process.mjs';
 import { createTempFixture } from './testkit/core/temp_fixture.mjs';
 import { createStackHappierCliCommandFixture } from './testkit/stack_happier_cli_command_testkit.mjs';
+import { buildStubHappierServerSetSource } from './testkit/core/stub_happier_cli_server_set.mjs';
 import { recordStackRuntimeStart } from './utils/stack/runtime_state.mjs';
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
@@ -68,6 +69,7 @@ import { join } from 'node:path';
 import { killDetachedProcessGroup, spawnDaemonLikeProcess } from ${JSON.stringify(join(rootDir, 'scripts', 'testkit', 'core', 'spawn_daemon_like_process.mjs'))};
 
 const args = process.argv.slice(2);
+${buildStubHappierServerSetSource()}
 const home = process.env.HAPPIER_HOME_DIR || process.env.HAPPIER_STACK_CLI_HOME_DIR;
 if (!home) {
   console.error('missing HAPPIER_HOME_DIR');
@@ -669,9 +671,13 @@ test('hstack stack daemon <name> restart reuses persisted direct-peer topology e
   assert.match(logTextAfterStart, /direct_peer_feature_enabled=true/);
   assert.match(logTextAfterStart, /direct_peer_server_enabled=true/);
 
+  const statePath = join(fixture.stackCliHome, 'daemon.state.json');
+  const initialState = JSON.parse(await readFile(statePath, 'utf-8'));
   const restartRes = await runHstack(['stack', 'daemon', fixture.stackName, 'restart', '--json'], { env: fixture.baseEnv });
   assertExitOk(restartRes, 'stack daemon restart with persisted direct-peer topology env');
 
+  const restartedState = JSON.parse(await readFile(statePath, 'utf-8'));
+  assert.notEqual(restartedState.pid, initialState.pid, `expected a successor daemon process\n${restartRes.stdout}\n${restartRes.stderr}`);
   const restartLogText = await readLogText(logPath);
   const appendedLog = restartLogText.slice(logTextAfterStart.length);
   assert.match(appendedLog, /direct_peer_bind_port=13378/);

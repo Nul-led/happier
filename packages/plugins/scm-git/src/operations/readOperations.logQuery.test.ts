@@ -67,7 +67,7 @@ function shas(entries: readonly ScmLogEntry[]): string[] {
  */
 async function logQuery(input: {
     context: ReturnType<typeof buildContext>;
-    request: { cwd: string; query?: string; limit?: number; skip?: number };
+    request: { cwd: string; query?: string; limit?: number; skip?: number; range?: 'incoming' };
 }) {
     return runWithRealGitScmRuntime(() => gitLogList(input as Parameters<typeof gitLogList>[0]));
 }
@@ -105,6 +105,24 @@ describe('gitLogList bounded commit query', () => {
 
     afterEach(async () => {
         await Promise.all(cleanups.splice(0).map((cleanup) => cleanup().catch(() => undefined)));
+    });
+
+    it('reads only upstream commits not reachable from the current branch', async () => {
+        await runGit(repoRoot, ['checkout', '-b', 'remote-source']);
+        const incomingSha = await commitFile({
+            fileName: 'incoming.txt', message: 'remote change', authorName: 'Lin',
+            authorEmail: 'lin@example.com', dateIso: '2026-01-04T00:00:00Z',
+        });
+        await runGit(repoRoot, ['update-ref', 'refs/remotes/origin/main', incomingSha]);
+        await runGit(repoRoot, ['checkout', 'main']);
+        await runGit(repoRoot, ['config', 'branch.main.remote', 'origin']);
+        await runGit(repoRoot, ['config', 'branch.main.merge', 'refs/heads/main']);
+        await runGit(repoRoot, ['config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*']);
+
+        const response = await logQuery({ context: buildContext(), request: { cwd: repoRoot, range: 'incoming' } });
+        expect(response.success, response.error).toBe(true);
+        expect(response.rangeApplied).toBe(true);
+        expect(shas(response.entries ?? [])).toEqual([incomingSha]);
     });
 
     it('matches subject, body, and author case-insensitively and reports queryApplied', async () => {

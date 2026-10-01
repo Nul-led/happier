@@ -26,8 +26,15 @@ import {
   CHANNEL_STATE_INDEX_ID,
   CHANNEL_STATE_RECORD_KIND,
 } from './collections.js';
-import { readConversationOutwardDeliveryTranscriptActivities } from './outwardDelivery.js';
-import { MAX_CONVERSATION_BINDINGS_PER_ACCOUNT } from '@happier-dev/channels-protocol/v1';
+import {
+  readConversationOutwardDeliveryTranscriptActivities,
+  readConversationOutwardDeliveryLastDeliveries,
+} from './outwardDelivery.js';
+import {
+  MAX_CONVERSATION_BINDINGS_PER_ACCOUNT,
+  MAX_CONVERSATION_BINDING_ID_ASCII_BYTES,
+  ConversationSessionLastDeliveriesV1Schema,
+} from '@happier-dev/channels-protocol/v1';
 import {
   requireChannelsResourceAccountStorage,
   requireChannelsResourceSessionId,
@@ -39,12 +46,18 @@ import { readConversationSessionProjectionHistoryGap } from './sessionProjection
  * The Session projection publishes the SAME management row shape as the
  * Account-wide `bindings-v1` Resource, and in the worst case every one of the
  * 256 Account bindings targets one Session. Its ceiling is therefore that
- * Resource's declared ceiling plus the one attention entry each of those
- * bindings can additionally carry — not a separate estimate and not a round
- * number chosen for headroom.
+ * Resource's declared ceiling plus the attention and last-delivery entry each
+ * binding can additionally carry. Printable ASCII ids can escape to two bytes
+ * per character; the remaining entry bytes come from its widest scalar values.
  */
 export const MAX_CHANNELS_SESSION_CONVERSATIONS_BYTES = MAX_CHANNELS_BINDINGS_RESOURCE_BYTES
-  + (MAX_CONVERSATION_BINDINGS_PER_ACCOUNT * MAX_CONVERSATION_SESSION_BINDING_ATTENTION_ENTRY_BYTES);
+  + (MAX_CONVERSATION_BINDINGS_PER_ACCOUNT * MAX_CONVERSATION_SESSION_BINDING_ATTENTION_ENTRY_BYTES)
+  + ',"lastDeliveries":[]'.length
+  + (MAX_CONVERSATION_BINDINGS_PER_ACCOUNT * (
+    (MAX_CONVERSATION_BINDING_ID_ASCII_BYTES * 2)
+    + JSON.stringify({ bindingId: '', atMs: Number.MAX_SAFE_INTEGER, outcome: 'notDelivered' }).length
+    + 1
+  ));
 
 /**
  * The Session's own external conversations plus the one attention projection
@@ -54,7 +67,9 @@ export const MAX_CHANNELS_SESSION_CONVERSATIONS_BYTES = MAX_CHANNELS_BINDINGS_RE
  * Resource publishes, so the mounted surface still parses and presents it with
  * one parser and one presentation builder. `attention` is a sibling list, not
  * a second binding shape: the badge and the destination therefore name the
- * same conversation for the same reason, from the same bytes.
+ * same conversation for the same reason, from the same bytes. The destination
+ * additionally publishes optional `lastDeliveries` from retained custody; the
+ * Composer chips retain their existing attention read.
  */
 async function readChannelsSessionConversationsProjection(
   options: PluginDynamicResourceInvocationOptionsV1,
@@ -132,7 +147,33 @@ async function readChannelsSessionConversationsProjection(
 async function readChannelsSessionConversations(
   options: PluginDynamicResourceInvocationOptionsV1,
 ): Promise<string> {
-  return JSON.stringify(await readChannelsSessionConversationsProjection(options));
+  const projection = await readChannelsSessionConversationsProjection(options);
+  if (projection.bindings.length === 0) return JSON.stringify(projection);
+  const deliveries = await readConversationOutwardDeliveryLastDeliveries({
+    deliveriesCollection: requireChannelsResourceAccountStorage(options, 'sessionConversations')
+      .collection(CHANNEL_DELIVERIES_COLLECTION),
+    signal: options.signal,
+    bindingTargets: projection.bindings,
+  });
+  if (deliveries.kind === 'invalid') {
+    throw new PluginError({
+      code: 'channels_session_conversations_resource_delivery_row_invalid',
+      message: 'The Channels Session conversations Resource received an invalid delivery custody row.',
+    });
+  }
+  if (deliveries.kind === 'unavailable') {
+    throw new PluginError({
+      code: 'channels_session_conversations_resource_delivery_status_unavailable',
+      message: 'The Channels Session conversations Resource could not read delivery custody status.',
+      retryable: deliveries.reason !== 'cancelled',
+    });
+  }
+  return JSON.stringify({
+    ...projection,
+    ...(deliveries.lastDeliveries.length === 0 ? {} : {
+      lastDeliveries: ConversationSessionLastDeliveriesV1Schema.parse(deliveries.lastDeliveries),
+    }),
+  });
 }
 
 /**
@@ -251,9 +292,8 @@ function observeChannelsSessionBindings(
 }
 
 /**
- * The chips additionally depend on delivery custody, so they observe the
- * deliveries Collection as well. The list Resource deliberately does not: a
- * delivery attempt changes no binding row it publishes.
+ * The list and chips depend on delivery custody, so they observe the existing
+ * deliveries Collection as well as binding, connection and frontier changes.
  */
 function observeChannelsSessionConversations(
   invalidate: () => void,
@@ -274,7 +314,7 @@ function observeChannelsSessionConversations(
 /** The Session destination's read-only list of this Session's external conversations. */
 export const SESSION_CONVERSATIONS_RESOURCE_RUNTIME: PluginDynamicResourceRuntime = {
   read: readChannelsSessionConversations,
-  observe: observeChannelsSessionBindings,
+  observe: observeChannelsSessionConversations,
 };
 
 /** The connected-conversation chip: visible when this Session is bound and healthy. */

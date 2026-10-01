@@ -66,7 +66,13 @@ describe('OpenCode External Sessions managed server declaration', () => {
 
     expect(spec).toMatchObject({
       mode: { kind: 'attach', baseUrl: 'http://127.0.0.1:4096' },
-      healthCheck: { kind: 'http', target: { kind: 'servicePath', path: '/global/health' } },
+      healthCheck: {
+        kind: 'http',
+        alternatives: [
+          { target: { kind: 'servicePath', path: '/api/info' } },
+          { target: { kind: 'servicePath', path: '/global/health' } },
+        ],
+      },
       clientAccess: {
         kind: 'declaredSecretBasic',
         username: 'opencode',

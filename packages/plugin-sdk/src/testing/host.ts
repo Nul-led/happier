@@ -55,6 +55,7 @@ import type {
     TargetedContributionPointRef,
     TargetedContributionSnapshot,
 } from '../services/targetedContributions.js';
+import type { PluginTargetedContributionSourceCustodyV1 } from '../targetedContributionAuthoring.js';
 import type {
     PluginTestServicesFixture,
     PluginTestkit,
@@ -78,7 +79,7 @@ type TestkitActionTargetInvocation = Readonly<{
     expectedExecutionOrigin?: PluginMachineExecutionOriginV1;
     /** Exact-generation expectation from one host-issued admitted handle. */
     admittedTargetedOperation?: Readonly<{
-        contributorImmutableGenerationId: string;
+        contributorOccurrenceId: string;
     }>;
     signal: AbortSignal;
 }>;
@@ -91,7 +92,8 @@ type TestkitActionTargetInvocationResult = Readonly<{
 
 type TestkitActionTarget = Readonly<{
     pluginId: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
+    sourceCustody: PluginTargetedContributionSourceCustodyV1;
     manifest: ParsedPluginManifest;
     isCurrent(): boolean;
     subscribeCurrentness(listener: () => void): () => void;
@@ -126,9 +128,9 @@ type TestkitRegisteredActionInvocation = Readonly<{
 const actionTargetsByTestkit = new WeakMap<PluginTestkit, TestkitActionTarget>();
 type TestkitAdmittedTargetedOperationBinding = Readonly<{
     action: PluginContributionRef;
-    contributorImmutableGenerationId: string;
+    contributorOccurrenceId: string;
     targetPluginId: string;
-    targetImmutableGenerationId: string;
+    targetOccurrenceId: string;
     /**
      * The exact target-owned parser pair for this operation role. Production
      * carries the same pair on its opaque handle binding and parses around the
@@ -163,7 +165,8 @@ type TestkitFixtureAdmittedContribution = Readonly<{
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     operations: Readonly<Record<string, AdmittedTargetedOperationExecutionHandle>>;
 }>;
@@ -475,6 +478,11 @@ export async function createPluginTestkit(
     });
     const syntheticMaterialization = createSyntheticPluginMaterialization(manifest.id);
     const syntheticImmutableGenerationId = createSyntheticPluginImmutableGenerationId(manifest.id);
+    const syntheticOccurrenceId = `test-occurrence:${syntheticImmutableGenerationId}`;
+    const syntheticSourceCustody = Object.freeze({
+        kind: 'development' as const,
+        registeredRootId: `plugin-testkit:${manifest.id}`,
+    });
     const defaultServices = actionTargets.size === 0 && fixtureContributorTargets.length === 0
         ? createPluginServices(defaultServicesFixture)
         : undefined;
@@ -540,7 +548,7 @@ export async function createPluginTestkit(
                     ...(inputParser === undefined ? {} : { inputParser }),
                     ...(definition.resultSchema === undefined ? {} : { resultSchema: definition.resultSchema }),
                     ...(resultParser === undefined ? {} : { resultParser }),
-                    generationSignal: invocationLifetime.signal,
+                    occurrenceSignal: invocationLifetime.signal,
                     isCurrent: () => state === 'active',
                 })] as const];
             }),
@@ -638,7 +646,8 @@ export async function createPluginTestkit(
             kind: 'plugin' as const,
             pluginId: manifest.id,
             contribution: Object.freeze({ id: source.localId, qualifiedId: source.qualifiedId }),
-            immutableGenerationId: syntheticImmutableGenerationId,
+            occurrenceId: syntheticOccurrenceId,
+            sourceCustody: syntheticSourceCustody,
             materialization,
             ...(originSurface === undefined ? {} : { originSurface }),
         });
@@ -656,7 +665,7 @@ export async function createPluginTestkit(
         return currentMaterialization !== undefined
             && callerMaterialization !== undefined
             && arePluginMachineMaterializationRefsEqual(currentMaterialization, callerMaterialization)
-            && currentCaller.immutableGenerationId === caller.immutableGenerationId;
+            && currentCaller.occurrenceId === caller.occurrenceId;
     }
 
     function throwIfContributedActionCallerInactive(
@@ -761,19 +770,19 @@ export async function createPluginTestkit(
             contributor: Object.freeze({
                 pluginId: contributor.pluginId,
                 contributionId: declaration.id,
-                immutableGenerationId: contributor.immutableGenerationId,
+                occurrenceId: contributor.occurrenceId,
             }),
             role,
         });
-        const handle = Object.freeze({ identity }) as AdmittedTargetedOperationExecutionHandle;
+        const handle = Object.freeze({ identity }) as unknown as AdmittedTargetedOperationExecutionHandle;
         admittedTargetedOperationBindings.set(handle, Object.freeze({
             action: Object.freeze({
                 pluginId: contributor.pluginId,
                 localId: actionLocalId,
             }),
-            contributorImmutableGenerationId: contributor.immutableGenerationId,
+            contributorOccurrenceId: contributor.occurrenceId,
             targetPluginId: manifest.id,
-            targetImmutableGenerationId: syntheticImmutableGenerationId,
+            targetOccurrenceId: syntheticOccurrenceId,
             targetProtocol,
         }));
         return handle;
@@ -851,7 +860,8 @@ export async function createPluginTestkit(
                     contributor: Object.freeze({
                         pluginId: contributor.pluginId,
                         contributionId: declaration.id,
-                        immutableGenerationId: contributor.immutableGenerationId,
+                        occurrenceId: contributor.occurrenceId,
+                        sourceCustody: contributor.sourceCustody,
                     }),
                     protocol: Object.freeze({
                         id: declaration.protocol.id,
@@ -864,7 +874,8 @@ export async function createPluginTestkit(
 
         assertFixtureCurrent(signal);
         return Object.freeze({
-            generation: syntheticImmutableGenerationId,
+            occurrenceId: syntheticOccurrenceId,
+            sourceCustody: syntheticSourceCustody,
             contributions: Object.freeze(contributions),
         });
     }
@@ -891,7 +902,7 @@ export async function createPluginTestkit(
             .find((candidate) => candidate !== null
                 && candidate.contributor.pluginId === contributor.pluginId
                 && candidate.contributor.contributionId === request.contributor.contributionId
-                && candidate.contributor.immutableGenerationId === contributor.immutableGenerationId);
+                && candidate.contributor.occurrenceId === contributor.occurrenceId);
         const operation = admitted?.operations[request.role];
         const binding = readAdmittedTargetedOperationBinding(operation);
         if (!operation || !binding
@@ -900,11 +911,11 @@ export async function createPluginTestkit(
             || !sameFixtureProtocol(operation.identity.point.protocol, request.point.protocol)
             || operation.identity.contributor.pluginId !== contributor.pluginId
             || operation.identity.contributor.contributionId !== request.contributor.contributionId
-            || operation.identity.contributor.immutableGenerationId !== contributor.immutableGenerationId
+            || operation.identity.contributor.occurrenceId !== contributor.occurrenceId
             || operation.identity.role !== request.role
-            || binding.contributorImmutableGenerationId !== contributor.immutableGenerationId
+            || binding.contributorOccurrenceId !== contributor.occurrenceId
             || binding.targetPluginId !== manifest.id
-            || binding.targetImmutableGenerationId !== syntheticImmutableGenerationId) {
+            || binding.targetOccurrenceId !== syntheticOccurrenceId) {
             throw fixtureUnavailable();
         }
         return operation as PluginTestkitAdmittedTargetedOperation<TContribution, TRole>;
@@ -925,7 +936,7 @@ export async function createPluginTestkit(
         const contributorRecord = contributor as Readonly<Record<string, unknown>>;
         if (typeof contributorRecord.pluginId !== 'string'
             || typeof contributorRecord.contributionId !== 'string'
-            || typeof contributorRecord.immutableGenerationId !== 'string') {
+            || typeof contributorRecord.occurrenceId !== 'string') {
             return null;
         }
         return value as TestkitFixtureAdmittedContribution;
@@ -961,7 +972,7 @@ export async function createPluginTestkit(
             captureExecutionOrigin: boolean,
             expectedExecutionOrigin?: PluginMachineExecutionOriginV1,
             admittedTargetedOperation?: Readonly<{
-                contributorImmutableGenerationId: string;
+                contributorOccurrenceId: string;
             }>,
         ): Promise<TestkitActionTargetInvocationResult> => {
             const caller = resolvePluginActionCaller(source);
@@ -999,7 +1010,7 @@ export async function createPluginTestkit(
             if (!binding || binding.targetPluginId !== manifest.id) {
                 throw invalidAdmittedTargetedOperationHandle();
             }
-            if (binding.targetImmutableGenerationId !== syntheticImmutableGenerationId) {
+            if (binding.targetOccurrenceId !== syntheticOccurrenceId) {
                 throw createPluginActionHandlerNotStartedError({
                     code: 'plugin_action_generation_retired',
                     message: 'Admitted targeted operation target generation is no longer current',
@@ -1071,7 +1082,7 @@ export async function createPluginTestkit(
                 false,
                 undefined,
                 Object.freeze({
-                    contributorImmutableGenerationId: binding.contributorImmutableGenerationId,
+                    contributorOccurrenceId: binding.contributorOccurrenceId,
                 }),
             );
             return parseAdmittedTargetedOperationResult(
@@ -1100,7 +1111,7 @@ export async function createPluginTestkit(
                 true,
                 readExpectedExecutionOrigin(options?.expectedExecutionOrigin),
                 Object.freeze({
-                    contributorImmutableGenerationId: binding.contributorImmutableGenerationId,
+                    contributorOccurrenceId: binding.contributorOccurrenceId,
                 }),
             );
             if (!result.executionOrigin) {
@@ -1217,7 +1228,8 @@ export async function createPluginTestkit(
 
     const actionTarget = Object.freeze({
         pluginId: manifest.id,
-        immutableGenerationId: syntheticImmutableGenerationId,
+        occurrenceId: syntheticOccurrenceId,
+        sourceCustody: syntheticSourceCustody,
         manifest,
         isCurrent(): boolean {
             return state === 'active' && !invocationLifetime.signal.aborted;
@@ -1240,8 +1252,8 @@ export async function createPluginTestkit(
             if (targetInvocation.admittedTargetedOperation !== undefined
                 && (state !== 'active'
                     || invocationLifetime.signal.aborted
-                    || targetInvocation.admittedTargetedOperation.contributorImmutableGenerationId
-                        !== syntheticImmutableGenerationId)) {
+                    || targetInvocation.admittedTargetedOperation.contributorOccurrenceId
+                        !== syntheticOccurrenceId)) {
                 throw createPluginActionHandlerNotStartedError({
                     code: 'plugin_action_generation_retired',
                     message: 'The admitted contributor generation is no longer current',

@@ -100,6 +100,7 @@ const HOST_BINDING_OWNER_EVIDENCE = Object.freeze({
   'apps/cli/src/plugins/projection/registry/managedDependencies.ts': 'export const managedDependenciesProjectionFamily',
   'apps/cli/src/plugins/projection/registry/accountCollections.ts': 'export const accountCollectionsProjectionFamily',
   'apps/cli/src/plugins/projection/registry/voiceDeclarations.ts': 'export const voiceModelPackProjectionFamily',
+  'apps/cli/src/plugins/projection/registry/roles.ts': 'export const rolesProjectionFamily',
   'apps/cli/src/plugins/projection/registry/targetedContributions.ts': 'export function resolveAdmittedTargetedContributions',
   'apps/cli/src/cli/pluginCommandContributions.ts': 'export async function handlePluginCommandCliCommand',
   'apps/cli/src/plugins/runtime/toolCatalog.ts': 'export function projectExecutablePluginToolCatalog',
@@ -119,7 +120,7 @@ const HOST_BINDING_OWNER_EVIDENCE = Object.freeze({
   'apps/cli/src/agent/runtime/registry/engineRegistry/nativeAgentSessionHostServiceOwners.ts': 'export function createNativeAgentSessionHostServiceOwners',
   'apps/cli/src/plugins/runtime/loadPluginModule.ts': 'export async function loadVerifiedPluginModule',
   'packages/plugin-ui/src/surfaceEntry.tsx': 'export function defineUiSurface',
-  'packages/plugin-sdk/src/ui/build/buildUiArtifacts.ts': 'export async function buildUiArtifacts',
+  'packages/plugin-sdk/src/ui/build/buildUniversalUiArtifacts.ts': 'export async function buildUniversalPluginUiArtifacts',
   'packages/plugin-sdk/package.json': '"exports"',
 });
 const HOST_BINDING_OWNER_MODULES = new Set(Object.keys(HOST_BINDING_OWNER_EVIDENCE));

@@ -77,6 +77,8 @@ function passiveRealtimeResult(
 function usesCodexAppServer(context: AgentPreflightSessionControlsProbeContextV1): boolean {
   const backendMode = resolveCodexSessionBackendMode({
     accountSettings: context.accountSettings,
+    runtimeDescriptorV1: context.runtimeDescriptorV1,
+    runtimeKindOverride: context.runtimeKindOverride,
   }) ?? 'appServer';
   return backendMode === 'appServer';
 }
@@ -170,11 +172,14 @@ export const CODEX_PREFLIGHT_SESSION_CONTROLS = Object.freeze({
     CODEX_PREFLIGHT_JSON_RPC_COMMAND,
     CODEX_REALTIME_PREFLIGHT_JSON_RPC_COMMAND,
   ]),
-  resolveProbeVariant: ({ accountSettings }) => {
-    const backendMode = resolveCodexSessionBackendMode({ accountSettings }) ?? 'appServer';
+  resolveProbeVariant: ({ accountSettings, runtimeDescriptorV1, runtimeKindOverride }) => {
+    const backendMode = resolveCodexSessionBackendMode({ accountSettings, runtimeDescriptorV1, runtimeKindOverride }) ?? 'appServer';
     return `codex:${backendMode}`;
   },
-  probeModels: async (context) => (await readCodexPreflightSessionControls(context))?.availableModels ?? null,
+  probeModels: async (context) => {
+    const controls = await readCodexPreflightSessionControls(context);
+    return controls?.modelsObserved ? controls.availableModels : null;
+  },
   probeModes: async (context) => (await readCodexPreflightSessionControls(context))?.availableModes ?? null,
   probeConfigOptions: async (context) => (await readCodexPreflightSessionControls(context))?.configOptions ?? null,
   probePassiveRealtimeSetup: probeCodexPassiveRealtimeSetup,

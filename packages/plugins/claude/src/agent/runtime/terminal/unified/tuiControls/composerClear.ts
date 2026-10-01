@@ -1,7 +1,7 @@
 import type { TerminalControlPort } from '@happier-dev/plugin-sdk/agents/runtime';
 import { sleep } from '@happier-dev/plugin-sdk/async';
 
-import type { ClaudeScreenState } from '../screenState.js';
+import { isClaudeUsageLimitWaitBlockingComposerClear, type ClaudeScreenState } from '../screenState.js';
 import {
   captureScreenState,
   sendResultToFailure,
@@ -20,6 +20,7 @@ export type ClaudeComposerClearRefusalReason =
   | 'unrecognized_confirmation_dialog'
   | 'slash_picker'
   | 'selection_list'
+  | 'usage_limit_wait'
   | 'no_interactive_composer';
 
 export type ClaudeUserAuthorizedComposerClearResult = Readonly<
@@ -69,6 +70,7 @@ function resolveUnsafeRefusal(state: ClaudeScreenState): ClaudeComposerClearRefu
   if (state.unrecognizedConfirmationDialogVisible) return 'unrecognized_confirmation_dialog';
   if (state.slashPickerOpen) return 'slash_picker';
   if (state.selectionListVisible) return 'selection_list';
+  if (isClaudeUsageLimitWaitBlockingComposerClear(state)) return 'usage_limit_wait';
   if (!state.inputBoxInteractive || state.composerContent === null) return 'no_interactive_composer';
   return null;
 }

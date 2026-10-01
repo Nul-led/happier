@@ -65,6 +65,7 @@ export const INSPECTOR_UI = {
       key: 'plugins.inspector.title',
       fallback: 'Plugin Inspector',
     },
+    placement: { kind: 'rail' as const },
   }, {
     // The SAME renderer serves both direct destinations: one surface, two
     // destinations. The host-projected surface context distinguishes them and
@@ -77,6 +78,7 @@ export const INSPECTOR_UI = {
       key: 'plugins.inspector.title',
       fallback: 'Plugin Inspector',
     },
+    placement: { kind: 'rail' as const },
   }, {
     id: INSPECTOR_BROWSER_PANEL_SURFACE_ID,
     container: 'browserPanel' as const,
@@ -511,15 +513,12 @@ export const INSPECTOR_PLUGIN = definePlugin({
         key: 'plugins.inspector.surface.selfCheck',
         fallback: 'Run Inspector self-check',
       },
-      execution: { target: 'daemon' },
       description: {
         key: 'plugins.inspector.surface.selfCheckDescription',
         fallback: 'Verify the Inspector action bridge.',
       },
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['toolbar'],
-      dangerLevel: 'safe',
       resultSchema: {
         type: 'object',
         additionalProperties: false,

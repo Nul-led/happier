@@ -17,6 +17,8 @@ import type {
     ScmCommitBackoutResponse,
     ScmCommitCreateRequest,
     ScmCommitCreateResponse,
+    ScmConflictAcceptSideRequest,
+    ScmConflictMarkResolvedRequest,
     ScmDiffCommitRequest,
     ScmDiffCommitResponse,
     ScmDiffFileRequest,
@@ -61,6 +63,8 @@ import type {
     ScmStashApplyRequest,
     ScmStashApplyResponse,
     ScmStashDropRequest,
+    ScmStashCreateRequest,
+    ScmStashCreateResponse,
     ScmStashDropResponse,
     ScmStashListRequest,
     ScmStashListResponse,
@@ -170,11 +174,14 @@ export type ScmBackendCapabilities = {
         include?: ScmBackendCapabilityLeaf;
         exclude?: ScmBackendCapabilityLeaf;
         discard?: ScmBackendCapabilityLeaf;
+        stashCreate?: ScmBackendCapabilityLeaf;
         model: 'index' | 'working-copy';
         diffAreas: ('included' | 'pending' | 'both')[];
     };
     commit: {
         create?: ScmBackendCapabilityLeaf;
+        amend?: ScmBackendCapabilityLeaf;
+        signOff?: ScmBackendCapabilityLeaf;
         pathSelection?: ScmBackendCapabilityLeaf;
         lineSelection?: ScmBackendCapabilityLeaf;
         backout?: ScmBackendCapabilityLeaf;
@@ -188,6 +195,8 @@ export type ScmBackendCapabilities = {
         pull?: ScmBackendCapabilityLeaf;
         push?: ScmBackendCapabilityLeaf;
         publish?: ScmBackendCapabilityLeaf;
+        policies?: ScmBackendCapabilityLeaf;
+        forceWithLease?: ScmBackendCapabilityLeaf;
     };
     branch: {
         list?: ScmBackendCapabilityLeaf;
@@ -196,6 +205,8 @@ export type ScmBackendCapabilities = {
         merge?: ScmBackendCapabilityLeaf;
         rebase?: ScmBackendCapabilityLeaf;
         operationControl?: ScmBackendCapabilityLeaf;
+        operationSkip?: ScmBackendCapabilityLeaf;
+        conflictResolution?: ScmBackendCapabilityLeaf;
     };
     worktree: {
         create?: ScmBackendCapabilityLeaf;
@@ -217,6 +228,7 @@ export type ScmBackendCapabilities = {
         pullRequestRead?: ScmBackendCapabilityLeaf;
         pullRequestStatus?: ScmBackendCapabilityLeaf;
         pullRequestCreate?: ScmBackendCapabilityLeaf;
+        pullRequestDraftCreate?: ScmBackendCapabilityLeaf;
         pullRequestReuse?: ScmBackendCapabilityLeaf;
         pullRequestCheckout?: ScmBackendCapabilityLeaf;
         pullRequestPrepareWorktree?: ScmBackendCapabilityLeaf;
@@ -558,7 +570,10 @@ export type BackendRuntimeHandlers = Readonly<{
         merge?: (input: BackendRuntimeHandlerInput<ScmBranchIntegrationRequest>) => Promise<ScmBranchIntegrationResponse> | ScmBranchIntegrationResponse;
         rebase?: (input: BackendRuntimeHandlerInput<ScmBranchIntegrationRequest>) => Promise<ScmBranchIntegrationResponse> | ScmBranchIntegrationResponse;
         operationContinue?: (input: BackendRuntimeHandlerInput<ScmBranchOperationControlRequest>) => Promise<ScmBranchIntegrationResponse> | ScmBranchIntegrationResponse;
+        operationSkip?: (input: BackendRuntimeHandlerInput<ScmBranchOperationControlRequest>) => Promise<ScmBranchIntegrationResponse> | ScmBranchIntegrationResponse;
         operationAbort?: (input: BackendRuntimeHandlerInput<ScmBranchOperationControlRequest>) => Promise<ScmBranchIntegrationResponse> | ScmBranchIntegrationResponse;
+        conflictAcceptSide?: (input: BackendRuntimeHandlerInput<ScmConflictAcceptSideRequest>) => Promise<ScmBranchIntegrationResponse> | ScmBranchIntegrationResponse;
+        conflictMarkResolved?: (input: BackendRuntimeHandlerInput<ScmConflictMarkResolvedRequest>) => Promise<ScmBranchIntegrationResponse> | ScmBranchIntegrationResponse;
     }>;
     worktree?: Readonly<{
         create?: (input: BackendRuntimeHandlerInput<ScmWorktreeCreateRequest>) => Promise<ScmWorktreeCreateResponse> | ScmWorktreeCreateResponse;
@@ -596,6 +611,7 @@ export type BackendRuntimeHandlers = Readonly<{
         ) => Promise<ScmPullRequestRunStackedResponse> | ScmPullRequestRunStackedResponse;
     }>;
     stash?: Readonly<{
+        create?: (input: BackendRuntimeHandlerInput<ScmStashCreateRequest>) => Promise<ScmStashCreateResponse> | ScmStashCreateResponse;
         drop?: (input: BackendRuntimeHandlerInput<ScmStashDropRequest>) => Promise<ScmStashDropResponse> | ScmStashDropResponse;
         pop?: (input: BackendRuntimeHandlerInput<ScmStashPopRequest>) => Promise<ScmStashPopResponse> | ScmStashPopResponse;
         apply?: (input: BackendRuntimeHandlerInput<ScmStashApplyRequest>) => Promise<ScmStashApplyResponse> | ScmStashApplyResponse;

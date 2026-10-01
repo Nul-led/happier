@@ -1,5 +1,6 @@
 import {
   SCM_OPERATION_ERROR_CODES,
+  normalizeScmOperationOutcome,
   type ScmOperationErrorCode,
   type ScmPullRequestOpenOrReuseRequest,
   type ScmPullRequestOpenOrReuseResponse,
@@ -31,6 +32,7 @@ import {
     matchesBranchHeadContext,
     readDuplicatePullRequestHint,
 } from './pullRequestAuthChain.js';
+import { readPullRequestTemplate } from './pullRequestTemplate.js';
 
 type PullRequestWriteRegistry = Pick<ResolvedScmHostingProviderRegistry, 'getPullRequests' | 'buildCompareUrl'>;
 
@@ -60,6 +62,9 @@ function errorResponse(error: string, errorCode: ScmOperationErrorCode, extra?: 
         success: false,
         error,
         errorCode,
+        outcome: errorCode === SCM_OPERATION_ERROR_CODES.INVALID_REQUEST
+            ? { v: 1, kind: 'needs_input', errorCode, nextActions: [] }
+            : normalizeScmOperationOutcome({ success: false, errorCode, error }),
         ...extra,
     };
 }
@@ -121,6 +126,11 @@ function classifyError(error: unknown): Readonly<{
     if (maybeCode === SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED) {
         return { message, code: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED, cacheKind: 'network' };
     }
+    if (maybeCode === SCM_OPERATION_ERROR_CODES.INVALID_REQUEST
+        || maybeCode === SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE
+        || maybeCode === SCM_OPERATION_ERROR_CODES.REMOTE_REJECTED) {
+        return { message, code: maybeCode, cacheKind: 'network' };
+    }
     return { message, code: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED, cacheKind: 'network' };
 }
 
@@ -133,6 +143,14 @@ function createSuccessfulResponse(input: Readonly<{
         success: true,
         pullRequest: input.pullRequest,
         reused: input.reused,
+        result: input.reused ? 'reused' : 'created',
+        outcome: {
+            v: 1, kind: 'succeeded', nextActions: [],
+            effect: {
+                kind: 'pull_request', url: input.pullRequest.url,
+                ...(typeof input.pullRequest.number === 'number' ? { number: input.pullRequest.number } : {}),
+            },
+        },
         nextAction: createValidatedPullRequestFollowupAction({
             provider: input.provider,
             purpose: 'pullRequest',
@@ -315,26 +333,34 @@ export function createGitPullRequestOpenOrReuseOperation(
                 head: resolvedHeadBranch,
             });
 
-            function composeFallback(): ScmPullRequestOpenOrReuseResponse {
+            function composeFallback(errorCode: ScmOperationErrorCode = SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED): ScmPullRequestOpenOrReuseResponse {
                 if (compareUrl.kind !== 'resolved') {
                     return errorResponse('SCM hosting provider does not support pull request creation', SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED);
                 }
+                const nextAction = createValidatedPullRequestFollowupAction({
+                    provider: resolvedProvider,
+                    purpose: 'compose',
+                    url: compareUrl.url,
+                    allowedBaseUrl: resolvedProvider.baseUrl,
+                });
                 return {
-                    success: true,
+                    success: false,
+                    errorCode,
+                    error: 'Complete pull request creation on the provider page.',
+                    result: 'opened_compose',
+                    outcome: {
+                        v: 1, kind: 'needs_input', errorCode,
+                        nextActions: nextAction.kind === 'openUrl' ? [{ kind: 'open_url', url: nextAction.url }] : [],
+                    },
                     pullRequest: null,
                     reused: false,
                     composeUrl: compareUrl.url,
-                    nextAction: createValidatedPullRequestFollowupAction({
-                        provider: resolvedProvider,
-                        purpose: 'compose',
-                        url: compareUrl.url,
-                        allowedBaseUrl: resolvedProvider.baseUrl,
-                    }),
+                    nextAction,
                     authState: 'authentication_required',
                 };
             }
 
-            if (!writeAdapter?.createPullRequest) {
+            if (!writeAdapter?.createPullRequest || (request.draft === true && writeAdapter.supportsDraftCreate !== true)) {
                 return composeFallback();
             }
 
@@ -375,10 +401,37 @@ export function createGitPullRequestOpenOrReuseOperation(
                     });
                 }
                 if (classified.code === SCM_OPERATION_ERROR_CODES.REMOTE_AUTH_REQUIRED || classified.code === SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED) {
-                    return composeFallback();
+                    return composeFallback(classified.code);
                 }
                 return errorResponse(classified.message, classified.code);
             }
+
+            let body = request.body;
+            if (body === undefined) {
+                const template = await readPullRequestTemplate({
+                    cwd: snapshot.repo.rootPath ?? context.cwd,
+                    base: resolvedBaseBranch,
+                    remoteName: resolvedProvider.remoteName,
+                    providerKind: resolvedProvider.kind,
+                });
+                if (template.kind === 'needs_input') {
+                    return errorResponse(template.error, SCM_OPERATION_ERROR_CODES.INVALID_REQUEST, {
+                        outcome: { v: 1, kind: 'needs_input', errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST, nextActions: [] },
+                    });
+                }
+                body = template.body;
+            }
+
+            const unknownCreateOutcome = (message: string, errorCode: ScmOperationErrorCode) => errorResponse(message, errorCode, {
+                outcome: {
+                    v: 1, kind: 'outcome_unknown', errorCode, nextActions: [],
+                    reconciliation: {
+                        kind: 'pull_request', providerId: resolvedProvider.id,
+                        ...(resolvedProvider.nameWithOwner ? { repository: resolvedProvider.nameWithOwner } : {}),
+                        head: resolvedHeadBranch, base: resolvedBaseBranch,
+                    },
+                },
+            });
 
             if (snapshot.branch.head === resolvedHeadBranch && resolvedHeadBranch !== resolvedBaseBranch) {
                 const plan = resolvePullRequestBranchPublishPlan({
@@ -410,7 +463,8 @@ export function createGitPullRequestOpenOrReuseOperation(
                     base: resolvedBaseBranch,
                     head: resolvedHeadBranch,
                     title: request.title ?? resolvedHeadBranch,
-                    ...(request.body !== undefined ? { body: request.body } : {}),
+                    ...(body !== undefined ? { body } : {}),
+                    ...(request.draft !== undefined ? { draft: request.draft } : {}),
                     runtimeServices: readRuntimeServices(),
                 });
                 if (!matchesBranchHeadContext({
@@ -420,7 +474,7 @@ export function createGitPullRequestOpenOrReuseOperation(
                     headBranch: resolvedHeadBranch,
                     ...(requestedHeadRepositoryNameWithOwner ? { headRepositoryNameWithOwner: requestedHeadRepositoryNameWithOwner } : {}),
                 })) {
-                    return errorResponse(
+                    return unknownCreateOutcome(
                         'Pull request provider returned a pull request outside the requested branch context.',
                         SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
                     );
@@ -473,9 +527,13 @@ export function createGitPullRequestOpenOrReuseOperation(
                 }
                 const classified = classifyError(error);
                 if (classified.code === SCM_OPERATION_ERROR_CODES.REMOTE_AUTH_REQUIRED || classified.code === SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED) {
-                    return composeFallback();
+                    return composeFallback(classified.code);
                 }
-                return errorResponse(classified.message, classified.code);
+                const effectNotApplied = typeof error === 'object' && error !== null
+                    && 'effectNotApplied' in error && error.effectNotApplied === true;
+                return effectNotApplied
+                    ? errorResponse(classified.message, classified.code)
+                    : unknownCreateOutcome(classified.message, classified.code);
             }
         },
     });

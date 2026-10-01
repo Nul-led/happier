@@ -215,6 +215,11 @@ test('active Mac repo-local mirror uses the mapped Stack identity before delegat
       },
     );
 
+    if (process.platform !== 'darwin') {
+      assert.equal(result.code, 1, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+      assert.equal(existsSync(logPath), false, 'non-macOS hosts must not delegate through Lima');
+      return;
+    }
     assert.equal(result.code, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
     assert.deepEqual(readdirSync(storageDir), [stackName]);
     assert.match(readFileSync(join(storageDir, stackName, 'env'), 'utf8'), new RegExp(`^HAPPIER_STACK_STACK=${stackName}$`, 'm'));

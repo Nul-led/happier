@@ -21,7 +21,7 @@ import { Logger, logger } from '@/ui/logger';
 const boundaries = vi.hoisted(() => ({
     listSessionMarkers: vi.fn(),
     readStoredCredentials: vi.fn(),
-    retireSessionSubagentCustodyGeneration: vi.fn(),
+    retireSessionSubagentCustodySource: vi.fn(),
 }));
 
 const filesystemBoundary = vi.hoisted(() => ({
@@ -80,12 +80,8 @@ vi.mock('@/daemon/sessionRegistry', async (importOriginal) => ({
 
 vi.mock('@/session/transport/http/sessionSubagentCustodyHttp', async (importOriginal) => ({
     ...await importOriginal<typeof import('@/session/transport/http/sessionSubagentCustodyHttp')>(),
-    retireSessionSubagentCustodyGeneration: (...args: unknown[]) =>
-        boundaries.retireSessionSubagentCustodyGeneration(...args),
-}));
-
-vi.mock('../projection/registry/sources/generatedBundledPluginArtifacts', () => ({
-    BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS: [],
+    retireSessionSubagentCustodySource: (...args: unknown[]) =>
+        boundaries.retireSessionSubagentCustodySource(...args),
 }));
 
 vi.mock('../projection/registry/sources/generatedBundledPlugins', () => ({
@@ -200,7 +196,7 @@ async function prepareResolverWithObsoleteGeneration(): Promise<Readonly<{
         sourceRootPath: obsoleteSourceRoot,
         manifestRelativePath: 'marker',
         distribution: { kind: 'localPath', canonicalPath: obsoleteSourceRoot },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
         immutableGenerationId: obsoleteGenerationId,
     });
@@ -252,7 +248,7 @@ describe('resolveExecutablePluginRuntimeRegistry custody logging', () => {
             token: 'fixture-token',
             encryption: null,
         });
-        boundaries.retireSessionSubagentCustodyGeneration.mockRejectedValue(createSecretFailure());
+        boundaries.retireSessionSubagentCustodySource.mockRejectedValue(createSecretFailure());
         previousEnvironment = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
         delete process.env.DEBUG;
         process.env.HAPPIER_LOG_LEVEL = 'debug';

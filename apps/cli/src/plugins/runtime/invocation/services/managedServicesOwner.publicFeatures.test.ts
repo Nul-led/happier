@@ -99,14 +99,14 @@ type ReservePort = NonNullable<
 
 function publicScope(placement: Placement) {
     return Object.freeze({
-        generation: 'generation-public-features',
+        occurrenceId: 'occurrenceId-public-features',
         pluginId: 'acme.providers',
         contributionQualifiedId:
             'acme.providers/providers/gateway',
         ...(placement === 'runner'
             ? { sessionId: 'session-public-features' }
             : { operationId: 'catalog-probe-public-features' }),
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
     });
 }
 

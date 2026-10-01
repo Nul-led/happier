@@ -310,7 +310,6 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
       },
       client: {
         artifactId: 'voice-runtime-web',
-        modulePath: './ui/voice',
         exportName: 'activate',
       },
       },

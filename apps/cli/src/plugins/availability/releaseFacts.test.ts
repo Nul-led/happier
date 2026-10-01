@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { PluginUiArtifactsManifestV1Schema } from '@happier-dev/protocol/plugins/ui';
+import { PluginUiArtifactsManifestV2Schema } from '@happier-dev/protocol/plugins/ui';
 
 import { normalizePluginManifestV2 } from '@/plugins/manifest/normalize';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
@@ -15,6 +15,12 @@ describe('verified portable Plugin Availability facts', () => {
       id: 'com.acme.artifacts',
       version: '1.2.3',
       contributes: {
+        ui: {
+          renderers: [
+            { id: 'native-panel', kind: 'reactNative', artifact: 'native-bundle' },
+            { id: 'web-panel', kind: 'hostedWeb', source: { kind: 'artifact', artifact: 'hosted-static' } },
+          ],
+        },
         resources: [{
           id: 'brand',
           kind: 'asset',
@@ -23,47 +29,35 @@ describe('verified portable Plugin Availability facts', () => {
         }],
       },
     }));
-    const generatedUiArtifacts = PluginUiArtifactsManifestV1Schema.parse({
-      version: 1,
+    const generatedUiArtifacts = PluginUiArtifactsManifestV2Schema.parse({
+      version: 2,
       entries: [
         {
-          contributionId: 'native-panel',
+          artifactId: 'native-bundle',
           tier: 'reactNative',
-          platform: 'ios',
-          entry: 'native/ios.bundle',
+          entry: 'react-native/native-bundle/entry.cjs.bundle',
           files: [{
-            relativePath: 'native/ios.bundle',
+            relativePath: 'react-native/native-bundle/entry.cjs.bundle',
             digest: digest('b'),
             byteSize: 12,
           }],
           digest: digest('c'),
-          builtWith: { bundler: 'repack', version: '5.0.0' },
-          repack: {
-            containerName: 'acme_artifacts',
-            modulePath: './Panel',
-            exportName: 'Panel',
-          },
-          hostUiApiVersion: '1.0.0',
-          compat: {
-            react: '19.0.0',
-            reactNative: '0.83.4',
-            expoRuntime: '55.0.0',
-            hermes: '0.15.0',
-          },
+          builtWith: { bundler: 'esbuild', version: '0.27.2' },
+          executable: { exports: ['renderSurface'] },
+          hostUiApiRange: '^1.0.0',
         },
         {
-          contributionId: 'web-panel',
+          artifactId: 'hosted-static',
           tier: 'hostedWeb',
-          entry: 'web/index.html',
+          entry: 'hosted-web/hosted-static/index.html',
           files: [{
-            relativePath: 'web/index.html',
+            relativePath: 'hosted-web/hosted-static/index.html',
             digest: digest('d'),
             byteSize: 13,
           }],
           digest: digest('e'),
-          builtWith: { bundler: 'vite', version: '6.0.0' },
-          hostUiApiVersion: '1.0.0',
-          compat: {},
+          builtWith: { staging: 'staticDirectory' },
+          hostUiApiRange: '^1.0.0',
         },
       ],
     });
@@ -88,25 +82,27 @@ describe('verified portable Plugin Availability facts', () => {
     expect(availability.release?.uiSlots).toEqual([
       {
         contributionId: 'native-panel',
+        artifactId: 'native-bundle',
         tier: 'reactNative',
-        platform: 'ios',
+        platform: 'android',
         artifactDigest: digest('c'),
-        compatibility: {
-          hostUiApiVersion: '1.0.0',
-          reactVersion: '19.0.0',
-          reactNativeVersion: '0.83.4',
-          expoRuntimeVersion: '55.0.0',
-          hermesVersion: '0.15.0',
-        },
+        hostUiApiRange: '^1.0.0',
+      },
+      {
+        contributionId: 'native-panel', artifactId: 'native-bundle', tier: 'reactNative', platform: 'ios',
+        artifactDigest: digest('c'), hostUiApiRange: '^1.0.0',
+      },
+      {
+        contributionId: 'native-panel', artifactId: 'native-bundle', tier: 'reactNative', platform: 'web',
+        artifactDigest: digest('c'), hostUiApiRange: '^1.0.0',
       },
       {
         contributionId: 'web-panel',
+        artifactId: 'hosted-static',
         tier: 'hostedWeb',
         platform: 'web',
         artifactDigest: digest('e'),
-        compatibility: {
-          hostUiApiVersion: '1.0.0',
-        },
+        hostUiApiRange: '^1.0.0',
       },
     ]);
     expect(availability.release?.packageAssetArchive).toEqual({

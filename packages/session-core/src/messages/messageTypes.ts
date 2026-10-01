@@ -1,0 +1,98 @@
+import { AgentEvent } from "../raw/index.js";
+import type { MessageStructuredPresentationV1, SessionPermissionDecisionActorV1 } from '@happier-dev/protocol';
+import { MessageMeta } from "./messageMetaTypes.js";
+import type { TranscriptObservationMetadata } from "./transcriptObservationProvenance.js";
+import type { TranscriptAccountActorMetadata } from "./transcriptAccountActor.js";
+
+export type ToolCall = {
+    // Provider-side identifier for this tool call (e.g. ACP callId, Claude tool_use id).
+    // Optional for backward compatibility with older sessions and unit tests.
+    id?: string;
+    name: string;
+    state: 'running' | 'completed' | 'error' | 'unavailable';
+    input: any;
+    createdAt: number;
+    startedAt: number | null;
+    completedAt: number | null;
+    description: string | null;
+    result?: any;
+    permission?: {
+        id: string;
+        status: 'pending' | 'approved' | 'denied' | 'canceled';
+        kind?: string;
+        reason?: string;
+        mode?: string;
+        allowedTools?: string[];
+        decision?: 'approved' | 'approved_for_session' | 'approved_execpolicy_amendment' | 'denied' | 'abort';
+        decisionActor?: SessionPermissionDecisionActorV1;
+        date?: number;
+        /**
+         * Provider-suggested permission updates that can be applied by the user when approving.
+         *
+         * Opaque by default so provider-specific schemas can flow through without core coupling.
+         * (e.g. Claude Agent SDK `permission_suggestions` / `PermissionUpdate[]`).
+         */
+        suggestions?: unknown;
+    };
+};
+
+// Flattened message types - each message represents a single block
+export type UserTextMessage = {
+    kind: 'user-text';
+    id: string;
+    realID?: string | null;
+    seq?: number;
+    transcriptBlockIndex?: number;
+    localId: string | null;
+    createdAt: number;
+    text: string;
+    displayText?: string; // Optional text to display in UI instead of actual text
+    meta?: MessageMeta;
+    structuredPresentation?: MessageStructuredPresentationV1;
+} & TranscriptObservationMetadata & TranscriptAccountActorMetadata;
+
+export type ModeSwitchMessage = {
+    kind: 'agent-event';
+    id: string;
+    realID?: string | null;
+    seq?: number;
+    transcriptBlockIndex?: number;
+    /**
+     * The submitting client's row key. Load-bearing on this kind: the
+     * Agent-transition divider is only readable at its reserved localId, so an
+     * agent-event row that drops it can never be a divider.
+     */
+    localId: string | null;
+    createdAt: number;
+    event: AgentEvent;
+    meta?: MessageMeta;
+} & TranscriptObservationMetadata & TranscriptAccountActorMetadata;
+
+export type AgentTextMessage = {
+    kind: 'agent-text';
+    id: string;
+    realID?: string | null;
+    seq?: number;
+    transcriptBlockIndex?: number;
+    localId: string | null;
+    createdAt: number;
+    text: string;
+    isThinking?: boolean;
+    meta?: MessageMeta;
+    structuredPresentation?: MessageStructuredPresentationV1;
+} & TranscriptObservationMetadata & TranscriptAccountActorMetadata;
+
+export type ToolCallMessage = {
+    kind: 'tool-call';
+    id: string;
+    realID?: string | null;
+    seq?: number;
+    transcriptBlockIndex?: number;
+    localId: string | null;
+    createdAt: number;
+    tool: ToolCall;
+    children: Message[];
+    meta?: MessageMeta;
+} & TranscriptObservationMetadata & TranscriptAccountActorMetadata;
+
+export type Message = UserTextMessage | AgentTextMessage | ToolCallMessage | ModeSwitchMessage;

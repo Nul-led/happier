@@ -17,6 +17,7 @@ describe('retained OpenCode external-session takeover leaf', () => {
       deadlineAtMs: Date.now() + 1_000,
       maxSerializedBytes: 262_144,
       linkedSessionId: 'linked-1',
+      transcriptStorage: 'persisted',
       remoteSessionId: 'session-1',
       source: {
         kind: 'opencodeServer',
@@ -37,6 +38,8 @@ describe('retained OpenCode external-session takeover leaf', () => {
           agent: {
             backendMode: 'server',
             providerSessionId: 'session-1',
+            serverBaseUrl: 'https://remote.example.test/',
+            serverBaseUrlExplicit: true,
           },
         },
       },
@@ -49,6 +52,7 @@ describe('retained OpenCode external-session takeover leaf', () => {
       deadlineAtMs: Date.now() + 1_000,
       maxSerializedBytes: 262_144,
       linkedSessionId: 'linked-1',
+      transcriptStorage: 'persisted',
       remoteSessionId: 'session-1',
       source: { kind: 'differentSource' },
       linkData: {},

@@ -22,6 +22,8 @@ import type {
   ScmCommitBackoutResponse,
   ScmCommitCreateRequest,
   ScmCommitCreateResponse,
+  ScmConflictAcceptSideRequest,
+  ScmConflictMarkResolvedRequest,
   ScmDiffCommitRequest,
   ScmDiffCommitResponse,
   ScmDiffFileRequest,
@@ -64,6 +66,8 @@ import type {
   ScmStashApplyRequest,
   ScmStashApplyResponse,
   ScmStashDropRequest,
+  ScmStashCreateRequest,
+  ScmStashCreateResponse,
   ScmStashDropResponse,
   ScmStashListRequest,
   ScmStashListResponse,
@@ -252,6 +256,18 @@ export interface ScmBackend {
     context: ScmBackendContext;
     request: ScmBranchOperationControlRequest;
   }): Promise<ScmBranchIntegrationResponse>;
+  branchOperationSkip(input: {
+    context: ScmBackendContext;
+    request: ScmBranchOperationControlRequest;
+  }): Promise<ScmBranchIntegrationResponse>;
+  conflictAcceptSide(input: {
+    context: ScmBackendContext;
+    request: ScmConflictAcceptSideRequest;
+  }): Promise<ScmBranchIntegrationResponse>;
+  conflictMarkResolved(input: {
+    context: ScmBackendContext;
+    request: ScmConflictMarkResolvedRequest;
+  }): Promise<ScmBranchIntegrationResponse>;
   worktreeCreate(input: {
     context: ScmBackendContext;
     request: ScmWorktreeCreateRequest;
@@ -344,6 +360,10 @@ export interface ScmBackend {
     context: ScmBackendContext;
     request: ScmStashListRequest;
   }): Promise<ScmStashListResponse>;
+  stashCreate(input: {
+    context: ScmBackendContext;
+    request: ScmStashCreateRequest;
+  }): Promise<ScmStashCreateResponse>;
   stashDrop(input: {
     context: ScmBackendContext;
     request: ScmStashDropRequest;

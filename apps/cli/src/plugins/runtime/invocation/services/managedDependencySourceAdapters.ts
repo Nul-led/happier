@@ -92,6 +92,9 @@ export async function createProductionManagedDependencySourceAdapter(input: Read
         const expectedSource = Object.freeze({
             kind: 'pinned_archive' as const,
             version: source.version,
+            ...(source.archiveExtractionLimits
+                ? { archiveExtractionLimits: source.archiveExtractionLimits }
+                : {}),
             assetsByPlatform: source.assetsByPlatform,
         });
         if (

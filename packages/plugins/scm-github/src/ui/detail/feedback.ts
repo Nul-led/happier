@@ -12,6 +12,7 @@ import {
   type GithubReviewDecisionV1,
 } from '../../triage/mapping/facts.js';
 import { toTriageFacts } from '../../triage/mapping/protocol.js';
+import { readLatestGithubReviewsV1 } from '../../triage/mapping/reviews.js';
 
 /**
  * The GitHub `Feedback` plane's projection.
@@ -236,20 +237,7 @@ function reviewPeople(
   requests: readonly GithubFeedbackRequestV1[],
 ): GithubFeedbackReviewPeopleV1 {
   if (historical.length === 0 && requests.length === 0) return NO_REVIEW_PEOPLE;
-  const latestByAuthor = new Map<string, GithubFeedbackReviewV1>();
-  for (const review of historical) {
-    if (review.author === null) continue;
-    const previous = latestByAuthor.get(review.author);
-    // Feedback pages are appended newest connection first, so arrival order is
-    // not chronology: an older page must never replace the current state. A
-    // missing/equal timestamp keeps the first-seen record, which is the only
-    // ordering fact GitHub supplied for that tie.
-    if (previous === undefined
-      || (review.submittedAtMs !== null
-        && (previous.submittedAtMs === null || review.submittedAtMs > previous.submittedAtMs))) {
-      latestByAuthor.set(review.author, review);
-    }
-  }
+  const latestByAuthor = readLatestGithubReviewsV1(historical);
   return Object.freeze({
     reviewed: Object.freeze([...latestByAuthor.entries()].map(([login, review]) => Object.freeze({
       login,

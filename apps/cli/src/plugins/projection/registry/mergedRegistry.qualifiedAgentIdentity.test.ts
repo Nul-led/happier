@@ -15,9 +15,11 @@ import {
     resolveEngineRuntimeContribution,
 } from '@/agent/runtime/registry/engineRegistry/contributions';
 import {
-    createTargetAgentRuntimeRegistry,
     type AgentRuntimeOwnerDuplicate,
 } from '@/plugins/runtime/lifecycle/contributions/targetAgents';
+import {
+    createTargetAgentRuntimeRegistry,
+} from '@/plugins/runtime/lifecycle/contributions/targetAgents.testkit';
 import type { ActivationTarget } from '@/plugins/runtime/lifecycle/activation/targets';
 
 import {
@@ -206,7 +208,7 @@ describe('two plugins declaring the same local Agent id', () => {
                 agentRuntimeRegistration('acme.alpha'),
                 agentRuntimeRegistration('acme.beta'),
             ],
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: new AbortController().signal,
             onDuplicate,
         });
@@ -270,7 +272,11 @@ describe('Agent identity formatting', () => {
             agentId: routingId,
             qualifiedAgentId: qualifiedId,
             localAgentId: identity.localId,
-            immutableGenerationId: 'generation-1',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'generation-1',
+                installSource: 'localPath',
+            },
         })).toMatchObject({ agentId: routingId, qualifiedAgentId: qualifiedId });
     });
 });

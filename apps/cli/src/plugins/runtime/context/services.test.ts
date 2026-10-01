@@ -1,19 +1,13 @@
-import { access, chmod, constants, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 import { isPluginError, PluginError } from '@happier-dev/plugin-sdk';
 
-import type {
-    ExecLaunchInputV1,
-} from '../exec/privateContract';
-
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
-import { createPluginExecService } from '../exec/hostService';
 import {
     createPluginSecretStore,
-    createPurposeKeyedPluginSecretStore,
     preparePluginSecretsDataRemoval,
 } from './secrets';
 import {
@@ -40,18 +34,6 @@ import type {
 
 async function makeHappyHome(): Promise<string> {
     return await mkdtemp(join(tmpdir(), 'happier-a11-'));
-}
-
-async function firstExecutablePath(candidates: readonly string[]): Promise<string> {
-    for (const candidate of candidates) {
-        try {
-            await access(candidate, constants.X_OK);
-            return candidate;
-        } catch {
-            // Try the next platform-specific candidate.
-        }
-    }
-    throw new Error(`No executable candidate found: ${candidates.join(', ')}`);
 }
 
 describe('A.11 plugin context services', () => {
@@ -138,9 +120,9 @@ describe('A.11 plugin context services', () => {
         const storage = createStablePluginStorageService({
             pluginId: 'acme.plugin',
             paths,
-            generation: 'generation-1',
+            occurrenceId: 'generation-1',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         // The public `JsonValue` surface already forbids these runtime values;
         // passing them anyway must be refused instead of silently coerced into
@@ -295,7 +277,7 @@ describe('A.11 plugin context services', () => {
     it('uses caller-owned key material without creating the retired shared plugin key', async () => {
         const happyHomeDir = await makeHappyHome();
         const paths = resolvePluginStorePaths({ happyHomeDir });
-        const secrets = createPurposeKeyedPluginSecretStore({
+        const secrets = createPluginSecretStore({
             pluginId: 'acme.plugin',
             paths,
             secretKey: new Uint8Array(32).fill(7),
@@ -555,7 +537,7 @@ describe('A.11 plugin context services', () => {
             ...prompt,
             scheduling: { timeoutMs: 15_000 },
         });
-        expect(onHostCreated).toHaveBeenCalledWith(handle);
+        expect(onHostCreated).toHaveBeenCalledWith(handle, 'owned');
         transformerBinding.dispose();
 
         await service.dispose(terminalHandle, {
@@ -565,6 +547,7 @@ describe('A.11 plugin context services', () => {
         expect(disposeHost).toHaveBeenCalledWith({
             handle: boundHandle,
             adapter,
+            lifecycle: 'owned',
             intent: { kind: 'preserve_host', reason: 'runtime_recovery' },
         });
         expect(adapter.dispose).not.toHaveBeenCalled();
@@ -650,6 +633,150 @@ describe('A.11 plugin context services', () => {
             multiline: true,
             origin: { kind: 'ui_pending', nonce: 'nonce-cr' },
             scheduling: { timeoutMs: 15_000 },
+        });
+    });
+
+    it('launches an agent as a child in a borrowed Herdr terminal without creating or disposing a pane', async () => {
+        const inheritedHandle: TerminalHostHandle = {
+            kind: 'herdr',
+            sessionName: 'default',
+            paneId: 'pane-current',
+            terminalId: 'terminal-current',
+            socketPath: '/tmp/herdr.sock',
+            attachMetadata: {
+                attachStrategy: 'terminal_host',
+                topology: 'shared',
+                locality: 'same_machine',
+                maxClients: null,
+                requiresLocalAttachmentInfo: true,
+                liveProbe: 'required',
+            },
+        };
+        const createOrAttachHost = vi.fn(async () => inheritedHandle);
+        const dispose = vi.fn(async () => undefined);
+        const adapter: TerminalHostAdapter = {
+            kind: 'herdr',
+            createOrAttachHost,
+            injectUserPrompt: vi.fn(async () => ({
+                status: 'injected' as const,
+                injectedAt: 1,
+                bytesWritten: 1,
+                hostKind: 'herdr' as const,
+                hostSessionName: 'default',
+                paneId: 'pane-current',
+            })),
+            interruptTurn: vi.fn(async () => undefined),
+            evaluateLiveness: vi.fn(async () => ({ paneAlive: true, observedAt: 1 })),
+            dispose,
+        };
+        let resolveExit!: (exit: Readonly<{ code: number | null; signal: NodeJS.Signals | null }>) => void;
+        const process = {
+            whenExited: new Promise<Readonly<{ code: number | null; signal: NodeJS.Signals | null }>>((resolve) => {
+                resolveExit = resolve;
+            }),
+            terminate: vi.fn(async () => undefined),
+        };
+        const launchCurrentHostProcess = vi.fn(async () => process);
+        const onHostCreated = vi.fn(async (handle: TerminalHostHandle) => ({
+            ...handle,
+            attachmentId: 'borrowed-attachment' as NonNullable<TerminalHostHandle['attachmentId']>,
+        }));
+        const disposeHost = vi.fn(async () => undefined);
+        const resolveTerminalHost = vi.fn(() => ({ status: 'resolved' as const, adapter, reason: 'herdr_forced' as const }));
+        const service = createPluginTerminalHostService({
+            hasCapability: (capability) => capability === 'terminalHost',
+            resolveTerminalHost,
+            resolveAgentCliLaunch: () => ({ command: '/usr/local/bin/claude', args: ['--model', 'sonnet'] }),
+            resolveCurrentHost: () => ({ handle: inheritedHandle, lifecycle: 'borrowed' }),
+            launchCurrentHostProcess,
+            onHostCreated,
+            disposeHost,
+        });
+
+        const handle = await service.createOrAttachHost({
+            preference: 'tmux',
+            sessionName: 'claude-session',
+            workingDirectory: '/workspace',
+            launch: { kind: 'agent-cli', agentId: 'claude', args: ['--continue'], env: { EXTRA: '1' } },
+            isolatedEnv: true,
+        });
+
+        expect(createOrAttachHost).not.toHaveBeenCalled();
+        expect(resolveTerminalHost).toHaveBeenCalledWith('herdr');
+        expect(launchCurrentHostProcess).toHaveBeenCalledWith(expect.objectContaining({
+            spawnArgv: ['/usr/local/bin/claude', '--model', 'sonnet', '--continue'],
+            workingDirectory: '/workspace',
+            spawnEnv: expect.objectContaining({ EXTRA: '1' }),
+        }));
+        expect(onHostCreated).toHaveBeenCalledWith(inheritedHandle, 'borrowed');
+        await expect(service.evaluateLiveness(handle)).resolves.toMatchObject({ paneAlive: true });
+
+        resolveExit({ code: 0, signal: null });
+        await Promise.resolve();
+        await expect(service.evaluateLiveness(handle)).resolves.toMatchObject({ paneAlive: false, paneDead: true });
+
+        await service.dispose(handle, { kind: 'preserve_host', reason: 'runtime_recovery' });
+        expect(process.terminate).toHaveBeenCalledOnce();
+        expect(disposeHost).toHaveBeenCalledWith({
+            handle,
+            adapter,
+            intent: { kind: 'preserve_host', reason: 'runtime_recovery' },
+            lifecycle: 'borrowed',
+        });
+        expect(dispose).not.toHaveBeenCalled();
+    });
+
+    it('stops a direct provider child before disposing an owned current terminal host', async () => {
+        const inheritedHandle: TerminalHostHandle = {
+            kind: 'herdr',
+            sessionName: 'default',
+            paneId: 'pane-owned',
+            terminalId: 'terminal-owned',
+            socketPath: '/tmp/herdr.sock',
+            attachMetadata: {
+                attachStrategy: 'terminal_host', topology: 'shared', locality: 'same_machine',
+                maxClients: null, requiresLocalAttachmentInfo: true, liveProbe: 'required',
+            },
+        };
+        const adapter: TerminalHostAdapter = {
+            kind: 'herdr',
+            createOrAttachHost: vi.fn(async () => inheritedHandle),
+            injectUserPrompt: vi.fn(async () => ({
+                status: 'injected' as const, injectedAt: 1, bytesWritten: 1,
+                hostKind: 'herdr' as const, hostSessionName: 'default', paneId: 'pane-owned',
+            })),
+            interruptTurn: vi.fn(async () => undefined),
+            evaluateLiveness: vi.fn(async () => ({ paneAlive: true, observedAt: 1 })),
+            dispose: vi.fn(async () => undefined),
+        };
+        const process = {
+            whenExited: new Promise<never>(() => undefined),
+            terminate: vi.fn(async () => undefined),
+        };
+        const disposeHost = vi.fn(async () => undefined);
+        const service = createPluginTerminalHostService({
+            hasCapability: (capability) => capability === 'terminalHost',
+            resolveTerminalHost: () => ({ status: 'resolved', adapter, reason: 'herdr_forced' }),
+            resolveAgentCliLaunch: () => ({ command: '/usr/local/bin/claude', args: [] }),
+            resolveCurrentHost: () => ({ handle: inheritedHandle, lifecycle: 'owned' }),
+            launchCurrentHostProcess: vi.fn(async () => process),
+            disposeHost,
+        });
+
+        const handle = await service.createOrAttachHost({
+            preference: 'herdr',
+            sessionName: 'claude-session',
+            workingDirectory: '/workspace',
+            launch: { kind: 'agent-cli', agentId: 'claude' },
+            isolatedEnv: true,
+        });
+        await service.dispose(handle, { kind: 'destroy_owned_host', reason: 'session_closed' });
+
+        expect(process.terminate).toHaveBeenCalledOnce();
+        expect(disposeHost).toHaveBeenCalledWith({
+            handle, adapter,
+            intent: { kind: 'destroy_owned_host', reason: 'session_closed' },
+            lifecycle: 'owned',
         });
     });
 
@@ -884,590 +1011,5 @@ describe('A.11 plugin context services', () => {
 
         expect(received).toEqual(['{"line":true}']);
     });
-
-    it('rejects plugin-authored resolvedExecutable launches before spawning a process', async () => {
-        const shellPath = await firstExecutablePath(['/bin/sh', '/usr/bin/sh']);
-        const exec = createPluginExecService({
-            allowedExecutablePaths: [shellPath],
-        });
-
-        await expect(exec.run({
-            kind: 'resolvedExecutable',
-            executablePath: shellPath,
-            args: ['-c', 'exit 0'],
-        } as unknown as ExecLaunchInputV1)).rejects.toMatchObject({
-            code: 'PLUGIN_EXEC_UNRESOLVED_LAUNCH',
-        });
-    });
-
-    it('rejects path-only executable launches before spawn even when policy contains a matching path-only scope', async () => {
-        const exec = createPluginExecService({
-            allowedExecutablePaths: ['git'],
-        });
-
-        await expect(exec.spawn({
-            kind: 'binary',
-            executablePath: 'git',
-            args: ['--version'],
-        })).rejects.toMatchObject({
-            code: 'PLUGIN_EXEC_UNRESOLVED_LAUNCH',
-        });
-    });
-
-    it('rejects Windows package-manager shims before spawn even when explicitly allowed by path', async () => {
-        const npmShimPath = '/tmp/npm.cmd';
-        const exec = createPluginExecService({
-            allowedExecutablePaths: [npmShimPath],
-        });
-
-        await expect(exec.spawn({
-            kind: 'binary',
-            executablePath: npmShimPath,
-            args: ['--version'],
-        })).rejects.toMatchObject({
-            code: 'PLUGIN_EXEC_PATH_ONLY_RUNTIME_DENIED',
-        });
-    });
-
-    it('denies package-manager shim system-tool paths before issuing a grant', async () => {
-        const root = await mkdtemp(join(tmpdir(), 'happier-system-tool-shim-'));
-        const npmShimPath = join(root, 'NPM.CMD');
-        await writeFile(npmShimPath, '#!/bin/sh\nexit 0\n');
-        await chmod(npmShimPath, 0o755);
-        const exec = createPluginExecService({
-            systemTools: [
-                {
-                    toolId: 'acme.package-manager',
-                    displayName: 'Acme Package Manager',
-                    executablePath: npmShimPath,
-                    lookupNames: ['npm'],
-                },
-            ],
-        });
-
-        await expect(exec.systemTools.resolve({
-            toolId: 'acme.package-manager',
-            purpose: 'verify package-manager deny before grant',
-        })).rejects.toMatchObject({
-            code: 'plugin_exec_system_tool_denied',
-            diagnostics: [
-                expect.objectContaining({
-                    code: 'system_tool_denied',
-                    severity: 'error',
-                }),
-            ],
-        });
-    });
-
-    it('rejects Bun path-only runtime launches before spawn even when explicitly allowed by path', async () => {
-        const bunPath = '/tmp/bun';
-        const exec = createPluginExecService({
-            allowedExecutablePaths: [bunPath],
-        });
-
-        await expect(exec.spawn({
-            kind: 'binary',
-            executablePath: bunPath,
-            args: ['--version'],
-        })).rejects.toMatchObject({
-            code: 'PLUGIN_EXEC_PATH_ONLY_RUNTIME_DENIED',
-        });
-    });
-
-    it('returns structured remediation for a missing required system tool', async () => {
-        const root = await mkdtemp(join(tmpdir(), 'happier-missing-system-tool-'));
-        const missingPath = join(root, 'missing-tool');
-        const exec = createPluginExecService({
-            systemTools: [
-                {
-                    toolId: 'acme.audit',
-                    displayName: 'Acme Audit',
-                    executablePath: missingPath,
-                    source: 'system',
-                },
-            ],
-        });
-        const systemTools = exec.systemTools;
-
-        await expect(systemTools.resolve({
-            toolId: 'acme.audit',
-            purpose: 'review security findings',
-        })).rejects.toMatchObject({
-            code: 'plugin_exec_system_tool_unavailable',
-            diagnostics: [
-                expect.objectContaining({
-                    code: 'system_tool_missing',
-                    severity: 'error',
-                }),
-            ],
-        });
-    });
-
-    it('does not grant a fallback executable when system-tool resolution is aborted after it starts', async () => {
-        const shellPath = await firstExecutablePath(['/bin/sh', '/usr/bin/sh']);
-        const root = await mkdtemp(join(tmpdir(), 'happier-aborted-system-tool-'));
-        const missingPreferredPath = join(root, 'missing-tool');
-        const exec = createPluginExecService({
-            systemTools: [
-                {
-                    toolId: 'acme.abort',
-                    displayName: 'Acme Abort',
-                    executablePath: shellPath,
-                    source: 'system',
-                },
-            ],
-        });
-        const controller = new AbortController();
-        const resolvePromise = exec.systemTools.resolve({
-            toolId: 'acme.abort',
-            purpose: 'verify abort fail closed',
-            preferredPath: missingPreferredPath,
-            signal: controller.signal,
-        });
-
-        controller.abort();
-
-        await expect(resolvePromise).rejects.toMatchObject({
-            code: 'plugin_exec_system_tool_aborted',
-        });
-        await expect(exec.run({
-            kind: 'binary',
-            executablePath: shellPath,
-            args: ['-c', 'printf should-not-run'],
-        })).rejects.toMatchObject({
-            code: 'PLUGIN_EXEC_PERMISSION_DENIED',
-        });
-    });
-
-    it('allows ctx.exec.run with the exact launch returned by systemTools.resolve', async () => {
-        const shellPath = await firstExecutablePath(['/bin/sh', '/usr/bin/sh']);
-        const exec = createPluginExecService({
-            systemTools: [
-                {
-                    toolId: 'acme.echo',
-                    displayName: 'Acme Echo',
-                    executablePath: shellPath,
-                    source: 'user_config',
-                },
-            ],
-        });
-        const systemTools = exec.systemTools;
-
-        const grant = await systemTools.resolve({
-            toolId: 'acme.echo',
-            purpose: 'echo fixture text',
-        });
-
-        expect(grant).toMatchObject({
-            toolId: 'acme.echo',
-            source: 'user_config',
-            executablePath: shellPath,
-            launch: {
-                kind: 'binary',
-                executablePath: shellPath,
-            },
-        });
-        await expect(exec.run({
-            kind: 'binary',
-            executablePath: grant.executablePath,
-            args: ['-c', 'printf granted'],
-        })).resolves.toMatchObject({
-            stdout: 'granted',
-        });
-    });
-
-    it('closes stdin for one-shot ctx.exec.run launches that do not provide input', async () => {
-        const exec = createPluginExecService({
-            allowedExecutablePaths: [process.execPath],
-            allowPathRuntimeNames: ['node'],
-        });
-
-        await expect(exec.run({
-            kind: 'binary',
-            executablePath: process.execPath,
-            args: ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.stdout.write("eof"));'],
-        }, {
-            timeoutMs: 1_000,
-        })).resolves.toMatchObject({
-            exitCode: 0,
-            stdout: 'eof',
-        });
-    });
-
-    it('resolves manifest lookup names through the host PATH without exposing PATH to child launches', async () => {
-        const root = await mkdtemp(join(tmpdir(), 'happier-system-tool-path-'));
-        const toolPath = join(root, 'acme-audit');
-        await writeFile(
-            toolPath,
-            [
-                '#!/bin/sh',
-                'printf "%s" "${PATH:-}"',
-                '',
-            ].join('\n'),
-            'utf8',
-        );
-        await chmod(toolPath, 0o755);
-        const previousPath = process.env.PATH;
-        process.env.PATH = root;
-        try {
-            const exec = createPluginExecService({
-                systemTools: [
-                    {
-                        toolId: 'acme.audit',
-                        displayName: 'Acme Audit',
-                        lookupNames: ['acme-audit'],
-                        source: 'system',
-                    },
-                ],
-                baseEnv: {},
-            });
-
-            const grant = await exec.systemTools.resolve({
-                toolId: 'acme.audit',
-                purpose: 'verify host lookup',
-            });
-
-            expect(grant.executablePath).toBe(toolPath);
-            const result = await exec.run(grant.launch);
-            expect(result.stdout).not.toContain(root);
-        } finally {
-            process.env.PATH = previousPath;
-        }
-    });
-
-    it('launches an executable JavaScript-named system tool directly through its custom shebang', async () => {
-        if (process.platform === 'win32') return;
-
-        const root = await mkdtemp(join(tmpdir(), 'happier-system-tool-node-runtime-'));
-        const toolPath = join(root, 'acme-node-tool.js');
-        await writeFile(
-            toolPath,
-            [
-                '#!/bin/sh',
-                'printf custom-shebang-system-tool',
-                '',
-            ].join('\n'),
-            'utf8',
-        );
-        await chmod(toolPath, 0o755);
-        const exec = createPluginExecService({
-            systemTools: [
-                {
-                    toolId: 'acme.node-tool',
-                    displayName: 'Acme Node Tool',
-                    executablePath: toolPath,
-                    source: 'system',
-                },
-            ],
-            baseEnv: {},
-        });
-
-        const grant = await exec.systemTools.resolve({
-            toolId: 'acme.node-tool',
-            purpose: 'preserve executable JavaScript system-tool shebang',
-        });
-
-        expect(grant.launch).toMatchObject({
-            executablePath: toolPath,
-            args: [],
-        });
-        await expect(exec.run(grant.launch)).resolves.toMatchObject({
-            exitCode: 0,
-            stdout: 'custom-shebang-system-tool',
-        });
-    });
-
-    it('honors a declared preferred command name through host lookup without treating it as a path', async () => {
-        const root = await mkdtemp(join(tmpdir(), 'happier-system-tool-command-'));
-        const defaultToolPath = join(root, 'acme-default');
-        const overrideToolPath = join(root, 'acme-override');
-        await writeFile(defaultToolPath, ['#!/bin/sh', 'printf default', ''].join('\n'), 'utf8');
-        await writeFile(overrideToolPath, ['#!/bin/sh', 'printf override', ''].join('\n'), 'utf8');
-        await chmod(defaultToolPath, 0o755);
-        await chmod(overrideToolPath, 0o755);
-        const previousPath = process.env.PATH;
-        process.env.PATH = root;
-        try {
-            const exec = createPluginExecService({
-                systemTools: [
-                    {
-                        toolId: 'acme.audit',
-                        displayName: 'Acme Audit',
-                        lookupNames: ['acme-default', 'acme-override'],
-                        source: 'system',
-                    },
-                ],
-                baseEnv: {},
-            });
-
-            const grant = await exec.systemTools.resolve({
-                toolId: 'acme.audit',
-                purpose: 'verify command override',
-                preferredCommand: 'acme-override',
-            });
-
-            expect(grant.executablePath).toBe(overrideToolPath);
-            await expect(exec.run(grant.launch)).resolves.toMatchObject({
-                stdout: 'override',
-            });
-        } finally {
-            process.env.PATH = previousPath;
-        }
-    });
-
-    it('prefers an explicit system-tool executable path over a matching PATH command', async () => {
-        const root = await mkdtemp(join(tmpdir(), 'happier-system-tool-explicit-path-'));
-        const pathToolDir = join(root, 'path');
-        const explicitToolDir = join(root, 'explicit');
-        await mkdir(pathToolDir, { recursive: true });
-        await mkdir(explicitToolDir, { recursive: true });
-        const pathToolPath = join(pathToolDir, 'acme-tool');
-        const explicitToolPath = join(explicitToolDir, 'acme-tool');
-        await writeFile(pathToolPath, ['#!/bin/sh', 'printf path', ''].join('\n'), 'utf8');
-        await writeFile(explicitToolPath, ['#!/bin/sh', 'printf explicit', ''].join('\n'), 'utf8');
-        await chmod(pathToolPath, 0o755);
-        await chmod(explicitToolPath, 0o755);
-        const previousPath = process.env.PATH;
-        process.env.PATH = pathToolDir;
-        try {
-            const exec = createPluginExecService({
-                systemTools: [
-                    {
-                        toolId: 'acme.audit',
-                        displayName: 'Acme Audit',
-                        executablePath: explicitToolPath,
-                        lookupNames: ['acme-tool'],
-                        source: 'system',
-                    },
-                ],
-                baseEnv: {},
-            });
-
-            const grant = await exec.systemTools.resolve({
-                toolId: 'acme.audit',
-                purpose: 'verify explicit path precedence',
-                preferredCommand: 'acme-tool',
-            });
-
-            expect(grant.executablePath).toBe(explicitToolPath);
-            await expect(exec.run(grant.launch)).resolves.toMatchObject({
-                stdout: 'explicit',
-            });
-        } finally {
-            process.env.PATH = previousPath;
-        }
-    });
-
-    it('rejects preferred command names that are not declared lookup names', async () => {
-        const root = await mkdtemp(join(tmpdir(), 'happier-system-tool-command-denied-'));
-        const defaultToolPath = join(root, 'acme-default');
-        await writeFile(defaultToolPath, ['#!/bin/sh', 'printf default', ''].join('\n'), 'utf8');
-        await chmod(defaultToolPath, 0o755);
-        const previousPath = process.env.PATH;
-        process.env.PATH = root;
-        try {
-            const exec = createPluginExecService({
-                systemTools: [
-                    {
-                        toolId: 'acme.audit',
-                        displayName: 'Acme Audit',
-                        lookupNames: ['acme-default'],
-                        source: 'system',
-                    },
-                ],
-                baseEnv: {},
-            });
-
-            await expect(exec.systemTools.resolve({
-                toolId: 'acme.audit',
-                purpose: 'verify command override rejection',
-                preferredCommand: 'acme-other',
-            })).rejects.toMatchObject({
-                code: 'plugin_exec_system_tool_invalid_command',
-            });
-        } finally {
-            process.env.PATH = previousPath;
-        }
-    });
-
-    it('rejects an ungranted binary path even when a plugin guesses a valid executable', async () => {
-        const shellPath = await firstExecutablePath(['/bin/sh', '/usr/bin/sh']);
-        const exec = createPluginExecService({
-            systemTools: [
-                {
-                    toolId: 'acme.echo',
-                    displayName: 'Acme Echo',
-                    executablePath: shellPath,
-                    source: 'system',
-                },
-            ],
-        });
-
-        await expect(exec.run({
-            kind: 'binary',
-            executablePath: shellPath,
-            args: ['-c', 'printf should-not-run'],
-        })).rejects.toMatchObject({
-            code: 'PLUGIN_EXEC_PERMISSION_DENIED',
-        });
-    });
-
-    it('sanitizes system-tool diagnostics without leaking secret environment values', async () => {
-        const exec = createPluginExecService({
-            systemTools: [
-                {
-                    toolId: 'acme.secret',
-                    displayName: 'Acme Secret',
-                    executablePath: '/tmp/missing-tool?TOKEN=super-secret',
-                    source: 'user_config',
-                },
-            ],
-        });
-        const systemTools = exec.systemTools;
-
-        await expect(systemTools.resolve({
-            toolId: 'acme.secret',
-            purpose: 'verify sanitizer',
-        })).rejects.toMatchObject({
-            diagnostics: [
-                expect.objectContaining({
-                    detail: expect.not.objectContaining({
-                        executablePath: expect.stringContaining('super-secret'),
-                    }),
-                }),
-            ],
-        });
-    });
-
-    it('does not leak host environment variables into allowed exec launches', async () => {
-        const shellPath = await firstExecutablePath(['/bin/sh', '/usr/bin/sh']);
-        const previous = process.env.HAPPIER_A13_SECRET;
-        process.env.HAPPIER_A13_SECRET = 'leaked';
-        try {
-            const exec = createPluginExecService({
-                allowedExecutablePaths: [shellPath],
-                baseEnv: {},
-            });
-
-            await expect(exec.run({
-                kind: 'binary',
-                executablePath: shellPath,
-                args: ['-c', 'printf "%s" "${HAPPIER_A13_SECRET:-}"'],
-            })).resolves.toMatchObject({
-                stdout: '',
-            });
-        } finally {
-            if (previous === undefined) {
-                delete process.env.HAPPIER_A13_SECRET;
-            } else {
-                process.env.HAPPIER_A13_SECRET = previous;
-            }
-        }
-    });
-
-    it('disposes spawned exec handles through the plugin lifecycle registry', async () => {
-        const shellPath = await firstExecutablePath(['/bin/sh', '/usr/bin/sh']);
-        const registry = createPluginDisposableRegistry();
-        const exec = createPluginExecService({
-            allowedExecutablePaths: [shellPath],
-            addDisposable: registry.add,
-        });
-
-        const handle = await exec.spawn({
-            kind: 'binary',
-            executablePath: shellPath,
-            args: ['-c', 'sleep 30'],
-        });
-        await registry.dispose();
-
-        await expect(handle.exit).resolves.toMatchObject({
-            exitCode: null,
-        });
-        await expect(handle.dispose()).resolves.toBeUndefined();
-    });
-
-    it('disposes spawned process trees instead of leaving grandchildren alive', async () => {
-        const shellPath = await firstExecutablePath(['/bin/sh', '/usr/bin/sh']);
-        const root = await mkdtemp(join(tmpdir(), 'happier-exec-process-tree-'));
-        const pidFile = join(root, 'grandchild.pid');
-        const exec = createPluginExecService({
-            allowedExecutablePaths: [shellPath],
-        });
-        const handle = await exec.spawn({
-            kind: 'binary',
-            executablePath: shellPath,
-            args: [
-                '-c',
-                [
-                    `${JSON.stringify(shellPath)} -c 'trap "exit 0" TERM; while true; do sleep 1; done' &`,
-                    `echo $! > ${JSON.stringify(pidFile)}`,
-                    'wait',
-                ].join('\n'),
-            ],
-        });
-        try {
-            await vi.waitFor(async () => {
-                expect((await readFile(pidFile, 'utf8')).trim()).toMatch(/^\d+$/);
-            });
-            const grandchildPid = Number((await readFile(pidFile, 'utf8')).trim());
-
-            await handle.dispose();
-
-            await vi.waitFor(() => {
-                expect(() => process.kill(grandchildPid, 0)).toThrow();
-            });
-        } finally {
-            await handle.dispose();
-        }
-    });
-
-    it('escalates process-tree disposal when a child ignores SIGTERM', async () => {
-        if (process.platform === 'win32') {
-            return;
-        }
-
-        const shellPath = await firstExecutablePath(['/bin/sh', '/usr/bin/sh']);
-        const root = await mkdtemp(join(tmpdir(), 'happier-exec-process-tree-escalate-'));
-        const pidFile = join(root, 'stubborn-child.pid');
-        const exec = createPluginExecService({
-            allowedExecutablePaths: [shellPath],
-        });
-        const handle = await exec.spawn({
-            kind: 'binary',
-            executablePath: shellPath,
-            args: [
-                '-c',
-                [
-                    `${JSON.stringify(shellPath)} -c 'trap "" TERM; echo $$ > ${JSON.stringify(pidFile)}; while true; do sleep 1; done' &`,
-                    'wait',
-                ].join('\n'),
-            ],
-        });
-        let disposePromise: Promise<void> | null = null;
-        try {
-            await vi.waitFor(async () => {
-                expect((await readFile(pidFile, 'utf8')).trim()).toMatch(/^\d+$/);
-            });
-            const childPid = Number((await readFile(pidFile, 'utf8')).trim());
-            disposePromise = handle.dispose();
-
-            await expect(Promise.race([
-                disposePromise.then(() => 'disposed' as const),
-                new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 5_000)),
-            ])).resolves.toBe('disposed');
-            await vi.waitFor(() => {
-                expect(() => process.kill(childPid, 0)).toThrow();
-            });
-        } finally {
-            if (handle.pid) {
-                try {
-                    process.kill(-handle.pid, 'SIGKILL');
-                } catch {
-                    // The shared process-tree cleanup may already have removed the process group.
-                }
-            }
-            await disposePromise?.catch(() => undefined);
-        }
-    }, 10_000);
 
 });

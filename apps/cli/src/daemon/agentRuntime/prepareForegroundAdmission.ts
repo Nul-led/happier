@@ -15,10 +15,13 @@ import {
   sameQualifiedConnectedAccountRef,
   type ProviderErrorV1,
   type QualifiedConnectedAccountRef,
+  type ArtifactSharingResourceV1,
 } from '@happier-dev/protocol';
 
 import type { SessionTeamCredentialBindingIntentListV1 } from '@happier-dev/protocol/teams';
 import { configuration } from '@/configuration';
+import { readStoredCredentials } from '@/persistence';
+import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { resolveAgentContributionQualifiedId } from '@/plugins/projection/registry/agentRoutingIdentity';
 import { resolveCliFeatureDecisionForServer } from '@/features/featureDecisionService';
 import { prepareDirectProviderLaunch } from '@/providers/lifecycle/prepareDirectLaunch';
@@ -32,7 +35,7 @@ import {
   refreshSavedSecretCatalogForOperation,
   SavedSecretOperationAdmissionError,
 } from '@/settings/secrets/hydrateSavedSecretCatalog';
-import { readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
+import { loadAccountLaunchProfileArtifacts, readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
 import {
   ForegroundProfileSecretRecoveryRequiredError,
   LaunchSecretReferenceOverlayError,
@@ -45,6 +48,7 @@ import {
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
+import { attestFreshRunnerAgentBinding } from '@/plugins/runtime/retainedPluginSourceAttestation';
 import {
   attachExactRunnerRetainedPluginGenerations,
 } from '@/plugins/store/registry/generationCustodyRetirement';
@@ -124,6 +128,7 @@ function refusal(
 
 function readExactForegroundProfileSnapshot(
   request: ForegroundAgentRuntimeAdmissionOwnerRequestV1,
+  artifactsById?: ReadonlyMap<string, ArtifactSharingResourceV1>,
 ) {
   if (!request.profileId) return null;
   const settingsSnapshot = getActiveAccountSettingsSnapshot();
@@ -138,6 +143,7 @@ function readExactForegroundProfileSnapshot(
   }
   const profile = readProfilesFromAccountSettings(
     settingsSnapshot.settings,
+    artifactsById,
   ).visibleProfiles.find(
     (candidate) => candidate.id === request.profileId,
   );
@@ -443,7 +449,14 @@ export async function prepareForegroundAgentRuntimeAdmission(
   | Readonly<{ ok: true; prepared: PreparedForegroundAgentRuntimeAdmission }>
   | Extract<ForegroundAgentRuntimeAdmissionResponseV1, { ok: false }>
 > {
-  const initialExactProfileSnapshot = readExactForegroundProfileSnapshot(request);
+  let launchProfileArtifacts: ReadonlyMap<string, ArtifactSharingResourceV1> | undefined;
+  if (request.profileId) {
+    const credentials = await readStoredCredentials();
+    if (credentials && resolveAccountSettingsScopeKey(credentials) === request.accountSettingsScopeKey) {
+      launchProfileArtifacts = await loadAccountLaunchProfileArtifacts(getActiveAccountSettingsSnapshot()?.settings, credentials);
+    }
+  }
+  const initialExactProfileSnapshot = readExactForegroundProfileSnapshot(request, launchProfileArtifacts);
   if (request.profileId && !initialExactProfileSnapshot) {
     return refusal(createProviderErrorV1(
       'provider_agent_runtime_unsupported',
@@ -963,7 +976,7 @@ export async function prepareForegroundAgentRuntimeAdmission(
       effectiveConnectedServices || requestAuthMaterializedRoot,
     );
     const readExactProfileSnapshot = () =>
-      readExactForegroundProfileSnapshot(request);
+      readExactForegroundProfileSnapshot(request, launchProfileArtifacts);
     const stateSharingCatalogEntry = lease.registry.acquireAgentCatalogEntry
       ? await lease.registry.acquireAgentCatalogEntry(request.agentId)
       : lease.registry.contributes.catalogEntriesById[request.agentId] ?? null;
@@ -1581,15 +1594,20 @@ export async function prepareForegroundAgentRuntimeAdmission(
                 );
               }
             }
-            const retainedAgent =
+            const selectedRetainedAgent =
               lease.registry.agentRuntimesByAgentId
                 .get(request.agentId)
                 ?.sessionRunnerFactoryBinding;
-            if (!retainedAgent) {
+            if (!selectedRetainedAgent) {
               throw new Error(
                 'Foreground Agent runtime retained binding is unavailable',
               );
             }
+            const retainedAgent = await attestFreshRunnerAgentBinding({
+              binding: selectedRetainedAgent,
+              paths: resolvePluginStorePaths({ happyHomeDir: configuration.happyHomeDir }),
+              runnerSnapshotIdentity: runner.snapshotIdentity,
+            });
             runnerManagedDependencyRetentionReservation =
               await lease.registry
                 .reserveManagedDependencyRetention?.(retainedAgent)

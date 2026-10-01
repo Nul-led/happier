@@ -160,8 +160,9 @@ export type PluginActionPlacement =
     | 'message.menu';
 
 /**
- * The one public Action execution declaration. It is deliberately required:
- * the manifest parser does not infer a daemon target for authored Actions.
+ * The one public Action execution declaration. The manifest parser requires it;
+ * `definePlugin` projects `{ target: 'daemon' }` for an authored Action that
+ * supplies a root `run` handler and omits it, so only client Actions spell it.
  */
 export type PluginActionExecutionV2 =
     | Readonly<{ target: 'daemon' }>
@@ -169,7 +170,6 @@ export type PluginActionExecutionV2 =
         target: 'client';
         client: Readonly<{
             artifactId: string;
-            modulePath: `./${string}`;
             exportName: string;
         }>;
         platforms: readonly ('web' | 'ios' | 'android')[];
@@ -250,8 +250,9 @@ export type PluginActionAuthorDefaults = Readonly<{
     dangerLevel?: 'safe' | 'writesLocal' | 'writesRemote' | 'externalSideEffect' | 'destructive';
 }>;
 /**
- * The manifest declaration for one authored Action. `execution` is required:
- * it selects either a root daemon handler or one exact client artifact.
+ * The manifest declaration for one authored Action. A daemon Action is selected
+ * by its root `run` handler (an explicit `execution: { target: 'daemon' }` is
+ * accepted and redundant); a client Action names its exact client artifact.
  */
 export type PluginActionDeclaration = Readonly<{
     title: PluginLocalizedStringV2;
@@ -276,7 +277,7 @@ export type PluginActionDeclaration = Readonly<{
     metadata?: Readonly<Record<string, JsonValue>>;
 } & PluginActionAuthorDefaults> & (
     | Readonly<{
-        execution: Extract<PluginActionExecutionV2, Readonly<{ target: 'daemon' }>>;
+        execution?: Extract<PluginActionExecutionV2, Readonly<{ target: 'daemon' }>>;
         operation?: ActionOperationDeclarationV1;
     }>
     | Readonly<{
@@ -286,7 +287,7 @@ export type PluginActionDeclaration = Readonly<{
 );
 
 type PluginDaemonActionDeclaration = PluginActionDeclaration & Readonly<{
-    execution: Extract<PluginActionExecutionV2, Readonly<{ target: 'daemon' }>>;
+    execution?: Extract<PluginActionExecutionV2, Readonly<{ target: 'daemon' }>>;
 }>;
 
 type PluginClientActionDeclaration = PluginActionDeclaration & Readonly<{
@@ -865,6 +866,10 @@ export type DefinePluginInput<
             PluginContributionLocalId,
             Omit<NonNullable<NonNullable<PluginManifest['contributes']>['executionRunProfiles']>[number], 'id'>
         >>;
+        roles?: Readonly<Record<
+            PluginContributionLocalId,
+            Omit<ContributionRow<'roles'>, 'id'>
+        >>;
         notifications?: Readonly<Record<
             PluginContributionLocalId,
             Omit<NonNullable<NonNullable<PluginManifest['contributes']>['notifications']>[number], 'id'>
@@ -906,7 +911,7 @@ export type DefinePluginInput<
             [TLocalId in keyof TActions]: Readonly<
                 TActions[TLocalId] & (
                     | Readonly<{
-                        execution: Extract<PluginActionExecutionV2, Readonly<{ target: 'daemon' }>>;
+                        execution?: Extract<PluginActionExecutionV2, Readonly<{ target: 'daemon' }>>;
                         run: ActionHandler<
                             ProtocolActionSchemaInput<
                                 TActions[TLocalId] extends { inputSchema: infer TSchema }
@@ -1194,19 +1199,26 @@ function projectProtocolSchema(value: PluginActionSchema | undefined): PluginJso
     return normalizePluginJsonSchema(value as object) as PluginJsonSchema;
 }
 
-type DaemonPluginActionDefinition = Extract<
+type DaemonPluginActionDefinition = Exclude<
     PluginActionDefinition,
-    Readonly<{ execution: Readonly<{ target: 'daemon' }> }>
+    Readonly<{ execution: Readonly<{ target: 'client' }> }>
 > & Readonly<{ run: ActionHandler }>;
+
+const DAEMON_ACTION_EXECUTION: PluginActionExecutionV2 = Object.freeze({ target: 'daemon' });
+
+/** The one execution-target reading: an omitted `execution` is the daemon target. */
+function readActionExecution(definition: PluginActionDefinition): PluginActionExecutionV2 {
+    return definition.execution ?? DAEMON_ACTION_EXECUTION;
+}
 
 function isDaemonPluginActionDefinition(
     definition: PluginActionDefinition,
 ): definition is DaemonPluginActionDefinition {
-    return definition.execution.target === 'daemon' && typeof definition.run === 'function';
+    return readActionExecution(definition).target === 'daemon' && typeof definition.run === 'function';
 }
 
 function assertRootActionHandlerDeclaration(definition: PluginActionDefinition): void {
-    if (definition.execution.target === 'daemon') {
+    if (readActionExecution(definition).target === 'daemon') {
         if (!isDaemonPluginActionDefinition(definition)) {
             throw new TypeError('Daemon Action declarations require a root handler');
         }
@@ -1244,6 +1256,7 @@ function projectAction(localId: string, definition: PluginActionDefinition): Act
     assertRootActionHandlerDeclaration(definition);
     const {
         run: _run,
+        execution,
         scopes,
         surfaces,
         placementBindings,
@@ -1272,6 +1285,7 @@ function projectAction(localId: string, definition: PluginActionDefinition): Act
     );
     return Object.freeze({
         ...descriptor,
+        execution: execution ?? { target: 'daemon' as const },
         ...(inputSchema === undefined ? {} : { inputSchema: projectProtocolSchema(inputSchema) }),
         ...(resultSchema === undefined ? {} : { resultSchema: projectProtocolSchema(resultSchema) }),
         scopes: scopes ?? defaultScopes,
@@ -1833,7 +1847,7 @@ const ACTIONS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
     activate(input, api) {
         const definitions = input.actions as Readonly<Record<string, PluginActionDefinition>> | undefined;
         for (const [localId, definition] of Object.entries(definitions ?? {})) {
-            if (definition.execution.target === 'client') continue;
+            if (readActionExecution(definition).target === 'client') continue;
             if (!isDaemonPluginActionDefinition(definition)) {
                 throw new TypeError('Daemon Action declarations require a root handler');
             }
@@ -2372,6 +2386,7 @@ const BROWSER_TARGETS_ADAPTER = descriptorFamilyAdapter('browserTargets');
 const BROWSER_ACTIONS_ADAPTER = descriptorFamilyAdapter('browserActions');
 const SETTINGS_ADAPTER = descriptorFamilyAdapter('settings');
 const EXECUTION_RUN_PROFILES_ADAPTER = descriptorFamilyAdapter('executionRunProfiles');
+const ROLES_ADAPTER = descriptorFamilyAdapter('roles');
 const NOTIFICATIONS_ADAPTER = descriptorFamilyAdapter('notifications');
 const MANAGED_DEPENDENCIES_ADAPTER = descriptorFamilyAdapter('managedDependencies');
 const SYSTEM_TOOLS_ADAPTER = descriptorFamilyAdapter('systemTools');
@@ -2561,6 +2576,7 @@ export const DEFINE_PLUGIN_FAMILY_POLICY_V2 = Object.freeze({
     browserActions: { classification: 'descriptor-only', authorKey: 'browserActions', inputShape: 'descriptor', adapter: BROWSER_ACTIONS_ADAPTER },
     settings: { classification: 'descriptor-only', authorKey: 'settings', inputShape: 'descriptor', adapter: SETTINGS_ADAPTER },
     executionRunProfiles: { classification: 'descriptor-only', authorKey: 'executionRunProfiles', inputShape: 'descriptor', adapter: EXECUTION_RUN_PROFILES_ADAPTER },
+    roles: { classification: 'descriptor-only', authorKey: 'roles', inputShape: 'descriptor', adapter: ROLES_ADAPTER },
     notifications: { classification: 'descriptor-only', authorKey: 'notifications', inputShape: 'descriptor', adapter: NOTIFICATIONS_ADAPTER },
     managedDependencies: { classification: 'descriptor-only', authorKey: 'managedDependencies', inputShape: 'descriptor', adapter: MANAGED_DEPENDENCIES_ADAPTER },
     systemTools: { classification: 'descriptor-only', authorKey: 'systemTools', inputShape: 'descriptor', adapter: SYSTEM_TOOLS_ADAPTER },

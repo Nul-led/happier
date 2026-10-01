@@ -122,7 +122,7 @@ export type StablePluginConnectedAccountsHost = Readonly<{
             exactPurposeBindingSubjectId?: string;
         }>,
     ): ConnectedAccountsService;
-    /** Synchronously disposes every watch owned by this executable registry generation. */
+    /** Synchronously disposes every watch owned by this executable registry occurrenceId. */
     retire(): void;
 }>;
 
@@ -134,7 +134,7 @@ export type StablePluginConnectedAccountsHostOptions = Readonly<{
 function generationRetired(): PluginError {
     return new PluginError({
         code: 'plugin_final_generation_retired',
-        message: 'Plugin generation is no longer current',
+        message: 'Plugin occurrenceId is no longer current',
     });
 }
 
@@ -177,7 +177,7 @@ function listingOutOfScope(): PluginError {
 }
 
 function assertCurrent(seed: PluginInvocationServicesSeed): void {
-    if (seed.signal.aborted || !seed.isGenerationCurrent()) throw generationRetired();
+    if (seed.signal.aborted || !seed.isOccurrenceCurrent()) throw generationRetired();
 }
 
 function resolveScope(
@@ -826,7 +826,7 @@ export function createStablePluginConnectedAccountsHost(
                                 scheduled = false;
                                 return;
                             }
-                            if (seed.signal.aborted || !seed.isGenerationCurrent()) {
+                            if (seed.signal.aborted || !seed.isOccurrenceCurrent()) {
                                 subscription.dispose();
                                 resolveDeliveryWaiters(activeDeliveryWaiters);
                                 activeDeliveryWaiters = [];
@@ -890,7 +890,7 @@ export function createStablePluginConnectedAccountsHost(
                     seed.signal.addEventListener('abort', abort, { once: true });
                     registrationComplete = true;
                     startDelivery();
-                    if (seed.signal.aborted || !seed.isGenerationCurrent()) subscription.dispose();
+                    if (seed.signal.aborted || !seed.isOccurrenceCurrent()) subscription.dispose();
                     return subscription;
                 },
             });

@@ -14,6 +14,9 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
+        "create": false,
+        "visible": false,
         "title": "Happier (preview)",
         "dragDropEnabled": false
       }

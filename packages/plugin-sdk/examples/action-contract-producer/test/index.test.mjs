@@ -26,7 +26,11 @@ test('consumes the host-admitted target snapshot and disposes its observation', 
       return {
         async readCurrent() {
           return {
-            generation: 'target-generation-1',
+            occurrenceId: 'target-occurrence-1',
+            sourceCustody: {
+              kind: 'development',
+              registeredRootId: 'target-root-1',
+            },
             contributions: [{
               contributor: {
                 pluginId: 'example.document-reviewer',
@@ -52,9 +56,14 @@ test('consumes the host-admitted target snapshot and disposes its observation', 
   const result = await plugin.invokeAction('list-document-reviewers', {});
   assert.deepEqual({
     ...result,
+    sourceCustody: { ...result.sourceCustody },
     contributors: result.contributors.map((contributor) => ({ ...contributor })),
   }, {
-    generation: 'target-generation-1',
+    occurrenceId: 'target-occurrence-1',
+    sourceCustody: {
+      kind: 'development',
+      registeredRootId: 'target-root-1',
+    },
     contributors: [{
       pluginId: 'example.document-reviewer',
       contributionId: 'reviewer',
@@ -304,37 +313,74 @@ test('exercises Lane 10 parity through the same public Actions and contribution 
     {
       id: 'res_connected_01',
       teamId,
+      custodianAccountId: 'acc_owner_01',
+      sourceOwnerDisplayName: 'Example owner',
       displayName: 'Example OAuth share',
+      enabled: true,
+      revision: 1,
+      disclosureCeiling: 'brokered_only',
+      sessionUsePolicy: 'personal_allowed',
       source: {
         v: 1,
         kind: 'connected_account',
         target: {
           kind: 'account',
           account: {
-            service: { pluginId: 'happier.connectedAccounts.example', localId: 'example-oauth' },
+            service: { pluginId: 'happier.connected-accounts.example', localId: 'example-oauth' },
             accountId: 'acc_123',
           },
         },
         credentialIncarnation: 'incarnation-1',
       },
+      sourcePresentation: {
+        kind: 'connected_service',
+        service: { pluginId: 'happier.connected-accounts.example', localId: 'example-oauth' },
+      },
+      requestPolicy: null,
+      brokerPlacement: null,
+      allMembersDeliveryMode: null,
+      groupGrants: [],
+      memberGrants: [],
       readiness: { kind: 'available' },
+      recoveryAction: null,
+      brokerPresentation: { selectedTarget: null, eligibleTargets: [], selectedPool: null, eligiblePools: [] },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
     },
     {
       id: 'res_provider_01',
       teamId,
+      custodianAccountId: 'acc_owner_01',
+      sourceOwnerDisplayName: 'Example owner',
       displayName: 'Example provider share',
+      enabled: true,
+      revision: 1,
+      disclosureCeiling: 'brokered_only',
+      sessionUsePolicy: 'personal_allowed',
       source: {
         v: 1,
         kind: 'provider_connection',
         connectionId: 'conn_01',
-        connectionSecurityFingerprint: 'fingerprint-1',
-        credentialSlotId: 'apiKey',
+        connectionSecurityFingerprint: 'connection-security:v1:test',
+        credentialSlotId: 'api-key',
+      },
+      sourcePresentation: {
+        kind: 'provider',
         provider: {
           identity: { pluginId: 'happier.provider.openai', localId: 'openai' },
           definitionRevision: 1,
         },
       },
+      requestPolicy: null,
+      brokerPlacement: null,
+      allMembersDeliveryMode: null,
+      groupGrants: [],
+      memberGrants: [],
       readiness: { kind: 'available' },
+      recoveryAction: null,
+      brokerPresentation: { selectedTarget: null, eligibleTargets: [], selectedPool: null, eligiblePools: [] },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
     },
   ];
   const sharedResources = [{
@@ -350,7 +396,7 @@ test('exercises Lane 10 parity through the same public Actions and contribution 
   }];
   const listedAccounts = [{
     account: {
-      service: { pluginId: 'happier.connectedAccounts.example', localId: 'example-oauth' },
+      service: { pluginId: 'happier.connected-accounts.example', localId: 'example-oauth' },
       accountId: 'acc_123',
     },
     displayName: 'Example OAuth',
@@ -424,10 +470,12 @@ test('exercises Lane 10 parity through the same public Actions and contribution 
     },
   });
   t.after(async () => plugin.dispose());
-  const result = await plugin.invokeAction('inspect-team-credential-parity', {
-    teamId,
-    resourceId: 'res_connected_01',
-  });
+  const result = JSON.parse(JSON.stringify(
+    await plugin.invokeAction('inspect-team-credential-parity', {
+      teamId,
+      resourceId: 'res_connected_01',
+    }),
+  ));
   // Same Lane 10 Action IDs as built-in Team Settings/pickers, in canonical order.
   assert.deepEqual(seenActions, [
     'teams.credentials.list',
@@ -442,7 +490,7 @@ test('exercises Lane 10 parity through the same public Actions and contribution 
       id: 'res_connected_01',
       displayName: 'Example OAuth share',
       sourceKind: 'connected_account',
-      serviceIdentity: { pluginId: 'happier.connectedAccounts.example', localId: 'example-oauth' },
+      serviceIdentity: { pluginId: 'happier.connected-accounts.example', localId: 'example-oauth' },
       providerIdentity: null,
       readinessKind: 'available',
     },
@@ -535,7 +583,11 @@ test('preserves pending approval and typed failures for a public Saved Secret mu
     if (mode === 'error') {
       await assert.rejects(invocation, (error) => {
         assert.equal(error instanceof PluginError, true);
-        assert.deepEqual({ code: error.code, message: error.message, details: error.details }, expected);
+        assert.deepEqual({
+          code: error.code,
+          message: error.message,
+          details: { ...error.details },
+        }, expected);
         return true;
       });
     } else {
@@ -562,7 +614,7 @@ test('forwards to a Session-owned run through the canonical Session handle with 
   assert.doesNotMatch(source, /apps\/cli\/src\/plugins\/runtime/u);
   assert.doesNotMatch(source, /apps\/cli\/src\/session\/services\/sendSessionMessage/u);
   assert.doesNotMatch(source, /packages\/protocol\/src\/sessions\/pending/u);
-  assert.doesNotMatch(source, /encrypt.*field|per-field|compatibility.*epoch|version.*probe/u);
+  assert.doesNotMatch(source, /encrypt(?:ed|ion)?.*field|compatibility.*epoch|version.*probe/u);
   const sessionsAccess = module.manifest.hostAccess.required.find(
     (entry) => entry.capability === 'sessions',
   );
@@ -570,7 +622,7 @@ test('forwards to a Session-owned run through the canonical Session handle with 
     id: 'document-review-session-send',
     capability: 'sessions',
     reason: 'Send trusted document-review messages to selected Sessions and their retained execution runs.',
-    scope: { access: ['write'] },
+    scope: { access: ['read', 'write'] },
   });
   const targetedAction = module.manifest.contributes.actions.find(
     (entry) => entry.id === 'forward-to-session-run',

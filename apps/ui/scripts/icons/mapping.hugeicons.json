@@ -241,5 +241,7 @@
   "wrench": "Wrench01Icon",
   "x": "Cancel01Icon",
   "x-circle": "CancelCircleIcon",
-  "hard-drive-download": "HardDriveDownloadIcon"
+  "hard-drive-download": "HardDriveDownloadIcon",
+  "square-split-horizontal": "LayoutTwoColumnIcon",
+  "square-split-vertical": "LayoutTwoRowIcon"
 }

@@ -92,7 +92,6 @@ import {
     createRoutedPluginSettingsRecordStore,
     createStablePluginSettingsHost,
     type PluginAccountSettingsRecordAdapter,
-    type PluginSettingsRollbackDeclarations,
 } from './settings';
 import { createAccountPluginSettingsRecordStorage } from '../../context/accountPluginSettingsRecordStorage';
 import {
@@ -171,7 +170,7 @@ export type ManagedProviderRuntimeInvocationServices = Readonly<{
 
 type PluginInvocationRawRedactionScope = Readonly<{
     plugin: Readonly<{ id: string }>;
-    generation: string;
+    occurrenceId: string;
     correlationId: string;
 }>;
 
@@ -223,13 +222,6 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         contribution: PluginSettingsContributionV2;
     }>[];
     /**
-     * The one supported rollback Settings declaration per (pluginId, scope),
-     * derived once per registry generation from the existing generation
-     * support state. Absent means the support state was not readable, so the
-     * Settings owner preserves every removed value instead of pruning.
-     */
-    settingsRollbackDeclarations?: PluginSettingsRollbackDeclarations;
-    /**
      * Reports a plugin whose declared settings could not be modelled. The
      * declaration set spans every plugin, so the host isolates the offender and
      * this is the only channel that makes its loss visible.
@@ -247,7 +239,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
     }>;
     secretDeclarations?: readonly PluginSecretDeclaration[];
     resolveOptionalAccess?: (pluginId: string) => readonly PluginAccessSelection[];
-    isGenerationCurrent?: (action: ResolvedTargetAction) => boolean | Promise<boolean>;
+    isOccurrenceCurrent?: (action: ResolvedTargetAction) => boolean | Promise<boolean>;
     recordRuntimeLimitMeasurement?: HostRuntimeLimitMeasurementRecorder;
     actionExecutor?: PluginActionsHostExecutor;
     invokeContributedAction?: InvokeContributedAction;
@@ -337,11 +329,11 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
                             id: subscriptionIdentity.contributionId,
                             qualifiedId: subscriptionIdentity.contributionQualifiedId,
                         },
-                        generation: subscriptionIdentity.generation,
+                        occurrenceId: subscriptionIdentity.occurrenceId,
                         correlationId: subscriptionIdentity.correlationId,
                         surface: subscriptionIdentity.surface,
                         signal: listenerDiagnosticSignal,
-                        isGenerationCurrent: () => true,
+                        isOccurrenceCurrent: () => true,
                     },
                     sink: loggerSink,
                     secretRedactor,
@@ -360,7 +352,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
                     },
                     publisher: {
                         pluginId: publication.identity.pluginId,
-                        generation: publication.identity.generation,
+                        occurrenceId: publication.identity.occurrenceId,
                         correlationId: publication.identity.correlationId,
                     },
                     listenerError: readListenerFailureMessage(error),
@@ -403,9 +395,6 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             declarations,
             ...(params?.onPluginSettingsUnavailable
                 ? { onPluginSettingsUnavailable: params.onPluginSettingsUnavailable }
-                : {}),
-            ...(params?.settingsRollbackDeclarations
-                ? { rollbackDeclarations: params.settingsRollbackDeclarations }
                 : {}),
             recordStore: createRoutedPluginSettingsRecordStore([
                 ...(storagePaths
@@ -469,14 +458,14 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             registerRawForRedaction(seed, value) {
                 secretRedactor.registerRaw({
                     pluginId: seed.plugin.id,
-                    generation: seed.generation,
+                    occurrenceId: seed.occurrenceId,
                     correlationId: seed.correlationId,
                 }, value);
             },
             registerExactForRedaction(seed, value) {
                 secretRedactor.registerExact({
                     pluginId: seed.plugin.id,
-                    generation: seed.generation,
+                    occurrenceId: seed.occurrenceId,
                     correlationId: seed.correlationId,
                 }, value);
             },
@@ -520,7 +509,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         ...(secretsHost ? { secrets: secretsHost } : {}),
         ...(params?.storagePaths ? { storagePaths: params.storagePaths } : {}),
         resolveEphemeralStorageScope: (seed) => retainInvocationGenerationScope(
-            seed.generation,
+            seed.occurrenceId,
             seed.plugin.id,
         ).ephemeralStorage,
         ...(params?.daemonDatabase ? { daemonDatabase: params.daemonDatabase } : {}),
@@ -582,12 +571,12 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
                             .bindManagedServiceSecretReadPort({
                                 pluginId: seed.plugin.id,
                                 signal: seed.signal,
-                                isGenerationCurrent:
-                                    seed.isGenerationCurrent,
+                                isOccurrenceCurrent:
+                                    seed.isOccurrenceCurrent,
                                 registerRawForRedaction(value) {
                                     secretRedactor.registerRaw({
                                         pluginId: seed.plugin.id,
-                                        generation: seed.generation,
+                                        occurrenceId: seed.occurrenceId,
                                         correlationId: seed.correlationId,
                                     }, value);
                                 },
@@ -715,7 +704,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
                 : {}),
             ...(params?.storagePaths ? { storagePaths: params.storagePaths } : {}),
             resolveEphemeralStorageScope: (seed) => retainInvocationGenerationScope(
-                seed.generation,
+                seed.occurrenceId,
                 seed.plugin.id,
             ).ephemeralStorage,
             ...(params?.daemonDatabase ? { daemonDatabase: params.daemonDatabase } : {}),
@@ -724,15 +713,15 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         });
     };
     const invocationGenerationScopes = new Map<string, Readonly<{
-        generation: string;
+        occurrenceId: string;
         pluginId: string;
         ephemeralStorage: PluginStorageOwnerScope;
     }>>();
-    const managedGenerationKey = (generation: string, pluginId: string): string => `${generation}\u0000${pluginId}`;
-    const retainInvocationGenerationScope = (generation: string, pluginId: string) => {
-        const key = managedGenerationKey(generation, pluginId);
+    const managedGenerationKey = (occurrenceId: string, pluginId: string): string => `${occurrenceId}\u0000${pluginId}`;
+    const retainInvocationGenerationScope = (occurrenceId: string, pluginId: string) => {
+        const key = managedGenerationKey(occurrenceId, pluginId);
         const retained = invocationGenerationScopes.get(key) ?? Object.freeze({
-            generation,
+            occurrenceId,
             pluginId,
             ephemeralStorage: createPluginEphemeralStorageScope(),
         });
@@ -740,20 +729,20 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         return retained;
     };
     const resourceOwnersByGenerationKey = new Map<string, Readonly<{
-        generation: string;
+        occurrenceId: string;
         pluginId: string;
         owners: Set<StablePluginResourcesOwner>;
     }>>();
     const retainResourceGeneration = (
         owner: StablePluginResourcesOwner | null | undefined,
-        generation: string,
+        occurrenceId: string,
         pluginId: string,
     ): void => {
         if (!owner?.hasPlugin(pluginId)) return;
-        const key = managedGenerationKey(generation, pluginId);
+        const key = managedGenerationKey(occurrenceId, pluginId);
         const retained = resourceOwnersByGenerationKey.get(key)
             ?? Object.freeze({
-                generation,
+                occurrenceId,
                 pluginId,
                 owners: new Set<StablePluginResourcesOwner>(),
             });
@@ -789,11 +778,11 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         binding: PluginInvocationServiceBinding,
     ): PluginInvocationServiceBinding => removeUnavailableHttp(binding);
     const addManagedServicesAvailability = (
-        generation: string,
+        occurrenceId: string,
         contributionQualifiedId: string,
         binding: PluginInvocationServiceBinding,
     ): PluginInvocationServiceBinding => params?.managedServices?.isAvailable({
-        generation,
+        occurrenceId,
         contributionQualifiedId,
     }) === true
         ? withPluginInvocationServiceBindingAvailability(
@@ -802,7 +791,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         )
         : binding;
     const createOrdinaryServiceBinding = (
-        generation: string,
+        occurrenceId: string,
         id: string,
         hostAccessRequests: readonly Readonly<{
             request: import('@happier-dev/protocol').PluginHostAccessRequestV2;
@@ -810,11 +799,11 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         }>[] = [],
         contributionQualifiedId = id,
     ): PluginInvocationServiceBinding => addManagedServicesAvailability(
-        generation,
+        occurrenceId,
         contributionQualifiedId,
         addOrdinaryAvailableServices(
             removeUnavailableHostBackedServices(createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                generation,
+                occurrenceId,
                 id,
                 hostAccessRequests,
             )),
@@ -823,7 +812,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
     const createTargetServiceBindingForRoots = (
         roots: PluginFileSystemRoots | undefined,
     ): CreatePluginInvocationServiceBinding => (
-        generation,
+        occurrenceId,
         id,
         hostAccessRequests = [],
         contributionQualifiedId = id,
@@ -831,7 +820,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         const processDeclarationsAvailable = params?.exec !== undefined;
         const resolved = roots && processDeclarationsAvailable
             ? createLoggerFilesystemEventsAndExecServiceBinding(
-                generation,
+                occurrenceId,
                 id,
                 hostAccessRequests,
                 roots,
@@ -840,26 +829,26 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             )
             : roots
                 ? createLoggerFilesystemAndEventsServiceBinding(
-                    generation,
+                    occurrenceId,
                     id,
                     hostAccessRequests,
                     roots,
                 )
                 : processDeclarationsAvailable
                     ? createLoggerEventsAndExecServiceBinding(
-                        generation,
+                        occurrenceId,
                         id,
                         hostAccessRequests,
                         false,
                         params?.exec !== undefined,
                     )
                     : createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                        generation,
+                        occurrenceId,
                         id,
                         hostAccessRequests,
                     );
         const publicFilesystemBinding = addManagedServicesAvailability(
-            generation,
+            occurrenceId,
             contributionQualifiedId,
             resolved,
         );
@@ -874,7 +863,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         return addOrdinaryAvailableServices(removeUnavailableHostBackedServices(accountStorageAvailable));
     };
     const createTargetServiceBinding: CreatePluginInvocationServiceBinding = (
-        generation,
+        occurrenceId,
         id,
         hostAccessRequests = [],
         contributionQualifiedId = id,
@@ -884,7 +873,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             ?? params?.resolveFilesystemRoots?.(pluginId)
             ?? undefined;
         return createTargetServiceBindingForRoots(roots)(
-            generation,
+            occurrenceId,
             id,
             hostAccessRequests,
             contributionQualifiedId,
@@ -899,7 +888,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
     const resolveInvocationHostPolicy = createPluginInvocationHostPolicyResolver(hostPolicyParams);
     const resolveBaseHostBinding = createTargetActionHostBindingResolver({
         ...hostPolicyParams,
-        ...(params?.isGenerationCurrent ? { isGenerationCurrent: params.isGenerationCurrent } : {}),
+        ...(params?.isOccurrenceCurrent ? { isOccurrenceCurrent: params.isOccurrenceCurrent } : {}),
     });
     const createOperationServices = (
         seed: Parameters<typeof createServicesFactory>[0],
@@ -912,7 +901,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             sessionServiceAvailable: params?.sessions !== undefined,
         })({
             pluginId: currentSeed.plugin.id,
-            generation: currentSeed.generation,
+            occurrenceId: currentSeed.occurrenceId,
             qualifiedId: currentSeed.contribution.qualifiedId,
         }, {
             hostAccessRequests: operation.hostAccessRequests,
@@ -936,13 +925,13 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             'resources' in operation
                 ? operation.resources
                 : params?.resources,
-            currentSeed.generation,
+            currentSeed.occurrenceId,
             currentSeed.plugin.id,
         );
-        retainInvocationGenerationScope(currentSeed.generation, currentSeed.plugin.id);
+        retainInvocationGenerationScope(currentSeed.occurrenceId, currentSeed.plugin.id);
         const diagnosticScope = {
             pluginId: currentSeed.plugin.id,
-            generation: currentSeed.generation,
+            occurrenceId: currentSeed.occurrenceId,
             correlationId: currentSeed.correlationId,
         };
         secretRedactor.beginInvocation(
@@ -1000,23 +989,18 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
     };
     return Object.freeze({
         stableEventsBroker: broker,
-        async pruneRetiredPluginSettings(
-            previous: PluginSettingsRollbackDeclarations | undefined,
-        ) {
-            return await settingsHost?.pruneRetiredRollbackDeclarations?.(previous)
-                ?? Object.freeze([]);
-        },
+        ...(notificationsOwner ? { notifications: notificationsOwner } : {}),
         publishHostEvent(event: import('@happier-dev/protocol').HostSemanticEventV1): void {
             broker.publishHostEvent(event);
         },
         bindDeclaredEventSubscriptions(params: Readonly<{
             registrations: readonly DeclaredEventSubscriptionRegistration[];
-            isGenerationCurrent(registration: DeclaredEventSubscriptionRegistration): boolean;
+            isOccurrenceCurrent(registration: DeclaredEventSubscriptionRegistration): boolean;
             isEffectCapable?(registration: DeclaredEventSubscriptionRegistration): boolean;
             createContext(input: Readonly<{
                 pluginId: string;
                 pluginVersion: string;
-                generation: string;
+                occurrenceId: string;
                 localId: string;
                 sessionId?: string;
                 signal: AbortSignal;
@@ -1044,7 +1028,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         ): void {
             secretRedactor.registerRaw({
                 pluginId: seed.plugin.id,
-                generation: seed.generation,
+                occurrenceId: seed.occurrenceId,
                 correlationId: seed.correlationId,
             }, value);
         },
@@ -1054,17 +1038,17 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             return secretsHost?.bindDaemonPluginSecretAdministrationPort({
                 pluginId: seed.plugin.id,
                 signal: seed.signal,
-                isGenerationCurrent: seed.isGenerationCurrent,
+                isOccurrenceCurrent: seed.isOccurrenceCurrent,
             }) ?? null;
         },
         redactDiagnosticText(
-            scope: Readonly<{ pluginId: string; generation: string; correlationId: string }>,
+            scope: Readonly<{ pluginId: string; occurrenceId: string; correlationId: string }>,
             value: string,
         ): string {
             return secretRedactor.redact(scope, value);
         },
         completeDiagnosticScope(
-            scope: Readonly<{ pluginId: string; generation: string; correlationId: string }>,
+            scope: Readonly<{ pluginId: string; occurrenceId: string; correlationId: string }>,
         ): void {
             secretRedactor.completeInvocation(scope);
         },
@@ -1103,13 +1087,13 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             const seed = attachCurrentPluginMaterializationResolver(inputSeed);
             retainResourceGeneration(
                 params?.resources,
-                seed.generation,
+                seed.occurrenceId,
                 seed.plugin.id,
             );
-            retainInvocationGenerationScope(seed.generation, seed.plugin.id);
+            retainInvocationGenerationScope(seed.occurrenceId, seed.plugin.id);
             const diagnosticScope = {
                 pluginId: seed.plugin.id,
-                generation: seed.generation,
+                occurrenceId: seed.occurrenceId,
                 correlationId: seed.correlationId,
             };
             secretRedactor.beginInvocation(
@@ -1126,21 +1110,21 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         retireConnectedAccountConsumers(): void {
             connectedAccountsHost?.retire();
         },
-        retireEphemeralStorageGeneration(generation: string, pluginId: string): void {
-            invocationGenerationScopes.delete(managedGenerationKey(generation, pluginId));
+        retireEphemeralStorageOccurrence(occurrenceId: string, pluginId: string): void {
+            invocationGenerationScopes.delete(managedGenerationKey(occurrenceId, pluginId));
         },
-        async retireGeneration(generation: string, pluginId: string): Promise<void> {
+        async retireGeneration(occurrenceId: string, pluginId: string): Promise<void> {
             try {
                 const results = await Promise.allSettled([
                     ...(params?.managedServices?.retireGeneration
                         ? [params.managedServices.retireGeneration(
-                            generation,
+                            occurrenceId,
                             pluginId,
                         )]
                         : []),
                     ...[
                         ...(resourceOwnersByGenerationKey.get(
-                            managedGenerationKey(generation, pluginId),
+                            managedGenerationKey(occurrenceId, pluginId),
                         )?.owners
                             ?? []),
                     ].map(async (owner) =>
@@ -1154,14 +1138,14 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
                 if (failures.length > 0) {
                     throw new AggregateError(
                         failures,
-                        'Failed to retire plugin invocation service generation',
+                        'Failed to retire plugin invocation service occurrenceId',
                     );
                 }
             } finally {
-                secretRedactor.retireGeneration(generation, pluginId);
-                invocationGenerationScopes.delete(managedGenerationKey(generation, pluginId));
+                secretRedactor.retireGeneration(occurrenceId, pluginId);
+                invocationGenerationScopes.delete(managedGenerationKey(occurrenceId, pluginId));
                 resourceOwnersByGenerationKey.delete(
-                    managedGenerationKey(generation, pluginId),
+                    managedGenerationKey(occurrenceId, pluginId),
                 );
             }
         },
@@ -1170,19 +1154,19 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
                 const invocationScopes = [...invocationGenerationScopes.values()];
                 invocationGenerationScopes.clear();
                 for (const scope of invocationScopes) {
-                    secretRedactor.retireGeneration(scope.generation, scope.pluginId);
+                    secretRedactor.retireGeneration(scope.occurrenceId, scope.pluginId);
                 }
                 const resources = [
                     ...resourceOwnersByGenerationKey.values(),
-                ].flatMap(({ generation, pluginId, owners }) =>
+                ].flatMap(({ occurrenceId, pluginId, owners }) =>
                     [...owners].map((owner) =>
-                        Object.freeze({ generation, pluginId, owner })));
+                        Object.freeze({ occurrenceId, pluginId, owner })));
                 resourceOwnersByGenerationKey.clear();
                 const results = await Promise.allSettled([
                     ...(params?.managedServices?.retireGeneration
                         ? invocationScopes.map(async (scope) => (
                             await params.managedServices!.retireGeneration!(
-                                scope.generation,
+                                scope.occurrenceId,
                                 scope.pluginId,
                             )
                         ))

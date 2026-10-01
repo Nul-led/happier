@@ -499,11 +499,11 @@ export function createRunnerAgentDaemonFacetService(input: Readonly<{
           const port = input.externalSessionHostOperationOwner.bind({
             pluginId: retainedAgent.pluginId,
             agentId: retainedAgent.localAgentId,
-            generationId: retainedAgent.immutableGenerationId,
+            occurrenceId: randomUUID(),
             sessionId,
             machineId: input.machineId,
             readAccountRevision: input.readAccountRevision,
-            isGenerationCurrent: () =>
+            isOccurrenceCurrent: () =>
               binding !== null && isCurrentBinding(binding),
             ...(agentContribution ? { agentContribution } : {}),
           });
@@ -733,6 +733,7 @@ export function createRunnerAgentDaemonFacetService(input: Readonly<{
           RunnerAgentExternalSessionProviderOps['pageTranscript']
         >>>({
           kind: 'pageTranscript',
+          ...(request.projection ? { projection: request.projection } : {}),
           source: request.source,
           remoteSessionId: request.remoteSessionId,
           direction: request.direction,
@@ -755,6 +756,7 @@ export function createRunnerAgentDaemonFacetService(input: Readonly<{
           ]
         >>>({
           kind: 'readAfterTranscript',
+          ...(request.projection ? { projection: request.projection } : {}),
           source: request.source,
           remoteSessionId: request.remoteSessionId,
           cursor: request.cursor,
@@ -816,6 +818,8 @@ export function createRunnerAgentDaemonFacetService(input: Readonly<{
                 ...(operation.cursor
                   ? { cursor: operation.cursor }
                   : {}),
+                ...(operation.projection ? { projection: operation.projection } : {}),
+                ...(operation.replay ? { replay: operation.replay } : {}),
                 ...(operation.initialReplay
                   ? { initialReplay: true }
                   : {}),
@@ -835,6 +839,8 @@ export function createRunnerAgentDaemonFacetService(input: Readonly<{
                 ...(operation.cursor
                   ? { cursor: operation.cursor }
                   : {}),
+                ...(operation.projection ? { projection: operation.projection } : {}),
+                ...(operation.replay ? { replay: operation.replay } : {}),
                 ...(operation.initialReplay
                   ? { initialReplay: true }
                   : {}),

@@ -33448,6 +33448,25 @@
           "displayName": "Azure DevOps",
           "kinds": [
             {
+              "detailActions": true,
+              "detailTabs": [
+                {
+                  "id": "overview",
+                  "kind": "shared"
+                },
+                {
+                  "id": "activity",
+                  "kind": "shared"
+                },
+                {
+                  "id": "files",
+                  "kind": "shared"
+                },
+                {
+                  "id": "checks",
+                  "kind": "shared"
+                }
+              ],
               "displayName": "Pull request",
               "id": "pull-request",
               "pluralDisplayName": "Pull requests",

@@ -23,11 +23,13 @@ test('assertCliPrereqs({yarn:true}) accepts yarn', async () => {
 });
 
 test('assertCliPrereqs({yarn:true}) throws when yarn is unavailable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hs-prereqs-no-yarn-'));
   const oldPath = process.env.PATH;
   try {
-    process.env.PATH = '/bin';
+    process.env.PATH = root;
     await assert.rejects(() => assertCliPrereqs({ yarn: true }), /yarn/i);
   } finally {
     process.env.PATH = oldPath;
+    await rm(root, { recursive: true, force: true });
   }
 });

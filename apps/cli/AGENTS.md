@@ -39,39 +39,35 @@ Use the smallest relevant test slice while iterating and broaden before handoff.
 - Model Provider contributions belong in `packages/plugins/<providerId>/src/provider/**`; provider-agnostic CLI resolution/probing/materialization belongs in `src/providers/**`.
 - Generic CLI code must not branch on Agent or Provider ids when a typed contribution, catalog hook, or provider-binding adapter can own the variation.
 
-Details: `../../docs/agents-catalog.md` and `../../docs/providers.md`.
+Details: [Agent catalog](../../docs/agents-catalog.md), [Providers](../../docs/providers.md), [runtime ownership](../../docs/runtime-core.md), and [plugin platform/SDK ownership](../../docs/plugin-platform.md).
 
 ## Generated bundled-plugin artifacts
 
-`scripts/build-owned/generateBundledPluginEntries.ts` is the single producer and single owner of the generated bundled-plugin and bundled-Voice projection files. Its `…OutPath` declarations are the authority for the complete emitted set, which also reaches `packages/agents` and `packages/protocol`; the frequently touched outputs are:
+`scripts/build-owned/generateBundledPluginEntries.ts` is the single producer and single owner of the generated bundled-plugin semantic, catalog, daemon, and bundled-Voice projection files. It does not read, render, write, or check app-preseed Plugin UI byte graphs; those are owned by the `apps/ui` prebuild. Its `…OutPath` declarations are the authority for the complete emitted set, which also reaches `packages/agents` and `packages/protocol`; the frequently touched outputs are:
 
-- `src/plugins/projection/registry/sources/generatedBundledPluginArtifacts.ts`
 - `src/plugins/projection/registry/sources/generatedBundledPluginManifests.ts`
 - `src/plugins/projection/registry/sources/generatedBundledPlugins.ts`
-- `../ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.ts`
-- `../ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.web.ts`
-- `../ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.ios.ts`
-- `../ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.android.ts`
 - `../ui/sources/agents/registry/generatedBundledPluginEntries.ts`
 - `../ui/sources/text/bundledPluginTranslations.generated.ts`
 - `../ui/sources/voice/registry/generatedBundledVoiceEntries.ts`
 - `../ui/sources/voice/registry/generatedBundledVoiceRuntimeEntries.ts`
-- `../ui/sources/voice/registry/generatedBundledVoiceRuntimeEntries.ios.ts`
-- `../ui/sources/voice/registry/generatedBundledVoiceRuntimeEntries.android.ts`
+
+Voice runtime `.ios.ts` / `.android.ts` siblings are emitted only when manifest-declared platform membership differs from the common file. Platform package exports select each plugin implementation; equal host projections share one file.
+
+The normalized CLI manifest projection is the tracked clean-checkout declaration source. `packages/plugins/*/.happier-plugin/plugin.json` is an ignored on-demand package artifact, produced alongside the runtime for distribution; source Agent preparation consumes the tracked projection before those packaged artifacts exist.
 
 - Change the generator, never an emitted file. A hand edit to any emitted artifact is erased by the next run and is a review finding; the real defect is in the generator, in a bundled plugin's manifest, or in the bundled-plugin membership list.
 - Regeneration is the **last** step of a batch and runs **once**. Adding, renaming or re-manifesting a bundled plugin invalidates every emitted artifact, and several programs do this concurrently. Land every manifest/membership source change first, then run one regeneration:
 
   ```bash
-  node --experimental-strip-types scripts/migrations/extensions/generateBundledPluginEntries.ts --mode write
+  node --experimental-strip-types apps/cli/scripts/build-owned/generateBundledPluginEntries.ts --mode write
   ```
 
-  (that path is a thin compatibility entrypoint that re-exports `main` from the build-owned generator).
-- The drift gate already exists — do not add a second one. It runs the same publisher in `--mode check` under one of two scopes, and CI reaches both through `test:migration:governance`:
+- The semantic drift gate already exists — do not add a second one. It runs the same publisher in `--mode check` and CI reaches it through `test:migration:governance`:
   - `yarn test:migration:bundled-plugin-projections` (`--scope projections`) compares the generated projections against the bundled plugin sources and the bundle bytes **as installed**. Every input is owned by `packages/plugins/*`, so a failure names a plugin-source or projection defect.
-  - `yarn test:migration:bundled-plugin-runtime-determinism` (`--scope all`) additionally re-stages every bundled daemon runtime with esbuild and requires the installed bytes to equal that fresh build. The stage runs `bundle: true, packages: 'bundle'`, so the current `plugin-sdk`/`protocol` output is inlined into every bundle: rebuilding one shared workspace dependency changes all bundled runtimes at once, and the recorded artifact digests with them. That is whole-repo build determinism, not a plugin fact, and it is why the two questions no longer share one name.
+  - Byte equality across a shared-dependency rebuild is not a plugin-projection contract; only the semantic projection drift check is wired.
   - `--scope projections` is check-only; `--mode write` always publishes the full scope.
-- **The producer and everything it emits are one publication closure; land them in one commit.** The closure is the build-owned generator plus its helpers and test in `scripts/build-owned/`, the compatibility entrypoint `scripts/migrations/extensions/generateBundledPluginEntries.ts`, `scripts/verifyBundledPluginArtifacts.mjs`, **every** artifact the generator emits (not only the ones listed above), and the installed `packages/plugins/*/.happier-plugin/**` bytes the drift gate compares against. Splitting them across commits breaks `test:migration:governance` in CI: either the tracked entrypoint re-exports a producer CI does not have, or the tracked artifacts record bytes no tracked producer can emit. Establish membership from `git ls-tree -r --name-only HEAD <path>` at the moment you commit — never from a filename or from an earlier note in this file.
+- **The producer and its tracked projections are one publication closure; land them in one commit.** The closure is the build-owned generator plus its helpers and test in `scripts/build-owned/` and **every tracked projection** it emits (not only the ones listed above). The ignored installed `packages/plugins/*/.happier-plugin/**` bytes are materialized from those sources at publication. Pack-time publication compares the current source package tree directly with the prepared package tree before replacement; there is no committed byte ledger or compatibility generator entrypoint. Establish tracked membership from `git ls-tree -r --name-only HEAD <path>` at the moment you commit — never from a filename or from an earlier note in this file.
 
 ## Terminal and integrations
 

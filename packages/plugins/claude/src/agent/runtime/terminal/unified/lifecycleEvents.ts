@@ -17,6 +17,19 @@ function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
+// Native hook prompt_id and JSONL promptId name the same accepted prompt. A turn may
+// contain several inputs, while queued-command consumption owns a distinct transcript row.
+function readAcceptanceEvidenceId(payload: Record<string, unknown>, nested: Record<string, unknown>): string | undefined {
+  const attachment = isRecord(nested.attachment) ? nested.attachment : null;
+  if (attachment?.type !== 'queued_command') {
+    const promptId = readString(nested.prompt_id) ?? readString(nested.promptId)
+      ?? readString(payload.prompt_id) ?? readString(payload.promptId);
+    if (promptId) return `prompt:${promptId}`;
+  }
+  const uuid = readString(nested.uuid) ?? readString(payload.uuid);
+  return uuid ? `uuid:${uuid}` : undefined;
+}
+
 function readTimestampMs(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
   if (typeof value !== 'string' || value.trim().length === 0) return null;
@@ -104,6 +117,7 @@ function readHookObservation(
     turnId: readString(payload.turnId) ?? readString(nested.turnId),
     ...(detail ? { detail } : {}),
     evidence: nested,
+    acceptanceEvidenceId: readAcceptanceEvidenceId(payload, nested),
     ...(promptText ? { promptText } : {}),
     ...(typeof observedAtMs === 'number' ? { observedAtMs } : {}),
     ...(sidechainAgentId ? { sidechainAgentId } : {}),
@@ -139,6 +153,7 @@ function readTranscriptObservation(
       agentId: CLAUDE_UNIFIED_TERMINAL_PROVIDER_ID,
       kind: 'user_prompt',
       text,
+      acceptanceEvidenceId: readAcceptanceEvidenceId(payload, nested),
       turnId: readString(payload.turnId) ?? readString(nested.turnId),
       ...(typeof observedAtMs === 'number' ? { observedAtMs } : {}),
     });
@@ -164,6 +179,7 @@ function readTranscriptObservation(
       agentId: CLAUDE_UNIFIED_TERMINAL_PROVIDER_ID,
       kind: 'queued_command',
       text,
+      acceptanceEvidenceId: readAcceptanceEvidenceId(payload, nested),
       turnId: readString(payload.turnId) ?? readString(nested.turnId),
       ...(typeof observedAtMs === 'number' ? { observedAtMs } : {}),
     });
@@ -224,6 +240,7 @@ function readTranscriptObservation(
       agentId: CLAUDE_UNIFIED_TERMINAL_PROVIDER_ID,
       kind,
       text,
+      acceptanceEvidenceId: readAcceptanceEvidenceId(payload, nested),
       turnId: readString(payload.turnId) ?? readString(nested.turnId),
       ...(typeof observedAtMs === 'number' ? { observedAtMs } : {}),
     });

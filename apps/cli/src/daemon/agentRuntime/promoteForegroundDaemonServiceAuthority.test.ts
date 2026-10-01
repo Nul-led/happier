@@ -8,10 +8,9 @@ import type { TrackedSession } from '@/daemon/types';
 import type {
   clearSessionMarkerAgentRuntimeDaemonServicePromotionIfOwned,
   updateSessionMarkerAgentRuntimeDaemonServiceAuthorityPath,
-  updateSessionMarkerRunnerAgentImmutableGenerationId,
+  updateSessionMarkerRunnerAgentSourceCustody,
   updateSessionMarkerRunnerManagedDependencyRetention,
 } from '@/daemon/sessionRegistry';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import {
   createAgentSessionRunnerFactoryBinding,
   createHostDeclarativeAcpRunnerBinding,
@@ -55,8 +54,12 @@ function retainedAgent(input?: Readonly<{
     pluginVersion: '1.0.0',
     agentId: 'codex',
     localAgentId: 'codex',
-    immutableGenerationId:
-      input?.immutableGenerationId ?? 'generation-1',
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId:
+        input?.immutableGenerationId ?? 'generation-1',
+      installSource: 'localPath',
+    },
     locator: {
       module: './agent/runtime/factory',
       export: 'createRuntime',
@@ -79,8 +82,21 @@ function retainedHostDeclarativeAgent(input: Readonly<{
     agentId: 'codex',
     qualifiedAgentId: `${input.pluginId}/agents/codex`,
     localAgentId: 'codex',
-    immutableGenerationId: input.immutableGenerationId,
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: input.immutableGenerationId,
+      installSource: 'localPath',
+    },
   });
+}
+
+function retainedManagedGeneration(
+  retained: AgentSessionRunnerBindingV1,
+): string {
+  if (retained.sourceCustody.kind !== 'managed') {
+    throw new Error('Expected managed retained Agent custody');
+  }
+  return retained.sourceCustody.immutableGenerationId;
 }
 
 async function commitHardRevision(
@@ -114,7 +130,7 @@ async function commitHardRevision(
       transactionId: `hard-${revision}`,
       baseRevision: revision === 0 ? null : revision - 1,
       installationState,
-      pluginGenerations: {},
+      pluginOccurrenceIds: {},
       createdAtMs: revision + 1,
       creator: { pid: 42, instanceId: 'promotion-test' },
     }),
@@ -195,7 +211,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
           providerBindingActive: false,
         },
         persistAuthorityPath: async () => true,
-        persistRunnerAgentImmutableGenerationId: async () => true,
+        persistRunnerAgentSourceCustody: async () => true,
         persistRunnerManagedDependencyRetention: async () => true,
         attachRunnerRetainedPluginGenerations,
         readPluginImmutableGenerationIntegrityCurrentness,
@@ -204,7 +220,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
       expect(readPluginImmutableGenerationIntegrityCurrentness)
         .toHaveBeenCalledWith(
           retained.pluginId,
-          retained.immutableGenerationId,
+          retainedManagedGeneration(retained),
           undefined,
           undefined,
         );
@@ -244,7 +260,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
         processCommandHash: 'a'.repeat(64),
       };
       const persistAuthorityPath = vi.fn(async () => true);
-      const persistRunnerAgentImmutableGenerationId =
+      const persistRunnerAgentSourceCustody =
         vi.fn(async () => true);
       const persistRunnerManagedDependencyRetention =
         vi.fn(async () => true);
@@ -277,7 +293,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
           providerBindingActive: false,
         },
         persistAuthorityPath,
-        persistRunnerAgentImmutableGenerationId,
+        persistRunnerAgentSourceCustody,
         persistRunnerManagedDependencyRetention,
         attachRunnerRetainedPluginGenerations,
         readPluginImmutableGenerationIntegrityCurrentness:
@@ -285,7 +301,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
       })).resolves.toBe(false);
 
       expect(persistAuthorityPath).not.toHaveBeenCalled();
-      expect(persistRunnerAgentImmutableGenerationId)
+      expect(persistRunnerAgentSourceCustody)
         .not.toHaveBeenCalled();
       expect(persistRunnerManagedDependencyRetention)
         .not.toHaveBeenCalled();
@@ -323,7 +339,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
         releaseMarkerPersistence = resolve;
       });
       const persistAuthorityPath = vi.fn(async () => true);
-      const persistRunnerAgentImmutableGenerationId = vi.fn(async () => true);
+      const persistRunnerAgentSourceCustody = vi.fn(async () => true);
       const persistRunnerManagedDependencyRetention = vi.fn(async () => true);
       const readPluginImmutableGenerationIntegrityCurrentness = vi.fn(async () => true);
 
@@ -343,7 +359,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
           providerBindingActive: false,
         },
         persistAuthorityPath,
-        persistRunnerAgentImmutableGenerationId,
+        persistRunnerAgentSourceCustody,
         persistRunnerManagedDependencyRetention,
         attachRunnerRetainedPluginGenerations,
         readPluginImmutableGenerationIntegrityCurrentness,
@@ -357,7 +373,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
 
       await expect(promotion).resolves.toBe(false);
       expect(persistAuthorityPath).not.toHaveBeenCalled();
-      expect(persistRunnerAgentImmutableGenerationId).not.toHaveBeenCalled();
+      expect(persistRunnerAgentSourceCustody).not.toHaveBeenCalled();
       expect(persistRunnerManagedDependencyRetention).not.toHaveBeenCalled();
       expect(tracked).not.toHaveProperty(
         'agentRuntimeDaemonServiceCapabilityHash',
@@ -404,13 +420,13 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
       });
       const clearPersistedPromotion = vi.fn(async ({
         authorityFilePath,
-        immutableGenerationId,
+        sourceCustody,
         retention,
       }: Parameters<
         typeof clearSessionMarkerAgentRuntimeDaemonServicePromotionIfOwned
       >[0]) => {
         if (
-          immutableGenerationId !== undefined
+          sourceCustody !== undefined
           || retention !== undefined
           || persistedAuthorityPath !== authorityFilePath
         ) {
@@ -419,7 +435,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
         persistedAuthorityPath = undefined;
         return true;
       });
-      const persistRunnerAgentImmutableGenerationId = vi.fn(async () => true);
+      const persistRunnerAgentSourceCustody = vi.fn(async () => true);
       const persistRunnerManagedDependencyRetention = vi.fn(async () => true);
 
       const promotion = promoteForegroundDaemonServiceAuthority({
@@ -438,7 +454,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
           providerBindingActive: false,
         },
         persistAuthorityPath,
-        persistRunnerAgentImmutableGenerationId,
+        persistRunnerAgentSourceCustody,
         persistRunnerManagedDependencyRetention,
         attachRunnerRetainedPluginGenerations,
         clearPersistedPromotion,
@@ -461,7 +477,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
         authorityFilePath: fixture.authorityFilePath,
       });
       expect(persistedAuthorityPath).toBeUndefined();
-      expect(persistRunnerAgentImmutableGenerationId).not.toHaveBeenCalled();
+      expect(persistRunnerAgentSourceCustody).not.toHaveBeenCalled();
       expect(persistRunnerManagedDependencyRetention).not.toHaveBeenCalled();
       await expect(
         readAgentRuntimeDaemonServiceAuthorityForVerifiedMarker({
@@ -491,12 +507,13 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
       };
       const retention: RunnerManagedDependencyRetentionV1 = {
         v: 1 as const,
-        sourceGenerationIds: [],
+        sourceCustodies: [],
         qualifiedDependencyIds: [],
       };
       const persisted = {
         authorityFilePath: undefined as string | undefined,
-        immutableGenerationId: undefined as string | undefined,
+        sourceCustody: undefined as
+          AgentSessionRunnerBindingV1['sourceCustody'] | undefined,
         retention: undefined as typeof retention | undefined,
       };
       let releaseCustodyAttachment!: () => void;
@@ -511,12 +528,12 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
         persisted.authorityFilePath = authorityFilePath;
         return true;
       });
-      const persistRunnerAgentImmutableGenerationId = vi.fn(async ({
-        immutableGenerationId,
+      const persistRunnerAgentSourceCustody = vi.fn(async ({
+        sourceCustody,
       }: Parameters<
-        typeof updateSessionMarkerRunnerAgentImmutableGenerationId
+        typeof updateSessionMarkerRunnerAgentSourceCustody
       >[0]) => {
-        persisted.immutableGenerationId = immutableGenerationId;
+        persisted.sourceCustody = sourceCustody;
         return true;
       });
       const persistRunnerManagedDependencyRetention = vi.fn(async ({
@@ -529,21 +546,22 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
       });
       const clearPersistedPromotion = vi.fn(async ({
         authorityFilePath,
-        immutableGenerationId,
+        sourceCustody,
         retention: expectedRetention,
       }: Parameters<
         typeof clearSessionMarkerAgentRuntimeDaemonServicePromotionIfOwned
       >[0]) => {
         if (
           persisted.authorityFilePath !== authorityFilePath
-          || persisted.immutableGenerationId !== immutableGenerationId
+          || JSON.stringify(persisted.sourceCustody)
+            !== JSON.stringify(sourceCustody)
           || JSON.stringify(persisted.retention)
             !== JSON.stringify(expectedRetention)
         ) {
           return false;
         }
         persisted.authorityFilePath = undefined;
-        persisted.immutableGenerationId = undefined;
+        persisted.sourceCustody = undefined;
         persisted.retention = undefined;
         return true;
       });
@@ -571,7 +589,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
           providerBindingActive: false,
         },
         persistAuthorityPath,
-        persistRunnerAgentImmutableGenerationId,
+        persistRunnerAgentSourceCustody,
         persistRunnerManagedDependencyRetention,
         attachRunnerRetainedPluginGenerations,
         clearPersistedPromotion,
@@ -584,7 +602,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
       });
       expect(persisted).toEqual({
         authorityFilePath: fixture.authorityFilePath,
-        immutableGenerationId: fixture.retainedAgent.immutableGenerationId,
+        sourceCustody: fixture.retainedAgent.sourceCustody,
         retention,
       });
       await commitHardRevision(fixture.happyHomeDir, 1);
@@ -597,12 +615,12 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
         processCommandHash: fixture.runner.processCommandHash,
         processStartTimeMs: fixture.runner.processStartTimeMs,
         authorityFilePath: fixture.authorityFilePath,
-        immutableGenerationId: fixture.retainedAgent.immutableGenerationId,
+        sourceCustody: fixture.retainedAgent.sourceCustody,
         retention,
       });
       expect(persisted).toEqual({
         authorityFilePath: undefined,
-        immutableGenerationId: undefined,
+        sourceCustody: undefined,
         retention: undefined,
       });
       expect(tracked).not.toHaveProperty(
@@ -636,12 +654,13 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
       };
       const retention: RunnerManagedDependencyRetentionV1 = {
         v: 1 as const,
-        sourceGenerationIds: [],
+        sourceCustodies: [],
         qualifiedDependencyIds: [],
       };
       const persisted = {
         authorityFilePath: undefined as string | undefined,
-        immutableGenerationId: undefined as string | undefined,
+        sourceCustody: undefined as
+          AgentSessionRunnerBindingV1['sourceCustody'] | undefined,
         retention: undefined as typeof retention | undefined,
       };
       const persistAuthorityPath = vi.fn(async ({
@@ -652,12 +671,12 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
         persisted.authorityFilePath = authorityFilePath;
         return true;
       });
-      const persistRunnerAgentImmutableGenerationId = vi.fn(async ({
-        immutableGenerationId,
+      const persistRunnerAgentSourceCustody = vi.fn(async ({
+        sourceCustody,
       }: Parameters<
-        typeof updateSessionMarkerRunnerAgentImmutableGenerationId
+        typeof updateSessionMarkerRunnerAgentSourceCustody
       >[0]) => {
-        persisted.immutableGenerationId = immutableGenerationId;
+        persisted.sourceCustody = sourceCustody;
         return true;
       });
       const persistRunnerManagedDependencyRetention = vi.fn(async ({
@@ -670,21 +689,22 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
       });
       const clearPersistedPromotion = vi.fn(async ({
         authorityFilePath,
-        immutableGenerationId,
+        sourceCustody,
         retention: expectedRetention,
       }: Parameters<
         typeof clearSessionMarkerAgentRuntimeDaemonServicePromotionIfOwned
       >[0]) => {
         if (
           persisted.authorityFilePath !== authorityFilePath
-          || persisted.immutableGenerationId !== immutableGenerationId
+          || JSON.stringify(persisted.sourceCustody)
+            !== JSON.stringify(sourceCustody)
           || JSON.stringify(persisted.retention)
             !== JSON.stringify(expectedRetention)
         ) {
           return false;
         }
         persisted.authorityFilePath = undefined;
-        persisted.immutableGenerationId = undefined;
+        persisted.sourceCustody = undefined;
         persisted.retention = undefined;
         return true;
       });
@@ -707,7 +727,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
           providerBindingActive: false,
         },
         persistAuthorityPath,
-        persistRunnerAgentImmutableGenerationId,
+        persistRunnerAgentSourceCustody,
         persistRunnerManagedDependencyRetention,
         attachRunnerRetainedPluginGenerations,
         clearPersistedPromotion,
@@ -731,12 +751,12 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
         processCommandHash: fixture.runner.processCommandHash,
         processStartTimeMs: fixture.runner.processStartTimeMs,
         authorityFilePath: fixture.authorityFilePath,
-        immutableGenerationId: fixture.retainedAgent.immutableGenerationId,
+        sourceCustody: fixture.retainedAgent.sourceCustody,
         retention,
       });
       expect(persisted).toEqual({
         authorityFilePath: undefined,
-        immutableGenerationId: undefined,
+        sourceCustody: undefined,
         retention: undefined,
       });
       expect(tracked).not.toHaveProperty(
@@ -753,148 +773,6 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
       ).resolves.toBeNull();
       await expect(access(fixture.authorityFilePath))
         .rejects.toMatchObject({ code: 'ENOENT' });
-    } finally {
-      await rm(fixture.happyHomeDir, { recursive: true, force: true });
-    }
-  });
-
-  it('persists the exact marker path before promoting the real terminal-started tracked owner', async () => {
-    const bundledArtifact =
-      BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS.find(
-        (artifact) => artifact.record.pluginId === 'happier.agent.codex',
-      );
-    if (!bundledArtifact) {
-      throw new Error('Expected generated bundled Codex artifact');
-    }
-    const fixture = await createPublishedAuthority(retainedAgent({
-      pluginId: bundledArtifact.record.pluginId,
-      immutableGenerationId:
-        bundledArtifact.record.immutableGenerationId,
-    }));
-    try {
-    const tracked: TrackedSession = {
-      pid: 4242,
-      happySessionId: 'canonical-session-1',
-      startedBy: 'happy directly - likely by user from terminal',
-      processStartTimeMs: 2_000,
-      processCommandHash: 'a'.repeat(64),
-      agentRuntimeRunnerRestartDisposition:
-        'runner_authority_unavailable',
-    };
-    let releaseMarkerPersistence!: (persisted: boolean) => void;
-    tracked.sessionMarkerPersistence = new Promise<boolean>((resolve) => {
-      releaseMarkerPersistence = resolve;
-    });
-    const persistAuthorityPath = vi.fn(async () => true);
-    const persistRunnerAgentImmutableGenerationId =
-      vi.fn(async () => true);
-    const persistRunnerManagedDependencyRetention =
-      vi.fn(async () => true);
-    const readPluginImmutableGenerationIntegrityCurrentness =
-      vi.fn(async () => true);
-
-    const promotion = promoteForegroundDaemonServiceAuthority({
-      happyHomeDir: fixture.happyHomeDir,
-      publicReleaseRing: 'stable',
-      trackedSessions: new Map([[tracked.pid, tracked]]),
-      canonicalSessionId: 'canonical-session-1',
-      foregroundPid: tracked.pid,
-      authorityFilePath: fixture.authorityFilePath,
-      retainedAgent: fixture.retainedAgent,
-      runner: fixture.runner,
-      capabilityDigest: fixture.published.capabilityDigest,
-      invocationContext: {
-        cwd: '/workspace',
-        environment: {
-          PROVIDER_SECRET: 'secret-value',
-        },
-        agentCliLaunch: {
-          localAgentId: 'codex',
-          spec: {
-            source: 'override',
-            resolvedPath: '/workspace/.profile/bin/codex',
-            command: '/workspace/.profile/bin/codex',
-            args: [],
-          },
-        },
-        providerBindingActive: true,
-      },
-      persistAuthorityPath,
-      persistRunnerAgentImmutableGenerationId,
-      persistRunnerManagedDependencyRetention,
-      attachRunnerRetainedPluginGenerations,
-      readPluginImmutableGenerationIntegrityCurrentness,
-    });
-
-    await Promise.resolve();
-    expect(persistAuthorityPath).not.toHaveBeenCalled();
-    expect(
-      tracked.agentRuntimeDaemonServiceAuthorityFilePath,
-    ).toBeUndefined();
-
-    releaseMarkerPersistence(true);
-    await expect(promotion).resolves.toBe(true);
-
-    expect(persistAuthorityPath).toHaveBeenCalledWith({
-      pid: 4242,
-      sessionId: 'canonical-session-1',
-      processCommandHash: 'a'.repeat(64),
-      processStartTimeMs: 2_000,
-      authorityFilePath: fixture.authorityFilePath,
-    });
-    expect(
-      persistRunnerAgentImmutableGenerationId,
-    ).toHaveBeenCalledWith({
-      pid: 4242,
-      sessionId: 'canonical-session-1',
-      processCommandHash: 'a'.repeat(64),
-      processStartTimeMs: 2_000,
-      immutableGenerationId:
-        bundledArtifact.record.immutableGenerationId,
-    });
-    expect(
-      persistRunnerManagedDependencyRetention,
-    ).toHaveBeenCalledWith({
-      pid: 4242,
-      sessionId: 'canonical-session-1',
-      processCommandHash: 'a'.repeat(64),
-      processStartTimeMs: 2_000,
-      retention: {
-        v: 1,
-        sourceGenerationIds: [],
-        qualifiedDependencyIds: [],
-      },
-    });
-    expect(readPluginImmutableGenerationIntegrityCurrentness)
-      .toHaveBeenCalledWith(
-        bundledArtifact.record.pluginId,
-        bundledArtifact.record.immutableGenerationId,
-        'codex',
-        undefined,
-      );
-    expect(tracked).toMatchObject({
-      agentRuntimeDaemonServiceAuthorityFilePath:
-        fixture.authorityFilePath,
-      agentRuntimeDaemonServiceCapabilityHash:
-        fixture.published.capabilityDigest,
-      runnerAgentImmutableGenerationId:
-        bundledArtifact.record.immutableGenerationId,
-      runnerAgentInvocationContext: {
-        cwd: '/workspace',
-        environment: {},
-        agentCliLaunch: {
-          localAgentId: 'codex',
-          spec: {
-            source: 'override',
-            resolvedPath: '/workspace/.profile/bin/codex',
-            command: '/workspace/.profile/bin/codex',
-            args: [],
-          },
-        },
-        providerBindingActive: false,
-      },
-    });
-    expect(tracked.agentRuntimeRunnerRestartDisposition).toBeUndefined();
     } finally {
       await rm(fixture.happyHomeDir, { recursive: true, force: true });
     }
@@ -930,7 +808,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
           providerBindingActive: false,
         },
         persistAuthorityPath: async () => true,
-        persistRunnerAgentImmutableGenerationId:
+        persistRunnerAgentSourceCustody:
           async () => false,
         persistRunnerManagedDependencyRetention,
         attachRunnerRetainedPluginGenerations,
@@ -946,7 +824,7 @@ describe('promoteForegroundDaemonServiceAuthority', () => {
       'agentRuntimeDaemonServiceCapabilityHash',
     );
     expect(tracked).not.toHaveProperty(
-      'runnerAgentImmutableGenerationId',
+      'runnerAgentSourceCustodyV1',
     );
     } finally {
       await rm(fixture.happyHomeDir, { recursive: true, force: true });

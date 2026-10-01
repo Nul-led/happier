@@ -5,6 +5,7 @@ import type { AgentState } from '@/api/types';
 import { ProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/handler';
 import { ServerBoundPermissionRpcHandlerManager } from '@/agent/permissions/testkit/serverBoundPermissionRpcHandlerManager';
 import { createNativeAgentCurrentSessionUiServices } from '@/agent/runtime/registry/engineRegistry/nativeAgentSessionInteractions';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import { createStablePluginEventsBroker } from './events';
 import {
@@ -55,7 +56,7 @@ describe('plugin interaction caller attribution', () => {
             contributionId: 'host-agent',
             runtimeId: 'host-agent-runtime',
             sessionId: session.sessionId,
-            generationId: 'host-generation-1',
+            occurrenceId: createPluginRuntimeOccurrenceId('happier.agent.opencode'),
             interactionDeadlineMs: 1_000,
             isCurrent: () => true,
             signal: new AbortController().signal,
@@ -68,17 +69,17 @@ describe('plugin interaction caller attribution', () => {
                 activePluginIds: new Set(),
             },
         });
-        const binding = createLoggerAndEventsAvailablePluginInvocationServiceBinding('ordinary-generation-1', 'binding');
+        const binding = createLoggerAndEventsAvailablePluginInvocationServiceBinding('ordinary-occurrenceId-1', 'binding');
         const seed = Object.freeze({
             plugin: Object.freeze({ id: 'acme.ordinary', version: '1.0.0' }),
             contribution: Object.freeze({ id: 'run', qualifiedId: 'acme.ordinary/actions/run' }),
-            generation: 'ordinary-generation-1',
+            occurrenceId: createPluginRuntimeOccurrenceId('acme.ordinary'),
             correlationId: 'ordinary-correlation-1',
             surface: 'cli' as const,
             session: Object.freeze({ id: session.sessionId }),
             currentSession,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const request = Object.freeze({
             kind: 'approval' as const,
@@ -165,7 +166,7 @@ describe('plugin interaction caller attribution', () => {
             contributionId: 'native-agent',
             runtimeId: 'native-agent-runtime',
             sessionId: session.sessionId,
-            generationId: 'native-generation-1',
+            occurrenceId: createPluginRuntimeOccurrenceId('happier.agent.opencode'),
             interactionDeadlineMs: 1_000,
             isCurrent: () => true,
             signal: new AbortController().signal,
@@ -211,7 +212,7 @@ describe('plugin interaction caller attribution', () => {
             contributionId: 'opencode',
             runtimeId: 'happier.agent.opencode/agents/opencode',
             sessionId: session.sessionId,
-            generationId: 'opencode-generation-1',
+            occurrenceId: createPluginRuntimeOccurrenceId('happier.agent.opencode'),
             interactionDeadlineMs: 1_000,
             isCurrent: () => true,
             signal: new AbortController().signal,
@@ -230,7 +231,7 @@ describe('plugin interaction caller attribution', () => {
                 id: 'opencode',
                 qualifiedId: 'happier.agent.opencode/agents/opencode',
             }),
-            generation: 'opencode-generation-1',
+            occurrenceId: createPluginRuntimeOccurrenceId('happier.agent.opencode'),
             correlationId: 'opencode-correlation-1',
             surface: 'agent' as const,
             session: Object.freeze({ id: session.sessionId }),
@@ -246,9 +247,9 @@ describe('plugin interaction caller attribution', () => {
                     admittedPermissionCeiling: 'read-only' as const,
                 }),
             }),
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }), createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-            'opencode-generation-1',
+            'opencode-occurrenceId-1',
             'opencode-binding-1',
         )).interactions;
 
@@ -294,7 +295,7 @@ describe('plugin interaction caller attribution', () => {
             contributionId: 'opencode',
             runtimeId: 'happier.agent.opencode/agents/opencode',
             sessionId: session.sessionId,
-            generationId: 'opencode-generation-2',
+            occurrenceId: createPluginRuntimeOccurrenceId('happier.agent.opencode'),
             interactionDeadlineMs: 1_000,
             isCurrent: () => true,
             signal: new AbortController().signal,
@@ -313,7 +314,7 @@ describe('plugin interaction caller attribution', () => {
                 id: 'opencode',
                 qualifiedId: 'happier.agent.opencode/agents/opencode',
             }),
-            generation: 'opencode-generation-2',
+            occurrenceId: createPluginRuntimeOccurrenceId('happier.agent.opencode'),
             correlationId: 'opencode-correlation-2',
             surface: 'agent' as const,
             session: Object.freeze({ id: session.sessionId }),
@@ -325,9 +326,9 @@ describe('plugin interaction caller attribution', () => {
                 userMessageSeq: 2,
                 userMessageSeqs: Object.freeze([2]),
             }),
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }), createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-            'opencode-generation-2',
+            'opencode-occurrenceId-2',
             'opencode-binding-2',
         )).interactions;
 

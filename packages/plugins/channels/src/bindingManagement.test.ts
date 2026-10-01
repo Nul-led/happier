@@ -66,7 +66,18 @@ const retainedFinalResultAutomationTarget = {
   policy: { resultDelivery: 'finalResult' },
 } as const;
 
-function admittedProviderOperation(role: string, immutableGenerationId = 'provider-generation-1') {
+const channelsSourceCustody = Object.freeze({
+  kind: 'bundled_first_party' as const,
+  packagedRuntime: Object.freeze({ kind: 'cli_version_root' as const, versionRootId: 'cli-version-1' }),
+});
+
+const providerSourceCustody = Object.freeze({
+  kind: 'managed' as const,
+  immutableGenerationId: 'provider-generation-1',
+  installSource: 'npm' as const,
+});
+
+function admittedProviderOperation(role: string, occurrenceId = 'provider-occurrence-1') {
   return Object.freeze({
     identity: Object.freeze({
       target: Object.freeze({ pluginId: 'happier.channels' }),
@@ -77,7 +88,7 @@ function admittedProviderOperation(role: string, immutableGenerationId = 'provid
       contributor: Object.freeze({
         pluginId: materialization.pluginId,
         contributionId: 'test-provider',
-        immutableGenerationId,
+        occurrenceId,
       }),
       role,
     }),
@@ -115,21 +126,23 @@ function bindingCreateInput(
 }
 
 function providerContributionSnapshot(
-  immutableGenerationId = 'provider-generation-1',
-  targetGeneration = `channels-generation-${immutableGenerationId}`,
+  contributorOccurrenceId = 'provider-occurrence-1',
+  targetOccurrenceId = `channels-occurrence-${contributorOccurrenceId}`,
 ) {
-  const endpointResolve = admittedProviderOperation('endpointResolve', immutableGenerationId);
-  const principalResolve = admittedProviderOperation('principalResolve', immutableGenerationId);
+  const endpointResolve = admittedProviderOperation('endpointResolve', contributorOccurrenceId);
+  const principalResolve = admittedProviderOperation('principalResolve', contributorOccurrenceId);
   return {
     endpointResolve,
     principalResolve,
     snapshot: {
-      generation: targetGeneration,
+      occurrenceId: targetOccurrenceId,
+      sourceCustody: channelsSourceCustody,
       contributions: [{
         contributor: {
           pluginId: materialization.pluginId,
           contributionId: 'test-provider',
-          immutableGenerationId,
+          occurrenceId: contributorOccurrenceId,
+          sourceCustody: providerSourceCustody,
         },
         protocol: { id: 'happier.channels/providers', version: 1 },
         operations: {
@@ -208,7 +221,6 @@ function connectionRow(payloadOverrides: Readonly<Record<string, JsonValue>> = {
     providerPluginId: materialization.pluginId,
     providerContributionSelection: {
       contributionId: 'test-provider',
-      immutableGenerationId: 'provider-generation-1',
     },
     providerSetupInput: { source: 'test' },
     credentialRef: null,
@@ -301,12 +313,14 @@ function context(
     throw new Error('Unexpected provider resolution Action.');
   }),
   readCurrent: () => Promise<unknown> = vi.fn(async () => ({
-    generation: 'channels-generation-1',
+    occurrenceId: 'channels-occurrence-1',
+    sourceCustody: channelsSourceCustody,
     contributions: [{
       contributor: {
         pluginId: materialization.pluginId,
         contributionId: 'test-provider',
-        immutableGenerationId: 'provider-generation-1',
+        occurrenceId: 'provider-occurrence-1',
+        sourceCustody: providerSourceCustody,
       },
       protocol: { id: 'happier.channels/providers', version: 1 },
       operations: {
@@ -578,15 +592,15 @@ describe('Channels target-persisting binding management', () => {
     expect(collection.batches).toEqual([]);
   });
 
-  it('returns stale with zero writes when the admitted provider target generation changes during audience resolution', async () => {
+  it('returns stale with zero writes when the admitted provider target occurrence changes during audience resolution', async () => {
     const update = Reflect.get(management, 'updateConversationBindingForInvocation');
     expect(update).toEqual(expect.any(Function));
     if (typeof update !== 'function') return;
 
-    const original = providerContributionSnapshot('provider-generation-1');
+    const original = providerContributionSnapshot('provider-occurrence-1');
     const replacement = providerContributionSnapshot(
-      'provider-generation-1',
-      'channels-generation-2',
+      'provider-occurrence-1',
+      'channels-occurrence-2',
     );
     const readCurrent = vi.fn()
       .mockResolvedValueOnce(original.snapshot)
@@ -980,21 +994,22 @@ describe('Channels target-persisting binding management', () => {
         replaceProviderSnapshot: (snapshot: unknown) => void;
       }>) {
         input.replaceProviderSnapshot({
-          generation: 'channels-generation-retired',
+          occurrenceId: 'channels-occurrence-retired',
+          sourceCustody: channelsSourceCustody,
           contributions: [],
         });
       },
     },
     {
-      name: 'the provider target generation changes',
+      name: 'the provider target occurrence changes',
       expected: { kind: 'stale' },
       changeCurrentness(input: Readonly<{
         collection: ReturnType<typeof createCollection>;
         replaceProviderSnapshot: (snapshot: unknown) => void;
       }>) {
         input.replaceProviderSnapshot(providerContributionSnapshot(
-          'provider-generation-1',
-          'channels-generation-2',
+          'provider-occurrence-1',
+          'channels-occurrence-2',
         ).snapshot);
       },
     },
@@ -1941,7 +1956,6 @@ describe('Channels target-persisting binding management', () => {
         transportOrigin: { serverIdentityId: 'server-1', materializationRef: materialization },
         providerContributionSelection: {
           contributionId: 'test-provider',
-          immutableGenerationId: 'provider-generation-1',
         },
         predecessorTransportKind: 'socket',
         endpointRetarget: 'notRequired',

@@ -6,12 +6,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 const boundaries = vi.hoisted(() => ({
-  loadRetainedAgentRuntimeLeaf: vi.fn(),
   updateSessionMarkerRunnerManagedProviderAuthority: vi.fn(),
-}));
-
-vi.mock('@/plugins/runtime/runner/loadRetainedAgentRuntimeLeaf', () => ({
-  loadRetainedAgentRuntimeLeaf: boundaries.loadRetainedAgentRuntimeLeaf,
 }));
 
 vi.mock('@/daemon/sessionRegistry', async (importOriginal) => ({
@@ -29,6 +24,7 @@ import { createAgentSessionRunnerFactoryBinding } from '@/plugins/runtime/runner
 
 import {
   createAgentRuntimeDaemonServiceAuthorityPath,
+  publishAgentRuntimeDaemonServiceAuthority,
 } from './sessionBridgeAuthorization';
 import {
   refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority,
@@ -41,7 +37,11 @@ function retainedAgent() {
     pluginVersion: '1.0.0',
     agentId: 'codex',
     localAgentId: 'fixture',
-    immutableGenerationId: 'generation-a',
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: 'generation-a',
+      installSource: 'localPath',
+    },
     locator: {
       module: './agent/runtime/factory',
       export: 'createFixtureAgentRuntime',
@@ -53,6 +53,77 @@ function retainedAgent() {
 }
 
 describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', () => {
+  it('keeps a reattached live runner authorized when its command changes within the same process generation', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-refresh-reattached-'));
+    try {
+      const launchCommand =
+        '/immutable/runtime/versions/1.2.3/bin/happier fixture --launch-wrapper';
+      const runningCommand =
+        '/immutable/runtime/versions/1.2.3/bin/happier fixture --existing-session session-reattached';
+      const launchHash = createHash('sha256').update(launchCommand).digest('hex');
+      const runningHash = createHash('sha256').update(runningCommand).digest('hex');
+      const authorityPath = await createAgentRuntimeDaemonServiceAuthorityPath({
+        happyHomeDir,
+        publicReleaseRing: 'stable',
+      });
+      const retained = retainedAgent();
+      await publishAgentRuntimeDaemonServiceAuthority({
+        happyHomeDir,
+        publicReleaseRing: 'stable',
+        path: authorityPath,
+        sessionId: 'session-reattached',
+        runner: {
+          pid: 4262,
+          processStartTimeMs: 23_346,
+          processCommandHash: launchHash,
+          snapshotIdentity: 'version:1.2.3',
+        },
+        retainedAgent: retained,
+        httpPort: 3210,
+        readPluginHardRevocationRevision: async () => 0,
+      });
+      const tracked: TrackedSession = {
+        startedBy: 'daemon',
+        pid: 4261,
+        sessionRunnerPid: 4262,
+        happySessionId: 'session-reattached',
+        processStartTimeMs: 23_346,
+        processCommandHash: launchHash,
+        reattachedFromDiskMarker: true,
+        agentRuntimeDaemonServiceAuthorityFilePath: authorityPath,
+      };
+      const refreshed = await refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority({
+        happyHomeDir,
+        publicReleaseRing: 'stable',
+        httpPort: 3210,
+        sessionId: 'session-reattached',
+        tracked,
+        resolveCurrentRetainedAgent: async () => {
+          throw new Error('Reattached runner must retain its pinned Agent');
+        },
+        persistRunnerAgentSourceCustody: async () => true,
+        persistRunnerManagedDependencyRetention: async () => true,
+        attachRunnerRetainedPluginGenerations: async ({ attach }) => await attach(),
+        readProcessIdentityByPidFn: async (pid) => ({
+          pid,
+          processStartTimeMs: 23_346,
+          command: runningCommand,
+        }),
+        readPluginHardRevocationRevision: async () => 0,
+        readPluginImmutableGenerationIntegrityCurrentness: async () => true,
+      });
+
+      expect(refreshed.document.runner).toMatchObject({
+        pid: 4262,
+        processStartTimeMs: 23_346,
+        processCommandHash: runningHash,
+      });
+      expect(tracked.agentRuntimeDaemonServiceCapabilityHash).toBe(refreshed.capabilityDigest);
+    } finally {
+      await rm(happyHomeDir, { recursive: true, force: true });
+    }
+  });
+
   it('removes the published authority when hard revocation wins during the final immutable-currentness check', async () => {
     const happyHomeDir = await mkdtemp(join(
       tmpdir(),
@@ -87,7 +158,7 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
           modelSelection: {
             v: 1,
             ref: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: null,
               modelId: 'native',
             },
@@ -106,7 +177,7 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
           sessionId: 'session-final-currentness',
           tracked,
           resolveCurrentRetainedAgent: async () => retainedAgent(),
-          persistRunnerAgentImmutableGenerationId: async () => true,
+          persistRunnerAgentSourceCustody: async () => true,
           persistRunnerManagedDependencyRetention: async () => true,
           attachRunnerRetainedPluginGenerations: async ({ attach }) =>
             await attach(),
@@ -168,11 +239,15 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
           v: 1,
           adoptedManagedProviderAuthority: {
             pluginId: 'acme.provider',
+            sourceCustody: {
+            kind: 'managed',
             immutableGenerationId: 'provider-generation-p',
+            installSource: 'npm',
+          },
             manifestAuthority: 'external',
             hardRevocationRevisionAtAdmission: 0,
           },
-          sourceGenerationIds: [],
+          sourceCustodies: [],
           qualifiedDependencyIds: [],
         },
         spawnOptions: {
@@ -185,7 +260,7 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
           modelSelection: {
             v: 1,
             ref: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: null,
               modelId: 'native',
             },
@@ -207,7 +282,7 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
           sessionId: 'session-retained-p-final-currentness',
           tracked,
           resolveCurrentRetainedAgent: async () => retainedAgent(),
-          persistRunnerAgentImmutableGenerationId: async () => true,
+          persistRunnerAgentSourceCustody: async () => true,
           persistRunnerManagedDependencyRetention,
           attachRunnerRetainedPluginGenerations: async ({ attach }) =>
             await attach(),
@@ -277,11 +352,15 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
           v: 1,
           adoptedManagedProviderAuthority: {
             pluginId: 'acme.provider',
+            sourceCustody: {
+            kind: 'managed',
             immutableGenerationId: 'provider-generation-p',
+            installSource: 'npm',
+          },
             manifestAuthority: 'external',
             hardRevocationRevisionAtAdmission: 0,
           },
-          sourceGenerationIds: [],
+          sourceCustodies: [],
           qualifiedDependencyIds: [],
         },
         spawnOptions: {
@@ -294,7 +373,7 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
           modelSelection: {
             v: 1,
             ref: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: null,
               modelId: 'native',
             },
@@ -337,7 +416,7 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
           sessionId: 'session-retained-p-post-attachment-currentness',
           tracked,
           resolveCurrentRetainedAgent: async () => retainedAgent(),
-          persistRunnerAgentImmutableGenerationId: async () => true,
+          persistRunnerAgentSourceCustody: async () => true,
           persistRunnerManagedDependencyRetention,
           attachRunnerRetainedPluginGenerations: async ({ attach }) =>
             await attach(),
@@ -367,7 +446,11 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
         authority: null,
         expectedAuthority: {
           pluginId: 'acme.provider',
-          immutableGenerationId: 'provider-generation-p',
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'provider-generation-p',
+            installSource: 'npm',
+          },
           manifestAuthority: 'external',
           hardRevocationRevisionAtAdmission: 0,
         },
@@ -424,11 +507,15 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
           v: 1,
           adoptedManagedProviderAuthority: {
             pluginId: 'acme.provider',
+            sourceCustody: {
+            kind: 'managed',
             immutableGenerationId: 'provider-generation-p',
+            installSource: 'npm',
+          },
             manifestAuthority: 'external',
             hardRevocationRevisionAtAdmission: 0,
           },
-          sourceGenerationIds: [],
+          sourceCustodies: [],
           qualifiedDependencyIds: [],
         },
         spawnOptions: {
@@ -441,7 +528,7 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
           modelSelection: {
             v: 1,
             ref: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: null,
               modelId: 'native',
             },
@@ -482,7 +569,7 @@ describe('refreshTrackedRunnerAgentRuntimeDaemonServiceAuthority currentness', (
         sessionId: 'session-retained-p-final-read-unavailable',
         tracked,
         resolveCurrentRetainedAgent: async () => retainedAgent(),
-        persistRunnerAgentImmutableGenerationId: async () => true,
+        persistRunnerAgentSourceCustody: async () => true,
         persistRunnerManagedDependencyRetention,
         attachRunnerRetainedPluginGenerations: async ({ attach }) =>
           await attach(),

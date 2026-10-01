@@ -249,7 +249,7 @@ export async function assembleTriageListPass(
         if (!available || contribution === undefined) continue;
         contributionGenerationBySourceInstanceId.set(
             row.configured.instance.sourceInstanceId,
-            contribution.contributor.immutableGenerationId,
+            contribution.contributor.occurrenceId,
         );
         const resume = resumeByInstance.get(row.configured.instance.sourceInstanceId);
         lanes.push({
@@ -321,7 +321,7 @@ export async function assembleTriageListPass(
         if (record === undefined || initialRevision === undefined || record.revision !== initialRevision) return false;
         const currentContribution = currentAdmittedByQualifiedId.get(record.value.sourceQualifiedId);
         return currentContribution !== undefined
-            && currentContribution.contributor.immutableGenerationId
+            && currentContribution.contributor.occurrenceId
                 === contributionGenerationBySourceInstanceId.get(sourceInstanceId);
     };
 

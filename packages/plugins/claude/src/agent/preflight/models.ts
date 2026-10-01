@@ -3,17 +3,27 @@ const CLAUDE_CLI_HELP_COMMAND_ARGS = ['--help'] as const;
 const MIN_PREFLIGHT_MODELS_TIMEOUT_MS = 250;
 const PREFLIGHT_OUTPUT_MAX_BYTES = 256 * 1024;
 /** The answer is a property of the installed binary, so it only changes when that binary changes. */
-const CLAUDE_EFFORT_SUPPORT_TTL_MS = 5 * 60_000;
+const CLAUDE_INSTALLED_SUPPORT_TTL_MS = 5 * 60_000;
 /** A failed probe answers `false` fail-closed, so it is re-checked far sooner than a real answer. */
-const CLAUDE_EFFORT_SUPPORT_FAILURE_TTL_MS = 30_000;
+const CLAUDE_INSTALLED_SUPPORT_FAILURE_TTL_MS = 30_000;
 
-type ClaudeEffortSupportCacheEntry = Readonly<{ expiresAtMs: number; supportsEffort: boolean }>;
+type ClaudeInstalledSupport = Readonly<{
+    supportsEffort: boolean;
+    supportsSystemPromptSnapshotOff: boolean;
+    supportsStartupInstructions: boolean;
+}>;
+type ClaudeInstalledSupportCacheEntry = Readonly<{ expiresAtMs: number; support: ClaudeInstalledSupport }>;
 
-const claudeEffortSupportByExecutablePath = new Map<string, ClaudeEffortSupportCacheEntry>();
-const claudeEffortSupportProbesInFlight = new Map<string, Promise<boolean>>();
+const claudeInstalledSupportByExecutablePath = new Map<string, ClaudeInstalledSupportCacheEntry>();
+const claudeInstalledSupportProbesInFlight = new Map<string, Promise<ClaudeInstalledSupport>>();
 
-function claudeHelpSupportsEffort(helpText: string | null): boolean {
-    return typeof helpText === 'string' && /\B--effort\b/i.test(helpText);
+function readClaudeInstalledSupport(helpText: string): ClaudeInstalledSupport {
+    return {
+        supportsEffort: /\B--effort\b/i.test(helpText),
+        supportsSystemPromptSnapshotOff: /\B--system-prompt-snapshot\s+<on\|off>/i.test(helpText),
+        supportsStartupInstructions: /\B--system-prompt-snapshot\s+<on\|off>/i.test(helpText)
+            && /\B--append-system-prompt-file\b/i.test(helpText),
+    };
 }
 
 function buildClaudePreflightEnv(
@@ -27,12 +37,12 @@ function buildClaudePreflightEnv(
     return output;
 }
 
-async function runClaudeHelpEffortProbe(params: Readonly<{
+async function runClaudeHelpProbe(params: Readonly<{
     exec: ExecService;
     executable: ResolvedSystemTool['executable'];
     timeoutMs: number;
     env?: Readonly<Record<string, string | undefined>>;
-}>): Promise<Readonly<{ supportsEffort: boolean; probeFailed: boolean }>> {
+}>): Promise<Readonly<{ support: ClaudeInstalledSupport; probeFailed: boolean }>> {
     try {
         const result = await params.exec.run({
             executable: params.executable,
@@ -44,19 +54,19 @@ async function runClaudeHelpEffortProbe(params: Readonly<{
             timeoutMs: Math.max(MIN_PREFLIGHT_MODELS_TIMEOUT_MS, params.timeoutMs),
         });
         if (result.termination.observed.kind !== 'exit' || result.termination.observed.exitCode !== 0) {
-            return { supportsEffort: false, probeFailed: true };
+            return { support: readClaudeInstalledSupport(''), probeFailed: true };
         }
         const decoder = new TextDecoder();
         const stdout = decoder.decode(result.stdout);
         const helpText = stdout.trim() ? stdout : decoder.decode(result.stderr);
-        return { supportsEffort: claudeHelpSupportsEffort(helpText), probeFailed: false };
+        return { support: readClaudeInstalledSupport(helpText), probeFailed: false };
     } catch {
-        return { supportsEffort: false, probeFailed: true };
+        return { support: readClaudeInstalledSupport(''), probeFailed: true };
     }
 }
 
 /**
- * Resolve whether the installed Claude CLI accepts `--effort`.
+ * Resolve launch-control support from the installed Claude CLI's own help output.
  *
  * Every Claude session and execution-run open needs this fact before it can launch, so the
  * `--help` spawn is both TTL-cached and de-duplicated while in flight, keyed on the resolved
@@ -64,51 +74,69 @@ async function runClaudeHelpEffortProbe(params: Readonly<{
  * The in-flight half is load-bearing: a fan-out that opens N Claude runs at once would otherwise
  * have every caller pay the whole spawn before the first one could populate the cache.
  */
-export async function probeClaudeSupportsEffortRaw(params: Readonly<{
+async function probeClaudeInstalledSupportRaw(params: Readonly<{
     exec: ExecService;
     cwd: string;
     timeoutMs: number;
     env?: Readonly<Record<string, string | undefined>>;
     now?: () => number;
-}>): Promise<boolean> {
+}>): Promise<ClaudeInstalledSupport> {
     let resolved: ResolvedSystemTool;
     try {
         resolved = await params.exec.systemTools.resolve({
             toolId: 'claude-cli',
-            purpose: 'Probe Claude effort support',
+            purpose: 'Probe Claude launch-control support',
             cwd: params.cwd,
         });
     } catch {
-        return false;
+        return readClaudeInstalledSupport('');
     }
 
     const executablePath = resolved.executablePath;
     const readNowMs = () => params.now?.() ?? Date.now();
-    const cached = claudeEffortSupportByExecutablePath.get(executablePath);
-    if (cached && cached.expiresAtMs > readNowMs()) return cached.supportsEffort;
+    const cached = claudeInstalledSupportByExecutablePath.get(executablePath);
+    if (cached && cached.expiresAtMs > readNowMs()) return cached.support;
 
-    const inFlight = claudeEffortSupportProbesInFlight.get(executablePath);
+    const inFlight = claudeInstalledSupportProbesInFlight.get(executablePath);
     if (inFlight) return await inFlight;
 
     const pending = (async () => {
         try {
-            const outcome = await runClaudeHelpEffortProbe({
+            const outcome = await runClaudeHelpProbe({
                 exec: params.exec,
                 executable: resolved.executable,
                 timeoutMs: params.timeoutMs,
                 ...(params.env ? { env: params.env } : {}),
             });
-            claudeEffortSupportByExecutablePath.set(executablePath, {
-                supportsEffort: outcome.supportsEffort,
+            claudeInstalledSupportByExecutablePath.set(executablePath, {
+                support: outcome.support,
                 expiresAtMs: readNowMs() + (outcome.probeFailed
-                    ? CLAUDE_EFFORT_SUPPORT_FAILURE_TTL_MS
-                    : CLAUDE_EFFORT_SUPPORT_TTL_MS),
+                    ? CLAUDE_INSTALLED_SUPPORT_FAILURE_TTL_MS
+                    : CLAUDE_INSTALLED_SUPPORT_TTL_MS),
             });
-            return outcome.supportsEffort;
+            return outcome.support;
         } finally {
-            claudeEffortSupportProbesInFlight.delete(executablePath);
+            claudeInstalledSupportProbesInFlight.delete(executablePath);
         }
     })();
-    claudeEffortSupportProbesInFlight.set(executablePath, pending);
+    claudeInstalledSupportProbesInFlight.set(executablePath, pending);
     return await pending;
+}
+
+export async function probeClaudeSupportsEffortRaw(
+    params: Parameters<typeof probeClaudeInstalledSupportRaw>[0],
+): Promise<boolean> {
+    return (await probeClaudeInstalledSupportRaw(params)).supportsEffort;
+}
+
+export async function probeClaudeSupportsSystemPromptSnapshotOffRaw(
+    params: Parameters<typeof probeClaudeInstalledSupportRaw>[0],
+): Promise<boolean> {
+    return (await probeClaudeInstalledSupportRaw(params)).supportsSystemPromptSnapshotOff;
+}
+
+export async function probeClaudeSupportsStartupInstructionsRaw(
+    params: Parameters<typeof probeClaudeInstalledSupportRaw>[0],
+): Promise<boolean> {
+    return (await probeClaudeInstalledSupportRaw(params)).supportsStartupInstructions;
 }

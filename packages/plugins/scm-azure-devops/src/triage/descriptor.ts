@@ -45,10 +45,9 @@ export const AZURE_DEVOPS_TRIAGE_CONTRIBUTION_ID = 'azure-devops-forge';
 export const AZURE_DEVOPS_TRIAGE_DETAIL_RENDERER_ID = 'triage-pull-request-detail';
 
 /**
- * The built UI artifact the detail renderer mounts.
- *
- * It must equal `AZURE_DEVOPS_DETAIL_UI_ARTIFACT_ID` in the repository-root `uiBuildIdentity.mjs`;
- * `src/uiBuildConfig.test.ts` is the check that keeps the two from drifting.
+ * The built UI artifact the detail renderer mounts. The SDK UI build resolves it
+ * through the package's exact `./happier-plugin-ui/<artifactId>` export and fails
+ * the build when that export is missing.
  */
 export const AZURE_DEVOPS_TRIAGE_DETAIL_ARTIFACT_ID = 'azure-devops-detail-native';
 /**
@@ -82,5 +81,14 @@ export const AZURE_DEVOPS_TRIAGE_DESCRIPTOR = {
     workflowSubject: 'pullRequest',
     displayName: 'Pull request',
     pluralDisplayName: 'Pull requests',
+    // r0.42: the Triage detail frame draws these tabs and asks this source for
+    // each as a panel; the writes render as the header `actions` panel.
+    detailTabs: [
+      { kind: 'shared', id: 'overview' },
+      { kind: 'shared', id: 'activity' },
+      { kind: 'shared', id: 'files' },
+      { kind: 'shared', id: 'checks' },
+    ],
+    detailActions: true,
   }],
 } as const satisfies TriageSourceDescriptorV1;

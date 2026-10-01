@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Button, Row, Select, Stack, Status, TextField } from '@happier-dev/plugin-ui';
+import { Button, Dropdown, Row, Stack, Status, TextField, type MenuItem } from '@happier-dev/plugin-ui';
 
 import {
   type CorpusSavedViewV1,
@@ -16,15 +16,13 @@ import type { TriageSavedViewsNoticeV1 } from './useTriageSavedViews.js';
  * is where the five explicit operations live: select, create, rename, update
  * and delete.
  *
- * **Every control here is a shared public `plugin-ui` control.** There is no
- * Triage popover, menu, chip or focus handling in this file: the roving focus,
- * the checked/selected semantics, the platform touch-target floor and the
- * disabled treatment are the host's, reached through props. That is also why
- * the operations are exposed as controls rather than folded behind an overlay
- * trigger — `plugin-ui`'s `Popover`/`Menu` render their content only through the
- * private presentation host, so an overlay composition is unreachable on a
- * mount that does not publish one, which is the same reason the filter rail
- * exposes its facets individually.
+ * **One compact toolbar control.** The saved views and the four operations
+ * live in the shared public `Dropdown`: a named radio group of views, then the
+ * operations as menu actions. The roving focus, the checked semantics, the
+ * dismissal and focus return are `plugin-ui`'s and the host's, reached through
+ * props — there is no Triage popover, menu or focus handling in this file.
+ * The trigger names the lens the reader is looking through, so the list page
+ * reads as a work surface rather than a settings form.
  *
  * **It decides nothing durable.** `settings/savedViews.ts` mints the id,
  * validates every bound and owns the CAS verdict; `savedViewsCommand.ts` owns
@@ -34,8 +32,15 @@ import type { TriageSavedViewsNoticeV1 } from './useTriageSavedViews.js';
  * of the facet bound.
  */
 
-/** The Select value standing for "no saved view", which is not a view id. */
+/** The value standing for "no saved view", which is not a view id. */
 const UNSAVED_VIEW_KEY = '';
+const VIEWS_RADIO_GROUP = 'views';
+/** Menu ids are namespaced so a view id can never collide with an operation. */
+const VIEW_ITEM_PREFIX = 'view:';
+const OPERATION_CREATE = 'operation:create';
+const OPERATION_RENAME = 'operation:rename';
+const OPERATION_UPDATE = 'operation:update';
+const OPERATION_DELETE = 'operation:delete';
 
 export type TriageViewsControlPropsV1 = Readonly<{
   views: readonly CorpusSavedViewV1[];
@@ -48,8 +53,6 @@ export type TriageViewsControlPropsV1 = Readonly<{
   busy: boolean;
   /** Why the controls cannot write, in words, or `null` when they can. */
   unavailableReason: string | null;
-  /** Re-read saved views from their authoritative Account owner. */
-  onRetry: () => void;
   /** The stored set belongs to a writer this build cannot read. */
   unreadable: boolean;
   notice: TriageSavedViewsNoticeV1 | null;
@@ -66,7 +69,16 @@ type NameDraft =
   | Readonly<{ kind: 'create'; label: string }>
   | Readonly<{ kind: 'rename'; viewId: string; label: string }>;
 
-export function TriageViewsControl(props: TriageViewsControlPropsV1): React.ReactElement {
+/**
+ * The Views control in two placements: the compact `control` belongs in the
+ * list toolbar beside the other lens pickers, and `details` (the naming draft
+ * and the Views notices) belongs on its own line under the toolbar, only while
+ * there is something to say. One hook owns the draft state both read.
+ */
+export function useTriageViewsControl(props: TriageViewsControlPropsV1): Readonly<{
+  control: React.ReactElement;
+  details: React.ReactElement | null;
+}> {
   const {
     busy,
     namesUnavailableSources,
@@ -74,7 +86,6 @@ export function TriageViewsControl(props: TriageViewsControlPropsV1): React.Reac
     onCreateView,
     onDeleteView,
     onRenameView,
-    onRetry,
     onSelectView,
     onUpdateView,
     selectedViewId,
@@ -91,8 +102,7 @@ export function TriageViewsControl(props: TriageViewsControlPropsV1): React.Reac
     [selectedViewId, views],
   );
 
-  const onChangeSelection = React.useCallback((value: unknown) => {
-    if (typeof value !== 'string') return;
+  const onChangeSelection = React.useCallback((value: string) => {
     setDraft(null);
     onSelectView(value === UNSAVED_VIEW_KEY ? null : value);
   }, [onSelectView]);
@@ -130,69 +140,85 @@ export function TriageViewsControl(props: TriageViewsControlPropsV1): React.Reac
   // A stored set this build cannot read is not an empty set the reader may
   // overwrite: every write stays refused until a build that understands it runs.
   const writable = !unreadable && unavailableReason === null && !busy;
-  const options = React.useMemo(() => [
-    {
-      value: UNSAVED_VIEW_KEY,
-      label: text('plugins.triage.surface.views.none', 'No saved view'),
-    },
-    ...views.map((view) => ({ value: view.viewId, label: view.label })),
-  ], [text, views]);
+  const [open, setOpen] = React.useState(false);
+  const viewsLabel = text('plugins.triage.surface.views', 'Views');
+  const noneLabel = text('plugins.triage.surface.views.none', 'No saved view');
+  const items = React.useMemo((): MenuItem[] => [
+    { id: VIEW_ITEM_PREFIX + UNSAVED_VIEW_KEY, label: noneLabel, kind: 'radio', radioGroupId: VIEWS_RADIO_GROUP, disabled: !writable },
+    ...views.map((view): MenuItem => ({
+      id: VIEW_ITEM_PREFIX + view.viewId,
+      label: view.label,
+      kind: 'radio',
+      radioGroupId: VIEWS_RADIO_GROUP,
+      disabled: !writable,
+    })),
+  ], [noneLabel, views, writable]);
+  const operations = React.useMemo((): MenuItem[] => [
+    { id: OPERATION_CREATE, label: text('plugins.triage.surface.views.save', 'Save as new view'), disabled: !writable || draft !== null },
+    ...(selected === null ? [] : [
+      { id: OPERATION_RENAME, label: text('plugins.triage.surface.views.rename', 'Rename'), disabled: !writable || draft !== null },
+      // Nothing to save is not an operation. Offering it anyway would make an
+      // explicit write look like it did nothing.
+      { id: OPERATION_UPDATE, label: text('plugins.triage.surface.views.update', 'Update this view'), disabled: !writable || status !== 'modified' },
+      { id: OPERATION_DELETE, label: text('plugins.triage.surface.views.delete', 'Delete'), disabled: !writable },
+    ]),
+  ], [draft, selected, status, text, writable]);
+  const onSelectItem = React.useCallback((id: string) => {
+    if (id.startsWith(VIEW_ITEM_PREFIX)) {
+      onChangeSelection(id.slice(VIEW_ITEM_PREFIX.length));
+      return;
+    }
+    if (id === OPERATION_CREATE) startCreate();
+    else if (id === OPERATION_RENAME) startRename();
+    else if (id === OPERATION_UPDATE) update();
+    else if (id === OPERATION_DELETE) remove();
+  }, [onChangeSelection, remove, startCreate, startRename, update]);
+  const currentLabel = selected?.label ?? noneLabel;
+  // The trigger names the lens itself. "Modified" joins it only when the lens
+  // has moved off the saved view, because that is when Update means something.
+  const trigger = selected === null ? viewsLabel : selected.label;
 
-  return (
-    <Stack gap="small">
-      <Row gap="small" wrap align="center">
-        <Select
-          label={text('plugins.triage.surface.views', 'Views')}
-          value={selectedViewId ?? UNSAVED_VIEW_KEY}
-          options={options}
-          disabled={!writable}
-          onChange={onChangeSelection}
+  const control = (
+    <>
+      <Dropdown
+        open={open}
+        onOpenChange={setOpen}
+        trigger={trigger}
+        triggerAppearance="control"
+        triggerAccessibilityLabel={`${viewsLabel}: ${currentLabel}`}
+        radioGroups={[{
+          id: VIEWS_RADIO_GROUP,
+          accessibilityLabel: viewsLabel,
+          selectedId: VIEW_ITEM_PREFIX + (selectedViewId ?? UNSAVED_VIEW_KEY),
+        }]}
+        items={items}
+        groups={[{
+          id: 'operations',
+          accessibilityLabel: text('plugins.triage.surface.views.operations', 'View actions'),
+          items: operations,
+        }]}
+        onSelect={onSelectItem}
+      />
+      {/*
+        The one place the lens is named as no longer the saved one. It is said
+        in words rather than by a mark on the name, because the whole point of
+        the state is that an Update is available and has not happened.
+      */}
+      {status !== 'modified' ? null : (
+        <Status
+          tone="muted"
+          label={text('plugins.triage.surface.views.modified', 'Modified')}
         />
-        {/*
-          The one place the lens is named as no longer the saved one. It is said
-          in words rather than by a mark on the name, because the whole point of
-          the state is that an Update is available and has not happened.
-        */}
-        {status !== 'modified' ? null : (
-          <Status
-            tone="muted"
-            label={text('plugins.triage.surface.views.modified', 'Modified')}
-          />
-        )}
-        {draft !== null ? null : (
-          <Button
-            title={text('plugins.triage.surface.views.save', 'Save as new view')}
-            variant="plain"
-            disabled={!writable}
-            onPress={startCreate}
-          />
-        )}
-        {draft !== null || selected === null ? null : (
-          <>
-            <Button
-              title={text('plugins.triage.surface.views.rename', 'Rename')}
-              variant="plain"
-              disabled={!writable}
-              onPress={startRename}
-            />
-            <Button
-              title={text('plugins.triage.surface.views.update', 'Update this view')}
-              variant="plain"
-              // Nothing to save is not an operation. Offering it anyway would
-              // make an explicit write look like it did nothing.
-              disabled={!writable || status !== 'modified'}
-              onPress={update}
-            />
-            <Button
-              title={text('plugins.triage.surface.views.delete', 'Delete')}
-              variant="plain"
-              disabled={!writable}
-              onPress={remove}
-            />
-          </>
-        )}
-      </Row>
+      )}
+    </>
+  );
 
+  const hasDetails = draft !== null
+    || (namesUnavailableSources && status !== 'unsaved')
+    || unreadable
+    || notice !== null;
+  const details = !hasDetails ? null : (
+    <Stack gap="small">
       {draft === null ? null : (
         <Row gap="small" wrap align="center">
           <TextField
@@ -241,20 +267,14 @@ export function TriageViewsControl(props: TriageViewsControlPropsV1): React.Reac
         />
       ) : null}
 
-      {unavailableReason === null ? null : (
-        <Row gap="small" wrap align="center">
-          <Status tone="warning" label={unavailableReason} />
-          <Button
-            title={text('plugins.triage.surface.views.retry', 'Retry')}
-            variant="secondary"
-            onPress={onRetry}
-          />
-        </Row>
-      )}
-
+      {/*
+        An unreachable Account is said once by the page, beside the pins it
+        also blocks (`shell/root.tsx`), not here a second time.
+      */}
       {notice === null ? null : (
         <Status tone={notice.tone} label={notice.message} />
       )}
     </Stack>
   );
+  return { control, details };
 }

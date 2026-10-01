@@ -1,6 +1,6 @@
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
-import { resolveStackEnvPath } from '../utils/paths/paths.mjs';
+import { getRepoDir, resolveStackEnvPath } from '../utils/paths/paths.mjs';
 import { parseArgs } from '../utils/cli/args.mjs';
 import {
   resolveStackComponentArtifactDir,
@@ -41,6 +41,55 @@ import {
 } from './runtime_build_store_state.mjs';
 
 export { assertSelectedBuildPrerequisites, collectRuntimeBuildToolchainInputs } from './runtime_artifact_identity.mjs';
+
+export async function prepareBundledPluginPublicationInputs({
+  rootDir,
+  selection,
+  env,
+  runCanonicalBundledPluginArtifactPublisherImpl,
+  syncDaemonRuntimeDependenciesImpl,
+  generateBundledPluginUiArtifactsImpl,
+}) {
+  // Server code and support are independent of the bundled CLI/UI artifacts.
+  if (selection?.components
+    && selection.components.web !== true
+    && selection.components.daemon !== true) return;
+  const publish = runCanonicalBundledPluginArtifactPublisherImpl
+    ?? (await import('../../../cli/scripts/buildSharedDeps.mjs')).runCanonicalBundledPluginArtifactPublisher;
+  const generateUiArtifacts = generateBundledPluginUiArtifactsImpl
+    ?? (await import('../../../ui/scripts/generateBundledPluginUiArtifacts.mjs')).generateBundledPluginUiArtifacts;
+  const repoRoot = getRepoDir(rootDir, env);
+  if (selection?.components?.daemon === true) {
+    const syncDaemonRuntimeDependencies = syncDaemonRuntimeDependenciesImpl
+      ?? (await import('../../../cli/scripts/buildSharedDeps.mjs')).main;
+    await syncDaemonRuntimeDependencies({
+      repoRoot,
+      env,
+      quiet: true,
+      mode: 'runtime',
+      publicationMode: 'live',
+    });
+  } else {
+    await publish({
+      repoRoot,
+      env,
+      quiet: true,
+      mode: 'write',
+      publicationMode: 'live',
+    });
+  }
+  const uiArtifacts = await generateUiArtifacts({ repoRoot, mode: 'write' });
+  if ((uiArtifacts?.pluginFailures?.length ?? 0) > 0) {
+    await publish({
+      repoRoot,
+      env,
+      quiet: true,
+      mode: 'write',
+      publicationMode: 'live',
+      pluginFailures: uiArtifacts.pluginFailures,
+    });
+  }
+}
 
 function assertNamedStack(env) {
   const stackName = String(env.HAPPIER_STACK_STACK ?? '').trim() || 'main';
@@ -195,17 +244,14 @@ export async function buildRuntimeArtifactComponents({
   resolveRuntimeBuildRequestIdentityImpl = resolveRuntimeBuildRequestIdentity,
   buildSelectedStackArtifactsImpl = buildSelectedStackArtifacts,
   buildComponentArtifactWithIdentityLockImpl = buildComponentArtifactWithIdentityLock,
-  prepareCliBinaryArtifactWorkspacePublicationImpl = componentArtifacts.prepareCliBinaryArtifactWorkspacePublication,
+  readCliBinaryArtifactWorkspacePublicationImpl = componentArtifacts.readCliBinaryArtifactWorkspacePublication,
+  prepareBundledPluginPublicationInputsImpl = prepareBundledPluginPublicationInputs,
   withWorkspaceBundleLockImpl = withWorkspaceBundleLock,
   pruneComponentArtifactsImpl = pruneComponentArtifacts,
 }) {
   assertSelectedBuildPrerequisitesImpl({ selection, env });
+  await prepareBundledPluginPublicationInputsImpl({ rootDir, selection, env });
   const initialSourceMetadata = await collectBuildSourceMetadataImpl({ rootDir, env });
-  if (selection.components.daemon) {
-    await prepareCliBinaryArtifactWorkspacePublicationImpl({
-      repoRoot: initialSourceMetadata.repoDir,
-    });
-  }
   const buildRequest = await resolveRuntimeBuildRequestIdentityImpl({
     rootDir,
     producerStackBaseDir: stackBaseDir,
@@ -226,7 +272,13 @@ export async function buildRuntimeArtifactComponents({
       artifactFingerprint,
       env,
       withWorkspaceBundleLockImpl,
-      buildArtifact: async () => await builder({
+      buildArtifact: async () => {
+        const preparedWorkspacePublication = component === 'daemon'
+          ? await readCliBinaryArtifactWorkspacePublicationImpl({
+              repoRoot: sourceMetadata.repoDir,
+            })
+          : null;
+        return await builder({
         rootDir,
         stackBaseDir,
         artifactDir,
@@ -237,8 +289,18 @@ export async function buildRuntimeArtifactComponents({
         ...(buildRequest.supportArtifactFingerprints?.[component]
           ? { supportArtifactFingerprint: buildRequest.supportArtifactFingerprints[component] }
           : {}),
+        ...(component === 'daemon' && buildRequest.componentSourceFingerprints?.daemon
+          ? { requiredCliDistInputFingerprint: buildRequest.componentSourceFingerprints.daemon }
+          : {}),
+        ...(component === 'daemon' && buildRequest.daemonWorkspaceSourceFingerprint
+          ? { workspaceSourceFingerprint: buildRequest.daemonWorkspaceSourceFingerprint }
+          : {}),
         ...builderOptions,
-      }),
+        ...(component === 'daemon' && preparedWorkspacePublication
+          ? { preparedWorkspacePublication }
+          : {}),
+        });
+      },
     });
     await pruneComponentArtifactsImpl({
       stackBaseDir,
@@ -276,6 +338,7 @@ export async function resolveRepositoryRuntimePublicationComponents({
   env = process.env,
   inspectActiveRuntimeSnapshotImpl = inspectActiveRuntimeSnapshot,
   resolveRuntimeBuildRequestIdentityImpl = resolveRuntimeBuildRequestIdentity,
+  prepareBundledPluginPublicationInputsImpl = prepareBundledPluginPublicationInputs,
 }) {
   const components = normalizeRequestedRuntimeComponents(requestedComponents);
   const inspection = await inspectActiveRuntimeSnapshotImpl({
@@ -284,10 +347,8 @@ export async function resolveRepositoryRuntimePublicationComponents({
   const currentSnapshotId = inspection.valid ? inspection.snapshot?.snapshotId ?? null : null;
   if (components.length === 0) return { components, currentSnapshotId };
 
-  const identityComponents = components.filter((component) => component !== 'daemon');
-  if (identityComponents.length === 0) return { components, currentSnapshotId };
-
-  const selection = createRuntimePublicationSelection(identityComponents);
+  const selection = createRuntimePublicationSelection(components);
+  await prepareBundledPluginPublicationInputsImpl({ rootDir, selection, env });
   const buildRequest = await resolveRuntimeBuildRequestIdentityImpl({
     rootDir,
     producerStackBaseDir: authority.producerStackBaseDir,
@@ -295,7 +356,7 @@ export async function resolveRepositoryRuntimePublicationComponents({
     env,
   });
   return {
-    components: components.filter((component) => component === 'daemon' || (
+    components: components.filter((component) => (
       String(inspection.manifest?.components?.[component]?.artifactFingerprint ?? '').trim()
       !== String(buildRequest.artifactFingerprints?.[component] ?? '').trim()
     )),

@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { cp, lstat, mkdir, readdir, rm } from 'node:fs/promises';
-import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -53,8 +53,18 @@ const TRACKED_ROOT_DROPPED_AUTHOR_ENTRIES = AUTHOR_BUILD_PRODUCED_ENTRIES.filter
   (entry) => !SYNCED_BUILD_OUTPUT_ENTRIES.includes(entry),
 );
 
-function firstPathSegment(root, path) {
-  return relative(root, path).split(sep)[0] ?? '';
+function shouldCopyAuthorSource(trackedRoot, source) {
+  const relativeSource = relative(trackedRoot, source);
+  if (relativeSource === '') return true;
+  const segments = relativeSource.split(sep);
+  if (segments[0] === '.happier-plugin') {
+    // Hosted-static author input lives at this public conventional path, while
+    // the manifest and daemon-output inventory beside it are generated build
+    // products. Keep the source subtree without reintroducing stale generated
+    // bytes into the freshly reset isolated author root.
+    return segments.length === 1 || segments[1] === 'ui';
+  }
+  return !AUTHOR_BUILD_PRODUCED_ENTRIES.includes(segments[0]);
 }
 
 /**
@@ -78,40 +88,24 @@ async function assertUsableIsolatedRoot(isolatedRoot) {
 }
 
 /**
- * Runs the public author build. `yarn` runs the example's own `build` script
- * (`happier plugins dev build .`); `happier-dev` is the repository CLI entry the
- * local lane already used for the Session Agent example. Both remain public
- * `happier` commands — only the author root they are pointed at moves.
+ * Runs the public author build through the repository CLI entry. The `entry`
+ * label preserves which example contract the lane is exercising, but it must
+ * not select a package-manager launch path: the repository's `happier` bin is
+ * the stack wrapper, while the authoring contract belongs to the CLI. Calling
+ * the CLI entry directly also keeps the lane on the managed runtime/materializer
+ * path instead of depending on a system package manager or PATH precedence.
  */
 function spawnAuthorBuild({ entry, packageRoot, projectRoot }) {
-  if (entry === 'happier-dev') {
-    return spawnSync(
-      process.execPath,
-      [
-        resolve(packageRoot, '../../apps/cli/bin/happier-dev.mjs'),
-        'plugins',
-        'dev',
-        'build',
-        projectRoot,
-      ],
-      { stdio: 'inherit' },
-    );
-  }
-  // `happier` lives in the repository root bin folder. A lane started through
-  // `yarn run` already inherits it; a direct `node ./scripts/...` invocation
-  // does not, and the example's `build` script then dies with `happier: not
-  // found`, so the entry supplies it rather than depending on its caller.
-  const repositoryBinFolder = resolve(packageRoot, '../../node_modules/.bin');
   return spawnSync(
-    process.platform === 'win32' ? 'yarn.cmd' : 'yarn',
-    ['--cwd', projectRoot, 'build'],
-    {
-      stdio: 'inherit',
-      env: {
-        ...process.env,
-        PATH: `${repositoryBinFolder}${delimiter}${process.env.PATH ?? ''}`,
-      },
-    },
+    process.execPath,
+    [
+      resolve(packageRoot, '../../apps/cli/bin/happier-dev.mjs'),
+      'plugins',
+      'dev',
+      'build',
+      projectRoot,
+    ],
+    { stdio: 'inherit' },
   );
 }
 
@@ -125,14 +119,30 @@ async function syncAuthorSources(trackedRoot, projectRoot) {
   await cp(trackedRoot, projectRoot, {
     recursive: true,
     force: true,
-    filter: (source) => !AUTHOR_BUILD_PRODUCED_ENTRIES.includes(firstPathSegment(trackedRoot, source)),
+    filter: (source) => shouldCopyAuthorSource(trackedRoot, source),
   });
 }
 
 /** Recognized outputs this build produced, in canonical sync order. */
 async function recognizeBuildOutputs(projectRoot) {
   const produced = new Set(await readdir(projectRoot));
-  return SYNCED_BUILD_OUTPUT_ENTRIES.filter((name) => produced.has(name));
+  const recognized = [];
+  if (produced.has('dist')) recognized.push('dist');
+  if (produced.has('.happier-plugin')) {
+    const pluginOutputRoot = join(projectRoot, '.happier-plugin');
+    const generatedMetadata = await Promise.all([
+      '.happier-daemon-outputs.json',
+      'plugin.json',
+    ].map(async (name) => {
+      try {
+        return (await lstat(join(pluginOutputRoot, name))).isFile();
+      } catch {
+        return false;
+      }
+    }));
+    if (generatedMetadata.some(Boolean)) recognized.push('.happier-plugin');
+  }
+  return recognized;
 }
 
 async function syncVerifiedBuildToTrackedRoot(producedOutputs, projectRoot, trackedRoot) {

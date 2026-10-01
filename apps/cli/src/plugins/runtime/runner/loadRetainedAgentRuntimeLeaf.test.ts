@@ -2,6 +2,7 @@ import {
   link,
   mkdir,
   mkdtemp,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -28,6 +29,11 @@ import {
   loadRetainedAgentRuntimeLeaf,
   verifyRunnerAgentBindingAgainstGeneration,
 } from './loadRetainedAgentRuntimeLeaf';
+import { resolveRetainedBundledPluginRoot } from '../retainedPluginSourceAttestation';
+import { resolveFirstPartyInstallLayout } from '@happier-dev/cli-common/firstPartyRuntime';
+import { explainPinnedRunnerSnapshotUnreadiness } from '@happier-dev/cli-common/pinnedRunnerSnapshot';
+import { publishPinnedRunnerSnapshotFixture } from '@/testkit/process/spawnHappyCliHarness';
+import { readCliNodeWorkspaceRuntimeIdentityFromRuntimeRoot } from '@happier-dev/cli-common/componentArtifacts/copyCliNodeRuntimePayload';
 
 async function prepareRetainedFactory(input: Readonly<{
   happyHomeDir: string;
@@ -38,7 +44,6 @@ async function prepareRetainedFactory(input: Readonly<{
   loadMode: 'immutable-js' | 'source-ts';
   pluginId?: string;
   localAgentId?: string;
-  manifestAuthority?: 'external' | 'bundled_first_party';
   manifestEngines?: Readonly<Record<string, string>>;
   externalSessionsExport?: string;
   additionalFiles?: Readonly<Record<string, string>>;
@@ -109,12 +114,20 @@ async function prepareRetainedFactory(input: Readonly<{
       kind: 'localPath',
       canonicalPath: input.sourceRootPath,
     },
-    updatePolicy: 'reviewEveryUpdate',
+    updatePolicy: 'allowed',
     createdAtMs: 1,
   });
+  if (generated.sourceCustody?.kind !== 'managed') {
+    throw new Error('Expected managed immutable generation fixture custody');
+  }
   const record = {
     ...generated,
     immutableGenerationId: input.immutableGenerationId,
+    sourceCustody: {
+      kind: 'managed' as const,
+      immutableGenerationId: input.immutableGenerationId,
+      installSource: generated.sourceCustody.installSource,
+    },
   };
   const prepared = await prepareImmutablePluginGeneration({
     paths,
@@ -132,8 +145,7 @@ async function prepareRetainedFactory(input: Readonly<{
   await persistValidatedAgentSessionRunnerFactories({
     paths,
     record,
-    manifestAuthority:
-      input.manifestAuthority ?? 'external',
+    manifestAuthority: 'external',
     factories: [{
       localAgentId,
       locator,
@@ -147,12 +159,163 @@ async function prepareRetainedFactory(input: Readonly<{
     pluginVersion: '1.0.0',
     agentId: localAgentId,
     localAgentId,
-    immutableGenerationId: record.immutableGenerationId,
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: record.immutableGenerationId,
+      installSource: 'localPath',
+    },
     locator,
     normalizedModulePath: input.modulePath,
     loadMode: input.loadMode,
   });
   return { paths, prepared, binding };
+}
+
+async function prepareBundledFactory(input: Readonly<{
+  happyHomeDir: string;
+  sourceRootPath: string;
+  moduleBytes: string;
+  manifestExport?: string;
+  manifestModule?: string;
+}>) {
+  const pluginId = 'happier.agent.fixture';
+  const localAgentId = 'fixture';
+  const paths = resolvePluginStorePaths({ happyHomeDir: input.happyHomeDir });
+  await mkdir(join(input.sourceRootPath, '.happier-plugin'), {
+    recursive: true,
+  });
+  await mkdir(join(input.sourceRootPath, 'agent', 'runtime'), {
+    recursive: true,
+  });
+  await writeFile(
+    join(input.sourceRootPath, '.happier-plugin', 'plugin.json'),
+    JSON.stringify(createPluginManifestV2Fixture({
+      id: pluginId,
+      runtime: {
+        apiVersion: 1,
+        agentFactories: [{
+          localAgentId,
+          locator: {
+            module: input.manifestModule ?? './agent/runtime/factory',
+            export: input.manifestExport ?? 'createFixtureAgentRuntime',
+            runtimeApiVersion: 1,
+          },
+          normalizedModulePath: 'agent/runtime/factory.mjs',
+          loadMode: 'immutable-js',
+        }],
+      },
+      contributes: {
+        agents: [{
+          id: localAgentId,
+          title: 'Bundled fixture',
+          runtime: { kind: 'custom' },
+          primary: 'sessions',
+          capabilities: {
+            sessions: {
+              open: ['create'],
+              delivery: ['newTurn'],
+              cancel: true,
+            },
+          },
+        }],
+      },
+    })),
+    'utf8',
+  );
+  await writeFile(
+    join(input.sourceRootPath, 'agent', 'runtime', 'factory.mjs'),
+    input.moduleBytes,
+    'utf8',
+  );
+  return {
+    paths,
+    binding: createAgentSessionRunnerFactoryBinding({
+      v: 1,
+      pluginId,
+      pluginVersion: '1.0.0',
+      agentId: localAgentId,
+      localAgentId,
+      sourceCustody: {
+        kind: 'bundled_first_party',
+        packagedRuntime: {
+          kind: 'pinned_runner_snapshot',
+          snapshotId: 'runner-snapshot-a',
+        },
+      },
+      locator: {
+        module: './agent/runtime/factory',
+        export: 'createFixtureAgentRuntime',
+        runtimeApiVersion: 1,
+      },
+      normalizedModulePath: 'agent/runtime/factory.mjs',
+      loadMode: 'immutable-js',
+    }),
+  };
+}
+
+async function prepareDevelopmentFactory(input: Readonly<{
+  happyHomeDir: string;
+  sourceRootPath: string;
+  moduleBytes?: string;
+}>) {
+  const pluginId = 'acme.development-runner';
+  const localAgentId = 'fixture';
+  const paths = resolvePluginStorePaths({ happyHomeDir: input.happyHomeDir });
+  await mkdir(join(input.sourceRootPath, '.happier-plugin'), {
+    recursive: true,
+  });
+  await mkdir(join(input.sourceRootPath, 'agent', 'runtime'), {
+    recursive: true,
+  });
+  await writeFile(
+    join(input.sourceRootPath, '.happier-plugin', 'plugin.json'),
+    JSON.stringify(createPluginManifestV2Fixture({
+      id: pluginId,
+      contributes: {
+        agents: [{
+          id: localAgentId,
+          title: 'Development fixture',
+          runtime: { kind: 'custom' },
+          primary: 'sessions',
+          capabilities: {
+            sessions: {
+              open: ['create'],
+              delivery: ['newTurn'],
+              cancel: true,
+            },
+          },
+        }],
+      },
+    })),
+    'utf8',
+  );
+  await writeFile(
+    join(input.sourceRootPath, 'agent', 'runtime', 'factory.mjs'),
+    input.moduleBytes
+      ?? 'export function createFixtureAgentRuntime() { return { sessions: { open() {} } }; }',
+    'utf8',
+  );
+  return {
+    paths,
+    binding: createAgentSessionRunnerFactoryBinding({
+      v: 1,
+      pluginId,
+      pluginVersion: '1.0.0',
+      agentId: `${pluginId}/${localAgentId}`,
+      localAgentId,
+      sourceCustody: {
+        kind: 'development',
+        registeredRootId: input.sourceRootPath,
+      },
+      locator: {
+        module: './agent/runtime/factory',
+        export: 'createFixtureAgentRuntime',
+        runtimeApiVersion: 1,
+      },
+      normalizedModulePath: 'agent/runtime/factory.mjs',
+      loadMode: 'source-ts',
+    }),
+  };
 }
 
 async function prepareHostDeclarativeBinding(input: Readonly<{
@@ -203,7 +366,7 @@ async function prepareHostDeclarativeBinding(input: Readonly<{
       kind: 'localPath',
       canonicalPath: input.sourceRootPath,
     },
-    updatePolicy: 'reviewEveryUpdate',
+    updatePolicy: 'allowed',
     createdAtMs: 1,
     immutableGenerationId: input.immutableGenerationId,
   });
@@ -240,12 +403,246 @@ async function prepareHostDeclarativeBinding(input: Readonly<{
     agentId: 'acme.host-declarative-loader/fixture',
     qualifiedAgentId: `${pluginId}/agents/fixture`,
     localAgentId: 'fixture',
-    immutableGenerationId: record.immutableGenerationId,
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: record.immutableGenerationId,
+      installSource: 'localPath',
+    },
   });
   return { paths, prepared, binding };
 }
 
 describe('loadRetainedAgentRuntimeLeaf', () => {
+  it('attests an older pinned runner snapshot after daemon reload and rejects changed custody or unknown source', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'happier-retained-older-runner-'));
+    const snapshotsDir = join(tempRoot, '.runner-snapshots');
+    const stagingRoot = join(snapshotsDir, '.staging');
+    const packageRoot = join(stagingRoot, 'node_modules', '@happier-dev', 'plugins-antigravity');
+    const pluginFile = join(packageRoot, 'agent.mjs');
+    try {
+      await mkdir(join(stagingRoot, 'package-dist'), { recursive: true });
+      await mkdir(packageRoot, { recursive: true });
+      await writeFile(pluginFile, 'export const marker = "original";\n', 'utf8');
+      await mkdir(join(packageRoot, '.happier-plugin'), { recursive: true });
+      await writeFile(join(packageRoot, '.happier-plugin', 'plugin.json'), '{"contributes":{"resources":[]}}\n', 'utf8');
+      const packageNames = ['@happier-dev/plugins-antigravity'];
+      const workspaceRuntimeIdentity = readCliNodeWorkspaceRuntimeIdentityFromRuntimeRoot({
+        runtimeRoot: stagingRoot,
+        packageNames,
+      }).fingerprint;
+      const snapshot = publishPinnedRunnerSnapshotFixture({
+        stagingRoot,
+        workspaceRuntimeIdentity,
+        workspaceRuntimePackages: packageNames,
+      });
+      const snapshotId = snapshot.snapshotIdentity;
+      const oldRoot = snapshot.snapshotRoot;
+      expect(explainPinnedRunnerSnapshotUnreadiness(snapshot)).toBeNull();
+      const { snapshotRoot: currentRoot } = publishPinnedRunnerSnapshotFixture({
+        stagingRoot: join(snapshotsDir, '.current-staging'),
+        workspaceRuntimeIdentity: 'd'.repeat(64),
+      });
+      const unknownSnapshot = publishPinnedRunnerSnapshotFixture({
+        stagingRoot: join(snapshotsDir, '.unknown-staging'),
+        workspaceRuntimeIdentity: 'c'.repeat(64),
+      });
+      await rm(unknownSnapshot.snapshotRoot, { recursive: true });
+      const input = {
+        pluginId: 'happier.agent.antigravity',
+        custody: { kind: 'bundled_first_party' as const, packagedRuntime: { kind: 'pinned_runner_snapshot' as const, snapshotId } },
+        moduleUrl: pathToFileURL(join(currentRoot, 'package-dist', 'chunk.js')).href,
+      };
+      await expect(resolveRetainedBundledPluginRoot(input)).resolves.toMatchObject({
+        rootPath: join(oldRoot, 'node_modules', '@happier-dev', 'plugins-antigravity'),
+      });
+      await expect(resolveRetainedBundledPluginRoot({
+        ...input,
+        moduleUrl: pathToFileURL(join(oldRoot, 'package-dist', 'index.mjs')).href,
+      })).resolves.toMatchObject({
+        rootPath: join(oldRoot, 'node_modules', '@happier-dev', 'plugins-antigravity'),
+      });
+      await writeFile(join(oldRoot, '.workspace-runtime-identity'), `${'a'.repeat(64)}\n`, 'utf8');
+      await expect(resolveRetainedBundledPluginRoot(input)).rejects.toThrow();
+      await writeFile(join(oldRoot, '.workspace-runtime-identity'), `${workspaceRuntimeIdentity}\n`, 'utf8');
+      const movedPackageRoot = join(tempRoot, 'moved-plugin');
+      await rename(join(oldRoot, 'node_modules', '@happier-dev', 'plugins-antigravity'), movedPackageRoot);
+      await symlink(movedPackageRoot, join(oldRoot, 'node_modules', '@happier-dev', 'plugins-antigravity'), 'dir');
+      await expect(resolveRetainedBundledPluginRoot(input)).rejects.toThrow();
+      await expect(resolveRetainedBundledPluginRoot({
+        ...input,
+        custody: { kind: 'bundled_first_party', packagedRuntime: { kind: 'pinned_runner_snapshot', snapshotId: unknownSnapshot.snapshotIdentity } },
+      })).rejects.toThrow();
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a retained CLI version root after the daemon current alias advances', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-retained-version-root-'));
+    const processEnv = { ...process.env, HAPPIER_HOME_DIR: homeDir };
+    const layout = resolveFirstPartyInstallLayout({
+      componentId: 'happier-cli',
+      channel: 'publicdev',
+      processEnv,
+    });
+    const packageSegments = ['node_modules', '@happier-dev', 'plugins-antigravity'];
+    const versionARoot = join(layout.versionsDir, 'version-a');
+    const versionBRoot = join(layout.versionsDir, 'version-b');
+    const custody = {
+      kind: 'bundled_first_party' as const,
+      packagedRuntime: {
+        kind: 'cli_version_root' as const,
+        versionRootId: 'version-a',
+      },
+    };
+    try {
+      await mkdir(join(versionARoot, ...packageSegments), { recursive: true });
+      await mkdir(join(versionBRoot, ...packageSegments), { recursive: true });
+      await writeFile(join(layout.installRoot, 'current.version'), 'version-a\n', 'utf8');
+
+      await expect(resolveRetainedBundledPluginRoot({
+        pluginId: 'happier.agent.antigravity',
+        custody,
+        moduleUrl: pathToFileURL(join(layout.currentPath, 'package-dist', 'chunk.js')).href,
+        processEnv,
+      })).resolves.toMatchObject({
+        rootPath: join(versionARoot, ...packageSegments),
+        cacheIdentity: 'cli_version_root:version-a',
+      });
+
+      await writeFile(join(layout.installRoot, 'current.version'), 'version-b\n', 'utf8');
+      await expect(resolveRetainedBundledPluginRoot({
+        pluginId: 'happier.agent.antigravity',
+        custody,
+        moduleUrl: pathToFileURL(join(layout.currentPath, 'package-dist', 'chunk.js')).href,
+        processEnv,
+      })).resolves.toMatchObject({
+        rootPath: join(versionARoot, ...packageSegments),
+        cacheIdentity: 'cli_version_root:version-a',
+      });
+
+      await expect(resolveRetainedBundledPluginRoot({
+        pluginId: 'happier.agent.antigravity',
+        custody,
+        moduleUrl: pathToFileURL(join(versionARoot, 'package-dist', 'chunk.js')).href,
+        processEnv,
+      })).resolves.toMatchObject({
+        rootPath: join(versionARoot, ...packageSegments),
+      });
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('opens a daemon-attested current development Agent factory without a copied generation', async () => {
+    const happyHomeDir = await mkdtemp(
+      join(tmpdir(), 'happier-runner-development-home-'),
+    );
+    const sourceRootPath = await mkdtemp(
+      join(tmpdir(), 'happier-runner-development-source-'),
+    );
+    try {
+      const fixture = await prepareDevelopmentFactory({
+        happyHomeDir,
+        sourceRootPath,
+      });
+
+      await expect(loadRetainedAgentRuntimeLeaf({
+        paths: fixture.paths,
+        binding: fixture.binding,
+        developmentOccurrenceId: 'occurrence:development-runner:1',
+      })).resolves.toEqual({ factory: expect.any(Function) });
+    } finally {
+      await rm(happyHomeDir, { recursive: true, force: true });
+      await rm(sourceRootPath, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when the daemon-attested development root no longer exists', async () => {
+    const happyHomeDir = await mkdtemp(
+      join(tmpdir(), 'happier-runner-development-missing-home-'),
+    );
+    const sourceRootPath = await mkdtemp(
+      join(tmpdir(), 'happier-runner-development-missing-source-'),
+    );
+    try {
+      const fixture = await prepareDevelopmentFactory({
+        happyHomeDir,
+        sourceRootPath,
+      });
+      await rm(sourceRootPath, { recursive: true, force: true });
+
+      await expect(loadRetainedAgentRuntimeLeaf({
+        paths: fixture.paths,
+        binding: fixture.binding,
+        developmentOccurrenceId: 'occurrence:development-runner:missing',
+      })).rejects.toThrow();
+    } finally {
+      await rm(happyHomeDir, { recursive: true, force: true });
+      await rm(sourceRootPath, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a development binding without the daemon current-occurrence attestation', async () => {
+    const happyHomeDir = await mkdtemp(
+      join(tmpdir(), 'happier-runner-development-unattested-home-'),
+    );
+    const sourceRootPath = await mkdtemp(
+      join(tmpdir(), 'happier-runner-development-unattested-source-'),
+    );
+    try {
+      const fixture = await prepareDevelopmentFactory({
+        happyHomeDir,
+        sourceRootPath,
+      });
+
+      await expect(loadRetainedAgentRuntimeLeaf({
+        paths: fixture.paths,
+        binding: fixture.binding,
+      })).rejects.toThrow(/daemon-attested current occurrence/iu);
+    } finally {
+      await rm(happyHomeDir, { recursive: true, force: true });
+      await rm(sourceRootPath, { recursive: true, force: true });
+    }
+  });
+
+  it('opens current development source after restart instead of retaining historical bytes', async () => {
+    const happyHomeDir = await mkdtemp(
+      join(tmpdir(), 'happier-runner-development-restart-home-'),
+    );
+    const sourceRootPath = await mkdtemp(
+      join(tmpdir(), 'happier-runner-development-restart-source-'),
+    );
+    try {
+      const fixture = await prepareDevelopmentFactory({
+        happyHomeDir,
+        sourceRootPath,
+        moduleBytes:
+          'export function createFixtureAgentRuntime() { return { sourceVersion: "before" }; }',
+      });
+      await writeFile(
+        join(sourceRootPath, 'agent', 'runtime', 'factory.mjs'),
+        'export function createFixtureAgentRuntime() { return { sourceVersion: "after" }; }',
+        'utf8',
+      );
+      const after = await loadRetainedAgentRuntimeLeaf({
+        paths: fixture.paths,
+        binding: createAgentSessionRunnerFactoryBinding({
+          ...fixture.binding,
+          locator: { ...fixture.binding.locator },
+        }),
+        developmentOccurrenceId: 'occurrence:development-runner:after',
+      });
+
+      expect(await after.factory({} as never)).toMatchObject({
+        sourceVersion: 'after',
+      });
+    } finally {
+      await rm(happyHomeDir, { recursive: true, force: true });
+      await rm(sourceRootPath, { recursive: true, force: true });
+    }
+  });
+
   it('loads the retained factory and External Sessions companion from one module namespace without a grant or digest input', async () => {
     const happyHomeDir = await mkdtemp(
       join(tmpdir(), 'happier-runner-companion-home-'),
@@ -576,7 +973,7 @@ describe('loadRetainedAgentRuntimeLeaf', () => {
         agentId: 'substituted-agent',
         qualifiedAgentId: originalBinding.qualifiedAgentId,
         localAgentId: originalBinding.localAgentId,
-        immutableGenerationId: originalBinding.immutableGenerationId,
+        sourceCustody: originalBinding.sourceCustody,
       });
 
       await expect(loadRetainedAgentRuntimeLeaf({
@@ -771,31 +1168,77 @@ describe('loadRetainedAgentRuntimeLeaf', () => {
     }
   });
 
-  it('loads a reserved first-party declaration only with bundled validation authority', async () => {
+  it('loads bundled first-party bytes from the pinned runner snapshot root without reading the generation store', async () => {
     const happyHomeDir = await mkdtemp(
-      join(tmpdir(), 'happier-bundled-runner-loader-'),
+      join(tmpdir(), 'happier-bundled-snapshot-home-'),
     );
     const sourceRootPath = await mkdtemp(
-      join(tmpdir(), 'happier-bundled-runner-source-'),
+      join(tmpdir(), 'happier-bundled-snapshot-source-'),
     );
     try {
-      const moduleBytes =
-        'export function createFixtureAgentRuntime() { return { sessions: { open() { throw new Error(\"unused\"); } } }; }';
-      const fixture = await prepareRetainedFactory({
+      const fixture = await prepareBundledFactory({
         happyHomeDir,
         sourceRootPath,
-        immutableGenerationId: 'generation-bundled-runner',
-        modulePath: 'agent/runtime/factory.mjs',
-        moduleBytes,
-        loadMode: 'immutable-js',
-        pluginId: 'happier.agent.fixture',
-        manifestAuthority: 'bundled_first_party',
+        moduleBytes:
+          'export function createFixtureAgentRuntime() { return { sessions: { open() {} } }; }',
       });
 
       await expect(loadRetainedAgentRuntimeLeaf({
         paths: fixture.paths,
         binding: fixture.binding,
+        resolveBundledPluginRoot: async () => ({
+          rootPath: sourceRootPath,
+          cacheIdentity: 'pinned_runner_snapshot:runner-snapshot-a',
+        }),
       })).resolves.toEqual({ factory: expect.any(Function) });
+    } finally {
+      await rm(happyHomeDir, { recursive: true, force: true });
+      await rm(sourceRootPath, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a retained binding whose factory locator differs from the pinned manifest', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-bundled-drift-home-'));
+    const sourceRootPath = await mkdtemp(join(tmpdir(), 'happier-bundled-drift-source-'));
+    try {
+      const fixture = await prepareBundledFactory({
+        happyHomeDir,
+        sourceRootPath,
+        manifestExport: 'createSnapshotFactory',
+        moduleBytes: 'export function createSnapshotFactory() { return { source: "A" }; }',
+      });
+      await expect(verifyRunnerAgentBindingAgainstGeneration({
+        paths: fixture.paths,
+        binding: fixture.binding,
+        resolveBundledPluginRoot: async () => ({
+          rootPath: sourceRootPath,
+          cacheIdentity: 'pinned_runner_snapshot:runner-snapshot-a',
+        }),
+      })).rejects.toThrow('factory');
+    } finally {
+      await rm(happyHomeDir, { recursive: true, force: true });
+      await rm(sourceRootPath, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a tampered pinned manifest locator before loading its factory', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-bundled-tamper-home-'));
+    const sourceRootPath = await mkdtemp(join(tmpdir(), 'happier-bundled-tamper-source-'));
+    try {
+      const fixture = await prepareBundledFactory({
+        happyHomeDir,
+        sourceRootPath,
+        manifestModule: './agent/runtime/other',
+        moduleBytes: 'export function createFixtureAgentRuntime() { return {}; }',
+      });
+      await expect(verifyRunnerAgentBindingAgainstGeneration({
+        paths: fixture.paths,
+        binding: fixture.binding,
+        resolveBundledPluginRoot: async () => ({
+          rootPath: sourceRootPath,
+          cacheIdentity: 'pinned_runner_snapshot:runner-snapshot-a',
+        }),
+      })).rejects.toMatchObject({ code: 'RETAINED_AGENT_FACTORY_LOCATOR_INVALID' });
     } finally {
       await rm(happyHomeDir, { recursive: true, force: true });
       await rm(sourceRootPath, { recursive: true, force: true });
@@ -846,23 +1289,22 @@ describe('loadRetainedAgentRuntimeLeaf', () => {
       join(tmpdir(), 'happier-bundled-non-claude-private-source-'),
     );
     try {
-      const fixture = await prepareRetainedFactory({
+      const fixture = await prepareBundledFactory({
         happyHomeDir,
         sourceRootPath,
-        immutableGenerationId: 'generation-bundled-factory-only',
-        modulePath: 'agent/runtime/factory.mjs',
         moduleBytes: [
           'export function createFixtureAgentRuntime() { return { sessions: { open() {} } }; }',
           'export function unrelatedHostOpen() { throw new Error("must not be called"); }',
         ].join('\n'),
-        loadMode: 'immutable-js',
-        pluginId: 'happier.agent.fixture',
-        manifestAuthority: 'bundled_first_party',
       });
 
       const leaf = await loadRetainedAgentRuntimeLeaf({
         paths: fixture.paths,
         binding: fixture.binding,
+        resolveBundledPluginRoot: async () => ({
+          rootPath: sourceRootPath,
+          cacheIdentity: 'pinned_runner_snapshot:runner-snapshot-a',
+        }),
       });
 
       expect(Reflect.has(leaf, 'workflowRunRecordSessionOpen')).toBe(false);
@@ -891,7 +1333,6 @@ describe('loadRetainedAgentRuntimeLeaf', () => {
         moduleBytes,
         loadMode: 'immutable-js',
         pluginId: 'happier.agent.fixture',
-        manifestAuthority: 'external',
         // The impersonation this rejects is a *published* artifact claiming a
         // first-party id, so the generation has to be minted from a
         // registry-custodied acquisition identity. A local working tree is the
@@ -973,7 +1414,11 @@ describe('loadRetainedAgentRuntimeLeaf', () => {
 
   it.each([
     ['wrong immutable generation', {
-      immutableGenerationId: 'generation-substituted',
+      sourceCustody: {
+        kind: 'managed' as const,
+        immutableGenerationId: 'generation-substituted',
+        installSource: 'localPath' as const,
+      },
     }],
     ['different leaf', {
       locator: {

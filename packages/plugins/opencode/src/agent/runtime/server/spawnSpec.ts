@@ -8,7 +8,7 @@ import {
 import {
   OPEN_CODE_REQUEST_AUTH_CAPABILITY_PATH_ENV,
 } from '../../auth/services/requestAuth/env.js';
-import { OPEN_CODE_SYSTEM_TOOL_ID } from '../../systemTool.js';
+import type { OpenCodeSystemToolId } from '../../systemTool.js';
 import { OPEN_CODE_MANAGED_SERVER_STARTUP_TIMEOUT_MS } from './timeoutPolicy.js';
 import { openCodeServerHealthPath, type OpenCodeServerDialect } from './dialect.js';
 
@@ -66,18 +66,16 @@ export function buildOpenCodeManagedLaunchEnvironment(
  * Session runtime and the External Sessions browse surface describe the same
  * process the same way and cannot drift apart.
  *
- * `dialect` names the generation of the executable the host will resolve, which
- * is what decides the readiness route (`openCodeServerHealthPath`). It is
- * required and has no default: an `opencode2` child mounts no `/global/*` at
- * all, so a caller that guessed the legacy route here would leave a beta-only
- * install permanently unhealthy and its sessions unopenable. Every caller —
- * the Session runtime assembly and the External Sessions browse surface —
- * resolves it from the host's system-tool resolution through the one owner,
- * `resolveOpenCodeManagedServerDialect`.
+ * `dialect` and `healthPath` come from the same resolved executable decision.
+ * Preview `opencode2` uses `/api/health`; released `opencode` 2.x uses
+ * `/api/info`. Every caller — Session runtime and External Sessions browse —
+ * uses the provider-owned `resolveOpenCodeManagedServerDialect` result.
  */
 export function buildOpenCodeManagedServerSpawnSpec(params: Readonly<{
   id: string;
   dialect: OpenCodeServerDialect;
+  healthPath?: string;
+  systemToolId: OpenCodeSystemToolId;
   env?: Readonly<Record<string, string>>;
   permissionMode?: string | null;
   providerConfigContent?: string;
@@ -91,7 +89,7 @@ export function buildOpenCodeManagedServerSpawnSpec(params: Readonly<{
       launch: {
         executable: {
           kind: 'systemTool',
-          id: OPEN_CODE_SYSTEM_TOOL_ID,
+          id: params.systemToolId,
         },
         args: [
           'serve',
@@ -117,7 +115,7 @@ export function buildOpenCodeManagedServerSpawnSpec(params: Readonly<{
       kind: 'http',
       target: {
         kind: 'servicePath',
-        path: openCodeServerHealthPath(params.dialect),
+        path: params.healthPath ?? openCodeServerHealthPath(params.dialect),
       },
       timeoutMs: 5_000,
     },

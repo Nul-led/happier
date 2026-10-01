@@ -13,7 +13,7 @@ import {
   type PluginRawCredentialMaterializer,
   type PluginRawCredentialMaterializerBinding,
 } from './rawCredentialMaterializer';
-import { createServerPluginPermissionGrantListReader } from '@/plugins/runtime/lifecycle/permissions/pluginPermissionGrantListReader';
+import { createAccountLifetimePluginPermissionGrantListReader } from '@/plugins/runtime/lifecycle/permissions/pluginPermissionGrantListReader';
 import { createRegistryInstallReviewPrincipalReader } from './registryInstallReviewPrincipalReader';
 
 type DaemonRawCredentialCommonInput = Readonly<{
@@ -114,7 +114,7 @@ export function createDaemonPluginRawCredentialMaterializer(
     if (!input.credentials) {
       throw new TypeError('Raw credential materialization requires credentials or a grant reader');
     }
-    return createServerPluginPermissionGrantListReader({ credentials: input.credentials });
+    return createAccountLifetimePluginPermissionGrantListReader({ credentials: input.credentials });
   })();
   const ensureAccountSettingsSnapshot = resolveAccountSettingsWarmer({
     ...(input.credentials ? { credentials: input.credentials } : {}),

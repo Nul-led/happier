@@ -56,7 +56,7 @@ import {
   type TriageDetailSurfaceInputV1,
   type TriageSourceFailureV1,
 } from '@happier-dev/triage-protocol/v1';
-import { useTriageEvidenceDisclosure } from '@happier-dev/triage-sources/ui';
+import { TriageDetailPanel, useTriageEvidenceDisclosure } from '@happier-dev/triage-sources/ui';
 // The presentation rules used below are projections of the Triage contract's own
 // closed fact and failure vocabularies, so they are consumed from the one published
 // owner rather than re-spelled here: six copies is how one declared `compact` number
@@ -197,7 +197,8 @@ function SelectedOccurrenceSummary({
   controller: SentrySelectedEventControllerV1;
   locale: string;
   nowMs: number;
-  onOpenStackTrace: () => void;
+  /** Absent in a Triage panel, where Stack trace is the frame's own tab (r0.42). */
+  onOpenStackTrace?: () => void;
 }>): React.ReactElement {
   const text = usePluginTranslation();
   const { demand, read } = controller;
@@ -265,7 +266,7 @@ function SelectedOccurrenceSummary({
               : <Text variant="caption" tone="neutral">{frameLabel(frame)}</Text>}
           </Stack>
         )}
-      {!sentryProjectionHasTrace(projection)
+      {!sentryProjectionHasTrace(projection) || onOpenStackTrace === undefined
         ? null
         : (
           <Button
@@ -668,7 +669,8 @@ function OverviewPanel({
   selectedEvent: SentrySelectedEventControllerV1;
   locale: string;
   nowMs: number;
-  onOpenStackTrace: () => void;
+  /** Absent in a Triage panel, where Stack trace is the frame's own tab (r0.42). */
+  onOpenStackTrace?: () => void;
 }>): React.ReactElement {
   const text = usePluginTranslation();
   const factLabel = (field: SentryDetailFieldV1): string => {
@@ -1604,6 +1606,36 @@ function SentryDetailBody({
     activity: <ActivityPanel input={input} locale={locale} nowMs={nowMs} />,
   };
 
+  // The Triage detail asked for one panel (r0.42): its frame draws the tabs.
+  // Stack trace, occurrences and the release are this source's own tabs,
+  // declared after the shared ones.
+  if (input.panel !== undefined) {
+    return (
+      <Screen safeArea>
+        <TriageDetailPanel
+          panel={input.panel}
+          ariaLabel={text('plugins.sentry.ui.tabsLabel', 'Sentry issue detail sections')}
+          panels={{
+            overview: (
+              <OverviewPanel
+                input={input}
+                overview={overview}
+                summary={summary}
+                selectedEvent={selectedEvent}
+                locale={locale}
+                nowMs={nowMs}
+              />
+            ),
+            activity: panels.activity,
+            'stack-trace': panels['stack-trace'],
+            occurrences: panels.occurrences,
+            release: panels.release,
+          }}
+        />
+      </Screen>
+    );
+  }
+
   return (
     <Screen safeArea>
       <Tabs
@@ -1662,7 +1694,6 @@ function SentryDetailSurface(context: RenderContext): React.ReactElement {
 }
 
 /**
- * The exact export name the build target's Module Federation identity names. Renaming it breaks
- * the native artifact contract, not just this file.
+ * The manifest names this exact universal CommonJS export.
  */
 export const renderSurface = defineUiSurface(SentryDetailSurface);

@@ -1,5 +1,7 @@
 import type { PublicActionInputById, PublicActionResultById } from '../actions/generated.js';
+import { buildBackendTargetKeyV2, type SessionListQueryV1 } from '@happier-dev/protocol';
 import type { FollowTranscriptOptions, HappierTranscriptItem } from '../subscriptions.js';
+import type { HappierSessionController, HappierSessionLiveOptions } from '../live/types.js';
 import type { ActionExecute, ActionExecutionOptions, ActionTarget } from '../types.js';
 import { bindPublicActionInput, correspondenceOptions } from './boundActionCall.js';
 import { createSessionExecutionRuns, type HappierSessionExecutionRuns } from './sessionExecutionRuns.js';
@@ -27,6 +29,7 @@ type AgentIdentity = SessionSpawnActionInput['agentTarget']['identity'];
  */
 export type HappierSessionSpawnInput = Readonly<
   Omit<SessionSpawnActionInput, 'agentTarget' | 'executionTarget' | 'initialInput'> & Readonly<{
+    /** Friendly Agent id or canonical Agent target key; both resolve through the Machine inventory. */
     agent: string;
     initialMessage?: string;
   }>
@@ -39,6 +42,11 @@ export type HappierSessionSendAndWaitInput = Readonly<
 
 /** Per-call controls for an unbound fluent Session client. */
 export type HappierSessionSpawnOptions = ActionExecutionOptions;
+
+/** Exact folder membership and tag membership each use ANY; the two filters combine with AND. */
+export type HappierSessionListInput = Readonly<Partial<Pick<SessionListQueryV1,
+  'folderIds' | 'tagIds' | 'storage' | 'includeInactive' | 'cursor' | 'limit'
+>>>;
 
 type HappierMachineSessionOptions = Readonly<Omit<ActionExecutionOptions, 'target'>>;
 
@@ -94,6 +102,7 @@ export type HappierSession<TOptions extends ActionExecutionOptions = ActionExecu
     options?: TOptions,
   ) => Promise<PublicActionResultById['session.transcript.get']>;
   followTranscript: (options?: FollowTranscriptOptions) => AsyncIterable<HappierTranscriptItem>;
+  live: (options?: HappierSessionLiveOptions) => Promise<HappierSessionController>;
   stop: (options?: TOptions) => Promise<PublicActionResultById['session.stop']>;
 }>;
 
@@ -117,6 +126,10 @@ export class HappierSessionInitialInputError<TOptions extends ActionExecutionOpt
 }
 
 export type HappierSessions<TOptions extends ActionExecutionOptions = ActionExecutionOptions> = Readonly<{
+  list: (
+    input?: HappierSessionListInput,
+    options?: TOptions,
+  ) => Promise<PublicActionResultById['session.list']>;
   spawn: (
     input: HappierSessionSpawnInput,
     options?: TOptions,
@@ -143,13 +156,16 @@ type SessionCollectionParams = Readonly<{
     options?: FollowTranscriptOptions,
   ) => AsyncIterable<HappierTranscriptItem>;
   requireSessionId: (sessionId: string) => string;
+  live: (sessionId: string, options?: HappierSessionLiveOptions) => Promise<HappierSessionController>;
 }>;
 
 function resolveAgentIdentity(
   items: readonly AgentBackendInventoryItem[],
   agentId: string,
 ): AgentIdentity {
-  const candidate = items.find((item) => item.agentId === agentId);
+  const candidate = items.find((item) => agentId.startsWith('agent:')
+    ? item.identity !== undefined && buildBackendTargetKeyV2({ kind: 'agent', identity: item.identity }) === agentId
+    : item.agentId === agentId);
   if (candidate === undefined) throw new HappierAgentUnavailableError(agentId, 'not_installed');
   if (!candidate.enabled) throw new HappierAgentUnavailableError(agentId, 'disabled');
   if (candidate.identity === undefined) {
@@ -201,6 +217,7 @@ export function createSessions<TOptions extends ActionExecutionOptions = ActionE
         optionsForSession(options),
       ),
       followTranscript: (options?: FollowTranscriptOptions) => params.followTranscript(id, options),
+      live: (options?: HappierSessionLiveOptions) => params.live(id, options),
       stop: async (options?: TOptions) => await params.execute(
         'session.stop',
         bindPublicActionInput('session.stop', { sessionId: id }, options?.requestId),
@@ -210,6 +227,22 @@ export function createSessions<TOptions extends ActionExecutionOptions = ActionE
   };
 
   return Object.freeze({
+    list: async (input: HappierSessionListInput = {}, options?: TOptions) => await params.execute(
+      'session.list',
+      bindPublicActionInput('session.list', { query: {
+        v: 1,
+        storage: 'active',
+        includeInactive: true,
+        scope: 'all_accessible',
+        attention: 'any',
+        audiences: [],
+        ...input,
+        // The fluent query accepts immutable inputs; the public Action request owns its array.
+        tagIds: [...(input.tagIds ?? [])],
+        folderIds: input.folderIds === undefined ? undefined : [...input.folderIds],
+      } }, options?.requestId),
+      options,
+    ),
     async spawn(input: HappierSessionSpawnInput, options?: TOptions) {
       const { agent, initialMessage, ...actionInput } = input;
       const inventory = await params.execute(

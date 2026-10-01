@@ -42,8 +42,8 @@ describe('sessionCapabilities', () => {
     expect(AGENTS_CORE.opencode.sessionCapabilities).toEqual({
       sessionListing: 'supported',
       sessionFork: {
-        conversation: 'supported',
-        fromMessage: 'supported',
+        conversation: 'unsupported',
+        fromMessage: 'unsupported',
       },
       sessionRollback: {
         conversation: 'unsupported',
@@ -81,7 +81,7 @@ describe('sessionCapabilities', () => {
   });
 
   it('provides a boolean helper for supported session capabilities', () => {
-    expect(isAgentSessionCapabilitySupported('opencode', 'sessionFork.fromMessage')).toBe(true);
+    expect(isAgentSessionCapabilitySupported('opencode', 'sessionFork.fromMessage')).toBe(false);
     expect(isAgentSessionCapabilitySupported('claude', 'sessionRollback.conversation')).toBe(false);
     expect(isAgentSessionCapabilitySupported('opencode', 'usageLimitRecovery.checkNow')).toBe(false);
     expect(isAgentSessionCapabilitySupported('claude', 'usageLimitRecovery.checkNow')).toBe(false);
@@ -178,7 +178,7 @@ describe('sessionCapabilities', () => {
     ).toBe('unsupported');
   });
 
-  it('downgrades opencode fork-from-message to server-only sessions', () => {
+  it('keeps OpenCode fork admission disabled before the live dialect exists', () => {
     expect(
       evaluateAgentSessionCapabilitySupport({
         agentId: 'opencode',
@@ -193,7 +193,7 @@ describe('sessionCapabilities', () => {
         capability: 'sessionFork.conversation',
         metadata: { opencodeBackendMode: 'acp' },
       }),
-    ).toBe('supported');
+    ).toBe('unsupported');
 
     expect(
       evaluateAgentSessionCapabilitySupport({
@@ -331,7 +331,7 @@ describe('sessionCapabilities', () => {
     ).toMatchObject({
       sessionStorage: { direct: false, persisted: true },
       sessionCapabilities: {
-        sessionFork: { conversation: 'supported', fromMessage: 'unsupported' },
+        sessionFork: { conversation: 'unsupported', fromMessage: 'unsupported' },
       },
       localControl: null,
       tools: { delivery: 'native_mcp', support: 'supported' },

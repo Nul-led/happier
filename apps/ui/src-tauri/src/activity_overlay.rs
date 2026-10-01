@@ -159,6 +159,8 @@ pub struct ActivityOverlayState(Arc<Mutex<ActivityOverlayRuntimeState>>);
 #[cfg(desktop)]
 #[derive(Clone, Default)]
 struct ActivityOverlayRuntimeState {
+    #[cfg(target_os = "macos")]
+    mouse_poll: Arc<crate::pet_overlay::NativeMousePollController>,
     last_sync_payload: Option<DesktopActivityOverlaySyncPayload>,
     last_window_state: Option<DesktopActivityOverlayWindowStatePayload>,
     desired_expanded: Option<bool>,
@@ -543,6 +545,24 @@ fn resolve_activity_overlay_drag_retarget<R: Runtime>(
 }
 
 #[cfg(desktop)]
+pub(crate) fn release_for_menu_bar(app: &AppHandle) {
+    let Some(state) = app.try_state::<ActivityOverlayState>() else {
+        return;
+    };
+    if let Ok(mut guard) = state.0.lock() {
+        #[cfg(target_os = "macos")]
+        guard.mouse_poll.set_enabled(false);
+        guard.last_sync_payload = None;
+        guard.last_window_state = None;
+        guard.desired_expanded = None;
+        guard.qa_pinned_sync_payload = None;
+        guard.display_change_debounce = Default::default();
+        guard.native_mouse_state = Default::default();
+        guard.momentum_generation = guard.momentum_generation.wrapping_add(1);
+    };
+}
+
+#[cfg(desktop)]
 pub fn register<R: Runtime + 'static>(app: &mut App<R>) -> tauri::Result<()> {
     let state = app.state::<ActivityOverlayState>();
     if let Ok(mut guard) = state.0.lock() {
@@ -765,9 +785,21 @@ fn start_native_notch_mouse_poll_loop<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: ActivityOverlayState,
 ) {
+    let controller = state
+        .0
+        .lock()
+        .expect("activity overlay state")
+        .mouse_poll
+        .clone();
     let pending = Arc::new(AtomicBool::new(false));
     std::thread::spawn(move || loop {
+        if !controller.wait_until_enabled() {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(NATIVE_NOTCH_MOUSE_POLL_INTERVAL_MS));
+        if !controller.is_enabled() {
+            continue;
+        }
         let dispatch_app = app.clone();
         let task_app = app.clone();
         let task_state = state.clone();
@@ -779,6 +811,9 @@ fn start_native_notch_mouse_poll_loop<R: Runtime + 'static>(
                     .map_err(|error| error.to_string())
             },
             move || {
+                if crate::menu_bar::is_active(&task_app) {
+                    return;
+                }
                 let observation = read_native_notch_mouse_observation_on_main_thread();
                 let _ = handle_native_notch_mouse_observation(&task_app, &task_state, observation);
             },
@@ -1052,6 +1087,10 @@ pub fn desktop_activity_overlay_sync<R: Runtime>(
             apply_qa_sync_pin_override(&mut guard, payload, current_epoch_millis());
         apply_desired_expanded_override(&mut guard, &mut next_payload);
         guard.last_sync_payload = Some(next_payload.clone());
+        #[cfg(target_os = "macos")]
+        guard
+            .mouse_poll
+            .set_enabled(next_payload.visible && !crate::menu_bar::is_active(&app));
     }
 
     apply_overlay_state(&app, state.inner())
@@ -1450,6 +1489,9 @@ fn apply_overlay_state<R: Runtime>(
     app: &AppHandle<R>,
     state: &ActivityOverlayState,
 ) -> Result<(), String> {
+    if crate::menu_bar::is_active(app) {
+        return Ok(());
+    }
     let (payload, cached_display_context, runtime_host_fallback) = {
         let guard = state
             .0
@@ -2227,7 +2269,7 @@ mod tests {
             "core:window:allow-set-badge-label",
             "allow-desktop-fetch-update",
             "allow-desktop-install-update",
-            "allow-desktop-set-autostart-enabled",
+            "allow-desktop-finish-shutdown",
             "allow-start-system-task",
             "allow-cancel-system-task",
             "allow-respond-system-task-prompt",
@@ -2250,8 +2292,8 @@ mod tests {
             "allow-desktop-fetch-update",
             "allow-desktop-install-update",
             "allow-desktop-pick-ssh-identity-file",
-            "allow-desktop-get-autostart-enabled",
-            "allow-desktop-set-autostart-enabled",
+            "allow-desktop-set-tray-state",
+            "allow-desktop-finish-shutdown",
             "allow-desktop-set-tray-state",
             "allow-start-system-task",
             "allow-cancel-system-task",
@@ -3327,6 +3369,8 @@ mod tests {
             input_lock_updated_at_epoch_ms: None,
             qa_pinned_sync_payload: None,
             momentum_generation: 0,
+            #[cfg(target_os = "macos")]
+            mouse_poll: Default::default(),
         };
 
         let mut payload = DesktopActivityOverlaySyncPayload {
@@ -3439,6 +3483,8 @@ mod tests {
             input_lock_updated_at_epoch_ms: None,
             qa_pinned_sync_payload: None,
             momentum_generation: 0,
+            #[cfg(target_os = "macos")]
+            mouse_poll: Default::default(),
         };
 
         apply_expanded_override_to_runtime_state(&mut state, true);
@@ -3528,6 +3574,8 @@ mod tests {
             input_lock_updated_at_epoch_ms: None,
             qa_pinned_sync_payload: None,
             momentum_generation: 0,
+            #[cfg(target_os = "macos")]
+            mouse_poll: Default::default(),
         };
 
         let pinned =

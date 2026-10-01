@@ -10,6 +10,20 @@ async function readJson(relativePath) {
   return JSON.parse(await readFile(path.join(repoRoot, relativePath), 'utf8'));
 }
 
+test('ordinary build and typecheck graphs do not reach the Action drift producer', async () => {
+  const turbo = await readJson('turbo.json');
+  const reachable = new Set();
+  const visit = name => {
+    if (reachable.has(name)) return;
+    reachable.add(name);
+    for (const dependency of turbo.tasks[name]?.dependsOn ?? []) visit(dependency.replace(/^\^/u, ''));
+  };
+  visit('typecheck:finite');
+  visit('build:finite');
+  assert.equal(reachable.has('generated:finite'), false,
+    'schema drift belongs to its explicit check, never ordinary compilation');
+});
+
 test('the finite Turbo graph is activated through the current package manager without replacing package-owned semantics', async () => {
   const [rootPackage, turbo, pluginSdk, pluginUi, sdk, gitignore] = await Promise.all([
     readJson('package.json'),
@@ -34,6 +48,7 @@ test('the finite Turbo graph is activated through the current package manager wi
     '@happier-dev/cli-common',
     '@happier-dev/release-runtime',
     '@happier-dev/support',
+    '@happier-dev/session-core',
     '@happier-dev/bootstrap',
   ]) {
     assert.match(buildPackages, new RegExp(`(?:^| )${packageName.replace('/', '\\/')}(?: |$)`, 'u'));
@@ -44,7 +59,7 @@ test('the finite Turbo graph is activated through the current package manager wi
   );
   assert.equal(
     rootPackage.scripts['prepare:typecheck:workspaces'],
-    'node scripts/workspaces/ensureWorkspacePackagesBuiltCli.mjs --for-component=packages/terminal-native --for-component=packages/plugin-ui --for-component=apps/ui --for-component=apps/cli --for-component=apps/server --for-component=packages/tests',
+    'node scripts/workspaces/ensureWorkspacePackagesBuiltCli.mjs --for-component=packages/terminal-native --for-component=packages/plugin-ui --for-component=apps/ui --for-component=apps/cli --for-component=apps/server --for-component=packages/tests && yarn --cwd apps/ui -s generate:bundled-plugin-ui-artifacts',
   );
   assert.equal(
     rootPackage.scripts['check:public-sdk:finite'],
@@ -85,7 +100,6 @@ test('the finite Turbo graph is activated through the current package manager wi
     '$TURBO_ROOT$/apps/cli/scripts/build-owned/**',
   ]);
   assert.deepEqual(turbo.tasks['build:finite'].dependsOn, [
-    'generated:finite',
     'prepare:finite',
     '^build:finite',
   ]);
@@ -101,7 +115,7 @@ test('the finite Turbo graph is activated through the current package manager wi
   assert.deepEqual(turbo.tasks['typecheck:source:finite'].inputs, [
     '$TURBO_DEFAULT$',
     '$TURBO_ROOT$/scripts/workspaces/**',
-    '$TURBO_ROOT$/packages/{privacy-kit,protocol,peer-mediation,transfers,voice-modelpacks,agents,cli-common,release-runtime,channels-protocol,support,connection-supervisor,triage-protocol,triage-sources,plugin-sdk}/dist/**/*.d.ts',
+    '$TURBO_ROOT$/packages/{privacy-kit,protocol,peer-mediation,transfers,voice-modelpacks,agents,cli-common,release-runtime,channels-protocol,support,connection-supervisor,session-core,triage-protocol,triage-sources,plugin-sdk}/dist/**/*.d.ts',
     '$TURBO_ROOT$/packages/{privacy-kit,cli-common}/*.{d.ts,d.mts,d.cts}',
     '$TURBO_ROOT$/packages/{audio-stream-native,sherpa-native,ssh-native,terminal-native}/src/**/*.ts',
   ]);

@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { createWorkspaceChildBuildEnv } from '../../../scripts/workspaces/workspaceChildBuildEnv.mjs';
 import {
   ensureWorkspacePackagesBuiltByName as ensureWorkspacePackagesBuiltByNameDefault,
+  readWorkspaceBuildFileDigest,
 } from '../../../scripts/workspaces/ensureWorkspacePackagesBuilt.mjs';
 import { loadCliCommonWorkspacesModule } from '../../../scripts/workspaces/loadCliCommonWorkspacesModule.mjs';
 import { resolveWorkspaceBundlePublicationMode } from '../../../scripts/workspaces/workspaceBundlePublication.mjs';
@@ -99,49 +101,18 @@ function collectPathFingerprint(targetPath) {
   if (!stats.isDirectory()) {
     return {
       kind: 'file',
-      size: stats.size,
-      mtimeMs: Math.trunc(stats.mtimeMs),
+      digest: readWorkspaceBuildFileDigest(targetPath),
     };
   }
-
-  let fileCount = 0;
-  let totalSize = 0;
-  let maxMtimeMs = Math.trunc(stats.mtimeMs);
-  const dirs = [targetPath];
-  while (dirs.length > 0) {
-    const currentDir = dirs.pop();
-    if (!currentDir) continue;
-    let entries;
-    try {
-      entries = readdirSync(currentDir, { withFileTypes: true });
-    } catch (error) {
-      if (error && typeof error === 'object' && error.code === 'ENOENT') return null;
-      throw error;
-    }
-    for (const entry of entries) {
-      const entryPath = resolve(currentDir, entry.name);
-      let entryStats;
-      try {
-        entryStats = statSync(entryPath);
-      } catch (error) {
-        if (error && typeof error === 'object' && error.code === 'ENOENT') return null;
-        throw error;
-      }
-      maxMtimeMs = Math.max(maxMtimeMs, Math.trunc(entryStats.mtimeMs));
-      if (entry.isDirectory()) {
-        dirs.push(entryPath);
-        continue;
-      }
-      fileCount += 1;
-      totalSize += entryStats.size;
-    }
+  const files = collectRelativeFilePaths(targetPath);
+  const hash = createHash('sha256');
+  for (const path of files) {
+    hash.update(path).update('\0').update(readWorkspaceBuildFileDigest(resolve(targetPath, path))).update('\0');
   }
-
   return {
     kind: 'dir',
-    fileCount,
-    totalSize,
-    maxMtimeMs,
+    fileCount: files.length,
+    digest: hash.digest('hex'),
   };
 }
 
@@ -214,7 +185,7 @@ function collectRuntimeDependencySignatures({ repoRoot, pkgJson }) {
 
 function buildWorkspaceBundleSourceSignature({ bundles }) {
   return {
-    version: 3,
+    version: 4,
     bundles: bundles.map((bundle) => {
       const packageJsonPath = resolve(bundle.srcDir, 'package.json');
       const packageJson = JSON.parse(String(readFileSync(packageJsonPath, 'utf8')));
@@ -360,7 +331,6 @@ export async function bundleWorkspaceDeps(opts = {}) {
   const lockPath = opts.lockPath ?? resolveWorkspaceBundleLockPath(repoRoot);
   const baseEnv = opts.env ?? process.env;
   const publicationMode = opts.publicationMode ?? 'live';
-  const forceArtifactWorkspaceBuilds = publicationMode === 'artifact';
   const ensureWorkspacePackagesBuiltByName = opts.ensureWorkspacePackagesBuiltByName
     ?? ensureWorkspacePackagesBuiltByNameDefault;
 
@@ -377,7 +347,6 @@ export async function bundleWorkspaceDeps(opts = {}) {
       heldLockEnv,
       ensureWorkspacePackagesBuiltByName,
       {
-        force: forceArtifactWorkspaceBuilds,
         includeDevDependencies: false,
         publicationMode,
         quiet: true,
@@ -396,9 +365,6 @@ export async function bundleWorkspaceDeps(opts = {}) {
         env: heldLockEnv,
         includeDevDependencies: false,
         publicationMode,
-        ...(forceArtifactWorkspaceBuilds
-          ? { force: true }
-          : {}),
       },
     );
 

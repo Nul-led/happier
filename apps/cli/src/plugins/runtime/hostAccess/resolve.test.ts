@@ -24,7 +24,8 @@ const action = Object.freeze({
     qualifiedId: 'acme.alpha/actions/run',
     pluginId: 'acme.alpha',
     localId: 'run',
-    generation: '7',
+    occurrenceId: '7',
+    sourceCustody: { kind: 'development' as const, registeredRootId: 'acme-alpha-root' },
     dangerLevel: 'safe',
     scopes: Object.freeze(['global']),
     surfaces: Object.freeze(['cli']),
@@ -49,10 +50,10 @@ describe('target action HostAccess binding resolver', () => {
         const input = {
             pluginId: 'acme.alpha',
             resourceId: 'live',
-            generation: '7',
+            occurrenceId: '7',
             hostAccessRequests: [request],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         };
         const available = createPluginResourceAccountStorageResolver({
             accountStorage: {
@@ -85,7 +86,7 @@ describe('target action HostAccess binding resolver', () => {
         expect(resolve({
             pluginId: 'acme.alpha',
             resourceId: 'live',
-            generation: '7',
+            occurrenceId: '7',
             hostAccessRequests: [{
                 required: false,
                 request: {
@@ -96,7 +97,7 @@ describe('target action HostAccess binding resolver', () => {
                 },
             }],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         })).toBeUndefined();
         expect(binds).toBe(0);
     });
@@ -161,7 +162,7 @@ describe('target action HostAccess binding resolver', () => {
         });
 
         expect(binding?.serviceBinding).toMatchObject({
-            generation: '7',
+            occurrenceId: '7',
             availability: { logger: 'available', storage: 'unavailable' },
         });
     });
@@ -184,9 +185,9 @@ describe('target action HostAccess binding resolver', () => {
             scope: request.scope,
             selectedAtMs: 1,
         });
-        const createServiceBinding = (generation: string, id: string) => (
+        const createServiceBinding = (occurrenceId: string, id: string) => (
             addMcpAvailablePluginInvocationServiceBinding(
-                createLoggerAvailablePluginInvocationServiceBinding(generation, id),
+                createLoggerAvailablePluginInvocationServiceBinding(occurrenceId, id),
             )
         );
         const selected = createTargetActionHostBindingResolver({
@@ -249,9 +250,9 @@ describe('target action HostAccess binding resolver', () => {
             scope: request.scope,
             selectedAtMs: 1,
         });
-        const createServiceBinding = (generation: string, id: string) => (
+        const createServiceBinding = (occurrenceId: string, id: string) => (
             withPluginInvocationServiceBindingAvailability(
-                createLoggerAvailablePluginInvocationServiceBinding(generation, id),
+                createLoggerAvailablePluginInvocationServiceBinding(occurrenceId, id),
                 { serviceId: 'sessions', availability: 'available' },
             )
         );
@@ -319,8 +320,8 @@ describe('target action HostAccess binding resolver', () => {
             selectedAtMs: 1,
         });
         const resolve = createTargetActionHostBindingResolver({
-            createServiceBinding: (generation, id) => addMcpAvailablePluginInvocationServiceBinding(
-                createLoggerAvailablePluginInvocationServiceBinding(generation, id),
+            createServiceBinding: (occurrenceId, id) => addMcpAvailablePluginInvocationServiceBinding(
+                createLoggerAvailablePluginInvocationServiceBinding(occurrenceId, id),
             ),
             resolveOptionalAccess: () => [selection],
         });
@@ -359,8 +360,8 @@ describe('target action HostAccess binding resolver', () => {
             },
         };
         const resolve = createTargetActionHostBindingResolver({
-            createServiceBinding: (generation, id) => addConnectedAccountsAvailablePluginInvocationServiceBinding(
-                createLoggerAvailablePluginInvocationServiceBinding(generation, id),
+            createServiceBinding: (occurrenceId, id) => addConnectedAccountsAvailablePluginInvocationServiceBinding(
+                createLoggerAvailablePluginInvocationServiceBinding(occurrenceId, id),
             ),
         });
 
@@ -400,9 +401,9 @@ describe('target action HostAccess binding resolver', () => {
             scope: request.scope,
             selectedAtMs: 1,
         });
-        const createServiceBinding = (generation: string, id: string) => (
+        const createServiceBinding = (occurrenceId: string, id: string) => (
             addConnectedAccountsAvailablePluginInvocationServiceBinding(
-                createLoggerAvailablePluginInvocationServiceBinding(generation, id),
+                createLoggerAvailablePluginInvocationServiceBinding(occurrenceId, id),
             )
         );
         const selected = createTargetActionHostBindingResolver({
@@ -452,8 +453,8 @@ describe('target action HostAccess binding resolver', () => {
             scope: { locations: [{ root: 'workspace' as const }], access: ['read' as const] },
         };
         const resolve = createTargetActionHostBindingResolver({
-            createServiceBinding: (generation, id, requests) => createLoggerAndFilesystemServiceBinding(
-                generation,
+            createServiceBinding: (occurrenceId, id, requests) => createLoggerAndFilesystemServiceBinding(
+                occurrenceId,
                 id,
                 requests,
                 { pluginData: '/plugin-data', workspace: '/workspace', projects: new Map() },
@@ -580,8 +581,8 @@ describe('target action HostAccess binding resolver', () => {
             selectedAtMs: 1,
         });
         const resolve = createTargetActionHostBindingResolver({
-            createServiceBinding: (generation, id, requests) => (
-                createLoggerAndEventsAvailablePluginInvocationServiceBinding(generation, id, requests)
+            createServiceBinding: (occurrenceId, id, requests) => (
+                createLoggerAndEventsAvailablePluginInvocationServiceBinding(occurrenceId, id, requests)
             ),
             resolveOptionalAccess: () => [selection],
         });
@@ -680,8 +681,8 @@ describe('target action HostAccess binding resolver', () => {
             selectedAtMs: 1,
         });
         const resolve = createTargetActionHostBindingResolver({
-            createServiceBinding: (generation, id) => addMcpAvailablePluginInvocationServiceBinding(
-                createLoggerAvailablePluginInvocationServiceBinding(generation, id),
+            createServiceBinding: (occurrenceId, id) => addMcpAvailablePluginInvocationServiceBinding(
+                createLoggerAvailablePluginInvocationServiceBinding(occurrenceId, id),
             ),
             resolveOptionalAccess: () => [selection],
         });
@@ -717,9 +718,9 @@ describe('target action HostAccess binding resolver', () => {
         })).resolves.toMatchObject({ action: { hostAccess: [{ status: 'available' }] } });
     });
 
-    it('fails closed when the durable generation authority is no longer current', async () => {
+    it('fails closed when the durable occurrenceId authority is no longer current', async () => {
         const resolve = createTargetActionHostBindingResolver({
-            isGenerationCurrent: async () => false,
+            isOccurrenceCurrent: async () => false,
         });
 
         await expect(resolve(action, {

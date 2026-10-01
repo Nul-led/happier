@@ -64,6 +64,14 @@ pub struct StartMachineHttpTunnelRequest {
     #[serde(default)]
     relay_urls: Vec<String>,
     handshake_json: String,
+    #[serde(default)]
+    native_http_lease: Option<NativeHttpLeaseRequest>,
+}
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeHttpLeaseRequest {
+    open_json: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,6 +182,7 @@ pub async fn iroh_start_machine_tunnel(
                 "directAddresses": request.direct_addresses,
                 "relayUrls": request.relay_urls,
                 "handshakeJson": request.handshake_json,
+                "nativeHttpLease": request.native_http_lease,
                 "capProfile": "machineBulk",
             })
             .to_string(),

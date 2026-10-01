@@ -43,6 +43,7 @@ export function evaluateScmRemoteMutationPreconditions(input: Readonly<{
         kind: input.kind,
         snapshot: {
             hasConflicts: input.snapshot.hasConflicts,
+            operationState: input.snapshot.operationState,
             branch: {
                 head: input.snapshot.branch.head,
                 upstream: input.snapshot.branch.upstream,

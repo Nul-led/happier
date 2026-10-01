@@ -106,6 +106,7 @@ import {
   type GitlabPagedControllerV1,
 } from './detail/panelReaders.js';
 import type { GitlabPagedStateV1, GitlabReadStateV1 } from './detail/panelState.js';
+import { TriageDetailPanel } from '@happier-dev/triage-sources/ui';
 import { GitlabDiscussionResolutionControl, GitlabMutationControls } from './detail/mutationControls.js';
 import {
   GitlabIssueCommentPublicationControl,
@@ -254,10 +255,49 @@ function PagedFooter({
 
 /* --------------------------------------------------------------------- Overview */
 
+/**
+ * The mounted input with the latest overview read applied, so the write
+ * controls dispatch against the observation the reader is looking at.
+ */
+function gitlabEffectiveInput(
+  input: TriageDetailSurfaceInputV1,
+  value: ReturnType<typeof useGitlabOverview>['value'],
+): TriageDetailSurfaceInputV1 {
+  const fresh = value?.observation.kind === 'present'
+    ? value.observation
+    : null;
+  const {
+    nativeRevision: _launchNativeRevision,
+    sourceUpdatedAtMs: _launchSourceUpdatedAtMs,
+    ...stableLaunchObservation
+  } = input.observation;
+  return fresh === null || value === null ? input : {
+    ...input,
+    observation: {
+      ...stableLaunchObservation,
+      locator: fresh.locator,
+      snapshot: fresh.snapshot,
+      viewer: fresh.viewer,
+      observedAtMs: value.observedAtMs,
+      ...(fresh.nativeRevision === undefined ? {} : { nativeRevision: fresh.nativeRevision }),
+      ...(fresh.sourceUpdatedAtMs === undefined
+        ? {}
+        : { sourceUpdatedAtMs: fresh.sourceUpdatedAtMs }),
+    },
+  };
+}
+
+/** The write controls as the Triage detail header's `actions` panel (r0.42). */
+function GitlabActionsPanel({ input }: Readonly<{ input: TriageDetailSurfaceInputV1 }>): React.ReactElement | null {
+  const controller = useGitlabOverview(input);
+  return <GitlabMutationControls input={gitlabEffectiveInput(input, controller.value)} />;
+}
+
 function OverviewPanel({
   input,
   locale,
   nowMs,
+  withWrites = true,
 }: Readonly<{
   /**
    * The mounted input, carried alongside the projected body for one reason: the
@@ -268,31 +308,12 @@ function OverviewPanel({
   input: TriageDetailSurfaceInputV1;
   locale: string;
   nowMs: number;
+  /** False when the Triage detail places the write controls in its header (r0.42). */
+  withWrites?: boolean;
 }>): React.ReactElement {
   const text = usePluginTranslation();
   const controller = useGitlabOverview(input);
-  const fresh = controller.value?.observation.kind === 'present'
-    ? controller.value.observation
-    : null;
-  const {
-    nativeRevision: _launchNativeRevision,
-    sourceUpdatedAtMs: _launchSourceUpdatedAtMs,
-    ...stableLaunchObservation
-  } = input.observation;
-  const effectiveInput = fresh === null || controller.value === null ? input : {
-    ...input,
-    observation: {
-      ...stableLaunchObservation,
-      locator: fresh.locator,
-      snapshot: fresh.snapshot,
-      viewer: fresh.viewer,
-      observedAtMs: controller.value.observedAtMs,
-      ...(fresh.nativeRevision === undefined ? {} : { nativeRevision: fresh.nativeRevision }),
-      ...(fresh.sourceUpdatedAtMs === undefined
-        ? {}
-        : { sourceUpdatedAtMs: fresh.sourceUpdatedAtMs }),
-    },
-  };
+  const effectiveInput = gitlabEffectiveInput(input, controller.value);
   const body = projectGitlabDetailBody(effectiveInput);
   const statusFields = body.fields.filter(
     (field): field is Extract<GitlabDetailFieldV1, { kind: 'status' }> => field.kind === 'status',
@@ -368,7 +389,7 @@ function OverviewPanel({
               )}
             </Stack>
           )}
-        <GitlabMutationControls input={effectiveInput} />
+        {withWrites ? <GitlabMutationControls input={effectiveInput} /> : null}
         <RefreshRow
           onRefresh={() => { void controller.refresh(); }}
           pending={controller.refreshing}
@@ -1208,6 +1229,34 @@ function GitlabDetailBody({
     'work-sessions': <WorkSessionsPanel sessions={body.linkedSessions} />,
   };
 
+  // The Triage detail asked for one panel (r0.42): its frame draws the tabs.
+  // Reviews and comments fold into Activity; pipelines are this source's
+  // Checks; the linked Sessions are Triage's own agent step.
+  if (input.panel !== undefined) {
+    return (
+      <Screen safeArea>
+        <TriageDetailPanel
+          panel={input.panel}
+          ariaLabel={text('plugins.gitlab.ui.detailLabel', 'GitLab entry detail')}
+          panels={{
+            overview: <OverviewPanel input={input} locale={locale} nowMs={nowMs} withWrites={false} />,
+            activity: (
+              <Stack gap="large" style={{ flex: 1, minHeight: 0 }}>
+                {kindId === 'merge-request' ? (
+                  <Stack style={{ flex: 1, minHeight: 0 }}>{panels.reviews}</Stack>
+                ) : null}
+                <Stack style={{ flex: 1, minHeight: 0 }}>{panels.comments}</Stack>
+                <Stack style={{ flex: 1, minHeight: 0 }}>{panels.activity}</Stack>
+              </Stack>
+            ),
+            ...(kindId === 'merge-request' ? { files: panels.changes, checks: panels.pipelines } : {}),
+            actions: <GitlabActionsPanel input={input} />,
+          }}
+        />
+      </Screen>
+    );
+  }
+
   return (
     <Screen safeArea>
       <Tabs
@@ -1269,7 +1318,6 @@ function GitlabDetailSurface(context: RenderContext): React.ReactElement {
 }
 
 /**
- * The exact export name the build target's Module Federation identity names. Renaming it breaks
- * the native artifact contract, not just this file.
+ * The manifest names this exact universal CommonJS export.
  */
 export const renderSurface = defineUiSurface(GitlabDetailSurface);

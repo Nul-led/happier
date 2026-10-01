@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import ts from 'typescript';
+import type { ScmHostingProviderContribution as ProtocolScmHostingProviderContribution } from '@happier-dev/protocol';
 
 import {
     ProviderRefreshPolicySchema,
@@ -18,7 +19,6 @@ import {
     type ScmBackendDescribeResponse as ProtocolScmBackendDescribeResponse,
     type ScmBackendId as ProtocolScmBackendId,
     type ScmCapabilities as ProtocolScmCapabilities,
-    type ScmHostingProviderContribution as ProtocolScmHostingProviderContribution,
     type ScmHostingProviderKind as ProtocolScmHostingProviderKind,
     type ScmHostingProviderRef as ProtocolScmHostingProviderRef,
     type ScmHostingRepositoryAuthSummary as ProtocolScmHostingRepositoryAuthSummary,
@@ -33,7 +33,7 @@ import {
     type ScmHostingRepositoryVisibility as ProtocolScmHostingRepositoryVisibility,
     type ScmWorkingSnapshot as ProtocolScmWorkingSnapshot,
     type SourceControlCloneProtocol,
-} from '@happier-dev/protocol';
+} from '@happier-dev/protocol/scm';
 
 import * as rootScm from './index.js';
 import * as scmBackend from './backend/index.js';
@@ -92,6 +92,7 @@ const ROOT_RUNTIME_EXPORTS = [
     'SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN',
     'ScmCapabilitiesSchema',
     'ScmCloneProtocolSchema',
+    'ScmOperationOutcomeSchema',
     'ScmRefreshPolicySchema',
     'ScmSelectedMutationPathSchema',
     'ScmWorkingSnapshotSchema',
@@ -104,6 +105,7 @@ const ROOT_RUNTIME_EXPORTS = [
     'isScmPatchBoundToPath',
     'normalizeScmBranchSourceRef',
     'normalizeScmHostingRepositoryIdentity',
+    'normalizeScmOperationOutcome',
     'normalizeScmRemoteName',
     'normalizeScmRemoteRequest',
     'normalizeScmRemoteUrl',
@@ -146,11 +148,17 @@ const ROOT_TYPE_EXPORTS = [
     'ScmCommitBackoutResponse',
     'ScmCommitCreateRequest',
     'ScmCommitCreateResponse',
+    'ScmConflictAcceptSideRequest',
+    'ScmConflictAcceptSideResponse',
+    'ScmConflictEntry',
+    'ScmConflictMarkResolvedRequest',
+    'ScmConflictMarkResolvedResponse',
     'ScmDefaultBranchPushPolicy',
     'ScmDiffCommitRequest',
     'ScmDiffCommitResponse',
     'ScmDiffFileRequest',
     'ScmDiffFileResponse',
+    'ScmDirtyPolicy',
     'ScmFollowupAction',
     'ScmHostingRepositoryAuthSummary',
     'ScmHostingRepositoryDescribePublishTargetsRequest',
@@ -166,6 +174,11 @@ const ROOT_TYPE_EXPORTS = [
     'ScmLogListRequest',
     'ScmLogListResponse',
     'ScmOperationErrorCode',
+    'ScmOperationEffect',
+    'ScmOperationNextAction',
+    'ScmOperationOutcome',
+    'ScmOperationReconciliation',
+    'ScmOperationRepositoryState',
     'ScmOperationState',
     'ScmPullRequestAuthState',
     'ScmPullRequestCheckoutRequest',
@@ -189,6 +202,8 @@ const ROOT_TYPE_EXPORTS = [
     'ScmPullRequestState',
     'ScmPullRequestStatusProjection',
     'ScmPullRequestSummary',
+    'ScmPushMode',
+    'ScmReconcilePolicy',
     'ScmRefreshPolicy',
     'ScmRemoteAddRequest',
     'ScmRemoteInfo',
@@ -212,6 +227,7 @@ const ROOT_TYPE_EXPORTS = [
     'ScmRepositoryCloneTargetDescription',
     'ScmRepositoryInitRequest',
     'ScmRepositoryInitResponse',
+    'ScmRepositoryOperationKind',
     'ScmRepositoryRemoveIndexLockRequest',
     'ScmRepositoryRemoveIndexLockResponse',
     'ScmReviewWorkspaceCurrentness',
@@ -219,6 +235,8 @@ const ROOT_TYPE_EXPORTS = [
     'ScmSelectedMutationPath',
     'ScmStashApplyRequest',
     'ScmStashApplyResponse',
+    'ScmStashCreateRequest',
+    'ScmStashCreateResponse',
     'ScmStashDropRequest',
     'ScmStashDropResponse',
     'ScmStashEntry',
@@ -551,6 +569,8 @@ describe('SCM package-local projections', () => {
         expect(ScmCapabilitiesSchema).toBe(ProtocolScmCapabilitiesSchema);
         expect(ScmRefreshPolicySchema).toBe(ProviderRefreshPolicySchema);
         expect(ScmCloneProtocolSchema).toBe(SourceControlCloneProtocolSchema);
+        expect(scmProjection.ScmOperationOutcomeSchema).toBe(protocolScm.ScmOperationOutcomeSchema);
+        expect(scmProjection.normalizeScmOperationOutcome).toBe(protocolScm.normalizeScmOperationOutcome);
         expect(encodeCompareRef).toBe(sourceEncodeCompareRef);
         expect(parseScmRemoteUrl).toBe(sourceParseScmRemoteUrl);
         expect(stripTrailingSlash).toBe(sourceStripTrailingSlash);
@@ -583,6 +603,18 @@ describe('SCM package-local projections', () => {
     it('keeps all approved types nameable and preserves representative identities', () => {
         expectTypeOf<RootProjectionTypes>().toMatchTypeOf<readonly unknown[]>();
         expectTypeOf<ScmCapabilities>().toEqualTypeOf<ProtocolScmCapabilities>();
+        expectTypeOf<scmProjection.ScmOperationOutcome>()
+            .toEqualTypeOf<protocolScm.ScmOperationOutcome>();
+        expectTypeOf<scmProjection.ScmOperationState>()
+            .toEqualTypeOf<protocolScm.ScmOperationState>();
+        expectTypeOf<scmProjection.ScmConflictAcceptSideRequest>()
+            .toEqualTypeOf<protocolScm.ScmConflictAcceptSideRequest>();
+        expectTypeOf<scmProjection.ScmConflictMarkResolvedRequest>()
+            .toEqualTypeOf<protocolScm.ScmConflictMarkResolvedRequest>();
+        expectTypeOf<scmProjection.ScmWorktreeCreateResponse>()
+            .toEqualTypeOf<protocolScm.ScmWorktreeCreateResponse>();
+        expectTypeOf<scmProjection.ScmCommitCreateRequest>()
+            .toEqualTypeOf<protocolScm.ScmCommitCreateRequest>();
         expectTypeOf<typeof scmProjection.SCM_OPERATION_ERROR_CODES>()
             .toEqualTypeOf<typeof protocolScm.SCM_OPERATION_ERROR_CODES>();
         expectTypeOf<scmProjection.ScmWorkingSnapshot>()

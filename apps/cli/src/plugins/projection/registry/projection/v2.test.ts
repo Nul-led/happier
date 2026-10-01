@@ -23,6 +23,7 @@ import { buildPluginProjectionFamiliesByIdV2 } from '@/plugins/projection/famili
 import { resolveBuiltInContributions } from '../resolveBuiltInContributions';
 import { createResolvedContributionRegistry } from '../createResolvedContributionRegistry';
 import { projectLoadedPluginContributes } from '../resolvePluginContributions';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 function createEmptyResolvedContributionRegistry(): ResolvedContributionRegistry {
     return {
@@ -41,6 +42,19 @@ function createEmptyResolvedContributionRegistry(): ResolvedContributionRegistry
         agentDefinitionsById: new Map(),
                 providersByContributionKey: new Map(),
         pluginDiagnosticsByPluginId: {},
+    };
+}
+
+function admitPluginRuntime(
+    registry: ResolvedContributionRegistry,
+    pluginId: string,
+): ResolvedContributionRegistry {
+    return {
+        ...registry,
+        occurrenceIdsByPluginId: {
+            ...(registry.occurrenceIdsByPluginId ?? {}),
+            [pluginId]: createPluginRuntimeOccurrenceId(pluginId),
+        },
     };
 }
 
@@ -65,8 +79,10 @@ describe('buildPluginProjectionV2', () => {
                 operations: {},
             } satisfies PluginTargetedContributionV1,
         } satisfies ResolvedTargetedPluginContributionDeclaration;
+        const contributorOccurrenceId = createPluginRuntimeOccurrenceId(contributorPluginId);
         const registry = createResolvedContributionRegistry({
             targetedPluginContributions: [declaration],
+            occurrenceIdsByPluginId: { [contributorPluginId]: contributorOccurrenceId },
             immutableGenerationIdsByPluginId: {
                 [contributorPluginId]: 'contributor-generation-a',
             },
@@ -88,7 +104,7 @@ describe('buildPluginProjectionV2', () => {
             plugin: { id: contributorPluginId, version: '1.2.3', source: 'localPath' },
             contribution: { pluginId: contributorPluginId, localId: 'provider-a' },
             stage: 'normalization',
-            generation: 'contributor-generation-a',
+            occurrenceId: contributorOccurrenceId,
             host: 'daemon',
         });
         expect(PluginProjectionV2Schema.safeParse(projection).success).toBe(true);
@@ -114,8 +130,10 @@ describe('buildPluginProjectionV2', () => {
                 operations: {},
             } satisfies PluginTargetedContributionV1,
         } satisfies ResolvedTargetedPluginContributionDeclaration;
+        const contributorOccurrenceId = createPluginRuntimeOccurrenceId(contributorPluginId);
         const registry = createResolvedContributionRegistry({
             targetedPluginContributions: [declaration],
+            occurrenceIdsByPluginId: { [contributorPluginId]: contributorOccurrenceId },
             immutableGenerationIdsByPluginId: {
                 [contributorPluginId]: 'contributor-generation-a',
             },
@@ -156,7 +174,7 @@ describe('buildPluginProjectionV2', () => {
                 plugin: { id: contributorPluginId, version: '1.2.3', source: 'localPath' },
                 contribution: { pluginId: contributorPluginId, localId: 'provider-a' },
                 stage: 'normalization',
-                generation: 'contributor-generation-a',
+                occurrenceId: contributorOccurrenceId,
                 host: 'daemon',
             }),
         ]));
@@ -201,6 +219,67 @@ describe('buildPluginProjectionV2', () => {
         expect(projection.installedPackagesById['com.acme.plugin']).not.toHaveProperty('digest');
     });
 
+    it('tells a mount whether its plugin declares contribution points, with the current custody', () => {
+        const target = 'acme.target';
+        const plain = 'acme.plain';
+        const custody = { kind: 'development', registeredRootId: 'acme-root' } as const;
+        const occurrenceIds: Readonly<Record<string, ReturnType<typeof createPluginRuntimeOccurrenceId>>> = {
+            [target]: createPluginRuntimeOccurrenceId(target),
+            [plain]: createPluginRuntimeOccurrenceId(plain),
+        };
+        const current = (pluginId: string) => ({
+            occurrenceId: occurrenceIds[pluginId]!,
+            sourceCustody: custody,
+            desiredOccurrenceId: occurrenceIds[pluginId]!,
+            appliedOccurrenceId: occurrenceIds[pluginId]!,
+            applied: true,
+            selectedAccess: [],
+        });
+        const registry: ResolvedContributionRegistry = {
+            ...createEmptyResolvedContributionRegistry(),
+            occurrenceIdsByPluginId: occurrenceIds,
+            agents: [{
+                    id: 'target-agent',
+                    provenance: 'external',
+                    source: { kind: 'path' },
+                    pluginId: 'acme.target',
+                    identity: createPluginContributionIdentity({ pluginId: 'acme.target', localId: 'target-agent' }),
+                    manifestPath: '/plugins/acme.target/.happier-plugin/plugin.json',
+                    definition: { kindVersion: 1, id: 'target-agent', ownedBackendIds: [] },
+                }, {
+                    id: 'plain-agent',
+                    provenance: 'external',
+                    source: { kind: 'path' },
+                    pluginId: 'acme.plain',
+                    identity: createPluginContributionIdentity({ pluginId: 'acme.plain', localId: 'plain-agent' }),
+                    manifestPath: '/plugins/acme.plain/.happier-plugin/plugin.json',
+                    definition: { kindVersion: 1, id: 'plain-agent', ownedBackendIds: [] },
+                }],
+            pluginContributionPoints: [{ pluginId: target }] as unknown as ResolvedContributionRegistry['pluginContributionPoints'],
+        };
+
+        const projection = buildPluginProjectionV2({
+            registry,
+            generation: 1,
+            pluginFinalPolicyCurrentRuntimesById: new Map([[target, current(target)], [plain, current(plain)]]),
+        });
+
+        expect(projection.installedPackagesById[target]).toMatchObject({
+            occurrenceId: occurrenceIds[target],
+            sourceCustody: custody,
+            declaresContributionPoints: true,
+        });
+        expect(projection.installedPackagesById[plain]).toMatchObject({
+            sourceCustody: custody,
+            declaresContributionPoints: false,
+        });
+        expect(PluginProjectionV2Schema.safeParse(projection).success).toBe(true);
+        // Without a current occurrence fact the row makes no claim, and a
+        // mount asks the daemon instead of assuming an empty snapshot.
+        const metadataOnly = buildPluginProjectionV2({ registry, generation: 1 });
+        expect(metadataOnly.installedPackagesById[plain]).not.toHaveProperty('declaresContributionPoints');
+    });
+
     it('projects canonical exact action danger and localized confirmation metadata', () => {
         const confirmation = {
             title: { key: 'actions.publish.title', fallback: 'Publish changes?' },
@@ -233,7 +312,7 @@ describe('buildPluginProjectionV2', () => {
             },
         };
         const projection = buildPluginProjectionV2({
-            registry: { ...createEmptyResolvedContributionRegistry(), actions: [action] },
+            registry: admitPluginRuntime({ ...createEmptyResolvedContributionRegistry(), actions: [action] }, 'acme.publish'),
             generation: 1,
         });
 
@@ -253,13 +332,13 @@ describe('buildPluginProjectionV2', () => {
             'destructive',
         ] as const) {
             const exact = buildPluginProjectionV2({
-                registry: {
+                registry: admitPluginRuntime({
                     ...createEmptyResolvedContributionRegistry(),
                     actions: [{
                         ...action,
                         definition: { ...action.definition, dangerLevel, confirmation },
                     }],
-                },
+                }, 'acme.publish'),
                 generation: 1,
             });
             expect(exact.actionsById['acme.publish/publish']?.dangerLevel).toBe(dangerLevel);
@@ -300,10 +379,10 @@ describe('buildPluginProjectionV2', () => {
                 },
             }),
         } satisfies LoadedPlugin;
-        const registry = createResolvedContributionRegistry(projectLoadedPluginContributes({
+        const registry = admitPluginRuntime(createResolvedContributionRegistry(projectLoadedPluginContributes({
             loadResult: { loadedPlugins: [plugin], diagnosticsByPluginId: {} },
             provenance: 'external',
-        }));
+        })), pluginId);
 
         const projection = buildPluginProjectionV2({ registry, generation: 1 });
 
@@ -367,10 +446,10 @@ describe('buildPluginProjectionV2', () => {
                 },
             }),
         } satisfies LoadedPlugin;
-        const registry = createResolvedContributionRegistry(projectLoadedPluginContributes({
+        const registry = admitPluginRuntime(createResolvedContributionRegistry(projectLoadedPluginContributes({
             loadResult: { loadedPlugins: [plugin], diagnosticsByPluginId: {} },
             provenance: 'external',
-        }));
+        })), pluginId);
 
         const projected = buildPluginProjectionV2({ registry, generation: 1 })
             .actionsById[`${pluginId}/refresh`];
@@ -405,7 +484,6 @@ describe('buildPluginProjectionV2', () => {
             target: 'client',
             client: {
                 artifactId: 'client-actions',
-                modulePath: './client-actions.js',
                 exportName: 'activate',
             },
             platforms: ['web', 'ios'],
@@ -455,31 +533,32 @@ describe('buildPluginProjectionV2', () => {
         };
 
         const projected = buildPluginProjectionV2({
-            registry: {
+            registry: admitPluginRuntime({
                 ...createEmptyResolvedContributionRegistry(),
                 actions: [action],
                 introspectionContributions: [introspectionContribution],
-            },
+            }, pluginId),
             generation: 1,
             pluginExecutionOriginsByPluginId: { [pluginId]: origin },
         }).actionsById[`${pluginId}/open-client-preview`];
 
         expect(projected).toMatchObject({
             execution,
-            inputSchema: {},
-            outputSchema,
             dangerLevel: 'safe',
             available: true,
             ...origin,
         });
         expect(projected?.execution).toEqual(execution);
+        // Action schemas are read per Action on demand, never in the bulk projection.
+        expect(projected).not.toHaveProperty('inputSchema');
+        expect(projected).not.toHaveProperty('outputSchema');
 
         const unavailableProjection = buildPluginProjectionV2({
-            registry: {
+            registry: admitPluginRuntime({
                 ...createEmptyResolvedContributionRegistry(),
                 actions: [action],
                 introspectionContributions: [introspectionContribution],
-            },
+            }, pluginId),
             generation: 2,
             introspectionRuntimeSnapshot: adaptTargetActivationFacts({
                 generation: 2,
@@ -489,7 +568,7 @@ describe('buildPluginProjectionV2', () => {
                     pluginId,
                     pluginVersion: '1.0.0',
                     source: 'development',
-                    generation: 'activation-2',
+                    occurrenceId: 'activation-2',
                     host: 'daemon',
                     platform: 'darwin',
                     occurredAtMs: 10,
@@ -541,7 +620,7 @@ describe('buildPluginProjectionV2', () => {
                 surfaces: { ui: true, voice: false, agent: false, mcp: false, cli: false, rpc: false, api: false, plugin: false },
                 inputHints: null,
                 inputSchema: {},
-                execution: { target: 'client', client: { artifactId: 'client-actions', modulePath: './client-actions.js', exportName: 'activate' }, platforms: ['web'] },
+                execution: { target: 'client', client: { artifactId: 'client-actions', exportName: 'activate' }, platforms: ['web'] },
                 scopes: ['session'],
                 contributionSurfaces: ['ui'],
                 placementBindings: ['detailsPanel'],
@@ -552,7 +631,7 @@ describe('buildPluginProjectionV2', () => {
             if (candidatePluginId !== pluginId || localId !== action.definition.id) return null;
             return {
                 qualifiedId: `${candidatePluginId}/actions/${localId}`,
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 dangerLevel: 'safe',
                 scopes: ['session'],
                 surfaces: ['ui'],
@@ -561,13 +640,14 @@ describe('buildPluginProjectionV2', () => {
         };
 
         const projection = buildPluginProjectionV2({
-            registry: { ...createEmptyResolvedContributionRegistry(), actions: [action] },
+            registry: admitPluginRuntime({ ...createEmptyResolvedContributionRegistry(), actions: [action] }, pluginId),
             generation: 1,
             resolveActionPresentUserGatePolicy,
-            pluginFinalPolicyCurrentGenerationsById: new Map([[pluginId, {
-                immutableGenerationId: 'generation-7',
-                desiredImmutableGenerationId: 'generation-7',
-                appliedImmutableGenerationId: null,
+            pluginFinalPolicyCurrentRuntimesById: new Map([[pluginId, {
+                occurrenceId: createPluginRuntimeOccurrenceId(pluginId),
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-7', installSource: 'localPath' },
+                desiredOccurrenceId: createPluginRuntimeOccurrenceId(pluginId),
+                appliedOccurrenceId: null,
                 applied: false,
                 selectedAccess: [],
             }]]),
@@ -584,7 +664,7 @@ describe('buildPluginProjectionV2', () => {
             requiresCurrentIntent: false,
         });
         expect(buildPluginProjectionV2({
-            registry: { ...createEmptyResolvedContributionRegistry(), actions: [action] },
+            registry: admitPluginRuntime({ ...createEmptyResolvedContributionRegistry(), actions: [action] }, pluginId),
             generation: 1,
             resolveActionPresentUserGatePolicy,
         }).actionsById[`${pluginId}/open-client-preview`]).not.toHaveProperty('authorization');
@@ -619,7 +699,7 @@ describe('buildPluginProjectionV2', () => {
         };
 
         const projected = buildPluginProjectionV2({
-            registry: { ...createEmptyResolvedContributionRegistry(), actions: [action] },
+            registry: admitPluginRuntime({ ...createEmptyResolvedContributionRegistry(), actions: [action] }, pluginId),
             generation: 1,
         }).actionsById[`${pluginId}/refresh`];
 
@@ -657,7 +737,7 @@ describe('buildPluginProjectionV2', () => {
         };
 
         const projected = buildPluginProjectionV2({
-            registry: { ...createEmptyResolvedContributionRegistry(), actions: [action] },
+            registry: admitPluginRuntime({ ...createEmptyResolvedContributionRegistry(), actions: [action] }, pluginId),
             generation: 1,
             pluginExecutionOriginsByPluginId: {
                 [pluginId]: {
@@ -707,7 +787,7 @@ describe('buildPluginProjectionV2', () => {
         }>;
 
         const projection = buildPluginProjectionV2({
-            registry: { ...createEmptyResolvedContributionRegistry(), actions: [action] },
+            registry: admitPluginRuntime({ ...createEmptyResolvedContributionRegistry(), actions: [action] }, 'acme.preview'),
             generation: 1,
         });
 
@@ -745,14 +825,13 @@ describe('buildPluginProjectionV2', () => {
         };
 
         const projection = buildPluginProjectionV2({
-            registry: { ...createEmptyResolvedContributionRegistry(), actions: [action] },
+            registry: admitPluginRuntime({ ...createEmptyResolvedContributionRegistry(), actions: [action] }, 'acme.provider'),
             generation: 1,
         });
 
         expect(projection.actionsById['acme.provider/refresh-provider-state']).toMatchObject({
             surfaces: ['plugin'],
             dangerLevel: 'writesRemote',
-            inputSchema: {},
             operation: { version: 1, visibility: 'activity', progress: 'reported', presentation: { onStart: 'detail' } },
         });
         expect(projection.actionsById['acme.provider/refresh-provider-state']).not.toHaveProperty('placement');
@@ -832,50 +911,58 @@ describe('buildPluginProjectionV2', () => {
         });
 
         expect(projection.diagnostics).toEqual(diagnostics);
-        expect(projection.contributionIntrospection?.diagnostics).toEqual(diagnostics);
     });
 
-    it('projects catalog lifecycle truth without inferring runtime binding or activation', () => {
+    it('carries only the lifecycle rows a client reads, without inferring runtime binding or activation', () => {
+        const candidate = (family: string, localId: string) => ({
+            pluginId: 'acme.lifecycle',
+            pluginVersion: '1.0.0',
+            source: 'development' as const,
+            family,
+            identity: { kind: 'localId' as const, localId },
+            registration: 'required' as const,
+            consumer: 'lifecycle-host',
+            platforms: ['cli' as const],
+        });
         const projection = buildPluginProjectionV2({
             registry: {
                 ...createEmptyResolvedContributionRegistry(),
-                introspectionContributions: [{
-                    pluginId: 'acme.lifecycle',
-                    pluginVersion: '1.0.0',
-                    source: 'development',
-                    family: 'actions',
-                    identity: { kind: 'localId', localId: 'run' },
-                    registration: 'required',
-                    consumer: 'action-dispatch',
-                    platforms: ['cli'],
-                }],
+                introspectionContributions: [
+                    candidate('actions', 'run'),
+                    candidate('agents', 'helper'),
+                    candidate('composerReferences', 'issues'),
+                ],
             },
             generation: 2,
         });
 
+        // Action and Agent rows have no client reader: the Agent catalog and the
+        // Action catalog are the describe's records of those; the complete
+        // lifecycle table stays with the CLI inspector's catalog snapshot.
         expect(projection.contributionIntrospection?.contributions).toMatchObject([{
-            contribution: { qualifiedId: 'acme.lifecycle/actions/run' },
+            contribution: { qualifiedId: 'acme.lifecycle/composerReferences/issues' },
             registration: { requirement: 'required', state: 'unbound' },
             activation: { state: 'dormant' },
         }]);
+        expect(projection.contributionIntrospection?.contributions).toHaveLength(1);
     });
 
     it('joins exact T4 activation facts into the current generation projection', () => {
         const candidate = {
             pluginId: 'acme.lifecycle', pluginVersion: '1.0.0', source: 'development' as const,
-            family: 'actions', identity: { kind: 'localId' as const, localId: 'run' },
+            family: 'composerReferences', identity: { kind: 'localId' as const, localId: 'run' },
             registration: 'required' as const,
-            consumer: 'action-dispatch', platforms: ['cli' as const],
+            consumer: 'composer-reference-host', platforms: ['cli' as const],
         };
         const introspectionRuntimeSnapshot = adaptTargetActivationFacts({
             generation: 4, candidates: [candidate], runtimeState: 'current',
             plugins: [{ pluginId: 'acme.lifecycle', pluginVersion: '1.0.0', source: 'development' }],
             targetActivationFacts: [{
                 pluginId: 'acme.lifecycle', pluginVersion: '1.0.0', source: 'development',
-                generation: '4', host: 'daemon', platform: 'darwin', occurredAtMs: 10,
+                occurrenceId: '4', host: 'daemon', platform: 'darwin', occurredAtMs: 10,
                 status: 'active',
-                required: [{ family: 'actions', localId: 'run' }],
-                bound: [{ family: 'actions', localId: 'run' }], diagnostics: [],
+                required: [{ family: 'composerReferences', localId: 'run' }],
+                bound: [{ family: 'composerReferences', localId: 'run' }], diagnostics: [],
             }],
         });
         const projection = buildPluginProjectionV2({
@@ -886,8 +973,8 @@ describe('buildPluginProjectionV2', () => {
 
         expect(projection.contributionIntrospection?.contributions).toEqual([
             expect.objectContaining({
-                registration: { requirement: 'required', state: 'bound', generation: '4' },
-                activation: { state: 'active', generation: '4' },
+                registration: { requirement: 'required', state: 'bound', occurrenceId: '4' },
+                activation: { state: 'active', occurrenceId: '4' },
             }),
         ]);
     });
@@ -920,13 +1007,18 @@ describe('buildPluginProjectionV2', () => {
             manifestPath: '/plugins/com.acme.voice/plugin.json',
             definition,
         });
+        const occurrenceId = createPluginRuntimeOccurrenceId('com.acme.voice');
         const projection = buildPluginProjectionV2({
-            registry: { ...createEmptyResolvedContributionRegistry(), voiceModelPacks: [owned(pack)] },
+            registry: {
+                ...createEmptyResolvedContributionRegistry(),
+                voiceModelPacks: [owned(pack)],
+                occurrenceIdsByPluginId: { 'com.acme.voice': occurrenceId },
+            },
             generation: 7,
         });
 
         expect(projection.familiesById.voiceModelPacks?.entriesById['com.acme.voice/english-small']).toMatchObject({
-            id: 'com.acme.voice/english-small', pluginId: 'com.acme.voice', generation: 7,
+            id: 'com.acme.voice/english-small', pluginId: 'com.acme.voice', occurrenceId,
         });
     });
     it('projects executable voice providers under qualified identities', () => {
@@ -939,12 +1031,14 @@ describe('buildPluginProjectionV2', () => {
             capabilities: {
                 turn: { cancelResponse: true, bargeIn: true },
             },
-            client: { artifactId: 'voice-ui', modulePath: './voice.js', exportName: 'activate' },
+            client: { artifactId: 'voice-ui', exportName: 'activate' },
         }] }).voiceProviders[0]!;
         const identity = createPluginContributionIdentity({ pluginId: 'com.acme.voice', localId: provider.id });
+        const occurrenceId = createPluginRuntimeOccurrenceId('com.acme.voice');
         const projection = buildPluginProjectionV2({
             registry: {
                 ...createEmptyResolvedContributionRegistry(),
+                occurrenceIdsByPluginId: { 'com.acme.voice': occurrenceId },
                 voiceProviders: [{
                     provenance: 'external', source: { kind: 'path' }, pluginId: 'com.acme.voice', identity,
                     manifestPath: '/plugins/com.acme.voice/plugin.json', definition: provider,
@@ -954,7 +1048,7 @@ describe('buildPluginProjectionV2', () => {
         });
 
         expect(projection.familiesById.voiceProviders?.entriesById['com.acme.voice/conversation']).toMatchObject({
-            id: 'com.acme.voice/conversation', pluginId: 'com.acme.voice', generation: 8,
+            id: 'com.acme.voice/conversation', pluginId: 'com.acme.voice', occurrenceId,
             contributionKey: 'com.acme.voice/conversation', definition: provider,
         });
     });
@@ -1234,9 +1328,11 @@ describe('buildPluginProjectionV2', () => {
             .toThrow(/qualified identity/i);
     });
 
-    it('projects bounded provider definitions under qualified contribution keys', () => {
+    it('projects provider identity without shipping definitions unread by the UI', () => {
+        const occurrenceId = createPluginRuntimeOccurrenceId('acme.gateway');
         const registry = {
             ...createEmptyResolvedContributionRegistry(),
+            occurrenceIdsByPluginId: { 'acme.gateway': occurrenceId },
             providers: [{
                 provenance: 'external' as const,
                 source: { kind: 'path' as const },
@@ -1269,11 +1365,10 @@ describe('buildPluginProjectionV2', () => {
         } satisfies ResolvedContributionRegistry;
         const projection = buildPluginProjectionV2({ registry, generation: 7 });
 
-        expect(projection.familiesById.providers?.entriesById['acme.gateway/main']).toMatchObject({
+        expect(projection.familiesById.providers?.entriesById['acme.gateway/main']).toEqual({
             id: 'acme.gateway/main',
             pluginId: 'acme.gateway',
-            generation: 7,
-            definition: { id: 'main', name: 'Acme Gateway' },
+            occurrenceId,
         });
     });
 
@@ -1327,10 +1422,10 @@ describe('buildPluginProjectionV2', () => {
             generation: 5,
         }, [])).toThrow(/missing:/);
         expect(projection.agentsById).toEqual({});
-        expect(projection.backendsById).toEqual({});
+        expect(projection).not.toHaveProperty('backendsById');
     });
 
-    it('keeps the retired backend projection empty for mixed-version readers', () => {
+    it('projects no backend map beside Agents', () => {
         const projection = buildPluginProjectionV2({
             registry: {
                 ...createEmptyResolvedContributionRegistry(),
@@ -1352,12 +1447,15 @@ describe('buildPluginProjectionV2', () => {
             generation: 1,
         });
 
-        expect(projection.backendsById).toEqual({});
+        expect(projection).not.toHaveProperty('backendsById');
     });
 
     it('projects static MCP contribution families through the canonical projection family surface', () => {
         const registry = {
             ...createEmptyResolvedContributionRegistry(),
+            occurrenceIdsByPluginId: {
+                'acme.mcp': createPluginRuntimeOccurrenceId('acme.mcp'),
+            },
             mcpServers: [
                 {
                     provenance: 'external',
@@ -1538,7 +1636,7 @@ describe('buildPluginProjectionV2', () => {
             catalogAgentId: 'antigravity',
             iconAgentId: 'antigravity',
         }));
-        expect(projection.backendsById).toEqual({});
+        expect(projection).not.toHaveProperty('backendsById');
     });
 
     it('projects generic daemon settings for a plugin without losing explicit secret custody', () => {
@@ -1598,17 +1696,6 @@ describe('buildPluginProjectionV2', () => {
             registry,
             generation: 9,
             installedPackages: [],
-            settingsRollbackDeclarationsByPluginId: new Map([
-                ['acme.hooks', new Map([
-                    ['daemon', {
-                        generation: 'generation-prev',
-                        supported: true,
-                        // The canonical producer has already excluded the
-                        // retained secret declaration from this public fact.
-                        fieldIds: ['enabled'],
-                    }],
-                ])],
-            ]),
         });
 
         expect(projection.settingsById['acme.hooks/settings']).toEqual({
@@ -1618,11 +1705,6 @@ describe('buildPluginProjectionV2', () => {
             title: {
                 key: 'plugins.acme.settings.title',
                 fallback: 'Acme settings',
-            },
-            rollback: {
-                generation: 'generation-prev',
-                supported: true,
-                fieldIds: ['enabled'],
             },
             scope: { kind: 'daemon' },
             presentation: {

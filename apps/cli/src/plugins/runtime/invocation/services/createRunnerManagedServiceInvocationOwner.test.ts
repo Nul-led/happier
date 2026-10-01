@@ -34,6 +34,9 @@ import {
 import {
     createAgentSessionRunnerFactoryBinding,
 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
+import {
+    createPluginManifestV2Fixture,
+} from '@/plugins/testkit/manifestV2Fixture';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import {
     createImmutablePluginGenerationRecordFromSource,
@@ -49,7 +52,11 @@ function projectionInput(baseUrl = 'http://127.0.0.1:4312') {
         contributionId: 'opencode/agent',
         serverId: 'opencode-server',
         instanceId: 'instance-one',
-        immutableGenerationId: 'generation-one',
+        sourceCustody: {
+            kind: 'managed' as const,
+            immutableGenerationId: 'occurrenceId-one',
+            installSource: 'localPath' as const,
+        },
         custodyOwner: 'sessionRunner' as const,
         mode: 'managedSpawn' as const,
         endpoint: {
@@ -83,7 +90,7 @@ function exactHandleClaim(): RunnerManagedProviderCustodyClaimV1 {
             },
             purposeBindings: { v: 1, bindings: [] },
         },
-        agentTargetKey: 'backend:opencode',
+        agentTargetKey: 'agent:happier.agent.opencode/opencode',
         connectionId: ProviderConnectionIdSchema.parse('connection-opencode'),
         contributionKey: 'opencode/opencode',
         endpoint: {
@@ -120,10 +127,14 @@ function exactHandleClaim(): RunnerManagedProviderCustodyClaimV1 {
         runtimeBindingBasis,
         pluginId: 'opencode',
         providerLocalId: 'opencode',
-        activationGeneration: 'opencode-generation',
-        immutableGenerationId: 'opencode-generation',
+        occurrenceId: 'opencode-occurrence',
+        sourceCustody: {
+            kind: 'managed' as const,
+            immutableGenerationId: 'opencode-occurrenceId',
+            installSource: 'localPath' as const,
+        },
         manifestAuthority: 'external',
-        operationClaimId: 'session-demand:session-one:opencode-generation',
+        operationClaimId: 'session-demand:session-one:opencode-occurrenceId',
     });
 }
 
@@ -150,7 +161,7 @@ function projectedRequestResolver(
 }
 
 /**
- * The owner derives HostAccess from the ingested generation manifest, so the
+ * The owner derives HostAccess from the ingested occurrenceId manifest, so the
  * expectation reads the same canonical parse of the fixture bytes rather than
  * the cold `definePlugin` declaration, whose `hostAccess` is optional.
  */
@@ -172,6 +183,10 @@ async function prepareRetainedAgentFixture() {
         'happier-managed-service-owner-source-',
     ));
     const paths = resolvePluginStorePaths({ happyHomeDir });
+    const manifest = {
+        ...OPENCODE_PLUGIN_MANIFEST,
+        id: 'acme.opencode-managed-service-owner',
+    };
     const moduleBytes = 'export function createRuntime() { throw new Error("unused"); }';
     await mkdir(join(sourceRootPath, '.happier-plugin'), {
         recursive: true,
@@ -179,7 +194,7 @@ async function prepareRetainedAgentFixture() {
     await mkdir(join(sourceRootPath, 'agent'), { recursive: true });
     await writeFile(
         join(sourceRootPath, '.happier-plugin', 'plugin.json'),
-        JSON.stringify(OPENCODE_PLUGIN_MANIFEST),
+        JSON.stringify(manifest),
         'utf8',
     );
     await writeFile(
@@ -192,14 +207,14 @@ async function prepareRetainedAgentFixture() {
         .digest('hex')
         .slice(0, 16)}`;
     const record = await createImmutablePluginGenerationRecordFromSource({
-        pluginId: OPENCODE_PLUGIN_MANIFEST.id,
+        pluginId: manifest.id,
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: {
             kind: 'localPath',
             canonicalPath: sourceRootPath,
         },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
         immutableGenerationId,
     });
@@ -216,7 +231,7 @@ async function prepareRetainedAgentFixture() {
     await persistValidatedAgentSessionRunnerFactories({
         paths,
         record,
-        manifestAuthority: 'bundled_first_party',
+        manifestAuthority: 'external',
         factories: [{
             localAgentId: 'opencode',
             locator,
@@ -226,14 +241,95 @@ async function prepareRetainedAgentFixture() {
     });
     const retainedAgent = createAgentSessionRunnerFactoryBinding({
         v: 1,
-        pluginId: OPENCODE_PLUGIN_MANIFEST.id,
-        pluginVersion: OPENCODE_PLUGIN_MANIFEST.version,
+        pluginId: manifest.id,
+        pluginVersion: manifest.version,
         agentId: 'opencode',
         localAgentId: 'opencode',
-        immutableGenerationId,
+        sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId,
+            installSource: 'localPath',
+        },
         locator,
         normalizedModulePath: 'agent/runtime.mjs',
         loadMode: 'immutable-js',
+    });
+    return {
+        happyHomeDir,
+        sourceRootPath,
+        paths,
+        retainedAgent,
+        async cleanup() {
+            await rm(happyHomeDir, { recursive: true, force: true });
+            await rm(sourceRootPath, { recursive: true, force: true });
+        },
+    };
+}
+
+async function prepareDevelopmentRetainedAgentFixture() {
+    const happyHomeDir = await mkdtemp(join(
+        tmpdir(),
+        'happier-managed-service-owner-development-home-',
+    ));
+    const sourceRootPath = await mkdtemp(join(
+        tmpdir(),
+        'happier-managed-service-owner-development-source-',
+    ));
+    const paths = resolvePluginStorePaths({ happyHomeDir });
+    const pluginId = 'acme.development-service-owner';
+    const pluginVersion = '1.0.0';
+    const localAgentId = 'opencode';
+    const manifest = createPluginManifestV2Fixture({
+        id: pluginId,
+        version: pluginVersion,
+        contributes: {
+            agents: [{
+                id: localAgentId,
+                title: 'Development service owner',
+                runtime: { kind: 'custom' },
+                primary: 'sessions',
+                capabilities: {
+                    sessions: {
+                        open: ['create'],
+                        delivery: ['newTurn'],
+                        cancel: true,
+                    },
+                },
+            }],
+        },
+    });
+    await mkdir(join(sourceRootPath, '.happier-plugin'), {
+        recursive: true,
+    });
+    await mkdir(join(sourceRootPath, 'agent'), { recursive: true });
+    await writeFile(
+        join(sourceRootPath, '.happier-plugin', 'plugin.json'),
+        JSON.stringify(manifest),
+        'utf8',
+    );
+    await writeFile(
+        join(sourceRootPath, 'agent', 'runtime.mjs'),
+        'export function createRuntime() { throw new Error("unused"); }',
+        'utf8',
+    );
+    const locator = {
+        module: './agent/runtime',
+        export: 'createRuntime',
+        runtimeApiVersion: 1 as const,
+    };
+    const retainedAgent = createAgentSessionRunnerFactoryBinding({
+        v: 1,
+        pluginId,
+        pluginVersion,
+        agentId: `${pluginId}/${localAgentId}`,
+        localAgentId,
+        sourceCustody: {
+            kind: 'development',
+            registeredRootId: sourceRootPath,
+        },
+        locator,
+        normalizedModulePath: 'agent/runtime.mjs',
+        loadMode: 'source-ts',
     });
     return {
         happyHomeDir,
@@ -276,7 +372,7 @@ describe('runner managed-service invocation owner endpoint binding', () => {
                 definition: {
                     id: (OPENCODE_PLUGIN_MANIFEST.contributes.agents ?? [])[0]!.id,
                 },
-                provenance: 'first_party',
+                provenance: 'external',
             });
             const declaredHostAccess = parsedOpenCodeHostAccess();
             expect(owner.hostAccessRequests.map(({ required }) => required))
@@ -299,7 +395,49 @@ describe('runner managed-service invocation owner endpoint binding', () => {
         }
     });
 
-    it('keeps a projected endpoint bound to exact direct Session, contribution, and retained generation facts', async () => {
+    it('requires and accepts the daemon-attested occurrence for a development Agent owner', async () => {
+        const fixture = await prepareDevelopmentRetainedAgentFixture();
+        let owner: Awaited<ReturnType<
+            typeof createRunnerManagedServiceInvocationOwner
+        >> | null = null;
+        const authority = {
+            happyHomeDir: fixture.happyHomeDir,
+            publicReleaseRing: 'stable' as const,
+            path: join(fixture.happyHomeDir, 'authority.json'),
+            sessionId: 'session-development-service-owner',
+            runner: {
+                pid: 1,
+                processStartTimeMs: 1,
+                processCommandHash: 'a'.repeat(64),
+                snapshotIdentity: 'runner-development-service-owner',
+            },
+            retainedAgent: fixture.retainedAgent,
+        };
+        try {
+            owner = await createRunnerManagedServiceInvocationOwner({
+                paths: fixture.paths,
+                authority,
+                retainedAgent: fixture.retainedAgent,
+                developmentOccurrenceId:
+                    'occurrence:development-service-owner:current',
+            });
+            expect(owner.verifiedAgentDeclaration.definition.id)
+                .toBe('opencode');
+
+            await expect(createRunnerManagedServiceInvocationOwner({
+                paths: fixture.paths,
+                authority,
+                retainedAgent: fixture.retainedAgent,
+            })).rejects.toThrow(
+                'Development retained Agent binding requires a daemon-attested current occurrence',
+            );
+        } finally {
+            await owner?.owners.dispose();
+            await fixture.cleanup();
+        }
+    });
+
+    it('keeps a projected endpoint bound to exact direct Session, contribution, and retained occurrenceId facts', async () => {
         const observed: ManagedServiceRequest[] = [];
         const remotePublish = vi.fn(async (
             input: ManagedServiceEndpointProjectionInputV1,
@@ -322,7 +460,7 @@ describe('runner managed-service invocation owner endpoint binding', () => {
                 pluginId: projection.pluginId,
                 contributionId: projection.contributionId,
                 sessionId: projection.sessionId,
-                immutableGenerationId: projection.immutableGenerationId,
+                sourceCustody: projection.sourceCustody,
             },
             signal: new AbortController().signal,
         });
@@ -341,14 +479,21 @@ describe('runner managed-service invocation owner endpoint binding', () => {
             { ...projection, pluginId: 'other-plugin' },
             { ...projection, contributionId: 'opencode/other' },
             { ...projection, sessionId: 'other-session' },
-            { ...projection, immutableGenerationId: 'other-generation' },
+            {
+                ...projection,
+                sourceCustody: {
+                    kind: 'managed' as const,
+                    immutableGenerationId: 'other-occurrenceId',
+                    installSource: 'localPath' as const,
+                },
+            },
         ]) {
             expect(binding.bindExactEndpoint({
                 identity: {
                     pluginId: identity.pluginId,
                     contributionId: identity.contributionId,
                     sessionId: identity.sessionId,
-                    immutableGenerationId: identity.immutableGenerationId,
+                    sourceCustody: identity.sourceCustody,
                 },
                 signal: new AbortController().signal,
             })).toBeNull();

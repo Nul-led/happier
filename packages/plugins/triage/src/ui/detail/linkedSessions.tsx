@@ -20,6 +20,8 @@ export function TriageLinkedSessions(props: Readonly<{
   hasMore: boolean;
   pageState?: 'idle' | 'loading' | 'failed';
   onLoadMore?: () => void;
+  /** Omit the visible label when an enclosing story step already names the group. */
+  labelled?: boolean;
 }>): React.ReactElement | null {
   const text = usePluginTranslation();
   const host = usePluginHostApi();
@@ -45,7 +47,9 @@ export function TriageLinkedSessions(props: Readonly<{
   if (props.sessions.length === 0) return null;
   return (
     <Stack gap="small">
-      <Label value={text('plugins.triage.surface.detail.sessions', 'Sessions')} />
+      {props.labelled === false ? null : (
+        <Label value={text('plugins.triage.surface.detail.sessions', 'Sessions')} />
+      )}
       <ItemGroup accessibilityLabel={text('plugins.triage.surface.detail.sessions', 'Sessions')}>
         {props.sessions.map((session) => {
           const title = session.displayTitle ?? text('plugins.triage.surface.detail.session', 'Session');

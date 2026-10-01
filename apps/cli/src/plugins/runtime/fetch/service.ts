@@ -178,7 +178,7 @@ async function assertPluginNetworkBindingCurrent(
 ): Promise<void> {
     if (
         seed.signal.aborted
-        || !seed.isGenerationCurrent()
+        || !seed.isOccurrenceCurrent()
         || binding.networkRevocationSignal?.aborted
         || (binding.networkCurrentness !== undefined && !await binding.networkCurrentness())
     ) {
@@ -1077,7 +1077,7 @@ export function createStablePluginHttpHost(params: StablePluginHttpHostParams): 
                 request: PluginHttpRequest,
                 options: Parameters<HttpService['request']>[1] = {},
             ) {
-                if (!seed.isGenerationCurrent()) {
+                if (!seed.isOccurrenceCurrent()) {
                     throw new PluginError({
                         code: 'plugin_final_generation_retired',
                         message: 'Plugin generation is no longer current',
@@ -1090,7 +1090,7 @@ export function createStablePluginHttpHost(params: StablePluginHttpHostParams): 
                 } finally {
                     mergedSignal.dispose();
                 }
-                if (!seed.isGenerationCurrent()) {
+                if (!seed.isOccurrenceCurrent()) {
                     throw new PluginError({
                         code: 'plugin_final_generation_retired',
                         message: 'Plugin generation is no longer current',
@@ -1121,7 +1121,7 @@ export function createStablePluginHttpHost(params: StablePluginHttpHostParams): 
                     input: Parameters<HttpService['request']>[0],
                     options: Parameters<HttpService['request']>[1] = {},
                 ) {
-                    if (!seed.isGenerationCurrent()) {
+                    if (!seed.isOccurrenceCurrent()) {
                         throw new PluginError({
                             code: 'plugin_final_generation_retired',
                             message: 'Plugin generation is no longer current',
@@ -1181,7 +1181,7 @@ export function createStablePluginHttpHost(params: StablePluginHttpHostParams): 
                             signal: options.signal,
                             execute,
                         }));
-                    if (!seed.isGenerationCurrent()) {
+                    if (!seed.isOccurrenceCurrent()) {
                         throw new PluginError({
                             code: 'plugin_final_generation_retired',
                             message: 'Plugin generation is no longer current',
@@ -1193,7 +1193,7 @@ export function createStablePluginHttpHost(params: StablePluginHttpHostParams): 
                     input: PluginWebSocketOpenInput,
                     options: Parameters<HttpService['openWebSocket']>[1] = {},
                 ) {
-                    if (!seed.isGenerationCurrent()) {
+                    if (!seed.isOccurrenceCurrent()) {
                         throw new PluginError({
                             code: 'plugin_final_generation_retired',
                             message: 'Plugin generation is no longer current',
@@ -1230,7 +1230,7 @@ export function createStablePluginHttpHost(params: StablePluginHttpHostParams): 
                         if (!lifecycle.signal.aborted) lifecycle.abort(reason);
                     };
                     const abortForSeed = () => abortLifecycle(Object.freeze({
-                        kind: seed.isGenerationCurrent() ? 'hostShutdown' as const : 'generationRetired' as const,
+                        kind: seed.isOccurrenceCurrent() ? 'hostShutdown' as const : 'generationRetired' as const,
                     }));
                     const abortForConfigurationRevocation = () => abortLifecycle(Object.freeze({
                         kind: 'networkConfigurationRetired' as const,
@@ -1259,7 +1259,7 @@ export function createStablePluginHttpHost(params: StablePluginHttpHostParams): 
                         if (
                             lifecycle.signal.aborted
                             ||
-                            !seed.isGenerationCurrent()
+                            !seed.isOccurrenceCurrent()
                             || (binding.networkCurrentness !== undefined && !await binding.networkCurrentness())
                         ) {
                             abortLifecycle(Object.freeze({ kind: 'generationRetired' as const }));

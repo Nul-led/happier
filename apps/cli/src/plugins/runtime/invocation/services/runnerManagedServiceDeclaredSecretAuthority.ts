@@ -41,7 +41,7 @@ const UNAVAILABLE: RunnerManagedServiceDeclaredSecretResult =
  *
  * The runner is not a secret-custody authority: it holds no device-local key
  * material and cannot decrypt a managed-service credential. The current daemon
- * resolves the declaration from the exact retained generation's manifest and
+ * resolves the declaration from the exact retained occurrenceId's manifest and
  * reads the value through the one canonical daemon custody owner, so a runner
  * whose daemon authority is gone, rotated, or refusing gets no credential at
  * all rather than a locally decrypted one.
@@ -90,9 +90,9 @@ export async function resolveRunnerManagedServiceDeclaredSecret(
         pluginId: input.binding.pluginId,
         signal: input.signal ?? new AbortController().signal,
         // This binding exists only for this one operation, after the retained
-        // generation was verified above. Redaction belongs to the runner
+        // occurrenceId was verified above. Redaction belongs to the runner
         // invocation that consumes the value; this path never logs it.
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         registerRawForRedaction: () => {},
     });
     if (!readPort) return UNAVAILABLE;

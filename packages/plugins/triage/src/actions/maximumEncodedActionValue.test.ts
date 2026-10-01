@@ -70,6 +70,12 @@ import {
     TriageSetEntryPinnedInputV1Schema,
     TriageSetEntryPinnedResultV1Schema,
 } from './userMarksProtocol.js';
+import {
+    TriageReadFixPullRequestsInputV1Schema,
+    TriageReadFixPullRequestsResultV1Schema,
+    TriageSetFixPullRequestInputV1Schema,
+    TriageSetFixPullRequestResultV1Schema,
+} from './fixPullRequestsProtocol.js';
 
 /**
  * Serialized-size regression coverage for this aggregate's Action values.
@@ -106,6 +112,10 @@ const structurallyBoundedSchemas = {
     setEntryPinnedResult: TriageSetEntryPinnedResultV1Schema,
     listPinnedEntriesInput: TriageListPinnedEntriesInputV1Schema,
     listPinnedEntriesResult: TriageListPinnedEntriesResultV1Schema,
+    readFixPullRequestsInput: TriageReadFixPullRequestsInputV1Schema,
+    readFixPullRequestsResult: TriageReadFixPullRequestsResultV1Schema,
+    setFixPullRequestInput: TriageSetFixPullRequestInputV1Schema,
+    setFixPullRequestResult: TriageSetFixPullRequestResultV1Schema,
     linkEntryToSessionInput: TriageLinkEntryToSessionInputV1Schema,
     linkEntryToSessionResult: TriageLinkEntryToSessionActionResultV1Schema,
     unlinkEntryFromSessionInput: TriageUnlinkEntryFromSessionActionInputV1Schema,

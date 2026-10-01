@@ -5,6 +5,8 @@ import type {
   AttachSessionMetadata as AttachSessionMetadataV1,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
+type OpenCodeAttachHostFacts = Readonly<{ cliVersion: string | null }>;
+
 export type OpenCodeAttachTarget = AgentProviderCliAttachTargetResolutionV1;
 
 export function resolveOpenCodeAttachTarget(params: Readonly<{
@@ -41,7 +43,23 @@ export function resolveOpenCodeAttachTarget(params: Readonly<{
   };
 }
 
-export function createOpenCodeAttachArgs(target: AgentProviderCliAttachTargetV1): string[] {
+function isReleasedOpenCodeV2(host: OpenCodeAttachHostFacts): boolean {
+  return /^v?2(?:\.|$)/iu.test(host.cliVersion?.trim() ?? '');
+}
+
+export function createOpenCodeAttachArgs(
+  target: AgentProviderCliAttachTargetV1,
+  host: OpenCodeAttachHostFacts = { cliVersion: null },
+): string[] {
+  if (isReleasedOpenCodeV2(host)) {
+    return [
+      '--server',
+      target.baseUrl,
+      '--session',
+      target.providerSessionId,
+      target.directory,
+    ];
+  }
   return [
     'attach',
     target.baseUrl,
@@ -52,11 +70,14 @@ export function createOpenCodeAttachArgs(target: AgentProviderCliAttachTargetV1)
   ];
 }
 
-export function resolveOpenCodeAttachReachability(target: AgentProviderCliAttachTargetV1) {
+export function resolveOpenCodeAttachReachability(
+  target: AgentProviderCliAttachTargetV1,
+  host: OpenCodeAttachHostFacts = { cliVersion: null },
+) {
   try {
     const url = new URL(target.baseUrl);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-    url.pathname = `${url.pathname.replace(/\/+$/, '')}/global/health`;
+    url.pathname = `${url.pathname.replace(/\/+$/, '')}${isReleasedOpenCodeV2(host) ? '/api/info' : '/global/health'}`;
     url.search = '';
     url.hash = '';
     return { kind: 'http' as const, url: url.toString() };

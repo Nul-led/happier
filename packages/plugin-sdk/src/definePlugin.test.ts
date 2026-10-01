@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import {
     derivePluginDaemonContributionRegistrationRights,
     PLUGIN_CONTRIBUTION_CATALOG_V2,
+    PluginManifestV2Schema,
     VoiceProviderContributionSchema,
 } from '@happier-dev/protocol';
 
@@ -29,9 +30,9 @@ import {
     projectPluginAccountCollectionDeclaration,
 } from './definePlugin.js';
 import {
-    normalizePluginAccountCollectionMigrationRuntimeProjection as normalizePluginAccountCollectionMigrationRuntimeProjectionFromPublicRoot,
-    projectPluginAccountCollectionDeclaration as projectPluginAccountCollectionDeclarationFromPublicRoot,
-} from './index.js';
+    normalizePluginAccountCollectionMigrationRuntimeProjection as normalizePluginAccountCollectionMigrationRuntimeProjectionFromHostRegistration,
+    projectPluginAccountCollectionDeclaration as projectPluginAccountCollectionDeclarationFromHostRegistration,
+} from './host/registration/index.js';
 import type {
     DefinePluginInput,
     ComposerControlAuthorInteraction,
@@ -56,6 +57,7 @@ import {
     defineComposerRegion,
 } from './composer.js';
 import type { JsonValue } from './identity.js';
+
 import type { HttpMethod } from './http.js';
 import {
     defineProtocolJsonValue,
@@ -110,6 +112,27 @@ import {
 import { createPluginRegistrationScope } from './host/registration/index.js';
 import type { VoiceProvidersRegistrationApi } from './voice/projections.js';
 import type { SpeechProviderRuntime, VoiceSpeechSynthesizeRequest } from './voice/speech.js';
+
+describe('declarative plugin roles', () => {
+    it('projects author roles into the admitted manifest without runtime registration rights', () => {
+        const role = {
+            name: 'Security reviewer', instructions: 'Review security boundaries.',
+            engine: { agentTargetKey: 'agent:codex', effort: 'high' },
+            runsAs: { kind: 'background_run' as const, intent: 'review' as const },
+            workspaceWrites: 'deny' as const, secondOpinion: 'off' as const, enabled: true,
+        };
+        const plugin = definePlugin({
+            id: 'com.acme.roles', version: '1.0.0', displayName: 'Review roles',
+            roles: { security: role },
+        });
+        const manifest = PluginManifestV2Schema.parse(plugin.manifest);
+        expect(manifest.contributes.roles).toEqual([{ id: 'security', ...role }]);
+        expect(derivePluginDaemonContributionRegistrationRights(manifest)).toEqual([]);
+        const parsed = parsePluginManifest(plugin.manifest);
+        expect(parsed.ok).toBe(true);
+        if (parsed.ok) expect(parsed.manifest.contributes?.roles).toEqual(manifest.contributes.roles);
+    });
+});
 
 type RegisteredVoiceProviderRuntime = Parameters<VoiceProvidersRegistrationApi['register']>[1];
 
@@ -399,7 +422,6 @@ describe('definePlugin', () => {
                         target: 'client',
                         client: {
                             artifactId: 'action-client',
-                            modulePath: './runAction',
                             exportName: 'activate',
                         },
                         platforms: ['web'],
@@ -432,7 +454,6 @@ describe('definePlugin', () => {
                         target: 'client',
                         client: {
                             artifactId: 'action-client',
-                            modulePath: './runAction',
                             exportName: 'activate',
                         },
                         platforms: ['web'],
@@ -442,6 +463,36 @@ describe('definePlugin', () => {
                 },
             },
         } as never)).toThrow(/client action.*handler/i);
+    });
+
+    it('infers the daemon execution target from a root handler and projects SDK defaults', async () => {
+        const run = vi.fn(async () => null);
+        const plugin = definePlugin({
+            id: 'acme.inferred-daemon-action',
+            version: '1.0.0',
+            actions: {
+                inspect: { title: 'Inspect', run },
+            },
+        });
+
+        expect(plugin.manifest.contributes.actions).toEqual([{
+            id: 'inspect',
+            title: 'Inspect',
+            execution: { target: 'daemon' },
+            scopes: ['global'],
+            surfaces: ['cli'],
+            placementBindings: ['commandPalette'],
+            dangerLevel: 'safe',
+        }]);
+        const register = vi.fn();
+        await plugin.activate({ actions: { register } } as never);
+        expect(register).toHaveBeenCalledWith('inspect', run);
+
+        expect(() => definePlugin({
+            id: 'acme.action-without-target',
+            version: '1.0.0',
+            actions: { inspect: { title: 'Inspect' } },
+        } as never)).toThrow(/root handler/i);
     });
 
     it('captures the authored definition graph before later caller mutation', async () => {
@@ -766,6 +817,22 @@ describe('definePlugin', () => {
             openableContentViewers: { classification: 'descriptor-only' },
             accountCollections: { classification: 'descriptor-only' },
         });
+    });
+
+    it('projects widget placements through both explicit views and surface authoring', () => {
+        const plugin = definePlugin({
+            id: 'com.acme.widget-placements',
+            version: '1.0.0',
+            ui: {
+                views: [{ id: 'shared', container: 'widget', target: { kind: 'session' }, renderer: 'native', placements: ['board', 'companion'] }],
+                renderers: [{ id: 'native', kind: 'declarative', root: { kind: 'text', text: 'Shared' } }],
+                surfaces: [{ id: 'glance', placement: 'widget', target: { kind: 'session' }, placements: ['companion'], renderer: { kind: 'declarative', root: { kind: 'text', text: 'Glance' } } }],
+            },
+        });
+        expect(plugin.manifest.contributes.ui?.views).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'shared', placements: ['board', 'companion'] }),
+            expect.objectContaining({ id: 'glance', placements: ['companion'] }),
+        ]));
     });
 
     it('projects simple UI surfaces through the one UI adapter while retaining advanced explicit forms', () => {
@@ -1555,17 +1622,17 @@ describe('definePlugin', () => {
             ],
         });
         expect(staticTasksDeclaration).not.toHaveProperty('migrations.0.migrate');
-        expect(readFileSync(new URL('./index.public.ts', import.meta.url), 'utf8')).toContain(
-            "export { projectPluginAccountCollectionDeclaration } from './definePlugin.js';",
+        expect(readFileSync(new URL('./host/registration/index.public.ts', import.meta.url), 'utf8')).toContain(
+            "export { projectPluginAccountCollectionDeclaration } from '../../definePlugin.js';",
         );
-        expect(projectPluginAccountCollectionDeclarationFromPublicRoot)
+        expect(projectPluginAccountCollectionDeclarationFromHostRegistration)
             .toBe(projectPluginAccountCollectionDeclaration);
         expect(plugin.collectionMigrations).toEqual({ tasks: migrations });
         const publicRootProjection: PluginAccountCollectionMigrationRuntimeProjectionFromPublicRoot =
             plugin.collectionMigrations;
-        expect(normalizePluginAccountCollectionMigrationRuntimeProjectionFromPublicRoot)
+        expect(normalizePluginAccountCollectionMigrationRuntimeProjectionFromHostRegistration)
             .toBe(normalizePluginAccountCollectionMigrationRuntimeProjection);
-        expect(normalizePluginAccountCollectionMigrationRuntimeProjectionFromPublicRoot(
+        expect(normalizePluginAccountCollectionMigrationRuntimeProjectionFromHostRegistration(
             publicRootProjection,
             declarations,
         )).toEqual(plugin.collectionMigrations);
@@ -2730,7 +2797,6 @@ describe('definePlugin', () => {
                         },
                         client: {
                             artifactId: 'browser-voice',
-                            modulePath: './voiceProvider',
                             exportName: 'activate',
                         },
                     },
@@ -2749,7 +2815,6 @@ describe('definePlugin', () => {
             kind: 'conversation',
             client: {
                 artifactId: 'browser-voice',
-                modulePath: './voiceProvider',
                 exportName: 'activate',
             },
         })]);
@@ -3710,11 +3775,11 @@ void 0; /* @sdk-negative-type-case-end */
             infer TContribution
         > ? TContribution : never;
         expectTypeOf<AdmittedProvider>().toHaveProperty('contributor');
-        expectTypeOf<AdmittedProvider['contributor']>().toEqualTypeOf<Readonly<{
-            pluginId: string;
-            contributionId: string;
-            immutableGenerationId: string;
-        }>>();
+        expectTypeOf<AdmittedProvider['contributor']['pluginId']>().toEqualTypeOf<string>();
+        expectTypeOf<AdmittedProvider['contributor']['contributionId']>().toEqualTypeOf<string>();
+        expectTypeOf<AdmittedProvider['contributor']['occurrenceId']>().toEqualTypeOf<string>();
+        expectTypeOf<AdmittedProvider['contributor']['sourceCustody']>()
+            .toMatchTypeOf<import('./targetedContributionAuthoring.js').PluginTargetedContributionSourceCustodyV1>();
         type AdmittedSnapshot = TargetedContributionSnapshot<AdmittedProvider>;
         expectTypeOf<AdmittedSnapshot['contributions'][number]['contributor']>().toEqualTypeOf<
             AdmittedProvider['contributor']

@@ -8,6 +8,7 @@ import {
   type CodexExternalSessionInvocationBounds,
 } from '../../surfaces/sessions/external/invocationBounds.js';
 import { mapCodexRolloutEventToActions } from '../projection/actions.js';
+import { classifyCodexSessionThread, type CodexSessionThread } from './sessionThread.js';
 
 const CODEX_TITLE_SCAN_CHUNK_MAX_BYTES = 128 * 1024;
 const CODEX_TITLE_SCAN_CHUNK_MAX_ITEMS = 64;
@@ -104,6 +105,12 @@ function readTitleFromCodexTitleToolInput(input: unknown): string | null {
   return readCodexExternalSessionTitleCandidate(isRecord(input) ? input.title : null);
 }
 
+export type CodexRolloutHead = Readonly<{
+  title: string | null;
+  /** From line 1's `session_meta`, which this read traverses anyway. */
+  thread: CodexSessionThread | null;
+}>;
+
 /**
  * The one Codex rollout title reader. Both the bounded corpus scan (which
  * carries the title on the row it emits) and the selected-candidate build use
@@ -115,6 +122,21 @@ export async function readCodexSessionTitleFromRollout(
   bounds: CodexExternalSessionInvocationBounds,
   budget: CodexRolloutTitleReadBudget = CODEX_ROLLOUT_TITLE_FULL_BUDGET,
 ): Promise<string | null> {
+  return (await readCodexRolloutHead(filePath, bounds, budget)).title;
+}
+
+/**
+ * The title read plus the thread classification of the rollout's first
+ * record. The corpus scan performs this one head read per returned row, so
+ * classifying there costs no additional file open.
+ */
+export async function readCodexRolloutHead(
+  filePath: string,
+  bounds: CodexExternalSessionInvocationBounds,
+  budget: CodexRolloutTitleReadBudget = CODEX_ROLLOUT_TITLE_FULL_BUDGET,
+): Promise<CodexRolloutHead> {
+  let thread: CodexSessionThread | null = null;
+  let firstRecord = true;
   const fileSystem = createCodexExternalSessionJsonlScannerFileSystem(bounds);
   let fallbackUserText: string | null = null;
   let offsetBytes = 0;
@@ -150,6 +172,12 @@ export async function readCodexSessionTitleFromRollout(
     for (const line of page.items) {
       throwIfCodexExternalSessionInvocationStopped(bounds);
       if (line.value === null) continue;
+      if (firstRecord) {
+        firstRecord = false;
+        if (isRecord(line.value) && line.value.type === 'session_meta') {
+          thread = classifyCodexSessionThread(line.value.payload);
+        }
+      }
       if (
         consideredBytes >= budget.maxConsideredBytes
         || consideredItems >= budget.maxConsideredItems
@@ -164,7 +192,7 @@ export async function readCodexSessionTitleFromRollout(
       for (const action of mapCodexRolloutEventToActions(line.value, { debug: false })) {
         if (action.type === 'tool-call' && isChangeTitleToolNameAlias(action.name)) {
           const title = readTitleFromCodexTitleToolInput(action.input);
-          if (title) return title;
+          if (title) return { title, thread };
         }
         if (action.type === 'user-text' && fallbackUserText === null) {
           fallbackUserText = readCodexExternalSessionTitleCandidate(action.text);
@@ -177,5 +205,5 @@ export async function readCodexSessionTitleFromRollout(
     offsetBytes = page.nextOffsetBytes;
   }
 
-  return fallbackUserText;
+  return { title: fallbackUserText, thread };
 }

@@ -308,7 +308,7 @@ async function resolveRequestDialect(
 ): Promise<OpenCodeServerDialect> {
   return await resolveOpenCodeExternalSessionsDialect({
     source,
-    exec: invocation.exec,
+    managedEndpointRead: invocation.managedEndpointRead,
     signal: invocation.signal,
   });
 }

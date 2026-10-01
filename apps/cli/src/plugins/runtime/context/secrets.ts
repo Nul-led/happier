@@ -44,18 +44,6 @@ export type PluginSecretsOwnerParams = Readonly<{
     randomBytes?: (length: number) => Uint8Array;
 }>;
 
-/**
- * A file-backed secret namespace with caller-owned key material.  Runtime
- * callers must obtain that material from the canonical custody owner rather
- * than creating the retired shared plugin-secret key beside the data file.
- */
-export type PurposeKeyedPluginSecretStoreParams = Readonly<{
-    pluginId: string;
-    paths: PluginStorePaths;
-    secretKey: Uint8Array;
-    randomBytes?: (length: number) => Uint8Array;
-}>;
-
 export async function preparePluginSecretsDataRemoval(params: Readonly<{
     pluginId: string;
     paths: PluginStorePaths;
@@ -309,12 +297,6 @@ export function createPluginSecretStore(params: PluginSecretsOwnerParams): Plugi
             return Object.freeze(Object.keys(await owner.read()).sort().map((name) => Object.freeze({ name })));
         },
     });
-}
-
-export function createPurposeKeyedPluginSecretStore(
-    params: PurposeKeyedPluginSecretStoreParams,
-): PluginSecretStore {
-    return createPluginSecretStore(params);
 }
 
 /**
@@ -617,7 +599,7 @@ export function createDeclaredPluginSecretsService(params: Readonly<{
     declarations: readonly DeclaredPluginSecret[];
     resolveCustody: PluginSecretCustodyResolver;
     signal: AbortSignal;
-    isGenerationCurrent(): boolean;
+    isOccurrenceCurrent(): boolean;
     registerRawForRedaction(value: string): void;
 }>): SecretsService {
     const declarations = new Map<string, DeclaredPluginSecret>();
@@ -656,7 +638,7 @@ export function createDeclaredPluginSecretsService(params: Readonly<{
     }
 
     function assertCurrent(signal?: AbortSignal): void {
-        if (signal?.aborted || params.signal.aborted || !params.isGenerationCurrent()) {
+        if (signal?.aborted || params.signal.aborted || !params.isOccurrenceCurrent()) {
             throw stableSecretError('plugin_generation_stale', 'Plugin secrets invocation generation is stale');
         }
     }
@@ -780,7 +762,7 @@ export type StableDeclaredPluginSecretsHost = Readonly<{
     bind(input: Readonly<{
         pluginId: string;
         signal: AbortSignal;
-        isGenerationCurrent(): boolean;
+        isOccurrenceCurrent(): boolean;
         registerRawForRedaction(value: string): void;
     }>): SecretsService | null;
     /**
@@ -790,7 +772,7 @@ export type StableDeclaredPluginSecretsHost = Readonly<{
     bindDaemonPluginSecretAdministrationPort(input: Readonly<{
         pluginId: string;
         signal: AbortSignal;
-        isGenerationCurrent(): boolean;
+        isOccurrenceCurrent(): boolean;
     }>): DeclaredDaemonPluginSecretAdministrationPort | null;
     /**
      * Managed services may consume only an exact generation-bound daemon
@@ -800,7 +782,7 @@ export type StableDeclaredPluginSecretsHost = Readonly<{
     bindManagedServiceSecretReadPort(input: Readonly<{
         pluginId: string;
         signal: AbortSignal;
-        isGenerationCurrent(): boolean;
+        isOccurrenceCurrent(): boolean;
         registerRawForRedaction(value: string): void;
     }>): DeclaredPluginSecretReadPort | null;
 }>;
@@ -830,7 +812,7 @@ export function createStableDeclaredPluginSecretsHost(params: Readonly<{
     const bind = (input: Readonly<{
         pluginId: string;
         signal: AbortSignal;
-        isGenerationCurrent(): boolean;
+        isOccurrenceCurrent(): boolean;
         registerRawForRedaction(value: string): void;
     }>): Readonly<{
         declarations: readonly DeclaredPluginSecret[];
@@ -845,7 +827,7 @@ export function createStableDeclaredPluginSecretsHost(params: Readonly<{
                 declarations,
                 resolveCustody: params.resolveCustody,
                 signal: input.signal,
-                isGenerationCurrent: input.isGenerationCurrent,
+                isOccurrenceCurrent: input.isOccurrenceCurrent,
                 registerRawForRedaction: input.registerRawForRedaction,
             }),
         });
@@ -853,13 +835,13 @@ export function createStableDeclaredPluginSecretsHost(params: Readonly<{
     const bindDaemonPluginSecretAdministrationPort = (input: Readonly<{
         pluginId: string;
         signal: AbortSignal;
-        isGenerationCurrent(): boolean;
+        isOccurrenceCurrent(): boolean;
     }>): DeclaredDaemonPluginSecretAdministrationPort | null => {
         const declarations = declarationsForPlugin(input.pluginId);
         if (!declarations || declarations.length === 0) return null;
 
         const assertCurrent = (signal?: AbortSignal): void => {
-            if (signal?.aborted || input.signal.aborted || !input.isGenerationCurrent()) {
+            if (signal?.aborted || input.signal.aborted || !input.isOccurrenceCurrent()) {
                 throw stableSecretError(
                     'plugin_generation_stale',
                     'Plugin daemon-secret administration generation is stale',
@@ -1017,7 +999,7 @@ export function createStableDeclaredPluginSecretsHost(params: Readonly<{
                     !signal?.aborted
                     && !revalidationSignal?.aborted
                     && !input.signal.aborted
-                    && input.isGenerationCurrent()
+                    && input.isOccurrenceCurrent()
                 );
                 try {
                     if (!isBoundCurrent()) return null;

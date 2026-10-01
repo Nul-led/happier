@@ -53,7 +53,24 @@ describe('resolveTriageListShellState', () => {
     expect(resolveTriageListShellState(snapshot({
       freshness: 'unknown',
       error: { code: 'plugin_action_failed', message: 'The list could not be read.' },
-    }))).toEqual({ kind: 'unavailable', message: 'The list could not be read.' });
+    }))).toEqual({ kind: 'unavailable', message: 'The list could not be read.', retryable: true });
+  });
+
+  it('carries whether retrying can help and the diagnostic, never the bare code as copy', () => {
+    expect(resolveTriageListShellState(snapshot({
+      freshness: 'unknown',
+      error: {
+        code: 'plugin_action_failed',
+        message: 'unsupported_method',
+        retryable: false,
+        detail: 'unsupported_method · host_api_method_not_installed:executeAction',
+      },
+    }))).toEqual({
+      kind: 'unavailable',
+      message: 'unsupported_method',
+      retryable: false,
+      detail: 'unsupported_method · host_api_method_not_installed:executeAction',
+    });
   });
 
   it('says the wait out loud instead of leaving Refresh to do nothing', () => {
@@ -119,9 +136,9 @@ describe('resolveTriageListShellState', () => {
     // section, saved views and Pin/Unpin — those are Collection state and no
     // source read is involved in them.
     expect(resolveTriageListShellState(unread, { durableStateReachable: true }))
-      .toEqual({ kind: 'sourcesUnreachable', message: 'The list could not be read.' });
+      .toEqual({ kind: 'sourcesUnreachable', message: 'The list could not be read.', retryable: true });
     expect(resolveTriageListShellState(unread, { durableStateReachable: false }))
-      .toEqual({ kind: 'unavailable', message: 'The list could not be read.' });
+      .toEqual({ kind: 'unavailable', message: 'The list could not be read.', retryable: true });
     // Fails closed: a caller that cannot answer promises the reader nothing.
     expect(resolveTriageListShellState(unread).kind).toBe('unavailable');
   });

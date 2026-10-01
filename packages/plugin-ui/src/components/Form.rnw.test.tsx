@@ -8,7 +8,13 @@ import { mountThroughReactNativeWeb } from '../rnwMount.testSupport.js';
 import { createHostApiStub, createSurfaceContext, SURFACE_THEME_FIXTURE } from '../surfaceFixture.testSupport.js';
 import { Form } from './index.js';
 import { PluginUiProvider } from './PluginUiProvider.js';
+import {
+  PluginUiPresentationHostProviderInternal,
+  type PluginUiPresentationHost,
+} from '../presentationHost/context.js';
 import type { FormProps } from './Form.js';
+import { HappierUiPaletteProvider } from '../environment/context.js';
+import type { HappierUiPalette } from '../environment/types.js';
 
 const hints: ActionInputHints = {
   title: 'Connect provider',
@@ -803,6 +809,339 @@ describe('plugin-ui text entry behaviour', () => {
 
     // The author receives the caret itself; the platform's event never leaks.
     expect(onSelectionChange).toHaveBeenCalledWith({ start: 1, end: 3 });
+    mount.unmount();
+  });
+});
+
+describe('standalone Select presentation', () => {
+  function mountWithMenuHost(element: React.ReactElement) {
+    const context = createSurfaceContext();
+    const host = {
+      renderMarkdown: () => null,
+      renderCodeBlock: () => null,
+      renderIcon: () => null,
+      renderPopover: (input: Parameters<PluginUiPresentationHost['renderPopover']>[0]) => (
+        input.open ? input.content({ requestClose: () => input.onRequestClose(), maxHeight: 400 }) : null
+      ),
+    } as unknown as PluginUiPresentationHost;
+    return mountThroughReactNativeWeb(
+      <PluginUiProvider hostApi={createHostApiStub(context)} context={context}>
+        <PluginUiPresentationHostProviderInternal host={host}>{element}</PluginUiPresentationHostProviderInternal>
+      </PluginUiProvider>,
+    );
+  }
+  const orderOptions = [
+    { value: 'newest', label: 'Newest' },
+    { value: 'oldest', label: 'Oldest' },
+    { value: 'smart', label: 'Smart' },
+  ] as const;
+
+  it('names a standalone inline Select visibly, and a Select inside a Field only once', () => {
+    const standalone = mountForm(
+      <Form.Select label="Order" value="newest" options={orderOptions} onChange={() => undefined} />,
+    );
+    // A reader who cannot tell a source tile from a state tile needs the name
+    // on screen, not only in the accessibility tree.
+    expect(standalone.container.textContent).toContain('Order');
+    standalone.unmount();
+
+    const fielded = mountForm(
+      <Form.Field label="Order">
+        <Form.Select label="Order" value="newest" options={orderOptions} onChange={() => undefined} />
+      </Form.Field>,
+    );
+    expect(fielded.container.textContent?.match(/Order/gu)).toHaveLength(1);
+    fielded.unmount();
+  });
+
+  it('presents a menu Select as one labelled trigger that opens the shared menu', async () => {
+    const onChange = vi.fn();
+    function Harness() {
+      const [value, setValue] = useState<string>('newest');
+      return (
+        <Form.Select
+          label="Order"
+          presentation="menu"
+          value={value}
+          options={orderOptions}
+          onChange={(next) => { onChange(next); setValue(next as string); }}
+        />
+      );
+    }
+    const mount = mountWithMenuHost(<Harness />);
+
+    // Closed: one compact trigger that states the current choice, no tiles.
+    expect(mount.container.querySelectorAll('[role="radio"], [role="menuitemradio"]')).toHaveLength(0);
+    const trigger = mount.container.querySelector<HTMLElement>('[aria-haspopup="menu"]');
+    expect(trigger?.textContent).toContain('Order');
+    expect(trigger?.textContent).toContain('Newest');
+
+    await act(async () => { trigger?.click(); });
+    const items = [...mount.container.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+    expect(items.map((item) => item.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false']);
+
+    await act(async () => { items[2]?.click(); });
+    expect(onChange).toHaveBeenLastCalledWith('smart');
+    expect(mount.container.querySelector('[aria-haspopup="menu"]')?.textContent).toContain('Smart');
+    mount.unmount();
+  });
+
+  it('keeps a multi-select menu open while toggling and enforces the same selection floor', async () => {
+    function Harness() {
+      const [value, setValue] = useState<readonly string[]>(['github']);
+      return (
+        <Form.Select
+          label="Source"
+          presentation="menu"
+          multiple
+          minimumSelections={1}
+          value={value}
+          options={[{ value: 'github', label: 'GitHub' }, { value: 'sentry', label: 'Sentry' }]}
+          onChange={(next) => { setValue(next as readonly string[]); }}
+        />
+      );
+    }
+    const mount = mountWithMenuHost(<Harness />);
+    await act(async () => { mount.container.querySelector<HTMLElement>('[aria-haspopup="menu"]')?.click(); });
+    let items = [...mount.container.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')];
+    // The last remaining selection under a floor cannot be removed — the same
+    // rule the inline presentation enforces, from the same owner.
+    expect(items[0]?.getAttribute('aria-disabled')).toBe('true');
+
+    await act(async () => { items[1]?.click(); });
+    items = [...mount.container.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')];
+    expect(items.map((item) => item.getAttribute('aria-checked'))).toEqual(['true', 'true']);
+    expect(mount.container.querySelector('[aria-haspopup="menu"]')?.textContent).toContain('2');
+    mount.unmount();
+  });
+});
+
+describe('shared control visuals (D6)', () => {
+  const HOST_PALETTE: HappierUiPalette = {
+    page: '#fafafa',
+    sheet: '#ffffff',
+    sheetBorder: '#e0e0e0',
+    rowDivider: '#eeeeee',
+    groupDivider: '#0d0e0f',
+    controlBorder: '#abcdef',
+    fieldBackground: '#fdfdfd',
+    placeholder: '#999999',
+    selection: '#111111',
+    switchTrackOn: '#123456',
+    switchTrackOff: '#654321',
+    switchThumb: '#fedcba',
+    segmentTrack: '#e1e1e1',
+    segmentThumb: '#fefefe',
+    navigationSelected: '#e8e8e8',
+    navigationHover: '#efefef',
+  };
+
+  const fieldOrderOptions = [
+    { value: 'newest', label: 'Newest' },
+    { value: 'oldest', label: 'Oldest' },
+    { value: 'smart', label: 'Smart' },
+  ] as const;
+
+  function mountWithPalette(element: React.ReactElement) {
+    const context = createSurfaceContext();
+    const host = {
+      renderMarkdown: () => null,
+      renderCodeBlock: () => null,
+      renderIcon: () => null,
+      renderPopover: (input: Parameters<PluginUiPresentationHost['renderPopover']>[0]) => (
+        input.open ? input.content({ requestClose: () => input.onRequestClose(), maxHeight: 400 }) : null
+      ),
+    } as unknown as PluginUiPresentationHost;
+    return mountThroughReactNativeWeb(
+      <PluginUiProvider hostApi={createHostApiStub(context)} context={context}>
+        <PluginUiPresentationHostProviderInternal host={host}>
+          <HappierUiPaletteProvider palette={HOST_PALETTE}>{element}</HappierUiPaletteProvider>
+        </PluginUiPresentationHostProviderInternal>
+      </PluginUiProvider>,
+    );
+  }
+
+  it('draws a Toggle with the shared switch geometry in the host switch colours', async () => {
+    function Harness() {
+      const [value, setValue] = useState(true);
+      return <Form.Toggle label="Enable sync" value={value} onChange={setValue} />;
+    }
+    const mount = mountWithPalette(<Harness />);
+    const toggle = mount.container.querySelector<HTMLElement>('[role="switch"]');
+    const track = toggle?.firstElementChild as HTMLElement | null;
+    const thumb = track?.firstElementChild as HTMLElement | null;
+    // Core's switch geometry (40×22 track, 18 thumb) and the host's own switch roles.
+    expect(getComputedStyle(track!).width).toBe('40px');
+    expect(getComputedStyle(track!).height).toBe('22px');
+    expect(getComputedStyle(track!).backgroundColor).toBe('rgb(18, 52, 86)');
+    expect(getComputedStyle(thumb!).backgroundColor).toBe('rgb(254, 220, 186)');
+
+    await act(async () => {
+      toggle?.focus();
+      toggle?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    });
+    expect(toggle?.getAttribute('aria-checked')).toBe('false');
+    expect(getComputedStyle(track!).backgroundColor).toBe('rgb(101, 67, 33)');
+    mount.unmount();
+  });
+
+  it('presents a field Select as a field box naming the chosen option that opens the shared menu', async () => {
+    const onChange = vi.fn();
+    function Harness() {
+      const [value, setValue] = useState<string | undefined>(undefined);
+      return (
+        <Form.Select
+          label="Order"
+          presentation="field"
+          value={value}
+          options={fieldOrderOptions}
+          onChange={(next) => { onChange(next); setValue(next as string); }}
+        />
+      );
+    }
+    const mount = mountWithPalette(<Harness />);
+
+    // The row title names the field, so the box shows only the choice — or asks for one.
+    let trigger = mount.container.querySelector<HTMLElement>('[aria-haspopup="menu"]');
+    expect(trigger?.getAttribute('aria-label')).toBe('Order');
+    expect(trigger?.textContent).toBe('Choose…');
+    expect(mount.container.textContent).not.toContain('Order');
+    const box = trigger?.firstElementChild as HTMLElement | null;
+    expect(getComputedStyle(box!).borderTopColor).toBe('rgb(171, 205, 239)');
+
+    await act(async () => { trigger?.click(); });
+    const items = [...mount.container.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+    expect(items.map((item) => item.getAttribute('aria-checked'))).toEqual(['false', 'false', 'false']);
+    await act(async () => { items[1]?.click(); });
+
+    expect(onChange).toHaveBeenLastCalledWith('oldest');
+    trigger = mount.container.querySelector<HTMLElement>('[aria-haspopup="menu"]');
+    expect(trigger?.textContent).toBe('Oldest');
+    expect(trigger?.getAttribute('aria-label')).toBe('Order: Oldest');
+    mount.unmount();
+  });
+
+  it('presents a segmented Select as a labelled radiogroup with arrow-key selection', async () => {
+    const onChange = vi.fn();
+    function Harness() {
+      const [value, setValue] = useState<string>('newest');
+      return (
+        <Form.Select
+          label="Order"
+          presentation="segmented"
+          value={value}
+          options={[
+            { value: 'newest', label: 'Newest' },
+            { value: 'oldest', label: 'Oldest', disabled: true },
+            { value: 'smart', label: 'Smart' },
+          ]}
+          onChange={(next) => { onChange(next); setValue(next as string); }}
+        />
+      );
+    }
+    const mount = mountWithPalette(<Harness />);
+
+    const group = mount.container.querySelector<HTMLElement>('[role="radiogroup"]');
+    expect(group?.getAttribute('aria-label')).toBe('Order');
+    let radios = [...mount.container.querySelectorAll<HTMLElement>('[role="radio"]')];
+    expect(radios.map((radio) => radio.textContent)).toEqual(['Newest', 'Oldest', 'Smart']);
+    expect(radios.map((radio) => radio.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false']);
+    expect(radios.map((radio) => radio.getAttribute('tabindex'))).toEqual(['0', '-1', '-1']);
+    expect(getComputedStyle(group!).backgroundColor).toBe('rgb(225, 225, 225)');
+
+    // The unavailable segment is skipped, and focus follows the selection.
+    await act(async () => {
+      radios[0]?.focus();
+      radios[0]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
+    radios = [...mount.container.querySelectorAll<HTMLElement>('[role="radio"]')];
+    expect(onChange).toHaveBeenLastCalledWith('smart');
+    expect(radios.map((radio) => radio.getAttribute('aria-checked'))).toEqual(['false', 'false', 'true']);
+    expect(document.activeElement).toBe(radios[2]);
+
+    await act(async () => { radios[0]?.click(); });
+    expect(onChange).toHaveBeenLastCalledWith('newest');
+    mount.unmount();
+  });
+
+  it('rejects a multiple-choice segmented Select', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(() => mountForm(
+      <Form.Select
+        label="Sources"
+        presentation="segmented"
+        multiple
+        value={['a']}
+        options={[{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }]}
+        onChange={() => undefined}
+      />,
+    )).toThrow(/segmented/u);
+    error.mockRestore();
+  });
+
+  function setInputValue(input: HTMLInputElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  it('presents a field TextField as the page field box, named by the row it sits in', () => {
+    const mount = mountWithPalette(
+      <Form.TextField label="Display name" presentation="field" value="" placeholder="Review bot" onChange={() => undefined} testID="name-field" />,
+    );
+    const input = mount.container.querySelector<HTMLInputElement>('[data-testid="name-field"]')!;
+    expect(input.getAttribute('aria-label')).toBe('Display name');
+    // The row title names the field: the field draws no visible label of its own.
+    expect(mount.container.textContent).not.toContain('Display name');
+    const box = input.parentElement!;
+    expect(getComputedStyle(box).borderTopColor).toBe('rgb(171, 205, 239)');
+    expect(getComputedStyle(box).backgroundColor).toBe('rgb(253, 253, 253)');
+    expect(box.style.borderTopLeftRadius).toBe('9px');
+    mount.unmount();
+  });
+
+  it('keeps a field TextField draft local and commits it once when focus leaves', async () => {
+    const onCommit = vi.fn();
+    const onChange = vi.fn();
+    const mount = mountWithPalette(
+      <Form.TextField
+        label="Retries"
+        presentation="field"
+        kind="integer"
+        value="3"
+        onChange={onChange}
+        onCommit={onCommit}
+        testID="retries-field"
+      />,
+    );
+    const input = mount.container.querySelector<HTMLInputElement>('[data-testid="retries-field"]')!;
+
+    await act(async () => { setInputValue(input, '1a2'); });
+    // The draft keeps only digits and stays in the field while typing.
+    expect(input.value).toBe('12');
+    expect(onChange).toHaveBeenLastCalledWith('12');
+    expect(onCommit).not.toHaveBeenCalled();
+
+    await act(async () => { input.dispatchEvent(new FocusEvent('blur')); input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledWith('12');
+
+    // An emptied number returns to the saved value instead of committing nothing.
+    await act(async () => { setInputValue(input, ''); });
+    await act(async () => { input.dispatchEvent(new FocusEvent('blur')); input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(input.value).toBe('3');
+    mount.unmount();
+  });
+
+  it('shows a field TextField refusal beneath the box and announces it', () => {
+    const mount = mountWithPalette(
+      <Form.TextField label="Endpoint" presentation="field" value="ftp://x" onChange={() => undefined} error="Use an https:// address." testID="endpoint-field" />,
+    );
+    const input = mount.container.querySelector<HTMLInputElement>('[data-testid="endpoint-field"]')!;
+    const alert = mount.container.querySelector<HTMLElement>('[role="alert"]');
+    expect(alert?.textContent).toBe('Use an https:// address.');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
     mount.unmount();
   });
 });

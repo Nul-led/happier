@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, type ReactNode } from 'react';
+import { createContext, useContext, useMemo, type Context, type ReactNode } from 'react';
 import type { PluginUiThemeV1 } from '@happier-dev/plugin-sdk/ui';
 
 import type {
@@ -6,7 +6,9 @@ import type {
   HappierUiEnvironment,
   HappierUiInsets,
   HappierUiLocalization,
+  HappierUiPalette,
   HappierUiPlatformFacts,
+  HappierUiTypography,
 } from './types.js';
 
 /**
@@ -24,6 +26,19 @@ const HappierUiLocalizationContext = createContext<HappierUiLocalization | null>
 const HappierUiAccessibilityContext = createContext<HappierUiAccessibility | null>(null);
 const HappierUiPlatformContext = createContext<HappierUiPlatformFacts | null>(null);
 const HappierUiInsetsContext = createContext<HappierUiInsets | null>(null);
+const HappierUiTypographyContext = createContext<HappierUiTypography | null>(null);
+const HappierUiPaletteContext = createContext<HappierUiPalette | null>(null);
+
+/** @internal The surface bridge re-provides this across the host's details pane (`components/surfaceBridge.tsx`). */
+export const HAPPIER_UI_ENVIRONMENT_CONTEXTS_INTERNAL: readonly Context<unknown>[] = [
+  HappierUiThemeContext,
+  HappierUiLocalizationContext,
+  HappierUiAccessibilityContext,
+  HappierUiPlatformContext,
+  HappierUiInsetsContext,
+  HappierUiTypographyContext,
+  HappierUiPaletteContext,
+] as readonly Context<unknown>[];
 
 export type HappierUiEnvironmentProviderProps = Readonly<{
   environment: HappierUiEnvironment;
@@ -188,4 +203,93 @@ export function useOptionalHappierUiPlatform(): HappierUiPlatformFacts | null {
 
 export function useHappierUiInsets(): HappierUiInsets {
   return requireEnvironmentCapability(useContext(HappierUiInsetsContext), 'insets');
+}
+
+/**
+ * Install a same-realm host's real type-role styles (see {@link HappierUiTypography}).
+ *
+ * Its own capability context, so text that reads typography never rerenders on
+ * an unrelated environment change. The value is expected to be module-stable.
+ */
+export function HappierUiTypographyProvider({
+  typography,
+  children,
+}: Readonly<{ typography: HappierUiTypography; children?: ReactNode }>) {
+  return (
+    <HappierUiTypographyContext.Provider value={typography}>
+      {children}
+    </HappierUiTypographyContext.Provider>
+  );
+}
+
+export function useOptionalHappierUiTypography(): HappierUiTypography | null {
+  return useContext(HappierUiTypographyContext);
+}
+
+/**
+ * Install a same-realm host's configuration-page colour roles (see
+ * {@link HappierUiPalette}). Its own capability context, like typography; the
+ * host supplies a new value only when its theme changes.
+ */
+export function HappierUiPaletteProvider({
+  palette,
+  children,
+}: Readonly<{ palette: HappierUiPalette; children?: ReactNode }>) {
+  return (
+    <HappierUiPaletteContext.Provider value={palette}>
+      {children}
+    </HappierUiPaletteContext.Provider>
+  );
+}
+
+/**
+ * Each page-anatomy colour role from the public theme snapshot: the nearest
+ * snapshot role, so a realm without host facts (a hosted-web frame, the author
+ * test fixture) draws the same anatomy in its own theme.
+ */
+export function resolveHappierUiPalette(theme: PluginUiThemeV1): HappierUiPalette {
+  const colors = theme.colors;
+  return {
+    page: colors.surface,
+    sheet: colors.surface,
+    sheetBorder: colors.divider,
+    rowDivider: colors.divider,
+    // The snapshot has one hairline role; the group separator's lighter weight is a host fact.
+    groupDivider: colors.divider,
+    controlBorder: colors.divider,
+    fieldBackground: colors.surface,
+    placeholder: colors.mutedText,
+    selection: colors.accent,
+    switchTrackOn: colors.accent,
+    switchTrackOff: colors.control,
+    switchThumb: colors.onAccent,
+    segmentTrack: colors.control,
+    segmentThumb: colors.surface,
+    navigationSelected: colors.elevatedSurface,
+    navigationHover: colors.control,
+  };
+}
+
+const snapshotPalettes = new WeakMap<PluginUiThemeV1, HappierUiPalette>();
+
+function snapshotPalette(theme: PluginUiThemeV1): HappierUiPalette {
+  const existing = snapshotPalettes.get(theme);
+  if (existing) return existing;
+  const palette = Object.freeze(resolveHappierUiPalette(theme));
+  snapshotPalettes.set(theme, palette);
+  return palette;
+}
+
+/**
+ * The page-anatomy colours for a shared component: the host's installed roles,
+ * else the ones resolved from `theme` (the caller's explicit theme, or the
+ * environment's). `null` only when neither exists — a core adapter always passes
+ * its own colours instead.
+ */
+export function useOptionalHappierUiPalette(theme?: PluginUiThemeV1 | null): HappierUiPalette | null {
+  const installed = useContext(HappierUiPaletteContext);
+  const environmentTheme = useContext(HappierUiThemeContext);
+  if (installed) return installed;
+  const resolvedTheme = theme ?? environmentTheme;
+  return resolvedTheme ? snapshotPalette(resolvedTheme) : null;
 }

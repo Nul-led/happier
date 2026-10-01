@@ -24,7 +24,7 @@ import type {
 } from '@/agent/runtime/state/currentSessionUiTypes';
 import type { PermissionRequestOwner } from '@/agent/permissions/permissionRequestOwner';
 import type { InteractionTransientRequesterV1 } from '@happier-dev/protocol';
-import type { AgentInvocationTurnAdmissionWitness } from './types';
+import type { AgentInvocationTurnAdmissionWitness, PluginInvocationServicesSeed } from './types';
 import { isWorkflowInteractionCapacityError } from '@/agent/permissions/interactionPersistenceError';
 
 type PresentationResult = HostSessionPresentationOneShotResult | HostSessionPresentationStatefulResult;
@@ -130,19 +130,37 @@ function confirmationUnavailable(requestId: string): InteractionTransientConfirm
 type InvocationInteractionParams = Readonly<{
     currentSession: CurrentSessionUiBinding | null;
     signal: AbortSignal;
-    isGenerationCurrent: () => boolean;
+    isOccurrenceCurrent: () => boolean;
     createOperationId?: () => string;
     approvals?: ApprovalQueueService;
     permissionOwner?: PermissionRequestOwner;
     requester?: InteractionTransientRequesterV1;
     /**
      * Exact target-action provenance stamped by the invocation host. It is
-     * absent outside a host context that can prove immutable generation and
+     * absent outside a host context that can prove immutable occurrenceId and
      * contribution identity, so status/widget writes fail closed there.
      */
     presentationOwner?: HostSessionPresentationOwner;
     /** Host-owned current-turn reader; plugins never supply this carrier. */
     readActiveTurnAdmissionWitness?(): AgentInvocationTurnAdmissionWitness | null;
+}>;
+
+export function createInteractionTransientRequesterForInvocation(
+    seed: Pick<PluginInvocationServicesSeed, 'plugin' | 'contribution' | 'occurrenceId' | 'correlationId'>,
+): InteractionTransientRequesterV1 {
+    if (!seed.occurrenceId) {
+        throw new Error('Transient plugin interactions require a current process-local occurrence');
+    }
+    return Object.freeze({
+        pluginId: seed.plugin.id,
+        contributionId: seed.contribution.id,
+        occurrenceId: seed.occurrenceId,
+        invocationId: seed.correlationId,
+    });
+}
+
+type InvocationPresentationParams = Omit<InvocationInteractionParams, 'isOccurrenceCurrent'> & Readonly<{
+    isOccurrenceCurrent: () => boolean;
 }>;
 
 function readActiveTurnPermissionContext(
@@ -169,7 +187,7 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
     const isCurrent = (): boolean => {
         let current = false;
         try {
-            current = !params.signal.aborted && params.isGenerationCurrent();
+            current = !params.signal.aborted && params.isOccurrenceCurrent();
         } catch {
             current = false;
         }
@@ -179,8 +197,8 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
         const current = isCurrent();
         if (!current) {
             throwUiError(
-                'plugin_interaction_generation_retired',
-                'The plugin generation is no longer current',
+                'plugin_interaction_occurrence_retired',
+                'The plugin occurrence is no longer current',
             );
         }
     };
@@ -225,7 +243,7 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
                     return Object.freeze({ requestId: fallbackRequestId, kind: 'approval', status: 'requesterAborted' });
                 }
                 if (!isCurrent()) {
-                    return Object.freeze({ requestId: fallbackRequestId, kind: 'approval', status: 'generationRetired' });
+                    return Object.freeze({ requestId: fallbackRequestId, kind: 'approval', status: 'occurrenceRetired' });
                 }
                 return approvalUnavailable(fallbackRequestId);
             }
@@ -248,7 +266,7 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
                     return Object.freeze({ requestId: fallbackRequestId, kind: 'questions', status: 'requesterAborted' });
                 }
                 if (!isCurrent()) {
-                    return Object.freeze({ requestId: fallbackRequestId, kind: 'questions', status: 'generationRetired' });
+                    return Object.freeze({ requestId: fallbackRequestId, kind: 'questions', status: 'occurrenceRetired' });
                 }
                 return questionsUnavailable(fallbackRequestId);
             }
@@ -269,7 +287,7 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
                     return Object.freeze({ requestId: fallbackRequestId, kind: 'confirmation', status: 'requesterAborted' });
                 }
                 if (!isCurrent()) {
-                    return Object.freeze({ requestId: fallbackRequestId, kind: 'confirmation', status: 'generationRetired' });
+                    return Object.freeze({ requestId: fallbackRequestId, kind: 'confirmation', status: 'occurrenceRetired' });
                 }
                 return confirmationUnavailable(fallbackRequestId);
             }
@@ -278,7 +296,7 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
     });
 }
 
-export function createPluginInvocationPresentation(params: InvocationInteractionParams): PresentationService {
+export function createPluginInvocationPresentation(params: InvocationPresentationParams): PresentationService {
     if (!params.currentSession) return createUnavailablePresentation();
 
     const createOperationId = params.createOperationId ?? randomUUID;
@@ -287,7 +305,7 @@ export function createPluginInvocationPresentation(params: InvocationInteraction
     const isCurrent = (): boolean => {
         let current = false;
         try {
-            current = !params.signal.aborted && params.isGenerationCurrent();
+            current = !params.signal.aborted && params.isOccurrenceCurrent();
         } catch {
             current = false;
         }
@@ -296,7 +314,7 @@ export function createPluginInvocationPresentation(params: InvocationInteraction
     const assertCurrent = (): void => {
         const current = isCurrent();
         if (!current) {
-            throwUiError('plugin_ui_generation_retired', 'The plugin generation is no longer current');
+            throwUiError('plugin_ui_generation_retired', 'The plugin occurrenceId is no longer current');
         }
     };
     const operationOptions = (signal?: AbortSignal): Readonly<{ signal: AbortSignal }> => Object.freeze({

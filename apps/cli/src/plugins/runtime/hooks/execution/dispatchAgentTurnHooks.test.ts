@@ -286,12 +286,12 @@ describe('agent turn hook dispatch bridge', () => {
             definition: { id: 'failing-action' },
           }],
         ]),
-        immutableGenerationIdsByPluginId: Object.freeze({
-          'companion.plugin': 'generation-g',
-          'hostile.plugin': 'generation-h',
-          'failing.plugin': 'generation-f',
-        }),
       },
+      readPluginOccurrenceId: (pluginId: string) => ({
+        'companion.plugin': 'occurrence-g',
+        'hostile.plugin': 'occurrence-h',
+        'failing.plugin': 'occurrence-f',
+      }[pluginId] ?? null),
       targetActionInvocations: {
         evaluateCatalogPolicy: () => ({ outcome: 'visible' as const }),
       },
@@ -377,7 +377,7 @@ describe('agent turn hook dispatch bridge', () => {
           toolId: 'companion.plugin/companion-tool',
           name: 'companion_tool',
         }),
-        expectedContributorImmutableGenerationId: 'generation-g',
+        expectedContributorOccurrenceId: 'occurrence-g',
       }),
     ]);
     const selectedBinding = nativeMcpComposition.selectedToolBindings[0];

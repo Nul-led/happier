@@ -322,7 +322,8 @@ const plugin = definePlugin({
         try {
           const snapshot = await observation.readCurrent({ signal: context.signal });
           return {
-            generation: snapshot.generation,
+            occurrenceId: snapshot.occurrenceId,
+            sourceCustody: snapshot.sourceCustody,
             contributors: snapshot.contributions.map((contribution) => ({
               pluginId: contribution.contributor.pluginId,
               contributionId: contribution.contributor.contributionId,
@@ -433,17 +434,19 @@ const plugin = definePlugin({
                   ? resource.source.target.service
                   : null,
             providerIdentity:
-              resource.source?.kind === 'provider_connection'
-                ? resource.source.provider.identity
+              resource.sourcePresentation?.kind === 'provider'
+                ? resource.sourcePresentation.provider.identity
                 : null,
             readinessKind: resource.readiness?.kind ?? null,
           })),
-          sharedSecrets: shared.map((entry) => ({
-            ref: entry.ref,
-            name: entry.name,
-            materialStatus: entry.materialStatus,
-            canUse: entry.capabilities?.use ?? false,
-          })),
+          sharedSecrets: shared.flatMap((entry) => 'ref' in entry
+            ? [{
+                ref: entry.ref,
+                name: entry.name,
+                materialStatus: entry.materialStatus,
+                canUse: entry.capabilities.use,
+              }]
+            : []),
           sourceCatalog: {
             supportedKinds: sourceCatalog.supportedKinds,
             candidates: sourceCatalog.candidates.map((candidate) => ({

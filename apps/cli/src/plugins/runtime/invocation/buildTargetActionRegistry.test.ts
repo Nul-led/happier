@@ -13,6 +13,7 @@ import {
 } from '@happier-dev/plugin-sdk';
 
 import type { LoadedPlugin } from '@/plugins/discovery/load/installed';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
 import {
     createResolvedContributionRegistry,
@@ -57,7 +58,7 @@ type BuildRegistryParams = Omit<
 >> & Readonly<{
     resolveAuthorizationFacts?: (action: Readonly<{
         pluginId: string;
-        generation: string;
+        occurrenceId: string;
         qualifiedId: string;
     }>) => TargetActionAuthorizationFacts;
 }>;
@@ -70,6 +71,12 @@ function buildRegistry(
         resolveAuthorizationFacts: () => authorizationFacts(),
         resolveHostBinding: createTargetActionHostBindingResolver(),
         resolveHostPolicy: createTargetActionHostPolicyResolver(),
+        readCurrentPluginOccurrenceId: () => '7' as PluginRuntimeOccurrenceId,
+        readCurrentPluginSourceCustody: () => ({
+            kind: 'managed',
+            immutableGenerationId: 'immutable-alpha',
+            installSource: 'archive',
+        }),
         ...params,
     });
 }
@@ -471,7 +478,7 @@ function registryWithHostAccess() {
 
 function fact(overrides: Partial<PluginTargetActivationFact> = {}): PluginTargetActivationFact {
     return {
-        pluginId: 'acme.alpha', pluginVersion: '1.2.3', source: 'localPath', generation: '7',
+        pluginId: 'acme.alpha', pluginVersion: '1.2.3', source: 'localPath', occurrenceId: '7',
         host: 'daemon', platform: 'darwin', occurredAtMs: 1, status: 'active',
         required: [{ family: 'actions', localId: 'run' }],
         bound: [{ family: 'actions', localId: 'run' }], diagnostics: [], ...overrides,
@@ -482,7 +489,7 @@ describe('buildTargetActionInvocationRegistry', () => {
     it('delegates daemon Action present-user policy to the runtime final-policy owner', () => {
         const policy = Object.freeze({
             qualifiedId: 'acme.alpha/actions/run',
-            generation: '7',
+            occurrenceId: '7',
             dangerLevel: 'safe' as const,
             scopes: Object.freeze(['global']),
             surfaces: Object.freeze(['cli']),
@@ -504,7 +511,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes: registry(),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: handler },
             }],
             targetActivationFacts: [fact()],
@@ -515,19 +522,19 @@ describe('buildTargetActionInvocationRegistry', () => {
         expect(resolvePresentUserGatePolicy).toHaveBeenCalledWith('acme.alpha', 'run');
     });
 
-    it('keeps a retained Action registration backed by its own active generation', async () => {
+    it('keeps a retained Action registration backed by its own active occurrence', async () => {
         const target = buildRegistry({
             contributes: registry(),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'actions',
                     localId: 'run',
                     value: handler,
                 },
             }],
-            targetActivationFacts: [fact({ generation: '7' })],
+            targetActivationFacts: [fact({ occurrenceId: '7' })],
         });
 
         await expect(target.invoke({
@@ -548,7 +555,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             }),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'actions',
                     localId: 'run',
@@ -581,7 +588,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes: registry({ pluginManifest }),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'actions',
                     localId: 'run',
@@ -709,7 +716,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes,
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: { family: 'actions', localId: 'reset-history', value: handler },
             }],
             targetActivationFacts: [fact({
@@ -740,26 +747,24 @@ describe('buildTargetActionInvocationRegistry', () => {
         expect(handler).toHaveBeenCalledOnce();
     });
 
-    it('does not dispatch a Connected Accounts Action after its generation retires', async () => {
+    it('does not dispatch a Connected Accounts Action after its occurrence retires', async () => {
         const pluginManifest = connectedAccountActionManifest();
         const services = connectedAccountActionServices();
-        let generationCurrent = true;
-        const generationLifecycle = Object.freeze({
-            isCurrent: () => generationCurrent,
-            retirementSignal: new AbortController().signal,
-        });
+        let occurrenceCurrent = true;
         const target = buildRegistry({
             contributes: registry({ pluginManifest }),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: async () => ({ ok: true }) },
             }],
             targetActivationFacts: [fact()],
             ...services,
-            resolveGenerationLifecycle: () => generationLifecycle,
+            readCurrentPluginOccurrenceId: () => occurrenceCurrent
+                ? ('7' as PluginRuntimeOccurrenceId)
+                : null,
         });
-        generationCurrent = false;
+        occurrenceCurrent = false;
 
         await expect(target.invoke({
             pluginId: 'acme.alpha',
@@ -795,7 +800,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes: registry({ pluginManifest }),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'actions',
                     localId: 'run',
@@ -845,7 +850,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes: registry({ pluginManifest }),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'actions',
                     localId: 'run',
@@ -899,7 +904,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes: registry({ pluginManifest }),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: handler },
             }],
             targetActivationFacts: [fact()],
@@ -947,7 +952,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes: registry({ pluginManifest }),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'actions',
                     localId: 'run',
@@ -1008,7 +1013,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes: registry({ pluginManifest }),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'actions',
                     localId: 'run',
@@ -1063,7 +1068,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes: registry({ pluginManifest }),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'actions',
                     localId: 'run',
@@ -1073,10 +1078,9 @@ describe('buildTargetActionInvocationRegistry', () => {
             targetActivationFacts: [fact()],
             ...services,
             actionFormConnectedAccounts: { resolveBindingIntent },
-            resolveGenerationLifecycle: () => Object.freeze({
-                isCurrent: () => current,
-                retirementSignal: new AbortController().signal,
-            }),
+            readCurrentPluginOccurrenceId: () => current
+                ? ('7' as PluginRuntimeOccurrenceId)
+                : null,
         });
 
         await expect(target.invoke({
@@ -1104,7 +1108,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             createServices,
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: handler },
             }],
             targetActivationFacts: [fact()],
@@ -1131,7 +1135,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes: registry({ pluginManifest }),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: {
                     family: 'actions',
                     localId: 'run',
@@ -1152,12 +1156,12 @@ describe('buildTargetActionInvocationRegistry', () => {
         });
     });
 
-    it('uses exact committed generation currentness instead of the discovery source trust string', async () => {
+    it('uses exact occurrence currentness instead of the discovery source trust string', async () => {
         const committedHandler = vi.fn(handler);
         const committed = buildRegistry({
             contributes: registry({ trustPolicy: 'prompt' }),
             targetRegistrations: [{
-                pluginId: 'acme.alpha', generation: '7',
+                pluginId: 'acme.alpha', occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: committedHandler },
             }],
             targetActivationFacts: [fact()],
@@ -1172,7 +1176,7 @@ describe('buildTargetActionInvocationRegistry', () => {
         const uncommitted = buildRegistry({
             contributes: registry({ trustPolicy: 'local_trusted' }),
             targetRegistrations: [{
-                pluginId: 'acme.alpha', generation: '7',
+                pluginId: 'acme.alpha', occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: uncommittedHandler },
             }],
             targetActivationFacts: [fact()],
@@ -1196,7 +1200,7 @@ describe('buildTargetActionInvocationRegistry', () => {
         const target = buildRegistry({
             contributes: registry({ pluginManifest: manifest({ dangerLevel }) }),
             targetRegistrations: [{
-                pluginId: 'acme.alpha', generation: '7',
+                pluginId: 'acme.alpha', occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: actionHandler },
             }],
             targetActivationFacts: [fact()],
@@ -1247,7 +1251,7 @@ describe('buildTargetActionInvocationRegistry', () => {
                 surfaces: ['plugin'],
             }) }),
             targetRegistrations: [{
-                pluginId: 'acme.alpha', generation: '7',
+                pluginId: 'acme.alpha', occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: actionHandler },
             }],
             targetActivationFacts: [fact()],
@@ -1263,7 +1267,12 @@ describe('buildTargetActionInvocationRegistry', () => {
                 kind: 'plugin',
                 pluginId: 'acme.caller',
                 contribution: { id: 'send', qualifiedId: 'acme.caller/actions/send' },
-                immutableGenerationId: 'acme-caller-generation-1',
+                occurrenceId: 'acme-caller-occurrence-1',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'acme-caller-generation-1',
+                    installSource: 'archive',
+                },
                 materialization: callerMaterialization.materialization,
                 originSurface: 'ui',
             },
@@ -1275,7 +1284,12 @@ describe('buildTargetActionInvocationRegistry', () => {
                     kind: 'plugin',
                     pluginId: 'acme.caller',
                     contribution: { id: 'send', qualifiedId: 'acme.caller/actions/send' },
-                    immutableGenerationId: 'acme-caller-generation-1',
+                    occurrenceId: 'acme-caller-occurrence-1',
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId: 'acme-caller-generation-1',
+                        installSource: 'archive',
+                    },
                     materialization: callerMaterialization.materialization,
                     originSurface: 'ui',
                 },
@@ -1289,7 +1303,7 @@ describe('buildTargetActionInvocationRegistry', () => {
         const target = buildRegistry({
             contributes: registry({ pluginManifest: manifest({ surfaces: ['plugin'] }) }),
             targetRegistrations: [{
-                pluginId: 'acme.alpha', generation: '7',
+                pluginId: 'acme.alpha', occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: actionHandler },
             }],
             targetActivationFacts: [fact()],
@@ -1318,7 +1332,7 @@ describe('buildTargetActionInvocationRegistry', () => {
                 surfaces: ['plugin'],
             }) }),
             targetRegistrations: [{
-                pluginId: 'acme.alpha', generation: '7',
+                pluginId: 'acme.alpha', occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: actionHandler },
             }],
             targetActivationFacts: [fact()],
@@ -1337,7 +1351,12 @@ describe('buildTargetActionInvocationRegistry', () => {
                 kind: 'plugin' as const,
                 pluginId: 'acme.mounted',
                 contribution: { id: 'dashboard', qualifiedId: 'acme.mounted/dashboard' },
-                immutableGenerationId: 'acme-mounted-generation-1',
+                occurrenceId: 'acme-mounted-occurrence-1',
+                sourceCustody: {
+                    kind: 'managed' as const,
+                    immutableGenerationId: 'acme-mounted-generation-1',
+                    installSource: 'archive' as const,
+                },
                 materialization: mountedMaterialization.materialization,
                 originSurface: 'ui' as const,
             },
@@ -1376,7 +1395,7 @@ describe('buildTargetActionInvocationRegistry', () => {
         const target = buildRegistry({
             contributes: registry({ pluginManifest: manifest({ dangerLevel: 'writesRemote' }) }),
             targetRegistrations: [{
-                pluginId: 'acme.alpha', generation: '7',
+                pluginId: 'acme.alpha', occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: actionHandler },
             }],
             targetActivationFacts: [fact()],
@@ -1403,7 +1422,7 @@ describe('buildTargetActionInvocationRegistry', () => {
         const target = buildRegistry({
             contributes: registry(),
             targetRegistrations: [{
-                pluginId: 'acme.alpha', generation: '7',
+                pluginId: 'acme.alpha', occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: actionHandler },
             }],
             targetActivationFacts: [fact()],
@@ -1434,25 +1453,25 @@ describe('buildTargetActionInvocationRegistry', () => {
 
         expect(() => buildRegistry({
             contributes: registry(),
-            targetRegistrations: [{ pluginId: 'acme.alpha', generation: '8', registration: { family: 'actions', localId: 'run', value: handler } }],
+            targetRegistrations: [{ pluginId: 'acme.alpha', occurrenceId: '8', registration: { family: 'actions', localId: 'run', value: handler } }],
             targetActivationFacts: [fact()],
-        })).toThrow(/not backed by an active generation fact/i);
+        })).toThrow(/lacks host-stamped occurrence or source custody/i);
 
         expect(() => buildRegistry({
             contributes: registry(),
-            targetRegistrations: [{ pluginId: 'acme.alpha', generation: '7', registration: { family: 'actions', localId: 'extra', value: handler } }],
+            targetRegistrations: [{ pluginId: 'acme.alpha', occurrenceId: '7', registration: { family: 'actions', localId: 'extra', value: handler } }],
             targetActivationFacts: [fact({ required: [], bound: [{ family: 'actions', localId: 'extra' }] })],
         })).toThrow(/no matching manifest action/i);
     });
 
     it.each(['dormant', 'unavailable'] as const)(
-        'omits retained registrations when the plugin generation is %s',
+        'omits retained registrations when the plugin occurrence is %s',
         (status) => {
             const target = buildRegistry({
                 contributes: registry(),
                 targetRegistrations: [{
                     pluginId: 'acme.alpha',
-                    generation: '7',
+                    occurrenceId: '7',
                     registration: { family: 'actions', localId: 'run', value: handler },
                 }],
                 targetActivationFacts: [fact({ status })],
@@ -1469,7 +1488,7 @@ describe('buildTargetActionInvocationRegistry', () => {
     it('refreshes a lazily published Action against the current activation facts', async () => {
         const targetRegistrations: Array<{
             pluginId: string;
-            generation: string;
+            occurrenceId: string;
             registration: { family: 'actions'; localId: string; value: typeof handler };
         }> = [];
         let targetActivationFacts: readonly PluginTargetActivationFact[] = [];
@@ -1481,7 +1500,7 @@ describe('buildTargetActionInvocationRegistry', () => {
 
         targetRegistrations.push({
             pluginId: 'acme.alpha',
-            generation: '7',
+            occurrenceId: '7',
             registration: { family: 'actions', localId: 'run', value: handler },
         });
         targetActivationFacts = [fact()];
@@ -1500,7 +1519,7 @@ describe('buildTargetActionInvocationRegistry', () => {
         const target = buildRegistry({
             contributes: registry(),
             targetRegistrations: [{
-                pluginId: 'acme.alpha', generation: '7',
+                pluginId: 'acme.alpha', occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: async (_input: JsonValue, context: PluginInvocationContext) => {
                     contextVersion = context.plugin.version;
                     return { ok: true };
@@ -1516,7 +1535,7 @@ describe('buildTargetActionInvocationRegistry', () => {
     it('rebuilds from the complete live generation publication after lazy activation', async () => {
         const targetRegistrations: Array<{
             pluginId: string;
-            generation: string;
+            occurrenceId: string;
             registration: { family: 'actions'; localId: string; value: typeof handler };
         }> = [];
         const targetActivationFacts: PluginTargetActivationFact[] = [];
@@ -1526,7 +1545,7 @@ describe('buildTargetActionInvocationRegistry', () => {
         expect(target.has('acme.alpha', 'run')).toBe(false);
 
         targetRegistrations.push({
-            pluginId: 'acme.alpha', generation: '7',
+            pluginId: 'acme.alpha', occurrenceId: '7',
             registration: { family: 'actions', localId: 'run', value: handler },
         });
         targetActivationFacts.push(fact());
@@ -1544,7 +1563,7 @@ describe('buildTargetActionInvocationRegistry', () => {
         const target = buildRegistry({
             contributes: registryWithHostAccess(),
             resolveHostBinding,
-            targetRegistrations: [{ pluginId: 'acme.alpha', generation: '7', registration: { family: 'actions', localId: 'run', value: handler } }],
+            targetRegistrations: [{ pluginId: 'acme.alpha', occurrenceId: '7', registration: { family: 'actions', localId: 'run', value: handler } }],
             targetActivationFacts: [fact()],
         });
         await expect(target.invoke({ pluginId: 'acme.alpha', localId: 'run', input: {}, surface: 'cli' }))
@@ -1565,7 +1584,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes: registryWithHostAccess(),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: handler },
             }],
             targetActivationFacts: [fact()],
@@ -1596,7 +1615,7 @@ describe('buildTargetActionInvocationRegistry', () => {
             contributes: registry({ pluginManifest }),
             targetRegistrations: [{
                 pluginId: 'acme.alpha',
-                generation: '7',
+                occurrenceId: '7',
                 registration: { family: 'actions', localId: 'run', value: handler },
             }],
             targetActivationFacts: [fact()],

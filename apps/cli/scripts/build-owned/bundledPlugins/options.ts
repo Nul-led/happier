@@ -9,6 +9,12 @@ export type GeneratorOptions = Readonly<{
   workspaceNames: readonly string[];
   aggregateOnly: boolean;
   /**
+   * Publish only installed artifacts and inventories owned by a prepared
+   * one-way execution target. Source-synchronized projections stay read-only
+   * so validation on that target cannot repair the inputs it is checking.
+   */
+  targetOwnedOnly: boolean;
+  /**
    * Publish only the manifest-derived generated TypeScript *compiler inputs*.
    *
    * These outputs (`packages/agents/src/generated/agentIds.ts` and the Protocol
@@ -20,22 +26,25 @@ export type GeneratorOptions = Readonly<{
    * artifact.
    */
   compilerInputsOnly: boolean;
+  /** Publish source Agent definition facts without compiling/staging executable runtimes. */
+  agentDefinitionsOnly: boolean;
+  inheritedFailuresStdin: boolean;
 }>;
 
 export function resolveGeneratorAuthoringPreparationPolicy({
   mode,
   targetsCanonicalRoot,
+  targetOwnedOnly = false,
 }: Readonly<{
   mode: GeneratorMode;
   targetsCanonicalRoot: boolean;
+  targetOwnedOnly?: boolean;
 }>): Readonly<{
   generatedCompilerInputMode: GeneratorMode;
-  publishPluginSdkApiGovernance: boolean;
 }> {
-  const publishesCanonicalSource = mode === 'write' && targetsCanonicalRoot;
+  const publishesCanonicalSource = mode === 'write' && targetsCanonicalRoot && !targetOwnedOnly;
   return Object.freeze({
     generatedCompilerInputMode: publishesCanonicalSource ? 'write' : 'check',
-    publishPluginSdkApiGovernance: publishesCanonicalSource,
   });
 }
 
@@ -48,18 +57,19 @@ export type PluginAuthorRuntimeLoadScope = 'none' | 'manifest' | 'full';
 export function resolvePluginAuthorRuntimeLoadScope({
   aggregateOnly,
   compilerInputsOnly,
+  agentDefinitionsOnly,
   scope,
-}: Pick<GeneratorOptions, 'aggregateOnly' | 'compilerInputsOnly' | 'scope'>): PluginAuthorRuntimeLoadScope {
+}: Pick<GeneratorOptions, 'aggregateOnly' | 'scope'> & Partial<Pick<GeneratorOptions, 'compilerInputsOnly' | 'agentDefinitionsOnly'>>): PluginAuthorRuntimeLoadScope {
   // Compiler-input publication reads committed manifest artifacts only. Loading
   // the authoring runtime would import the very `plugin-sdk`/`cli-common`
   // output this mode exists to unblock.
-  if (aggregateOnly || compilerInputsOnly) return 'none';
+  if (aggregateOnly || compilerInputsOnly || agentDefinitionsOnly) return 'none';
   return scope === 'projections' ? 'manifest' : 'full';
 }
 
 export function printGeneratorUsage(): void {
   console.log([
-    'Usage: node --experimental-strip-types scripts/migrations/extensions/generateBundledPluginEntries.ts [--root DIR] [--mode write|check] [--scope all|projections] [--workspace plugins-<id>] [--aggregate] [--compiler-inputs]',
+    'Usage: node --experimental-strip-types apps/cli/scripts/build-owned/generateBundledPluginEntries.ts [--root DIR] [--mode write|check] [--scope projections] [--workspace plugins-<id>] [--target-owned-only] [--aggregate] [--compiler-inputs] [--agent-definitions]',
     '',
     'Generates/patches bundled plugin entry maps from packages/plugins/*.',
     '',
@@ -68,20 +78,26 @@ export function printGeneratorUsage(): void {
     'committed plugin manifest artifacts. It is the pre-build step the shared-dependency',
     'build owner runs before compiling the workspaces that consume those inputs.',
     '',
-    '--scope projections (check only) compares the generated projections against the',
-    'bundled plugin sources and the installed bundle bytes. --scope all (default) also',
-    're-stages every bundled daemon runtime and requires the installed bytes to equal',
-    'that fresh build, which is a whole-repo build-determinism question because the',
-    'stage inlines the current plugin-sdk/protocol output into every bundle.',
+    '--agent-definitions refreshes authored Agent definition facts through the same',
+    'projection writer, deriving native-home keys from static Agent source. It does not',
+    'prepare workspace dist or stage executable Plugin bundles.',
+    '',
+    '--scope projections is the optional explicit spelling for check mode. The retired',
+    'whole-runtime determinism scope is not a public generator mode; writes always publish',
+    'the current complete source-owned output set unless --compiler-inputs or',
+    '--agent-definitions selects its bounded source preparation phase.',
   ].join('\n'));
 }
 
 export function parseGeneratorCliArgs(argv: readonly string[]): GeneratorOptions {
   let rootDir = process.cwd();
   let mode: GeneratorMode = 'write';
-  let scope: GeneratorScope = 'all';
+  let requestedScope: GeneratorScope | undefined;
   let aggregateOnly = false;
   let compilerInputsOnly = false;
+  let agentDefinitionsOnly = false;
+  let targetOwnedOnly = false;
+  let inheritedFailuresStdin = false;
   const workspaceNames: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -108,10 +124,10 @@ export function parseGeneratorCliArgs(argv: readonly string[]): GeneratorOptions
     }
     if (arg === '--scope') {
       const next = argv[index + 1];
-      if (next !== 'all' && next !== 'projections') {
-        throw new Error(`Invalid --scope (expected all|projections): ${String(next)}`);
+      if (next !== 'projections') {
+        throw new Error(`Invalid --scope (expected projections): ${String(next)}`);
       }
-      scope = next;
+      requestedScope = next;
       index += 1;
       continue;
     }
@@ -136,6 +152,18 @@ export function parseGeneratorCliArgs(argv: readonly string[]): GeneratorOptions
       compilerInputsOnly = true;
       continue;
     }
+    if (arg === '--agent-definitions') {
+      agentDefinitionsOnly = true;
+      continue;
+    }
+    if (arg === '--target-owned-only') {
+      targetOwnedOnly = true;
+      continue;
+    }
+    if (arg === '--inherited-failures-stdin') {
+      inheritedFailuresStdin = true;
+      continue;
+    }
     throw new Error(`Unknown arg: ${arg}`);
   }
 
@@ -145,9 +173,22 @@ export function parseGeneratorCliArgs(argv: readonly string[]): GeneratorOptions
   if (compilerInputsOnly && (aggregateOnly || workspaceNames.length > 0)) {
     throw new Error('--compiler-inputs cannot be combined with --aggregate or --workspace');
   }
-  if (mode === 'write' && scope !== 'all') {
-    throw new Error('--scope projections is a check-only scope; --mode write always publishes --scope all');
+  if (agentDefinitionsOnly && (aggregateOnly || compilerInputsOnly || workspaceNames.length > 0 || targetOwnedOnly)) {
+    throw new Error('--agent-definitions cannot be combined with --aggregate, --compiler-inputs, --workspace or --target-owned-only');
   }
+  if (targetOwnedOnly && mode !== 'write') {
+    throw new Error('--target-owned-only requires --mode write');
+  }
+  if (targetOwnedOnly && workspaceNames.length === 0) {
+    throw new Error('--target-owned-only requires at least one --workspace selector');
+  }
+  if (targetOwnedOnly && (aggregateOnly || compilerInputsOnly)) {
+    throw new Error('--target-owned-only cannot be combined with --aggregate or --compiler-inputs');
+  }
+  if (mode === 'write' && requestedScope === 'projections') {
+    throw new Error('--scope projections is a check-only scope; write mode always publishes the complete output set');
+  }
+  const scope: GeneratorScope = mode === 'check' ? 'projections' : 'all';
   return {
     rootDir,
     mode,
@@ -155,6 +196,9 @@ export function parseGeneratorCliArgs(argv: readonly string[]): GeneratorOptions
     workspaceNames: Object.freeze(workspaceNames),
     aggregateOnly,
     compilerInputsOnly,
+    agentDefinitionsOnly,
+    inheritedFailuresStdin,
+    targetOwnedOnly,
   };
 }
 

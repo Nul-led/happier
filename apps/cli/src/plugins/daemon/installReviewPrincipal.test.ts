@@ -30,7 +30,7 @@ function review() {
     optionalHostAccess: [],
     rawCredentialAccess: [],
     compatibility: { happier: '*', runtimeApiVersion: 1 },
-    updatePolicy: 'reviewSensitiveChanges',
+    updatePolicy: 'allowed',
   } satisfies PluginInstallationReview;
 }
 

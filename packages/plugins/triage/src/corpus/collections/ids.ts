@@ -40,6 +40,7 @@ export const CORPUS_USER_MARKS_FIELD = {
     markedAtMs: 'markedAtMs',
     entryRef: 'entryRef',
     displayAtMark: 'displayAtMark',
+    fixPullRequests: 'fixPullRequests',
 } as const;
 
 export const CORPUS_SOURCE_INSTANCES_INDEX_ID = {

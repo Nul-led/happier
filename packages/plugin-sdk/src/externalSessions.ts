@@ -197,12 +197,23 @@ export function createAgentExternalSessionsProducerOverflowFailure(
     };
 }
 
+/**
+ * Marks a candidate as one of the Agent's internal threads rather than a
+ * session a person started. Absent means top-level.
+ */
+export type AgentExternalSessionCandidateThread = Readonly<{
+    kind: 'reviewer' | 'subagent';
+    parentRemoteSessionId: string | null;
+    parentTitle?: string;
+}>;
+
 export type AgentExternalSessionCandidate = Readonly<{
     remoteSessionId: string;
     title?: string;
     updatedAtMs: number;
     createdAtMs?: number;
     archived?: boolean;
+    thread?: AgentExternalSessionCandidateThread;
     linkData?: AgentExternalSessionLinkData;
     /** Private resumable enrichment state; the host strips it before publication. */
     candidateIndexState?: AgentExternalSessionCandidateIndexState;
@@ -234,6 +245,18 @@ export type AgentExternalSessionTranscriptItem = Readonly<{
     raw: AgentExternalSessionTranscriptRawRecord;
 }>;
 
+/** Nonvisual native evidence admitted only by terminal source following. */
+export type AgentExternalSessionTerminalObservation = Readonly<{
+    id: string;
+    /** Nonvisual evidence cannot claim transcript/user-message classification. */
+    localId?: never;
+    sidechainId?: never;
+    messageRole?: never;
+    userProjection?: never;
+    createdAtMs: number;
+    raw: Readonly<{ role: 'source_observation'; content: JsonValue }>;
+}>;
+
 export type AgentExternalSessionsResolveSourceRequest = AgentExternalSessionsInvocation & Readonly<{
     source: AgentExternalSessionSource;
 }>;
@@ -253,6 +276,11 @@ export type AgentExternalSessionsListCandidatesRequest = AgentExternalSessionsIn
     maxItems: number;
     searchTerm?: string;
     searchMode?: 'fast' | 'full';
+    /**
+     * List the Agent's internal threads too. Absent or false: top-level
+     * sessions only, and pages, cursors and progress describe that listing.
+     */
+    includeThreads?: boolean;
     /** Read-only lookup into the same host index receiving this result. */
     readCandidateIndexState?: AgentExternalSessionCandidateIndexLookup;
 }>;
@@ -297,6 +325,8 @@ export type AgentExternalSessionsResolvedIdentity = Readonly<{
 }>;
 
 export type AgentExternalSessionsPageTranscriptRequest = AgentExternalSessionsInvocation & Readonly<{
+    /** Forward terminal catch-up may include ordered nonvisual source evidence. */
+    projection?: 'terminal';
     source: AgentExternalSessionSource;
     remoteSessionId: string;
     direction: 'older' | 'newer';
@@ -304,6 +334,8 @@ export type AgentExternalSessionsPageTranscriptRequest = AgentExternalSessionsIn
     maxItems: number;
 }>;
 export type AgentExternalSessionsReadAfterTranscriptRequest = AgentExternalSessionsInvocation & Readonly<{
+    /** Terminal consumers also receive ordered nonvisual source evidence. */
+    projection?: 'terminal';
     source: AgentExternalSessionSource;
     remoteSessionId: string;
     cursor: string;
@@ -323,7 +355,7 @@ export type AgentExternalSessionsReadAfterTranscriptResult =
     | Readonly<{ outcome: 'already_current' }>
     | Readonly<{
         outcome: 'advanced';
-        items: readonly AgentExternalSessionTranscriptItem[];
+        items: readonly (AgentExternalSessionTranscriptItem | AgentExternalSessionTerminalObservation)[];
         nextCursor: string;
         boundary: string;
         hasMore: boolean;
@@ -334,7 +366,7 @@ export type AgentExternalSessionsReadAfterTranscriptResult =
     | Readonly<{ outcome: 'source_unavailable' }>
     | Readonly<{ outcome: 'read_failed' }>;
 export type AgentExternalSessionsTranscriptPage = Readonly<{
-    items: readonly AgentExternalSessionTranscriptItem[];
+    items: readonly (AgentExternalSessionTranscriptItem | AgentExternalSessionTerminalObservation)[];
     nextCursor: string | null;
     tailCursor?: string | null;
     hasMore?: boolean;

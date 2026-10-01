@@ -36,6 +36,7 @@ type TranscriptFileFollowAccessRequest = Readonly<{
 type AuthorizedTranscriptFileFollowPath = Readonly<{
     filePath: string;
     expiresAtMs?: number;
+    pendingAtFollow?: boolean;
 }>;
 
 export type PluginTranscriptFileFollowAccessPolicy = (
@@ -140,6 +141,13 @@ export function createPluginTranscriptFileFollowService(params?: Readonly<{
                 onLine: async (line) => {
                     if (closed && !allowFinalDrainDelivery) {
                         return;
+                    }
+                    if (authorizedPath.pendingAtFollow
+                        && await resolveTranscriptFileFollowRealPath(followFilePath) !== followFilePath) {
+                        throw new PluginContextServiceError(
+                            'PLUGIN_TRANSCRIPTS_FILE_FOLLOW_PATH_DENIED',
+                            'ctx.transcripts.fileFollow.follow path is not granted',
+                        );
                     }
                     sequence += 1;
                     lineHandlerCallDepth += 1;
@@ -310,7 +318,7 @@ async function resolveFollowFilePath(params: Readonly<{
     const realFilePath = realFilePathRequired
         ? await resolveTranscriptFileFollowRealPath(params.filePath)
         : null;
-    if (realFilePathRequired && !realFilePath) {
+    if (realFilePathRequired && !realFilePath && !params.fileFollowPathGrants) {
         return null;
     }
     if (realFilePath) {
@@ -337,6 +345,7 @@ async function resolveFollowFilePath(params: Readonly<{
         if (granted) {
             return Object.freeze({
                 filePath: granted.path,
+                ...(!realFilePath ? { pendingAtFollow: true } : {}),
                 ...(granted.expiresAtMs !== undefined ? { expiresAtMs: granted.expiresAtMs } : {}),
             });
         }

@@ -57,7 +57,7 @@ type Principal = {
     qualifiedContributionId: PluginContributionIdentityV1;
     variantId: string;
     eventId: string;
-    pluginGeneration: string;
+    pluginOccurrenceId: string;
     retirementSignal: AbortSignal;
     ingressController: AbortController;
     state: PrincipalState;
@@ -67,7 +67,7 @@ type Principal = {
 export type QualifiedExternalSessionHookRuntimeLease = Readonly<{
     hooks: AgentExternalSessionHooksContribution;
     externalSessions: BoundedAgentExternalSessionsContribution;
-    generation: string;
+    occurrenceId: string;
     retirementSignal: AbortSignal;
     isCurrent(): boolean;
     release(): Promise<void>;
@@ -107,7 +107,7 @@ type QualifiedExternalSessionHookIngressParams = Readonly<{
     acquireRuntime(input: Readonly<{
         qualifiedContributionId: PluginContributionIdentityV1;
         agentId: string;
-        pluginGeneration: string;
+        pluginOccurrenceId: string;
         variantId: string;
     }>): Promise<QualifiedExternalSessionHookRuntimeLease | null>;
     resolveCurrentLink(input: Readonly<{
@@ -174,7 +174,7 @@ export type QualifiedExternalSessionHookPrincipalInput = Readonly<{
     qualifiedContributionId: PluginContributionIdentityV1;
     variantId: string;
     eventId: string;
-    pluginGeneration: string;
+    pluginOccurrenceId: string;
     retirementSignal: AbortSignal;
     principalRef?: string;
     token?: string;
@@ -427,7 +427,7 @@ export function createQualifiedExternalSessionHookIngress(
         && currentPrincipalByScope.get(principal.scopeKey) === principal
         && !ingressSignal.aborted
         && !principal.retirementSignal.aborted
-        && runtime.generation === principal.pluginGeneration
+        && runtime.occurrenceId === principal.pluginOccurrenceId
         && !runtime.retirementSignal.aborted
         && runtime.isCurrent()
         && (params.shouldCommit?.() ?? true)
@@ -445,7 +445,7 @@ export function createQualifiedExternalSessionHookIngress(
             const localId = normalizedId(input.qualifiedContributionId.localId);
             const variantId = normalizedId(input.variantId);
             const eventId = normalizedId(input.eventId);
-            const pluginGeneration = normalizedId(input.pluginGeneration);
+            const pluginOccurrenceId = normalizedId(input.pluginOccurrenceId);
             if (
                 !installationIdentity
                 || !machineId
@@ -458,7 +458,7 @@ export function createQualifiedExternalSessionHookIngress(
                 )
                 || !variantId
                 || !eventId
-                || !pluginGeneration
+                || !pluginOccurrenceId
             ) {
                 throw new Error('Invalid qualified External Session hook principal');
             }
@@ -508,7 +508,7 @@ export function createQualifiedExternalSessionHookIngress(
                 qualifiedContributionId,
                 variantId,
                 eventId,
-                pluginGeneration,
+                pluginOccurrenceId,
                 retirementSignal: input.retirementSignal,
                 ingressController: new AbortController(),
                 state: input.retirementSignal.aborted
@@ -617,7 +617,7 @@ export function createQualifiedExternalSessionHookIngress(
                 async () => await params.acquireRuntime({
                     qualifiedContributionId: principal.qualifiedContributionId,
                     agentId: principal.agentId,
-                    pluginGeneration: principal.pluginGeneration,
+                    pluginOccurrenceId: principal.pluginOccurrenceId,
                     variantId: principal.variantId,
                 }),
                 initial.terminal,
@@ -626,7 +626,7 @@ export function createQualifiedExternalSessionHookIngress(
             if (
                 !runtime
                 || initial.signal.aborted
-                || runtime.generation !== principal.pluginGeneration
+                || runtime.occurrenceId !== principal.pluginOccurrenceId
                 || runtime.retirementSignal.aborted
                 || !runtime.isCurrent()
                 || !isAccountScopeCurrent()
@@ -850,7 +850,7 @@ export function createQualifiedExternalSessionHookIngress(
                     return { state: 'ignored' };
                 }
                 const ensureKey = JSON.stringify([
-                    principal.pluginGeneration,
+                    principal.pluginOccurrenceId,
                     policy.accountScopeKey,
                     policy.sourcePolicyId,
                     policy.enabledAtMs,

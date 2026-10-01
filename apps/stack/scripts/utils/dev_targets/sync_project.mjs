@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { withJsonOwnerFileLock } from '../proc/jsonOwnerFileLock.mjs';
 import { runCaptureResult } from '../proc/proc.mjs';
 import {
   buildMutagenProjectArgs,
@@ -19,6 +20,8 @@ import {
 } from './mutagen_runtime.mjs';
 
 export const INDEPENDENT_DEV_TARGET_SYNC_OWNER = 'dev-target-sync-service';
+const DEV_TARGET_SYNC_PROJECT_LIFECYCLE_LOCK_TIMEOUT_MS = 30_000;
+const DEV_TARGET_SYNC_PROJECT_LIFECYCLE_LOCK_STALE_AFTER_MS = 60_000;
 const DEV_TARGET_CONTROL_EXECUTABLE = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..', '..', '..',
@@ -48,6 +51,51 @@ export async function runDevTargetControlProcess({ label, command, args, env, sy
 function requireSuccessful(result, description) {
   if (result?.code === 0) return;
   throw new Error(`[dev-targets] ${description} failed (code=${String(result?.code ?? 'unknown')})`);
+}
+
+async function withDevTargetSyncProjectLifecycleLock(
+  { stackBaseDir, env = process.env },
+  fn,
+) {
+  const { projectFile } = resolveDevTargetMutagenRuntime({ stackBaseDir, env });
+  return await withJsonOwnerFileLock(fn, {
+    // Use the same short, bounded mutation window as Stack runtime state. A
+    // background supervisor can retry a busy project, but it must not race a
+    // sync-service start, stop, or another project lifecycle operation.
+    lockPath: `${projectFile}.hstack-lifecycle.lock`,
+    timeoutMs: DEV_TARGET_SYNC_PROJECT_LIFECYCLE_LOCK_TIMEOUT_MS,
+    pollIntervalMs: 125,
+    staleAfterMs: DEV_TARGET_SYNC_PROJECT_LIFECYCLE_LOCK_STALE_AFTER_MS,
+    errorLabel: 'dev-target synchronization project lifecycle lock',
+  });
+}
+
+async function inspectBorrowedIndependentDevTargetSyncProject(
+  { requiredTargets, mutagenRuntime },
+  { runProcess },
+) {
+  requireSuccessful(await runProcess({
+    label: 'mutagen',
+    command: 'mutagen',
+    args: buildMutagenProjectArgs('list', mutagenRuntime.projectFile),
+    env: mutagenRuntime.env,
+  }), 'independent Mutagen project status');
+  const unhealthyTargets = new Map();
+  for (const target of requiredTargets) {
+    const sessionName = resolveMutagenSessionName(target.name);
+    const result = await runProcess({
+      label: `sync:${target.name}`,
+      command: 'mutagen',
+      args: ['sync', 'list', sessionName, '--template', MUTAGEN_SYNC_LIST_JSON_TEMPLATE],
+      env: mutagenRuntime.env,
+    });
+    requireSuccessful(result, `${target.name} independent synchronization status`);
+    const status = parseMutagenSyncList(result.out, sessionName);
+    if (status.state !== 'ready' && status.state !== 'synchronizing') {
+      unhealthyTargets.set(target.name, status.state);
+    }
+  }
+  return unhealthyTargets;
 }
 
 export async function resumeDevTargetSync(
@@ -117,7 +165,7 @@ export async function prepareDevTargetOpenSsh({ targets, mutagenDir, env }) {
   };
 }
 
-export async function ensureDevTargetSyncProject(
+async function ensureDevTargetSyncProjectUnlocked(
   {
     stackBaseDir,
     sourceDir,
@@ -127,7 +175,10 @@ export async function ensureDevTargetSyncProject(
     allowIndependentBorrow,
     env = process.env,
   },
-  { runProcess = runDevTargetControlProcess } = {},
+  {
+    runProcess = runDevTargetControlProcess,
+    withProjectLifecycleLock = withDevTargetSyncProjectLifecycleLock,
+  } = {},
 ) {
   const {
     HAPPIER_STACK_PROCESS_KIND: _stackProcessKind,
@@ -164,27 +215,10 @@ export async function ensureDevTargetSyncProject(
     borrowingIndependentProject
     && isEquivalentMutagenProject(existingProject, desiredProject)
   ) {
-    requireSuccessful(await runProcess({
-      label: 'mutagen',
-      command: 'mutagen',
-      args: buildMutagenProjectArgs('list', mutagenRuntime.projectFile),
-      env: mutagenRuntime.env,
-    }), 'independent Mutagen project status');
-    const unhealthyTargets = new Map();
-    for (const target of requiredTargets) {
-      const sessionName = resolveMutagenSessionName(target.name);
-      const result = await runProcess({
-        label: `sync:${target.name}`,
-        command: 'mutagen',
-        args: ['sync', 'list', sessionName, '--template', MUTAGEN_SYNC_LIST_JSON_TEMPLATE],
-        env: mutagenRuntime.env,
-      });
-      requireSuccessful(result, `${target.name} independent synchronization status`);
-      const status = parseMutagenSyncList(result.out, sessionName);
-      if (status.state !== 'ready' && status.state !== 'synchronizing') {
-        unhealthyTargets.set(target.name, status.state);
-      }
-    }
+    const unhealthyTargets = await inspectBorrowedIndependentDevTargetSyncProject(
+      { requiredTargets, mutagenRuntime },
+      { runProcess },
+    );
     return {
       ...mutagenRuntime,
       openSsh,
@@ -195,10 +229,57 @@ export async function ensureDevTargetSyncProject(
     };
   }
   if (borrowingIndependentProject) {
-    throw new Error(
-      '[dev-targets] independent synchronization project configuration differs; '
-        + 'the sync service must reconcile it before Stack startup can borrow it',
+    const current = await readFile(mutagenRuntime.projectFile, 'utf8').catch(() => null);
+    if (!isMutagenProjectOwnedBy(current, INDEPENDENT_DEV_TARGET_SYNC_OWNER)) {
+      throw new Error(
+        '[dev-targets] independent synchronization ownership changed during Stack startup; '
+          + 'refusing destructive project replacement',
+      );
+    }
+    // Mutagen reports a non-running project as a terminate failure. Preserve
+    // the existing best-effort teardown: start, resume, and status decide
+    // whether the desired project can actually be recreated.
+    await runProcess({
+      label: 'mutagen',
+      command: 'mutagen',
+      args: buildMutagenProjectArgs('terminate', mutagenRuntime.projectFile),
+      env: mutagenRuntime.env,
+    });
+    const currentAfterTermination = await readFile(
+      mutagenRuntime.projectFile,
+      'utf8',
+    ).catch(() => null);
+    if (!isMutagenProjectOwnedBy(currentAfterTermination, INDEPENDENT_DEV_TARGET_SYNC_OWNER)) {
+      throw new Error(
+        '[dev-targets] independent synchronization ownership changed during Stack startup; '
+          + 'refusing destructive project replacement',
+      );
+    }
+    await writeFile(mutagenRuntime.projectFile, desiredProject, 'utf8');
+    requireSuccessful(await runProcess({
+      label: 'mutagen',
+      command: 'mutagen',
+      args: buildMutagenProjectArgs('start', mutagenRuntime.projectFile),
+      env: mutagenRuntime.env,
+    }), 'Mutagen project start');
+    requireSuccessful(await runProcess({
+      label: 'mutagen',
+      command: 'mutagen',
+      args: buildMutagenProjectArgs('resume', mutagenRuntime.projectFile),
+      env: mutagenRuntime.env,
+    }), 'Mutagen project resume');
+    const unhealthyTargets = await inspectBorrowedIndependentDevTargetSyncProject(
+      { requiredTargets, mutagenRuntime },
+      { runProcess },
     );
+    return {
+      ...mutagenRuntime,
+      openSsh,
+      ownership: 'independent',
+      unhealthyTargets,
+      projectCreated: true,
+      release: async () => {},
+    };
   }
 
   await mkdir(mutagenRuntime.mutagenDir, { recursive: true });
@@ -307,19 +388,33 @@ export async function ensureDevTargetSyncProject(
     projectCreated,
     async release(action) {
       if (borrowingIndependentProject) return;
-      const current = await readFile(mutagenRuntime.projectFile, 'utf8').catch(() => null);
-      if (!isMutagenProjectOwnedBy(current, ownerId)) return;
-      await runProcess({
-        label: 'mutagen',
-        command: 'mutagen',
-        args: buildMutagenProjectArgs(action, mutagenRuntime.projectFile),
-        env: mutagenRuntime.env,
+      return await withProjectLifecycleLock({ stackBaseDir, env: mutagenRuntime.env }, async () => {
+        const current = await readFile(mutagenRuntime.projectFile, 'utf8').catch(() => null);
+        if (!isMutagenProjectOwnedBy(current, ownerId)) return;
+        await runProcess({
+          label: 'mutagen',
+          command: 'mutagen',
+          args: buildMutagenProjectArgs(action, mutagenRuntime.projectFile),
+          env: mutagenRuntime.env,
+        });
       });
     },
   };
 }
 
-export async function releaseIndependentDevTargetSyncProject(
+export async function ensureDevTargetSyncProject(input, dependencies = {}) {
+  const withProjectLifecycleLock = dependencies.withProjectLifecycleLock
+    ?? withDevTargetSyncProjectLifecycleLock;
+  return await withProjectLifecycleLock({
+    stackBaseDir: input.stackBaseDir,
+    env: input.env ?? process.env,
+  }, async () => await ensureDevTargetSyncProjectUnlocked(input, {
+    ...dependencies,
+    withProjectLifecycleLock,
+  }));
+}
+
+async function releaseIndependentDevTargetSyncProjectUnlocked(
   { stackBaseDir, env = process.env },
   { runProcess = runDevTargetControlProcess } = {},
 ) {
@@ -344,7 +439,16 @@ export async function releaseIndependentDevTargetSyncProject(
   return true;
 }
 
-export async function pauseOwnedDevTargetSyncProject(
+export async function releaseIndependentDevTargetSyncProject(input, dependencies = {}) {
+  const withProjectLifecycleLock = dependencies.withProjectLifecycleLock
+    ?? withDevTargetSyncProjectLifecycleLock;
+  return await withProjectLifecycleLock({
+    stackBaseDir: input.stackBaseDir,
+    env: input.env ?? process.env,
+  }, async () => await releaseIndependentDevTargetSyncProjectUnlocked(input, dependencies));
+}
+
+async function pauseOwnedDevTargetSyncProjectUnlocked(
   { stackBaseDir, ownerId, env = process.env },
   { runProcess = runDevTargetControlProcess } = {},
 ) {
@@ -358,4 +462,13 @@ export async function pauseOwnedDevTargetSyncProject(
     env: runtime.env,
   }), 'owned Mutagen project pause');
   return true;
+}
+
+export async function pauseOwnedDevTargetSyncProject(input, dependencies = {}) {
+  const withProjectLifecycleLock = dependencies.withProjectLifecycleLock
+    ?? withDevTargetSyncProjectLifecycleLock;
+  return await withProjectLifecycleLock({
+    stackBaseDir: input.stackBaseDir,
+    env: input.env ?? process.env,
+  }, async () => await pauseOwnedDevTargetSyncProjectUnlocked(input, dependencies));
 }

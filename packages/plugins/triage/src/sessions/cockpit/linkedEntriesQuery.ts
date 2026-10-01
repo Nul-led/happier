@@ -9,10 +9,9 @@ import {
  * The one static UI query the Session cockpit opens.
  *
  * There is exactly one, because there is exactly one durable collection behind a
- * linked entry. The link row is durable Account state; the *entry* it points at
- * is not stored anywhere, so there is no second query and no second row to
- * hydrate — the link's own private `displayPathAtLink` is the ordinary render
- * path (`core/CORPUS.md` §2.2, `core/SESSIONS.md` §5.1).
+ * linked entry. The link row is durable Account state; entry display content
+ * joins from the existing device-local shared window. No second entry store or
+ * query is created; `displayPathAtLink` remains the fallback for unknown entries.
  *
  * The identifiers below are the surface's half of that contract. The declaring
  * half lives with the Collection owner (`corpus/collections/definitions.ts`),

@@ -9,7 +9,7 @@ function registration(
     return Object.freeze({
         pluginId: 'acme.indexer',
         pluginVersion: '1.0.0',
-        generation: 'generation-one',
+        occurrenceId: 'generation-one',
         localId: 'retired-during-context-creation',
         runner,
     });
@@ -78,7 +78,7 @@ describe('background service runner host currentness', () => {
 
         expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({
             pluginId: 'acme.indexer',
-            generation: 'generation-one',
+            occurrenceId: 'generation-one',
             localId: 'retired-during-context-creation',
             code: 'background_service_failed',
             error: failure,

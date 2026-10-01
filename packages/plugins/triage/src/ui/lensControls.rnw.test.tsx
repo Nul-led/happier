@@ -34,6 +34,7 @@ import {
 } from '../corpus/testkit/observations.test-support.js';
 import { refreshTriageListWindow } from './window/mountedWindow.js';
 import { createTriageEphemeralSharedScopeFixture } from './window/ephemeralSharedScope.test-support.js';
+import { toolbarMenuItem } from './shell/toolbarMenus.test-support.js';
 import { renderSurface as renderShellSurface } from './surface.js';
 
 /**
@@ -148,7 +149,7 @@ async function mountShell(subPath?: string): Promise<Readonly<{
             authorPlugin: { id: 'happier.triage', version: '0.0.0' },
             surface: renderShellSurface,
             surfaceContext: createSurfaceContextFixture(),
-            adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope }),
+            adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope, overlays: true }),
             ...(subPath === undefined ? {} : { subPath }),
             handlers: {
                 publishCurrentUiContext: () => undefined,
@@ -195,7 +196,7 @@ describe('the PRs & Issues lens controls', () => {
             `ft,${SOURCE.pluginId},${SOURCE.localId},pull-request`,
         );
 
-        const active = await shell.getByRole('checkbox', {
+        const active = await toolbarMenuItem(shell, 'Type', 'menuitemcheckbox', {
             name: 'pull-request',
             state: { checked: true },
         });
@@ -215,7 +216,7 @@ describe('the PRs & Issues lens controls', () => {
             `fp,${SOURCE.pluginId},${SOURCE.localId},${encodeURIComponent(SCOPE)}`,
         );
 
-        await expect(shell.getByRole('checkbox', {
+        await expect(toolbarMenuItem(shell, 'Scope', 'menuitemcheckbox', {
             name: SCOPE,
             state: { checked: true },
         })).resolves.toBeTruthy();

@@ -2,7 +2,8 @@ import type { ManagedServiceSnapshot } from '@happier-dev/plugin-sdk/managed-ser
 
 import type { OpenCodeRuntimeTurnOperations } from './operations.js';
 import type { OpenCodeServerClient } from './openCodeServerClient.js';
-import type { OpenCodeMcpRegistrationResult } from './mcpRegistration.js';
+import type { OpenCodeMcpRegistrationResult, OpenCodeSessionMcpProjection } from './mcpRegistration.js';
+import type { OpenCodeServerDialect } from './dialect.js';
 import { createOpenCodeServerRuntimeController } from './runtimeController.js';
 import type { OpenCodeRuntimeContext } from './runtimeContext.js';
 import {
@@ -15,8 +16,11 @@ export function createOpenCodeServerRuntime(params: Readonly<{
   directory: string;
   client: OpenCodeServerClient;
   env?: Readonly<Record<string, string>>;
+  permissionMode?: string | null;
+  dialect?: OpenCodeServerDialect;
   readManagedServiceSnapshot?: () => ManagedServiceSnapshot | null | undefined;
   mcpRegistration: Promise<OpenCodeMcpRegistrationResult>;
+  mcpProjection: OpenCodeSessionMcpProjection;
 }> & OpenCodeHostRuntimeIdentity): OpenCodeRuntimeTurnOperations {
   return createOpenCodeServerRuntimeController({
     ...params,

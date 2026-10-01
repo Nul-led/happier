@@ -1,11 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 import * as buildModule from './build_stack_artifacts.mjs';
-import { createRuntimeArtifactFingerprint } from './runtime_artifact_identity.mjs';
+import { createRuntimeArtifactFingerprint, resolveRuntimeComponentSourcePaths } from './runtime_artifact_identity.mjs';
+
+test('server artifact identity includes a workspace dependency build script', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'happier-server-identity-inputs-'));
+  try {
+    const serverDir = join(repoDir, 'apps', 'server');
+    const protocolDir = join(repoDir, 'packages', 'protocol');
+    mkdirSync(join(protocolDir, 'scripts'), { recursive: true });
+    mkdirSync(serverDir, { recursive: true });
+    writeFileSync(join(serverDir, 'package.json'), JSON.stringify({
+      name: '@happier-dev/server',
+      dependencies: { '@happier-dev/protocol': '0.0.0' },
+    }));
+    writeFileSync(join(protocolDir, 'package.json'), JSON.stringify({ name: '@happier-dev/protocol' }));
+    writeFileSync(join(protocolDir, 'scripts', 'generate.mjs'), 'export const policy = true;\n');
+    assert.ok(resolveRuntimeComponentSourcePaths({
+      component: 'server',
+      sourceMetadata: { repoDir },
+    }).includes(join(protocolDir, 'scripts')));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
 import { resolveRuntimeBuildRequestIdentity } from './runtime_build_request_identity.mjs';
 
 test('runtime artifact identity inputs include only the toolchains consumed by each component', async () => {
@@ -86,6 +109,25 @@ test('server-only builds do not create or consume a web artifact', async () => {
 
   assert.deepEqual(calls, [{ component: 'server', options: {} }]);
   assert.deepEqual(Object.keys(artifacts), ['server']);
+});
+
+test('server-only publication does not require a CLI or UI plugin source tree', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'happier-server-only-preflight-'));
+  try {
+    mkdirSync(join(repoDir, 'apps', 'server'), { recursive: true });
+    writeFileSync(join(repoDir, 'package.json'), JSON.stringify({ private: true }));
+    writeFileSync(join(repoDir, 'apps', 'server', 'package.json'), JSON.stringify({
+      name: '@happier-dev/server',
+    }));
+    await buildModule.prepareBundledPluginPublicationInputs({
+      rootDir: repoDir,
+      env: { HAPPIER_STACK_REPO_DIR: repoDir },
+      selection: { components: { web: false, server: true, daemon: false } },
+    });
+    assert.deepEqual(readdirSync(repoDir).sort(), ['apps', 'package.json']);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
 });
 
 test('selected components build in a simple serial owner-local order without server-web coupling', async () => {
@@ -244,9 +286,13 @@ test('assertSelectedBuildPrerequisites accepts bun from BUN_INSTALL even when PA
   }
 });
 
-test('the artifact coordinator settles daemon workspace publication before capturing build identities', async () => {
+test('the artifact coordinator settles daemon publication before identity and only reads it afterwards', async () => {
   assert.equal(typeof buildModule.buildRuntimeArtifactComponents, 'function');
   const events = [];
+  const preparedWorkspacePublication = {
+    workspaceRuntimeIdentity: 'a'.repeat(64),
+    workspaceRuntimePackages: ['@happier-dev/protocol'],
+  };
   const stackBaseDir = '/stacks/repository-producer';
   const fixtureRepoRoot = mkdtempSync(join(tmpdir(), 'runtime-build-preidentity-publication-'));
   const fixtureStackRoot = join(fixtureRepoRoot, 'apps', 'stack');
@@ -275,10 +321,13 @@ test('the artifact coordinator settles daemon workspace publication before captu
       },
       env: {},
       assertSelectedBuildPrerequisitesImpl: () => {},
-      prepareCliBinaryArtifactWorkspacePublicationImpl: async ({ repoRoot }) => {
+      prepareBundledPluginPublicationInputsImpl: async () => {
+        writeFileSync(installedWorkspacePath, 'settled', 'utf8');
+      },
+      readCliBinaryArtifactWorkspacePublicationImpl: async ({ repoRoot }) => {
         assert.equal(repoRoot, fixtureRepoRoot);
         events.push('daemon-workspace-publication');
-        writeFileSync(installedWorkspacePath, 'settled', 'utf8');
+        return preparedWorkspacePublication;
       },
       collectBuildSourceMetadataImpl: async ({ rootDir }) => {
         assert.equal(rootDir, fixtureStackRoot);
@@ -303,6 +352,7 @@ test('the artifact coordinator settles daemon workspace publication before captu
             dbProvider: 'sqlite',
           },
           artifactFingerprints: { server: 'server-code-a', daemon: 'daemon-code-a' },
+          componentSourceFingerprints: { daemon: 'a'.repeat(64) },
           supportArtifactFingerprints: { server: 'server-support-a', daemon: 'daemon-support-a' },
         };
       },
@@ -321,7 +371,6 @@ test('the artifact coordinator settles daemon workspace publication before captu
         server: await buildComponent('server', async (input) => {
           assert.deepEqual(events, [
             'source-metadata',
-            'daemon-workspace-publication',
             'build-request-identity',
             'component-lock:server',
           ]);
@@ -339,15 +388,17 @@ test('the artifact coordinator settles daemon workspace publication before captu
         daemon: await buildComponent('daemon', async (input) => {
           assert.deepEqual(events, [
             'source-metadata',
-            'daemon-workspace-publication',
             'build-request-identity',
             'component-lock:server',
             'server-payload',
             'component-retention:server',
             'component-retention:server-support',
             'component-lock:daemon',
+            'daemon-workspace-publication',
           ]);
           assert.equal(input.supportArtifactFingerprint, 'daemon-support-a');
+          assert.equal(input.requiredCliDistInputFingerprint, 'a'.repeat(64));
+          assert.equal(input.preparedWorkspacePublication, preparedWorkspacePublication);
           events.push('daemon-payload');
           return {
             artifactDir: '/stacks/repository-producer/artifacts/daemon/daemon-code-a',
@@ -364,13 +415,13 @@ test('the artifact coordinator settles daemon workspace publication before captu
 
     assert.deepEqual(events, [
       'source-metadata',
-      'daemon-workspace-publication',
       'build-request-identity',
       'component-lock:server',
       'server-payload',
       'component-retention:server',
       'component-retention:server-support',
       'component-lock:daemon',
+      'daemon-workspace-publication',
       'daemon-payload',
       'component-retention:daemon',
       'component-retention:daemon-support',
@@ -381,6 +432,355 @@ test('the artifact coordinator settles daemon workspace publication before captu
   } finally {
     rmSync(fixtureRepoRoot, { recursive: true, force: true });
   }
+});
+
+test('web-only artifact builds never prepare the CLI bundled workspace closure', async () => {
+  assert.equal(typeof buildModule.buildRuntimeArtifactComponents, 'function');
+  let workspacePreparationCalls = 0;
+  const result = await buildModule.buildRuntimeArtifactComponents({
+    rootDir: '/repo/apps/stack',
+    stackBaseDir: '/stacks/repository-producer',
+    selection: {
+      components: { web: true, server: false, daemon: false },
+      activateRuntime: false,
+      forceRebuild: false,
+    },
+    env: {},
+    assertSelectedBuildPrerequisitesImpl: () => {},
+    prepareBundledPluginPublicationInputsImpl: async () => {},
+    readCliBinaryArtifactWorkspacePublicationImpl: async () => {
+      workspacePreparationCalls += 1;
+      throw new Error('web-only artifact builds must not prepare CLI workspaces');
+    },
+    collectBuildSourceMetadataImpl: async () => ({
+      repoDir: '/repo',
+      sourceFingerprint: 'provenance-a',
+      builtAt: '2026-08-16T12:00:00.000Z',
+      serverComponent: 'happier-server-light',
+      dbProvider: 'sqlite',
+    }),
+    resolveRuntimeBuildRequestIdentityImpl: async ({ selection }) => {
+      assert.deepEqual(selection.components, { web: true, server: false, daemon: false });
+      return {
+        sourceMetadata: {
+          repoDir: '/repo',
+          sourceFingerprint: 'provenance-a',
+          builtAt: '2026-08-16T12:00:00.000Z',
+          serverComponent: 'happier-server-light',
+          dbProvider: 'sqlite',
+        },
+        artifactFingerprints: { web: 'web-code-a' },
+        supportArtifactFingerprints: {},
+      };
+    },
+    withWorkspaceBundleLockImpl: async (fn) => await fn({ waited: false }),
+    buildSelectedStackArtifactsImpl: async ({ buildComponent }) => ({
+      web: await buildComponent('web', async () => ({
+        artifactDir: '/stacks/repository-producer/artifacts/web/web-code-a',
+        manifest: { component: 'web', artifactFingerprint: 'web-code-a' },
+      })),
+    }),
+    pruneComponentArtifactsImpl: async () => {},
+  });
+
+  assert.equal(workspacePreparationCalls, 0);
+  assert.equal(result.artifacts.web.manifest.artifactFingerprint, 'web-code-a');
+});
+
+test('daemon component publication retains a healthy plugin when an optional sibling build fails', async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'runtime-daemon-plugin-isolation-'));
+  try {
+    const stackDir = join(repoRoot, 'apps', 'stack');
+    mkdirSync(stackDir, { recursive: true });
+    mkdirSync(join(repoRoot, 'apps', 'cli'), { recursive: true });
+    writeFileSync(join(repoRoot, 'apps', 'cli', 'package.json'), JSON.stringify({
+      name: '@happier-dev/cli',
+      dependencies: {
+        '@happier-dev/plugins-healthy': '0.0.0',
+        '@happier-dev/plugins-broken': '0.0.0',
+      },
+      bundledDependencies: ['@happier-dev/plugins-healthy', '@happier-dev/plugins-broken'],
+    }));
+    for (const name of ['healthy', 'broken']) {
+      const packageDir = join(repoRoot, 'packages', 'plugins', name);
+      mkdirSync(packageDir, { recursive: true });
+      writeFileSync(join(packageDir, 'package.json'), JSON.stringify({
+        name: `@happier-dev/plugins-${name}`,
+      }));
+      writeFileSync(join(packageDir, 'tsconfig.json'), '{}\n');
+    }
+    const { buildBundledWorkspaceDependenciesForCli } = await import('../../../cli/scripts/buildSharedDeps.mjs');
+    const published = [];
+    let identityCaptured = false;
+    const sourceMetadata = { repoDir: repoRoot, sourceFingerprint: 'source-a' };
+    const result = await buildModule.buildRuntimeArtifactComponents({
+      rootDir: stackDir,
+      stackBaseDir: join(repoRoot, 'producer'),
+      selection: {
+        components: { web: false, server: false, daemon: true },
+        activateRuntime: true,
+        forceRebuild: false,
+      },
+      env: {},
+      assertSelectedBuildPrerequisitesImpl: () => {},
+      prepareBundledPluginPublicationInputsImpl: async () => {
+        assert.equal(identityCaptured, false, 'no publication writer may run after identity capture');
+        await buildBundledWorkspaceDependenciesForCli({
+          repoRoot,
+          publicationMode: 'live',
+          workspaceNames: ['plugins-healthy', 'plugins-broken'],
+          ensureWorkspacePackagesBuiltByNameImpl: async (_root, packageNames) => {
+            if (packageNames.includes('@happier-dev/plugins-broken')) throw new Error('broken staged export');
+            return { ok: true, built: packageNames, skipped: [] };
+          },
+          publishBundledPluginArtifactsImpl: async ({ workspaceNames, pluginFailures }) => {
+            published.push({ workspaceNames, pluginFailures });
+            return true;
+          },
+        });
+      },
+      collectBuildSourceMetadataImpl: async () => sourceMetadata,
+      resolveRuntimeBuildRequestIdentityImpl: async () => {
+        identityCaptured = true;
+        return { sourceMetadata, artifactFingerprints: { daemon: 'daemon-a' }, supportArtifactFingerprints: {} };
+      },
+      buildComponentArtifactWithIdentityLockImpl: async ({ buildArtifact }) => await buildArtifact(),
+      readCliBinaryArtifactWorkspacePublicationImpl: async () => {
+        return { workspaceRuntimeIdentity: 'a'.repeat(64), workspaceRuntimePackages: [] };
+      },
+      buildSelectedStackArtifactsImpl: async ({ buildComponent }) => ({
+        daemon: await buildComponent('daemon', async () => ({
+          artifactDir: join(repoRoot, 'producer', 'daemon-a'),
+          manifest: { component: 'daemon', artifactFingerprint: 'daemon-a' },
+        })),
+      }),
+      pruneComponentArtifactsImpl: async () => {},
+    });
+    assert.equal(result.artifacts.daemon.manifest.artifactFingerprint, 'daemon-a');
+    assert.deepEqual(published.map(({ workspaceNames }) => workspaceNames), [['plugins-healthy']]);
+    assert.deepEqual(published[0].pluginFailures.map(({ packageName }) => packageName), [
+      '@happier-dev/plugins-broken',
+    ]);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('repository snapshot publishes after a broken optional daemon plugin while retaining a healthy sibling', async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'runtime-snapshot-plugin-isolation-'));
+  try {
+    mkdirSync(join(repoRoot, 'apps', 'stack'), { recursive: true });
+    mkdirSync(join(repoRoot, 'apps', 'cli'), { recursive: true });
+    writeFileSync(join(repoRoot, 'apps', 'cli', 'package.json'), JSON.stringify({
+      name: '@happier-dev/cli',
+      bundledDependencies: ['@happier-dev/plugins-healthy', '@happier-dev/plugins-broken'],
+      dependencies: {
+        '@happier-dev/plugins-healthy': '0.0.0',
+        '@happier-dev/plugins-broken': '0.0.0',
+      },
+    }));
+    for (const name of ['healthy', 'broken']) {
+      const packageDir = join(repoRoot, 'packages', 'plugins', name);
+      mkdirSync(packageDir, { recursive: true });
+      writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: `@happier-dev/plugins-${name}` }));
+      writeFileSync(join(packageDir, 'tsconfig.json'), '{}\n');
+    }
+    const { buildBundledWorkspaceDependenciesForCli } = await import('../../../cli/scripts/buildSharedDeps.mjs');
+    const observed = [];
+    const authority = {
+      producerStackBaseDir: join(repoRoot, 'producer'),
+      producerStackName: 'repo-producer',
+      consumerStackBaseDir: join(repoRoot, 'consumer'),
+      consumerStackName: 'consumer',
+    };
+    const sourceMetadata = { repoDir: repoRoot, sourceFingerprint: 'source-a' };
+    const result = await buildModule.publishRepositoryRuntimeSnapshot({
+      rootDir: join(repoRoot, 'apps', 'stack'),
+      authority,
+      requestedComponents: ['daemon'],
+      env: {},
+      inspectActiveRuntimeSnapshotImpl: async () => ({ valid: false }),
+      captureRuntimeBuildStoreStateImpl: async () => null,
+      buildRuntimeArtifactComponentsImpl: async ({ rootDir, selection }) => await buildModule.buildRuntimeArtifactComponents({
+        rootDir,
+        stackBaseDir: authority.producerStackBaseDir,
+        selection,
+        env: {},
+        assertSelectedBuildPrerequisitesImpl: () => {},
+        prepareBundledPluginPublicationInputsImpl: async () => {
+          await buildBundledWorkspaceDependenciesForCli({
+            repoRoot,
+            publicationMode: 'live',
+            workspaceNames: ['plugins-healthy', 'plugins-broken'],
+            ensureWorkspacePackagesBuiltByNameImpl: async (_root, packageNames) => {
+              if (packageNames.includes('@happier-dev/plugins-broken')) throw new Error('broken staged export');
+              return { ok: true, built: packageNames, skipped: [] };
+            },
+            publishBundledPluginArtifactsImpl: async ({ workspaceNames, pluginFailures }) => {
+              observed.push({ workspaceNames, pluginFailures });
+              return true;
+            },
+          });
+        },
+        collectBuildSourceMetadataImpl: async () => sourceMetadata,
+        resolveRuntimeBuildRequestIdentityImpl: async () => ({
+          sourceMetadata,
+          artifactFingerprints: { daemon: 'daemon-a' },
+          supportArtifactFingerprints: {},
+        }),
+        buildComponentArtifactWithIdentityLockImpl: async ({ buildArtifact }) => await buildArtifact(),
+        readCliBinaryArtifactWorkspacePublicationImpl: async () => {
+          return { workspaceRuntimeIdentity: 'a'.repeat(64), workspaceRuntimePackages: [] };
+        },
+        buildSelectedStackArtifactsImpl: async ({ buildComponent }) => ({
+          daemon: await buildComponent('daemon', async () => ({
+            artifactDir: join(repoRoot, 'producer', 'daemon-a'),
+            manifest: { component: 'daemon', artifactFingerprint: 'daemon-a' },
+          })),
+        }),
+        pruneComponentArtifactsImpl: async () => {},
+      }),
+      publishBuiltRepositoryRuntimeSnapshotImpl: async ({ artifacts }) => {
+        assert.equal(artifacts.daemon.manifest.artifactFingerprint, 'daemon-a');
+        return { changed: true, snapshotId: 'snapshot-a', snapshotPath: '/snapshots/snapshot-a' };
+      },
+    });
+    assert.equal(result.snapshotId, 'snapshot-a');
+    assert.deepEqual(observed[0].workspaceNames, ['plugins-healthy']);
+    assert.deepEqual(observed[0].pluginFailures.map(({ packageName }) => packageName), [
+      '@happier-dev/plugins-broken',
+    ]);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('web-only publication settles plugin inputs before component identity and the UI build', async () => {
+  const events = [];
+  const sourceMetadata = { repoDir: '/repo', sourceFingerprint: 'source-a' };
+  await buildModule.buildRuntimeArtifactComponents({
+    rootDir: '/repo/apps/stack',
+    stackBaseDir: '/stacks/repository-producer',
+    selection: {
+      components: { web: true, server: false, daemon: false },
+      activateRuntime: false,
+      forceRebuild: false,
+    },
+    env: {},
+    assertSelectedBuildPrerequisitesImpl: () => {},
+    prepareBundledPluginPublicationInputsImpl: async () => { events.push('plugin-inputs'); },
+    collectBuildSourceMetadataImpl: async () => { events.push('source-metadata'); return sourceMetadata; },
+    resolveRuntimeBuildRequestIdentityImpl: async () => {
+      events.push('identity');
+      return { sourceMetadata, artifactFingerprints: { web: 'web-a' }, supportArtifactFingerprints: {} };
+    },
+    buildComponentArtifactWithIdentityLockImpl: async ({ buildArtifact }) => await buildArtifact(),
+    buildSelectedStackArtifactsImpl: async ({ buildComponent }) => ({
+      web: await buildComponent('web', async () => {
+        events.push('web-build');
+        return { artifactDir: '/artifact/web', manifest: { artifactFingerprint: 'web-a' } };
+      }),
+    }),
+    pruneComponentArtifactsImpl: async () => {},
+  });
+  assert.deepEqual(events, ['plugin-inputs', 'source-metadata', 'identity', 'web-build']);
+});
+
+test('plugin input preflight republishes a UI artifact failure before identity capture', async () => {
+  const failure = Object.freeze({
+    packageName: '@happier-dev/plugins-broken',
+    pluginId: 'happier.broken',
+    diagnostic: Object.freeze({ code: 'plugin_ui_artifact_invalid', message: 'missing bundle' }),
+  });
+  const events = [];
+  await buildModule.prepareBundledPluginPublicationInputs({
+    rootDir: '/repo/apps/stack',
+    env: {},
+    runCanonicalBundledPluginArtifactPublisherImpl: async (options) => {
+      events.push(['projection', options.pluginFailures ?? []]);
+    },
+    generateBundledPluginUiArtifactsImpl: async () => {
+      events.push(['ui-artifacts']);
+      return { pluginFailures: [failure] };
+    },
+  });
+  assert.deepEqual(events, [
+    ['projection', []],
+    ['ui-artifacts'],
+    ['projection', [failure]],
+  ]);
+});
+
+test('daemon preflight settles installed plugin diagnostics before UI artifact publication', async () => {
+  const events = [];
+  await buildModule.prepareBundledPluginPublicationInputs({
+    rootDir: '/repo/apps/stack',
+    selection: { components: { daemon: true, web: true, server: false } },
+    env: {},
+    runCanonicalBundledPluginArtifactPublisherImpl: async () => { events.push('projection'); },
+    syncDaemonRuntimeDependenciesImpl: async () => { events.push('installed-sync'); },
+    generateBundledPluginUiArtifactsImpl: async () => { events.push('ui-artifacts'); return { pluginFailures: [] }; },
+  });
+  assert.deepEqual(events, ['installed-sync', 'ui-artifacts']);
+});
+
+test('plugin input preflight resolves the monorepo root from either the repo root or the stack app dir', async () => {
+  const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url)).replace(/[\\/]$/, '');
+  for (const rootDir of [repoRoot, join(repoRoot, 'apps', 'stack')]) {
+    const seen = [];
+    await buildModule.prepareBundledPluginPublicationInputs({
+      rootDir,
+      env: {},
+      runCanonicalBundledPluginArtifactPublisherImpl: async (options) => { seen.push(options.repoRoot); },
+      generateBundledPluginUiArtifactsImpl: async (options) => { seen.push(options.repoRoot); return { pluginFailures: [] }; },
+    });
+    assert.deepEqual(seen, [repoRoot, repoRoot], rootDir);
+  }
+});
+
+test('an unchanged daemon artifact identity reuses its payload without preparing the CLI closure', async () => {
+  const sourceMetadata = { repoDir: '/repo', sourceFingerprint: 'source-a' };
+  const result = await buildModule.buildRuntimeArtifactComponents({
+    rootDir: '/repo/apps/stack',
+    stackBaseDir: '/stacks/repository-producer',
+    selection: {
+      components: { web: false, server: false, daemon: true },
+      activateRuntime: false,
+      forceRebuild: false,
+    },
+    env: {},
+    assertSelectedBuildPrerequisitesImpl: () => {},
+    collectBuildSourceMetadataImpl: async () => sourceMetadata,
+    prepareBundledPluginPublicationInputsImpl: async () => {},
+    resolveRuntimeBuildRequestIdentityImpl: async () => ({
+      sourceMetadata,
+      artifactFingerprints: { daemon: 'daemon-code-a' },
+      componentSourceFingerprints: { daemon: 'a'.repeat(64) },
+      daemonWorkspaceSourceFingerprint: 'b'.repeat(64),
+      supportArtifactFingerprints: { daemon: 'daemon-support-a' },
+    }),
+    readCliBinaryArtifactWorkspacePublicationImpl: async () => {
+      throw new Error('reused daemon artifact must not prepare the CLI closure');
+    },
+    buildComponentArtifactWithIdentityLockImpl: async ({ buildArtifact }) => {
+      void buildArtifact;
+      return {
+        manifest: {
+          component: 'daemon',
+          artifactFingerprint: 'daemon-code-a',
+          daemonSupportArtifactFingerprint: 'daemon-support-a',
+        },
+      };
+    },
+    buildSelectedStackArtifactsImpl: async ({ buildComponent }) => ({
+      daemon: await buildComponent('daemon', async () => {
+        throw new Error('reused daemon artifact must not enter payload builder');
+      }),
+    }),
+    pruneComponentArtifactsImpl: async () => {},
+  });
+
+  assert.equal(result.artifacts.daemon.manifest.artifactFingerprint, 'daemon-code-a');
 });
 
 test('same component identity builds once while its waiter reuses the published object', async () => {
@@ -496,7 +896,7 @@ test('repository publication holds the runtime lock only for producer snapshot c
   assert.equal(result.snapshotId.length > 0, true);
 });
 
-test('repository publication preflight forwards daemon without reading stale installed workspace identity', async () => {
+test('repository publication preflight skips a current daemon without preparing the bundled workspace closure', async () => {
   assert.equal(typeof buildModule.resolveRepositoryRuntimePublicationComponents, 'function');
   const fixtureRepoRoot = mkdtempSync(join(tmpdir(), 'runtime-publication-preflight-'));
   const installedWorkspacePath = join(fixtureRepoRoot, 'apps', 'cli', 'node_modules', 'identity.txt');
@@ -522,6 +922,7 @@ test('repository publication preflight forwards daemon without reading stale ins
       rootDir: fixtureRepoRoot,
       authority: { producerStackBaseDir: '/stacks/repo-producer' },
       requestedComponents: ['daemon'],
+      prepareBundledPluginPublicationInputsImpl: async () => {},
       inspectActiveRuntimeSnapshotImpl: async () => ({
         valid: true,
         snapshot: { snapshotId: 'snapshot-current' },
@@ -548,27 +949,29 @@ test('repository publication preflight forwards daemon without reading stale ins
             assert.equal(readFileSync(installedWorkspacePath, 'utf8'), 'stale-installed-workspace');
             return { daemon: 'daemon-source-a' };
           },
+          resolveDaemonWorkspaceSourceFingerprintImpl: async () => 'workspace-source-a',
           resolveDaemonSupportArtifactFingerprintImpl: async () => 'daemon-support-a',
         });
       },
     });
 
     assert.deepEqual(result, {
-      components: ['daemon'],
+      components: [],
       currentSnapshotId: 'snapshot-current',
     });
-    assert.equal(identityResolutionCalls, 0);
+    assert.equal(identityResolutionCalls, 1);
   } finally {
     rmSync(fixtureRepoRoot, { recursive: true, force: true });
   }
 });
 
-test('repository publication preflight filters non-daemon identities while forwarding daemon', async () => {
+test('repository publication preflight detects daemon identity drift with the same canonical identity owner', async () => {
   assert.equal(typeof buildModule.resolveRepositoryRuntimePublicationComponents, 'function');
   const result = await buildModule.resolveRepositoryRuntimePublicationComponents({
     rootDir: '/repo',
     authority: { producerStackBaseDir: '/stacks/repo-producer' },
     requestedComponents: ['daemon', 'server', 'outside-domain'],
+    prepareBundledPluginPublicationInputsImpl: async () => {},
     inspectActiveRuntimeSnapshotImpl: async () => ({
       valid: true,
       snapshot: { snapshotId: 'snapshot-current' },
@@ -580,8 +983,8 @@ test('repository publication preflight filters non-daemon identities while forwa
       },
     }),
     resolveRuntimeBuildRequestIdentityImpl: async ({ selection }) => {
-      assert.deepEqual(selection.components, { web: false, server: true, daemon: false, tauri: false });
-      return { artifactFingerprints: { server: 'server-current' } };
+      assert.deepEqual(selection.components, { web: false, server: true, daemon: true, tauri: false });
+      return { artifactFingerprints: { server: 'server-current', daemon: 'daemon-new' } };
     },
   });
 

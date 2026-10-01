@@ -104,7 +104,7 @@ describe('GitLab plugin manifest', () => {
     })]);
   });
 
-  it('declares each source-native detail plane as a UI-surfaced account-bound read', () => {
+  it('declares each source-native detail plane as an account-bound UI and agent-facing read', () => {
     const actions = new Map(PLUGIN_MANIFEST.contributes.actions.map((action) => [action.id, action]));
 
     for (const id of Object.values(GITLAB_TRIAGE_DETAIL_ACTION_IDS)) {
@@ -113,9 +113,9 @@ describe('GitLab plugin manifest', () => {
       // refused by the host, and the panel would report a contract break the user
       // cannot act on.
       expect(action, `${id} must be declared`).toBeDefined();
-      // `ui` only: the mounted detail body reaches them as present-user
-      // authority; the aggregate and other plugin code are refused.
-      expect(action?.surfaces).toEqual(['ui']);
+      // Native reads are reachable from UI and agent-facing Actions; direct
+      // plugin execution remains unavailable.
+      expect(action?.surfaces).toEqual(['ui', 'agent', 'mcp', 'cli']);
       expect(action?.dangerLevel).toBe('safe');
       expect(action?.hostAccess).toEqual([
         GITLAB_CLOUD_NETWORK_HOST_ACCESS_ID,
@@ -128,10 +128,11 @@ describe('GitLab plugin manifest', () => {
     }
     // They are NOT source-protocol roles. The two workspace operations below
     // are protocol-owned roles; none of the GitLab-native detail vocabulary is
-    // published into the shared source contract.
+    // published into the shared source contract. Shared pull-request status is
+    // a protocol role, not one of the native detail planes.
     const contribution = PLUGIN_MANIFEST.contributes.targetedPluginContributions[0];
     expect(Object.keys(contribution?.operations ?? {}).sort())
-      .toEqual(['get', 'listInstances', 'prepareReviewWorkspace', 'scan', 'verifyReviewWorkspace']);
+      .toEqual(['get', 'listInstances', 'prepareReviewWorkspace', 'readPullRequestStatus', 'scan', 'verifyReviewWorkspace']);
   });
 
   it('binds prepared-workspace materialization as the protocol-owned local write', () => {
@@ -285,7 +286,7 @@ describe('GitLab merge-request mutation Actions', () => {
     }
   });
 
-  it('never exposes a forge mutation on agent or mcp', () => {
+  it('exposes merge-request writes through centrally approved automation surfaces', () => {
     const ids = Object.values(GITLAB_TRIAGE_MUTATION_ACTION_IDS);
     // Enumerated, not sampled. The OMISSIONS are the gate: with no `agent` and no
     // `mcp` surface the Action is not agent-reachable at all, where a danger level
@@ -299,9 +300,8 @@ describe('GitLab merge-request mutation Actions', () => {
       const surfaces = actions.get(id)?.surfaces;
       expect(surfaces, id).toContain('ui');
       expect(surfaces, id).not.toContain('plugin');
-      expect(surfaces, id).not.toContain('agent');
-      expect(surfaces, id).not.toContain('mcp');
-      expect(surfaces, id).not.toContain('cli');
+      expect(surfaces, id).toEqual(id.startsWith('gitlab/merge-request/')
+        ? ['ui', 'agent', 'mcp', 'cli'] : ['ui']);
       expect(surfaces, id).not.toContain('voice');
     }
   });

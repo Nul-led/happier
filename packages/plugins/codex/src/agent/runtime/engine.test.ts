@@ -30,6 +30,16 @@ function createConnectedAccountsBoundary() {
 }
 
 describe('createCodexAgentRuntime', () => {
+  it('forces the native read-only sandbox for hands-off even with the default permission mode', async () => {
+    const runtime = await createCodexAgentRuntime({} as AgentRuntimeFactoryContext);
+    const plan = await runtime.surfaces?.terminal?.resolveLaunch({
+      sessionId: 'hands-off', cwd: '/repo', metadata: {}, modelSelection: null,
+      configuration: { mode: { value: null, updatedAtMs: 0 }, model: { value: null, updatedAtMs: 0 },
+        permissionIntent: { value: 'default', updatedAtMs: 0 }, options: {}, workspaceWrites: 'deny' },
+    });
+    expect(plan?.argv).toEqual(expect.arrayContaining(['--sandbox', 'read-only']));
+  });
+
   it('exposes every declared Codex direct session control through the native factory', async () => {
     const runtime = await createCodexAgentRuntime({} as AgentRuntimeFactoryContext);
 

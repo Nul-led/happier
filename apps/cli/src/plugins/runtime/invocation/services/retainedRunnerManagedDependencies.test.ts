@@ -82,7 +82,7 @@ async function prepareGeneration(input: Readonly<{
             kind: 'localPath',
             canonicalPath: sourceRootPath,
         },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
         immutableGenerationId: input.immutableGenerationId,
     });
@@ -100,7 +100,11 @@ function retainedRunnerInputs() {
         pluginVersion: '1.0.0',
         agentId: 'runner',
         localAgentId: 'runner',
-        immutableGenerationId: 'immutable-agent-g',
+        sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'immutable-agent-g',
+            installSource: 'localPath',
+        },
         locator: {
             module: './runtime.mjs',
             export: 'createRuntime',
@@ -172,21 +176,21 @@ describe('retained Runner managed dependencies', () => {
                     paths,
                     sourceParent,
                     pluginId: 'acme.control',
-                    immutableGenerationId: 'generation-control',
+                    immutableGenerationId: 'occurrenceId-control',
                     definition: controlDefinition,
                 }),
                 prepareGeneration({
                     paths,
                     sourceParent,
                     pluginId: 'acme.loser',
-                    immutableGenerationId: 'generation-loser',
+                    immutableGenerationId: 'occurrenceId-loser',
                     definition: sharedDefinition,
                 }),
                 prepareGeneration({
                     paths,
                     sourceParent,
                     pluginId: 'happier.winner',
-                    immutableGenerationId: 'generation-winner',
+                    immutableGenerationId: 'occurrenceId-winner',
                     definition: sharedDefinition,
                 }),
             ]);
@@ -197,10 +201,22 @@ describe('retained Runner managed dependencies', () => {
                 hostAccessRequests: retainedAgent.hostAccessRequests,
                 retention: {
                     v: 1,
-                    sourceGenerationIds: [
-                        'generation-control',
-                        'generation-loser',
-                        'generation-winner',
+                    sourceCustodies: [
+                        {
+                            kind: 'managed',
+                            immutableGenerationId: 'occurrenceId-control',
+                            installSource: 'localPath',
+                        },
+                        {
+                            kind: 'managed',
+                            immutableGenerationId: 'occurrenceId-loser',
+                            installSource: 'localPath',
+                        },
+                        {
+                            kind: 'managed',
+                            immutableGenerationId: 'occurrenceId-winner',
+                            installSource: 'localPath',
+                        },
                     ],
                     qualifiedDependencyIds: [
                         'acme.control/tool',
@@ -208,15 +224,27 @@ describe('retained Runner managed dependencies', () => {
                     ],
                     sourceCandidates: [{
                         qualifiedDependencyId: 'acme.control/tool',
-                        immutableGenerationId: 'generation-control',
+                        sourceCustody: {
+                            kind: 'managed',
+                            immutableGenerationId: 'occurrenceId-control',
+                            installSource: 'localPath',
+                        },
                         manifestAuthority: 'external',
                     }, {
                         qualifiedDependencyId: 'acme.loser/tool',
-                        immutableGenerationId: 'generation-loser',
+                        sourceCustody: {
+                            kind: 'managed',
+                            immutableGenerationId: 'occurrenceId-loser',
+                            installSource: 'localPath',
+                        },
                         manifestAuthority: 'external',
                     }, {
                         qualifiedDependencyId: 'happier.winner/tool',
-                        immutableGenerationId: 'generation-winner',
+                        sourceCustody: {
+                            kind: 'managed',
+                            immutableGenerationId: 'occurrenceId-winner',
+                            installSource: 'localPath',
+                        },
                         manifestAuthority: 'bundled_first_party',
                     }],
                 },

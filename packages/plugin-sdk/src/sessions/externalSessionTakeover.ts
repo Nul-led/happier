@@ -44,6 +44,8 @@ export const AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS = Object.freeze({
 
 export type AgentExternalSessionTakeoverLaunchPlan = Readonly<{
     environmentVariables?: Readonly<Record<string, string>>;
+    /** Ask the host to apply this Agent's canonical Account authentication default. */
+    applyConnectedAccountDefaults?: true;
     /** Agent-owned identity carried to the target Agent's session opener. */
     runtimeDescriptorV1?: RuntimeDescriptorV1;
 }>;
@@ -54,6 +56,8 @@ export type AgentExternalSessionTakeoverResolveLaunchRequest =
         source: AgentExternalSessionSource;
         remoteSessionId: string;
         linkData: AgentExternalSessionLinkData;
+        /** Host-selected transcript authority for the runtime being launched. */
+        transcriptStorage: 'direct' | 'persisted';
         /** Host-selected local cwd on the linked owner machine. */
         targetDirectory: string;
         linkedDirectory?: string;
@@ -244,6 +248,7 @@ export function validateAgentExternalSessionTakeoverResolveLaunchRequest(
             'source',
             'remoteSessionId',
             'linkData',
+            'transcriptStorage',
             'targetDirectory',
             'linkedDirectory',
         ],
@@ -255,6 +260,7 @@ export function validateAgentExternalSessionTakeoverResolveLaunchRequest(
             'source',
             'remoteSessionId',
             'linkData',
+            'transcriptStorage',
             'targetDirectory',
         ],
         'resolveLaunch request',
@@ -287,6 +293,12 @@ export function validateAgentExternalSessionTakeoverResolveLaunchRequest(
             + `${AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS.maxRemoteSessionIdCodeUnits} code units`,
         );
     }
+    if (record.transcriptStorage !== 'direct' && record.transcriptStorage !== 'persisted') {
+        return invalid(
+            'resolveLaunch request transcriptStorage',
+            "must be 'direct' or 'persisted'",
+        );
+    }
     return Object.freeze({
         ...snapshotInvocation(record),
         linkedSessionId: boundedString(
@@ -298,6 +310,7 @@ export function validateAgentExternalSessionTakeoverResolveLaunchRequest(
         source: source.data as AgentExternalSessionSource,
         remoteSessionId,
         linkData: linkData.data,
+        transcriptStorage: record.transcriptStorage,
         targetDirectory: boundedString(
             record.targetDirectory,
             1,
@@ -315,6 +328,7 @@ export function validateAgentExternalSessionTakeoverLaunchPlan(
         value,
         [
             'environmentVariables',
+            'applyConnectedAccountDefaults',
             'runtimeDescriptorV1',
         ],
         [],
@@ -323,6 +337,11 @@ export function validateAgentExternalSessionTakeoverLaunchPlan(
     const environmentVariables = record.environmentVariables === undefined
         ? undefined
         : snapshotEnvironmentVariables(record.environmentVariables);
+    const applyConnectedAccountDefaults = record.applyConnectedAccountDefaults === undefined
+        ? undefined
+        : record.applyConnectedAccountDefaults === true
+            ? true as const
+            : invalid('launch plan applyConnectedAccountDefaults', 'must be true when present');
     const runtimeDescriptorV1 = record.runtimeDescriptorV1 === undefined
         ? undefined
         : (() => {
@@ -349,6 +368,7 @@ export function validateAgentExternalSessionTakeoverLaunchPlan(
         })();
     return Object.freeze({
         ...(environmentVariables === undefined ? {} : { environmentVariables }),
+        ...(applyConnectedAccountDefaults === undefined ? {} : { applyConnectedAccountDefaults }),
         ...(runtimeDescriptorV1 === undefined ? {} : { runtimeDescriptorV1 }),
     });
 }

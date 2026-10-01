@@ -42,8 +42,11 @@ test('returns null for unsupported target triples so the bootstrap build can fal
   );
 });
 
-test('prepareTauriSidecar builds app workspace dependencies before compiling hsetup', async () => {
+test('prepareTauriSidecar publishes app workspace dependencies before compiling hsetup', async () => {
   const calls = [];
+  const ensureUiWorkspacePackagesBuilt = async (options) => {
+    calls.push(['ensure-ui', options]);
+  };
   const ensureWorkspacePackagesBuiltForComponent = async (componentDir, options) => {
     calls.push(['ensure', componentDir, options]);
   };
@@ -68,6 +71,7 @@ test('prepareTauriSidecar builds app workspace dependencies before compiling hse
 
   const result = await prepareTauriSidecar({
     env: { TAURI_ENV_TARGET_TRIPLE: 'aarch64-apple-darwin' },
+    ensureUiWorkspacePackagesBuilt,
     ensureWorkspacePackagesBuiltForComponent,
     ensureTauriSidecarBinaryFileImpl,
     ensureTauriSidecarRuntimeFilesImpl,
@@ -76,8 +80,9 @@ test('prepareTauriSidecar builds app workspace dependencies before compiling hse
   });
 
   assert.equal(result, 0);
-  assert.equal(calls[0][0], 'ensure');
-  assert.match(String(calls[0][1]), /apps\/ui$/);
+  assert.equal(calls[0][0], 'ensure-ui');
+  assert.match(String(calls[0][1].uiPackageDir), /apps\/ui$/);
+  assert.deepEqual(calls[0][1].env, { TAURI_ENV_TARGET_TRIPLE: 'aarch64-apple-darwin' });
   assert.equal(calls[1][0], 'ensure');
   assert.match(String(calls[1][1]), /apps\/bootstrap$/);
   assert.equal(calls[2][0], 'spawn');
@@ -112,7 +117,9 @@ test('ensureTauriSidecarBinaryFile stages the host target-scoped sidecar filenam
 
 test('prepareTauriSidecar invokes Yarn via a Windows-safe shell so yarn.cmd can be resolved', async () => {
   const calls = [];
+  const ensureUiWorkspacePackagesBuilt = async () => {};
   const ensureWorkspacePackagesBuiltForComponent = async () => {};
+  const ensureTauriSidecarBinaryFileImpl = async () => {};
   const ensureTauriSidecarRuntimeFilesImpl = async () => [];
   const ensureTauriSidecarEntrypointFileImpl = async (options) => join(options.srcTauriDir, 'binaries', 'hsetup.js');
   const spawnSyncImpl = (command, args, options) => {
@@ -125,7 +132,9 @@ test('prepareTauriSidecar invokes Yarn via a Windows-safe shell so yarn.cmd can 
   await prepareTauriSidecar({
     env: {},
     platform: 'win32',
+    ensureUiWorkspacePackagesBuilt,
     ensureWorkspacePackagesBuiltForComponent,
+    ensureTauriSidecarBinaryFileImpl,
     ensureTauriSidecarRuntimeFilesImpl,
     ensureTauriSidecarEntrypointFileImpl,
     spawnSyncImpl,
@@ -196,6 +205,7 @@ test('prepareTauriSidecar propagates spawn errors', async () => {
 
   await assert.rejects(() => prepareTauriSidecar({
     env: {},
+    ensureUiWorkspacePackagesBuilt: async () => {},
     ensureWorkspacePackagesBuiltForComponent: async () => {},
     spawnSyncImpl: () => ({ error: boom }),
   }), /spawn failed/);

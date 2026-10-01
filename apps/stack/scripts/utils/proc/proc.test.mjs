@@ -1,15 +1,123 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { EventEmitter } from 'node:events';
+import { spawn, spawnSync } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
 import { WriteStream } from 'node:fs';
 import { appendFile, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { withCliDistBuildLock } from './cliDistBuildLock.mjs';
-import { killProcessTree, markSpawnedProcessPlannedExit, run, runCapture, runCaptureResult, spawnProc } from './proc.mjs';
+import { killProcessTree, markSpawnedProcessPlannedExit, run, runCapture, runCaptureResult, runCommand, spawnProc } from './proc.mjs';
 import { isPidAlive } from './pids.mjs';
+
+test('foreground commands preserve their controlling terminal', { skip: process.platform === 'win32' }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-proc-tty-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const wrapper = join(root, 'tty.mjs');
+  await writeFile(wrapper, `
+    import { runCommand } from ${JSON.stringify(new URL('./proc.mjs', import.meta.url).href)};
+    const result = await runCommand(process.execPath, ['-e', "const fs = require('node:fs'); fs.closeSync(fs.openSync('/dev/tty', 'r')); console.log('controlling-terminal-ok');"], { stdio: 'inherit' });
+    process.exitCode = result.status ?? 1;
+  `);
+  const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+  const args = process.platform === 'darwin'
+    ? ['-q', '/dev/null', process.execPath, wrapper]
+    : ['-q', '-e', '-c', `${quote(process.execPath)} ${quote(wrapper)}`, '/dev/null'];
+  const result = spawnSync('script', args, { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /controlling-terminal-ok/);
+});
+
+for (const helper of ['runCommand', 'run']) {
+for (const cancellation of ['parent SIGKILL', 'supervisor group SIGKILL']) {
+  test(`${helper} owned foreground custody survives ${cancellation}`, { skip: process.platform === 'win32' }, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-proc-custody-'));
+    const pidFile = join(root, 'compiler.pid');
+    let compilerPid;
+    let wrapper;
+    t.after(async () => {
+      if (compilerPid) { try { process.kill(compilerPid, 'SIGKILL'); } catch {} }
+      if (wrapper?.exitCode == null && wrapper?.signalCode == null) wrapper?.kill('SIGKILL');
+      await rm(root, { recursive: true, force: true });
+    });
+    const compiler = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`;
+    wrapper = spawn(process.execPath, ['--input-type=module', '-e', `
+      import { ${helper} } from ${JSON.stringify(new URL('./proc.mjs', import.meta.url).href)};
+      await ${helper}(process.execPath, ['-e', ${JSON.stringify(compiler)}], { stdio: 'ignore', ownedProcessGroup: true });
+    `], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    wrapper.stderr.on('data', (chunk) => { stderr += chunk; });
+    async function waitFor(predicate, message) {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        if (await predicate()) return;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.fail(`${message}: ${stderr}`);
+    }
+    await waitFor(async () => {
+      compilerPid = Number(await readFile(pidFile, 'utf8').catch(() => '0'));
+      return compilerPid > 0;
+    }, 'compiler did not start');
+    const exited = once(wrapper, 'exit');
+    process.kill(cancellation.startsWith('supervisor') ? -wrapper.pid : wrapper.pid, 'SIGKILL');
+    assert.deepEqual(await exited, [null, 'SIGKILL']);
+    // A killed orphan can briefly await init reaping. It must not remain running.
+    await waitFor(() => {
+      if (!isPidAlive(compilerPid)) return true;
+      const state = spawnSync('ps', ['-o', 'stat=', '-p', String(compilerPid)], { encoding: 'utf8' });
+      assert.equal(state.error, undefined);
+      return !isPidAlive(compilerPid) || (state.status === 0 && state.stdout.trim().startsWith('Z'));
+    }, 'compiler survived wrapper cancellation');
+  });
+}
+}
+
+test('owned foreground custody forwards repeated parent-only cancellation', { skip: process.platform === 'win32' }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-proc-repeat-signal-'));
+  const marker = join(root, 'signal-count');
+  const command = `
+    const fs = require('node:fs'); let count = 0;
+    fs.writeFileSync(${JSON.stringify(marker)}, '0');
+    process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(marker)}, String(++count)); if (count === 2) process.exit(0); });
+    setInterval(() => {}, 1000);
+  `;
+  const wrapper = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { runCommand } from ${JSON.stringify(new URL('./proc.mjs', import.meta.url).href)};
+    const result = await runCommand(process.execPath, ['-e', ${JSON.stringify(command)}], { ownedProcessGroup: true, stdio: 'ignore' });
+    process.exitCode = result.status ?? 1;
+  `], { stdio: 'ignore' });
+  t.after(async () => {
+    if (wrapper.exitCode == null && wrapper.signalCode == null) wrapper.kill('SIGKILL');
+    await rm(root, { recursive: true, force: true });
+  });
+  async function waitForCount(count) {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (await readFile(marker, 'utf8').catch(() => '') === String(count)) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.fail(`command did not receive signal count ${count}`);
+  }
+  await waitForCount(0);
+  const exited = once(wrapper, 'exit');
+  wrapper.kill('SIGTERM');
+  await waitForCount(1);
+  wrapper.kill('SIGTERM');
+  await waitForCount(2);
+  assert.deepEqual(await exited, [0, null]);
+});
+
+for (const ownedProcessGroup of [false, true]) {
+test(`foreground commands remove cancellation handlers after a spawn failure or normal exit (owned=${ownedProcessGroup})`, async () => {
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  const before = signals.map((signal) => process.listenerCount(signal));
+  const failed = await runCommand(`happier-missing-foreground-command-${process.pid}`, [], { ownedProcessGroup });
+  assert.equal(failed.error.code, 'ENOENT');
+  const exited = await runCommand(process.execPath, ['-e', 'process.exit(7)'], { stdio: 'ignore', ownedProcessGroup });
+  assert.deepEqual(exited, { status: 7, signal: null });
+  assert.deepEqual(signals.map((signal) => process.listenerCount(signal)), before);
+});
+}
 
 test('killProcessTree delegates Windows cleanup to the bounded async tree-termination owner', async () => {
   let leaderAlive = true;

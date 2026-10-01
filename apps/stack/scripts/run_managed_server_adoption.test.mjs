@@ -5,11 +5,13 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveServerReadyTimeoutMs } from './utils/server/server.mjs';
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = dirname(scriptsDir);
 const repoRoot = dirname(dirname(packageRoot));
 const runScript = join(packageRoot, 'scripts', 'run.mjs');
+const runServerReadyTimeoutMs = resolveServerReadyTimeoutMs();
 
 async function createFakeMonorepo(rootDir) {
   await mkdir(join(rootDir, 'node_modules'), { recursive: true });
@@ -86,7 +88,7 @@ async function stopProcess(child) {
   child.stderr?.destroy();
 }
 
-async function waitForOutput(getOutput, pattern, timeoutMs = 8_000) {
+async function waitForOutput(getOutput, pattern, timeoutMs = runServerReadyTimeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const output = getOutput();
@@ -96,7 +98,7 @@ async function waitForOutput(getOutput, pattern, timeoutMs = 8_000) {
   throw new Error(`timed out waiting for ${pattern}:\n${getOutput()}`);
 }
 
-function runNode(args, { cwd, env, timeoutMs = 8_000 }) {
+function runNode(args, { cwd, env, timeoutMs = runServerReadyTimeoutMs }) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
@@ -272,7 +274,6 @@ exit 0
 
   const result = await runNode([runScript, '--source', '--no-daemon', '--no-ui'], {
     cwd: repoRoot,
-    timeoutMs: 8_000,
     env: {
       ...process.env,
       PATH: `${binDir}:${process.env.PATH}`,

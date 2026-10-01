@@ -3,6 +3,8 @@ import type { PluginUiEphemeralSharedScope } from '@happier-dev/plugin-ui';
 type SharedValueEntry = {
   value: unknown;
   dispose(): void;
+  retainWhenIdle: boolean;
+  onIdle?: () => void;
   onExecutionOriginChange?: () => void;
   readonly leases: Set<Readonly<{ executionOriginKey: string }>>;
 };
@@ -14,15 +16,24 @@ type SharedValueEntry = {
  */
 export function createTriageEphemeralSharedScopeOriginFixture(): Readonly<{
   forExecutionOrigin(executionOriginKey: string): PluginUiEphemeralSharedScope;
+  /** The host retires the scope (Account or plugin occurrence): every value is disposed. */
+  retire(): void;
 }> {
   const values = new Map<string, SharedValueEntry>();
 
   return Object.freeze({
+    retire() {
+      const entries = [...values.values()];
+      values.clear();
+      for (const entry of entries) entry.dispose();
+    },
     forExecutionOrigin(executionOriginKey: string): PluginUiEphemeralSharedScope {
       return Object.freeze({
         acquire<T>(key: string, create: () => Readonly<{
           value: T;
           dispose(): void;
+          retainWhenIdle?: true;
+          onIdle?(): void;
           onExecutionOriginChange?(): void;
         }>) {
           let entry = values.get(key);
@@ -31,6 +42,8 @@ export function createTriageEphemeralSharedScopeOriginFixture(): Readonly<{
             entry = {
               value: created.value,
               dispose: created.dispose,
+              retainWhenIdle: created.retainWhenIdle === true,
+              ...(created.onIdle === undefined ? {} : { onIdle: created.onIdle }),
               ...(created.onExecutionOriginChange === undefined
                 ? {}
                 : { onExecutionOriginChange: created.onExecutionOriginChange }),
@@ -52,6 +65,11 @@ export function createTriageEphemeralSharedScopeOriginFixture(): Readonly<{
               entry!.leases.delete(leaseRecord);
               if (entry!.leases.size === 0) {
                 if (values.get(key) !== entry) return;
+                // The SDK contract: a retained value survives its last lease.
+                if (entry!.retainWhenIdle) {
+                  entry!.onIdle?.();
+                  return;
+                }
                 values.delete(key);
                 entry!.dispose();
                 return;

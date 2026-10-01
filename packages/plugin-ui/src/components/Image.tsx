@@ -1,6 +1,5 @@
 import { useCallback, type ReactElement } from 'react';
 
-import { useHappierUiPlatform } from '../environment/context.js';
 import type { PluginUiResourceReference } from '../hostApi/resourceStore.js';
 import { usePluginResource } from '../hostApi/index.js';
 import { HappierBrandMark, HappierImage, type HappierImageSize } from '../presentation/content/Image.js';
@@ -92,7 +91,6 @@ export function BrandMark({ pluginId, size, showName = false, externallyLabelled
   const targetPluginId = pluginId === undefined ? undefined : pluginId.trim();
   const resource = targetPluginId ? undefined : presentationHost?.brand?.resource;
   const theme = usePluginTheme();
-  const { colorScheme } = useHappierUiPlatform();
   if (targetPluginId) {
     const rendered = presentationHost?.renderBrandMark?.({
       pluginId: targetPluginId,
@@ -111,7 +109,7 @@ export function BrandMark({ pluginId, size, showName = false, externallyLabelled
       showName={showName}
       externallyLabelled={externallyLabelled}
       theme={theme}
-      colorScheme={colorScheme}
+      monochrome={presentationHost?.brand?.monochrome}
       testID={testID}
     />;
   }
@@ -122,7 +120,6 @@ export function BrandMark({ pluginId, size, showName = false, externallyLabelled
       showName={showName}
       externallyLabelled={externallyLabelled}
       theme={theme}
-      colorScheme={colorScheme}
       testID={testID}
     />
   );
@@ -135,7 +132,7 @@ function ResourceBrandMark(props: Readonly<{
   showName: boolean;
   externallyLabelled: boolean;
   theme: ReturnType<typeof usePluginTheme>;
-  colorScheme: ReturnType<typeof useHappierUiPlatform>['colorScheme'];
+  monochrome?: boolean;
   testID?: string;
 }>): ReactElement {
   const { resource: snapshot } = usePluginResource(props.resource);
@@ -149,7 +146,7 @@ function ResourceBrandMark(props: Readonly<{
       showName={props.showName}
       externallyLabelled={props.externallyLabelled}
       theme={props.theme}
-      colorScheme={props.colorScheme}
+      monochrome={props.monochrome}
       testID={props.testID}
       onDecodeError={onDecodeError}
     />

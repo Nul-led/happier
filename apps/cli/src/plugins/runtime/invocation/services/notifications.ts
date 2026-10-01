@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
     buildQualifiedPluginContributionKey,
@@ -57,7 +57,8 @@ type PluginNotificationBatchResult = Awaited<
 >;
 
 export type PluginNotificationSenderBinding = Readonly<{
-    generation: string;
+    occurrenceId: string;
+    retirementSignal?: AbortSignal;
     isCurrent(): boolean | Promise<boolean>;
     send(request: PluginNotificationSendRequest, signal: AbortSignal): unknown | Promise<unknown>;
 }>;
@@ -66,7 +67,7 @@ export type StablePluginNotificationsHost = Readonly<{
     categories: readonly NotificationCategoryDeclaration[];
     channels: readonly ResolvedNotificationChannelContribution[];
     activateChannel(ref: PluginContributionRef): Promise<void>;
-    readChannel(ref: PluginContributionRef, seed: PluginInvocationServicesSeed): PluginNotificationSenderBinding | null;
+    readChannel(ref: PluginContributionRef, seed?: PluginInvocationServicesSeed): PluginNotificationSenderBinding | null;
     preferencePolicy?: Readonly<{
         read(params: Readonly<{
             pluginId: string;
@@ -78,14 +79,14 @@ export type StablePluginNotificationsHost = Readonly<{
         watch(params: Readonly<{
             pluginId: string;
             categoryId: string;
-            generation: string;
+            occurrenceId: string;
             listener(): void;
         }>): Disposable;
     }>;
     watchPreferences?(params: Readonly<{
         pluginId: string;
         contributionId: string;
-        generation: string;
+        occurrenceId: string;
         categoryId: string;
         listener(preferences: PluginNotificationPreferences): void;
     }>): Disposable;
@@ -131,8 +132,8 @@ function fingerprint(value: JsonValue): string {
 }
 
 function ensureCurrent(seed: PluginInvocationServicesSeed, signal?: AbortSignal): void {
-    if (seed.signal.aborted || signal?.aborted || !seed.isGenerationCurrent()) {
-        throw notificationError('plugin_notification_generation_retired', 'Notification invocation generation is no longer current');
+    if (seed.signal.aborted || signal?.aborted || !seed.isOccurrenceCurrent()) {
+        throw notificationError('plugin_notification_generation_retired', 'Notification invocation occurrenceId is no longer current');
     }
 }
 
@@ -406,6 +407,17 @@ async function waitForNotificationSender(
 }
 
 export type StablePluginNotificationsOwner = Readonly<{
+    availableHostChannels(): Promise<readonly Readonly<{
+        value: string;
+        label: string;
+        kind: ResolvedNotificationChannelContribution['definition']['kind'];
+    }>[]>;
+    sendHostNotification(request: Readonly<{
+        channelId: string;
+        title: string;
+        body?: string;
+        data?: unknown;
+    }>): Promise<boolean>;
     bind(
         seed: PluginInvocationServicesSeed,
         options?: Readonly<{
@@ -423,6 +435,31 @@ export function createStablePluginNotificationsOwner(host: StablePluginNotificat
     const now = host.now ?? Date.now;
     const operations = new Map<string, OperationRecord>();
     const settledAtByResult = new WeakMap<Promise<PluginNotificationBatchResult>, number>();
+    const hostPolicyFacts = resolveInvocationContributionPolicyFacts();
+
+    function hostChannelRef(channel: ResolvedNotificationChannelContribution) {
+        if (!channel.pluginId
+            || channel.definition.defaultEnabled === false
+            || evaluateContributionAvailability({
+                availability: channel.definition.availability,
+                facts: hostPolicyFacts,
+            }).outcome !== 'visible') return null;
+        return Object.freeze({ pluginId: channel.pluginId, localId: channel.definition.id });
+    }
+
+    async function readHostChannel(channel: ResolvedNotificationChannelContribution) {
+        const ref = hostChannelRef(channel);
+        if (!ref) return null;
+        try {
+            await host.activateChannel(ref);
+            const binding = host.readChannel(ref);
+            return binding && await isSenderBindingCurrent(binding)
+                ? Object.freeze({ ref, binding })
+                : null;
+        } catch {
+            return null;
+        }
+    }
 
     function operationExpiry(record: OperationRecord): number | null {
         // Retention begins only after terminal evidence exists. Expiring an
@@ -451,6 +488,52 @@ export function createStablePluginNotificationsOwner(host: StablePluginNotificat
     }
 
     return Object.freeze({
+        async availableHostChannels() {
+            const items: Readonly<{
+                value: string;
+                label: string;
+                kind: ResolvedNotificationChannelContribution['definition']['kind'];
+            }>[] = [];
+            for (const channel of host.channels) {
+                const ref = hostChannelRef(channel);
+                if (!ref) continue;
+                const binding = host.readChannel(ref);
+                if (binding && !await isSenderBindingCurrent(binding)) continue;
+                items.push(Object.freeze({
+                    value: qualifiedKey(ref),
+                    label: `${localizedFallback(channel.definition.title)} (${ref.pluginId})`,
+                    kind: channel.definition.kind,
+                }));
+            }
+            return Object.freeze(items.sort((left, right) => left.value.localeCompare(right.value)));
+        },
+        async sendHostNotification(request) {
+            const channel = host.channels.find((entry) => entry.pluginId
+                && qualifiedKey({ pluginId: entry.pluginId, localId: entry.definition.id }) === request.channelId);
+            if (!channel) return false;
+            const available = await readHostChannel(channel);
+            if (!available) return false;
+            const data = request.data === undefined ? undefined : clonePluginPlainData(request.data, {
+                path: 'notification data',
+                invalid: (message) => notificationError('plugin_notification_invalid_request', message),
+            }) as JsonValue;
+            const clientRequestId = randomUUID();
+            const deliveryId = `notification_${clientRequestId}`;
+            const signal = available.binding.retirementSignal ?? new AbortController().signal;
+            try {
+                const result = await waitForNotificationSender(available.binding, Object.freeze({
+                    clientRequestId, deliveryId, channelId: request.channelId, title: request.title,
+                    ...(request.body === undefined ? {} : { body: request.body }),
+                    ...(data === undefined ? {} : { data }),
+                }), signal);
+                return result !== NOTIFICATION_SENDER_RETIRED
+                    && !signal.aborted
+                    && await isSenderBindingCurrent(available.binding)
+                    && readSenderResult(result, deliveryId, request.channelId).status === 'accepted';
+            } catch {
+                return false;
+            }
+        },
         bind(seed, options) {
             const categories = (options?.categories ?? host.categories)
                 .filter((entry) => entry.pluginId === seed.plugin.id)
@@ -670,7 +753,7 @@ export function createStablePluginNotificationsOwner(host: StablePluginNotificat
                             }));
                             continue;
                         }
-                        if (seed.signal.aborted || !seed.isGenerationCurrent()) {
+                        if (seed.signal.aborted || !seed.isOccurrenceCurrent()) {
                             deliveries.push(Object.freeze({
                                 deliveryId, channelId: selectedChannel.key, status: 'failed', code: 'plugin_notification_generation_retired', retryable: false,
                             }));
@@ -684,7 +767,7 @@ export function createStablePluginNotificationsOwner(host: StablePluginNotificat
                             }));
                             continue;
                         }
-                        if (seed.signal.aborted || !seed.isGenerationCurrent()) {
+                        if (seed.signal.aborted || !seed.isOccurrenceCurrent()) {
                             deliveries.push(Object.freeze({
                                 deliveryId, channelId: selectedChannel.key, status: 'failed', code: 'plugin_notification_generation_retired', retryable: false,
                             }));
@@ -692,7 +775,6 @@ export function createStablePluginNotificationsOwner(host: StablePluginNotificat
                         }
                         const binding = host.readChannel(selectedChannel.ref, seed);
                         if (!binding
-                            || binding.generation !== seed.generation
                             || !await isSenderBindingCurrent(binding)) {
                             deliveries.push(Object.freeze({
                                 deliveryId, channelId: selectedChannel.key, status: 'failed', code: 'plugin_notification_channel_unavailable', retryable: true,
@@ -712,7 +794,7 @@ export function createStablePluginNotificationsOwner(host: StablePluginNotificat
                             const senderResult = await waitForNotificationSender(binding, senderRequest, operationSignal);
                             if (senderResult === NOTIFICATION_SENDER_RETIRED
                                 || operationSignal.aborted
-                                || !seed.isGenerationCurrent()
+                                || !seed.isOccurrenceCurrent()
                                 || !await isSenderBindingCurrent(binding)) {
                                 deliveries.push(Object.freeze({
                                     deliveryId, channelId: selectedChannel.key, status: 'outcomeUnknown', code: 'plugin_notification_outcome_unknown',
@@ -769,7 +851,6 @@ export function createStablePluginNotificationsOwner(host: StablePluginNotificat
                         ensureCurrent(seed, options?.signal);
                         const binding = host.readChannel(ref, seed);
                         items.push(Object.freeze(binding
-                            && binding.generation === seed.generation
                             && await isSenderBindingCurrent(binding)
                             ? { ...summary, state: 'available' as const }
                             : { ...summary, state: 'unavailable' as const, code: 'plugin_notification_channel_unavailable' }));
@@ -830,19 +911,19 @@ export function createStablePluginNotificationsOwner(host: StablePluginNotificat
                 };
                 try {
                     const publish = (preferences: PluginNotificationPreferences) => {
-                        if (!disposed && !seed.signal.aborted && seed.isGenerationCurrent()) listener(preferences);
+                        if (!disposed && !seed.signal.aborted && seed.isOccurrenceCurrent()) listener(preferences);
                     };
                     const candidate = host.preferencePolicy
                         ? host.preferencePolicy.watch(Object.freeze({
                             pluginId: seed.plugin.id,
-                            generation: seed.generation,
+                            occurrenceId: seed.occurrenceId,
                             categoryId,
                             listener: () => publish(buildPreferences(category)),
                         }))
                         : host.watchPreferences!(Object.freeze({
                             pluginId: seed.plugin.id,
                             contributionId: seed.contribution.qualifiedId,
-                            generation: seed.generation,
+                            occurrenceId: seed.occurrenceId,
                             categoryId,
                             listener: publish,
                         }));
@@ -857,7 +938,7 @@ export function createStablePluginNotificationsOwner(host: StablePluginNotificat
                     );
                 }
                 seed.signal.addEventListener('abort', dispose, { once: true });
-                if (seed.signal.aborted || !seed.isGenerationCurrent()) dispose();
+                if (seed.signal.aborted || !seed.isOccurrenceCurrent()) dispose();
                 return Object.freeze({ dispose });
             };
 

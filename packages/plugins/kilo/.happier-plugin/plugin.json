@@ -22,7 +22,7 @@
             ]
           },
           "tools": {
-            "delivery": "shell_bridge"
+            "delivery": "native_mcp"
           }
         },
         "catalog": {
@@ -180,6 +180,18 @@
   },
   "id": "happier.agent.kilo",
   "runtime": {
+    "agentFactories": [
+      {
+        "loadMode": "immutable-js",
+        "localAgentId": "kilo",
+        "locator": {
+          "export": "createKiloAgentRuntime",
+          "module": "./agent/runtime/factory",
+          "runtimeApiVersion": 1
+        },
+        "normalizedModulePath": ".happier-plugin/agent/runtime/factory.js"
+      }
+    ],
     "apiVersion": 1
   },
   "schemaVersion": 2,

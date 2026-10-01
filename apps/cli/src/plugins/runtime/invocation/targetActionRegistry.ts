@@ -15,6 +15,7 @@ import type {
     PluginActionConfirmationV2,
     PluginActionDangerLevelV2,
     PluginMachineMaterializationRefV1,
+    PluginSourceCustodyV1,
     TargetActionApprovalReplayPlacementV1,
 } from '@happier-dev/protocol';
 
@@ -32,6 +33,7 @@ import {
 import {
     type PluginInvocationSurface,
 } from '@happier-dev/plugin-sdk/interactions';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import {
     createTargetActionExecutor,
     fingerprintTargetActionPolicy,
@@ -92,9 +94,10 @@ export type TargetActionInvocationRegistration = Readonly<{
     family?: string;
     pluginId: string;
     pluginVersion: string;
-    generation: string;
-    /** Exact admitted plugin bytes, projected by the runtime owner. */
-    immutableGenerationId?: string;
+    /** Process-local target occurrence, projected by the runtime owner. */
+    occurrenceId: PluginRuntimeOccurrenceId;
+    /** Durable source custody stamped by the runtime owner. */
+    sourceCustody?: PluginSourceCustodyV1;
     localId: string;
     definition: TargetActionDefinition;
     inputParser?: PluginActionInputParser;
@@ -141,12 +144,12 @@ export type InvokeTargetActionParams = Readonly<{
     /** Host-private external API authority; never projected into plugin context. */
     externalActionContext?: PluginExternalActionContext;
     /**
-     * Exact target-generation fact from an admitted targeted operation. It is
+     * Exact target-occurrence fact from an admitted targeted operation. It is
      * private Action-dispatch evidence, not a caller assertion or SDK input.
      */
-    expectedAdmittedTargetGeneration?: Readonly<{
+    expectedAdmittedTargetOccurrence?: Readonly<{
         pluginId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     }>;
     /**
      * Daemon ingress revalidates a mounted caller's live machine context at
@@ -267,23 +270,19 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
     resolveHostBinding: ResolveTargetActionHostBinding;
     createServices: CreatePluginInvocationServices;
     redactDiagnosticText?: (
-        scope: Readonly<{ pluginId: string; generation: string; correlationId: string }>,
+        scope: Readonly<{ pluginId: string; occurrenceId: string; correlationId: string }>,
         value: string,
     ) => string;
     completeDiagnosticScope?: (
-        scope: Readonly<{ pluginId: string; generation: string; correlationId: string }>,
+        scope: Readonly<{ pluginId: string; occurrenceId: string; correlationId: string }>,
     ) => void;
-    resolveGenerationLifecycle?(pluginId: string): Readonly<{
-        isCurrent(): boolean;
-        retirementSignal: AbortSignal;
-    }>;
     /**
      * Host-private current materialization for the exact target invocation.
      * It is the sole source for restamping a plugin-to-plugin caller edge.
      */
     resolveCurrentPluginMaterializationRef?(pluginId: string): PluginMachineMaterializationRefV1 | null;
-    /** Canonical committed immutable-generation authority for final Action admission. */
-    resolveCurrentPluginImmutableGenerationId?(pluginId: string): Promise<string | null>;
+    /** Canonical process-local occurrence authority for final Action admission. */
+    readCurrentPluginOccurrenceId?(pluginId: string): string | null;
     resolveCurrentSessionUi?: (sessionId: string) => HostCurrentSessionUiServices | null;
     /**
      * Narrow host-owned Action-form Account recheck. It runs after canonical
@@ -298,7 +297,7 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
     }>): Promise<TargetActionPreDispatchResult | null>;
     /**
      * Host-private binding for this one admitted target-Action correlation.
-     * It is deliberately neither a generation nor a background-service lease.
+     * It is deliberately neither a occurrenceId nor a background-service lease.
      */
     bindConnectedAccountActionOperation?(input: Readonly<{
         pluginId: string;
@@ -321,35 +320,34 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
     refresh(): void;
     dispose(): void;
 }> {
-    const generationController = new AbortController();
+    const registryController = new AbortController();
     type IndexedAction = Readonly<{
         registration: TargetActionInvocationRegistration;
         invocation: ReturnType<typeof createPluginActionInvocation>;
         /** The exact retirement signal this entry's invocation was prepared against. */
-        generationSignal: AbortSignal;
+        registrySignal: AbortSignal;
         isCurrent(): boolean;
     }>;
 
     /**
      * Preparing an invocation compiles the Action's input and result JSON Schemas, which builds a
      * schema compiler and generates a validator for each. `refresh()` runs after every on-demand
-     * activation, including the ones that publish nothing, so recompiling an Action generation
-     * that did not change is the dominant cost of re-indexing and is pure waste.
+     * activation, including the ones that publish nothing, so recompiling an unchanged Action
+     * occurrence is the dominant cost of re-indexing and is pure waste.
      *
-     * `createPluginActionInvocation` reads only the ids, the two schemas and the generation
+     * `createPluginActionInvocation` reads only the ids, the two schemas and the registry
      * signal. When all of those are the identical values the previous entry was prepared from,
      * a recompilation can only reproduce the validators it already holds.
      */
     function canReusePreparedInvocation(
         previous: IndexedAction,
         registration: TargetActionInvocationRegistration,
-        generationSignal: AbortSignal,
+        registrySignal: AbortSignal,
     ): boolean {
-        return previous.generationSignal === generationSignal
+        return previous.registrySignal === registrySignal
             && previous.registration.pluginId === registration.pluginId
             && previous.registration.localId === registration.localId
-            && previous.registration.generation === registration.generation
-            && previous.registration.immutableGenerationId === registration.immutableGenerationId
+            && previous.registration.occurrenceId === registration.occurrenceId
             && previous.registration.definition.inputSchema === registration.definition.inputSchema
             && previous.registration.definition.resultSchema === registration.definition.resultSchema
             && previous.registration.inputParser === registration.inputParser
@@ -394,16 +392,16 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                     : { operation: Object.freeze({ ...registration.definition.operation }) }),
             });
             const storedRegistration = Object.freeze({ ...registration, definition });
-            const lifecycle = params.resolveGenerationLifecycle?.(registration.pluginId);
             const isRegistrationCurrent = () => (
-                !generationController.signal.aborted
-                && (params.resolveGenerationLifecycle?.(registration.pluginId).isCurrent() ?? true)
-                && actionsByKey.get(key)?.registration.generation === registration.generation
+                !registryController.signal.aborted
+                && actionsByKey.get(key)?.registration.occurrenceId === registration.occurrenceId
+                && (registration.occurrenceId === undefined
+                    || params.readCurrentPluginOccurrenceId?.(registration.pluginId) === registration.occurrenceId)
             );
-            const generationSignal = lifecycle?.retirementSignal ?? generationController.signal;
+            const registrySignal = registryController.signal;
             const reusable = previous.get(key);
             const invocation = reusable
-                && canReusePreparedInvocation(reusable, storedRegistration, generationSignal)
+                && canReusePreparedInvocation(reusable, storedRegistration, registrySignal)
                 ? reusable.invocation
                 : createPluginActionInvocation({
                     pluginId: registration.pluginId,
@@ -412,13 +410,13 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                     ...(registration.inputParser === undefined ? {} : { inputParser: registration.inputParser }),
                     ...(definition.resultSchema === undefined ? {} : { resultSchema: definition.resultSchema }),
                     ...(registration.resultParser === undefined ? {} : { resultParser: registration.resultParser }),
-                    generationSignal,
+                    occurrenceSignal: registrySignal,
                     isCurrent: isRegistrationCurrent,
                 });
             next.set(key, Object.freeze({
                 registration: storedRegistration,
                 invocation,
-                generationSignal,
+                registrySignal,
                 isCurrent: isRegistrationCurrent,
             }));
         }
@@ -432,16 +430,15 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
     ]);
 
     const isExpectedAdmittedTargetCurrent = async (
-        expected: NonNullable<InvokeTargetActionParams['expectedAdmittedTargetGeneration']>,
+        expected: NonNullable<InvokeTargetActionParams['expectedAdmittedTargetOccurrence']>,
         caller: PluginInvocationCaller | undefined,
     ): Promise<boolean> => {
         if (caller?.kind !== 'plugin' || caller.pluginId !== expected.pluginId) {
             return false;
         }
         try {
-            return await params.resolveCurrentPluginImmutableGenerationId?.(
-                expected.pluginId,
-            ) === expected.immutableGenerationId;
+            return params.readCurrentPluginOccurrenceId?.(expected.pluginId)
+                === expected.occurrenceId;
         } catch {
             return false;
         }
@@ -484,16 +481,14 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                 const currentSession = invocation.sessionId
                     ? params.resolveCurrentSessionUi?.(invocation.sessionId) ?? null
                     : null;
-                // Only the target-action host has the exact immutable
-                // generation, contribution and invocation correlation needed
-                // to qualify transient status/widget keys. Other invocation
-                // paths remain deliberately unavailable rather than inventing
-                // a plugin prefix or a mutable-generation substitute.
-                const presentationOwner = invocation.sessionId && registration.immutableGenerationId
+                // Only managed source custody carries the retained immutable
+                // package occurrenceId used to qualify Session presentation
+                // keys. Live invocation currentness remains occurrence-owned.
+                const presentationOwner = invocation.sessionId && registration.sourceCustody?.kind === 'managed'
                     ? createHostSessionPresentationOwner({
                         pluginId: registration.pluginId,
                         contributionId: registration.localId,
-                        generationId: registration.immutableGenerationId,
+                        generationId: registration.sourceCustody.immutableGenerationId,
                         invocationId: correlationId,
                     })
                     : undefined;
@@ -503,10 +498,10 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                 const seed = Object.freeze({
                     plugin: Object.freeze({ id: registration.pluginId, version: registration.pluginVersion }),
                     contribution: Object.freeze({ id: registration.localId, qualifiedId }),
-                    generation: registration.generation,
-                    ...(registration.immutableGenerationId === undefined
+                    occurrenceId: registration.occurrenceId,
+                    ...(registration.sourceCustody === undefined
                         ? {}
-                        : { immutableGenerationId: registration.immutableGenerationId }),
+                        : { sourceCustody: registration.sourceCustody }),
                     correlationId,
                     surface: invocation.surface,
                     ...(invocation.caller ? { caller: invocation.caller } : {}),
@@ -533,7 +528,7 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                     ...(currentSession ? { currentSession } : {}),
                     signal: lifetime.signal,
                     redactionLifetimeSignal: lifetime.redactionLifetimeSignal,
-                    isGenerationCurrent: indexed.isCurrent,
+                    isOccurrenceCurrent: indexed.isCurrent,
                 });
                 let connectedAccountOperationBinding:
                     | TargetActionConnectedAccountOperationBinding
@@ -552,12 +547,10 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                     { once: true },
                 );
                 try {
-                    if (!seed.isGenerationCurrent()) {
-                        throw new PluginError({
-                            code: 'plugin_action_generation_retired',
-                            message: 'Plugin action generation retired before dispatch',
-                        });
-                    }
+                    // Currentness was admitted in `prepare` and re-checked once
+                    // immediately before this handler (the executor `invoke`
+                    // callback). Admitted work now runs under its captured
+                    // lease; only cancellation stops it.
                     const operationResult = await params.bindConnectedAccountActionOperation?.({
                         pluginId: registration.pluginId,
                         localId: registration.localId,
@@ -577,22 +570,10 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                         });
                     }
                     connectedAccountOperationBinding = operationResult ?? null;
-                    if (signal.aborted || lifetime.signal.aborted || !indexed.isCurrent()) {
+                    if (signal.aborted || lifetime.signal.aborted) {
                         throw new PluginError({
                             code: 'plugin_action_generation_retired',
                             message: 'Plugin action operation retired before dispatch',
-                        });
-                    }
-                    if (
-                        invocation.expectedAdmittedTargetGeneration
-                        && !(await isExpectedAdmittedTargetCurrent(
-                            invocation.expectedAdmittedTargetGeneration,
-                            invocation.caller,
-                        ))
-                    ) {
-                        throw new PluginError({
-                            code: 'plugin_action_generation_retired',
-                            message: 'Admitted target generation is no longer current',
                         });
                     }
                     const effectiveServiceBinding = connectedAccountOperationBinding
@@ -626,7 +607,7 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                         ui: createPluginInvocationPresentation({
                             currentSession,
                             signal: seed.signal,
-                            isGenerationCurrent: seed.isGenerationCurrent,
+                            isOccurrenceCurrent: seed.isOccurrenceCurrent,
                             ...(presentationOwner ? { presentationOwner } : {}),
                         }),
                     });
@@ -693,30 +674,29 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                 kind: 'settled' as const,
                 result: unavailable('plugin_action_handler_missing', 'No committed target action registration exists'),
             });
-            if (generationController.signal.aborted) {
+            if (registryController.signal.aborted) {
                 return Object.freeze({
                     kind: 'settled' as const,
-                    result: unavailable('plugin_action_generation_retired', 'Plugin action generation is no longer current'),
+                    result: unavailable('plugin_action_generation_retired', 'Plugin action occurrence is no longer current'),
                 });
             }
-            if (params.resolveGenerationLifecycle?.(indexed.registration.pluginId).isCurrent() === false) {
-                return Object.freeze({
-                    kind: 'settled' as const,
-                    result: unavailable('plugin_action_generation_retired', 'Plugin action generation is no longer current'),
-                });
-            }
+            if (!indexed.isCurrent()) return Object.freeze({
+                kind: 'settled' as const,
+                result: unavailable('plugin_action_generation_retired', 'Plugin action occurrence is no longer current'),
+            });
             let operationProgress = invocation.operationProgress;
             const correlationId = randomUUID();
             const lifetime = createPluginInvocationLifetime(invocation.signal);
             const diagnosticScope = Object.freeze({
                 pluginId: indexed.registration.pluginId,
-                generation: indexed.registration.generation,
+                occurrenceId: indexed.registration.occurrenceId,
                 correlationId,
             });
             const resolveCurrentAction = (): ResolvedTargetAction | null => {
                 const current = actionsByKey.get(key);
                 if (!current) return null;
                 const { registration } = current;
+                if (!registration.sourceCustody) return null;
                 const availability = resolveTargetActionAvailability({
                     availability: registration.definition.availability ?? undefined,
                     facts: resolveInvocationContributionPolicyFacts({
@@ -735,7 +715,8 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                 const action = {
                     qualifiedId: `${registration.pluginId}/actions/${registration.localId}`,
                     pluginId: registration.pluginId, localId: registration.localId,
-                    generation: registration.generation, dangerLevel: registration.definition.dangerLevel,
+                    occurrenceId: registration.occurrenceId, dangerLevel: registration.definition.dangerLevel,
+                    sourceCustody: registration.sourceCustody,
                     scopes: registration.definition.scopes, surfaces: registration.definition.surfaces,
                     ...(registration.definition.confirmation === undefined
                         ? {}
@@ -766,8 +747,8 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                 }),
                 invoke: async (action, _args, serviceBinding) => {
                     const current = actionsByKey.get(key);
-                    if (!current || current.registration.generation !== action.generation) {
-                        return unavailable('plugin_action_generation_retired', 'Plugin action generation is no longer current');
+                    if (!current || !indexed.isCurrent()) {
+                        return unavailable('plugin_action_generation_retired', 'Plugin action occurrence is no longer current');
                     }
                     try {
                         if (invocation.isEnabledByActionSettings?.() === false) {
@@ -799,15 +780,15 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                         }
                     }
                     if (
-                        invocation.expectedAdmittedTargetGeneration
+                        invocation.expectedAdmittedTargetOccurrence
                         && !(await isExpectedAdmittedTargetCurrent(
-                            invocation.expectedAdmittedTargetGeneration,
+                            invocation.expectedAdmittedTargetOccurrence,
                             invocation.caller,
                         ))
                     ) {
                         return unavailable(
                             'plugin_action_generation_retired',
-                            'Admitted target generation is no longer current',
+                            'Admitted target occurrence is no longer current',
                         );
                     }
                     return await invokeHandler(
@@ -879,16 +860,16 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                 });
         },
         refresh() {
-            if (generationController.signal.aborted || !params.readActions) return;
+            if (registryController.signal.aborted || !params.readActions) return;
             const next = buildIndex(params.readActions(), actionsByKey);
             for (const key of next.keys()) expectedActionKeys.add(key);
             actionsByKey = next;
         },
         dispose() {
-            if (!generationController.signal.aborted) {
-                generationController.abort(new PluginError({
+            if (!registryController.signal.aborted) {
+                registryController.abort(new PluginError({
                     code: 'plugin_action_generation_retired',
-                    message: 'Plugin action generation retired',
+                    message: 'Plugin action occurrence retired',
                 }));
             }
         },

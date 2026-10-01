@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type {
   JsonValue,
@@ -11,12 +11,16 @@ import type {
   InteractionTransientAuthorQuestionV1,
   InteractionTransientApprovalResultV1,
   InteractionTransientQuestionAnswerV1,
+  InteractionTransientQuestionsAuthorRequestV1,
 } from '@happier-dev/plugin-sdk/interactions';
+import { InteractionTransientAuthorRequestV1Schema } from '@happier-dev/protocol';
 
 import type { DisposableCodexAppServerClient } from './client.js';
 import {
+  buildCodexAsyncUserInputReply,
   buildCodexRequestUserInputAnswers,
   looksLikeCodexApprovalRequestUserInput,
+  readCodexAsyncUserInputItem,
   resolveCodexApprovalQuestionChoice,
   type CodexApprovalOutcome,
 } from '../core/requestUserInputQuestions.js';
@@ -26,6 +30,11 @@ type SessionMcp = Pick<
   NonNullable<AgentSessionRuntimeContext['services']['sessions']['current']>['mcp'],
   'elicit'
 >;
+type AsyncQuestionMessageSender = (request: Readonly<{
+  idempotencyKey: string;
+  text: string;
+  toolCallId: string;
+}>) => Promise<void>;
 type RecordLike = Readonly<Record<string, unknown>>;
 
 function readRecord(value: unknown): RecordLike | null {
@@ -220,24 +229,56 @@ function normalizeToolQuestions(value: unknown): CodexQuestion[] {
   return output;
 }
 
+function normalizeAsyncQuestions(
+  item: NonNullable<ReturnType<typeof readCodexAsyncUserInputItem>>,
+): CodexQuestion[] {
+  return item.questions.map((question) => ({
+    id: `async-question-${question.index}`,
+    prompt: question.title,
+    options: question.options.map((option) => ({ value: option, label: option })),
+    allowCustom: question.options.length > 0,
+    required: true,
+    multiple: false,
+  }));
+}
+
+function buildQuestionsRequest(
+  questions: readonly CodexQuestion[],
+  title: string,
+): InteractionTransientQuestionsAuthorRequestV1 | null {
+  if (questions.length === 0) return null;
+  const pluginQuestions = questions.map(toPluginQuestion) as [
+    InteractionTransientAuthorQuestionV1,
+    ...InteractionTransientAuthorQuestionV1[],
+  ];
+  const parsed = InteractionTransientAuthorRequestV1Schema.safeParse({
+    kind: 'questions',
+    title,
+    questions: pluginQuestions,
+  });
+  return parsed.success && parsed.data.kind === 'questions' ? parsed.data : null;
+}
+
+async function askQuestionsRequest(
+  ui: InteractionUi,
+  request: InteractionTransientQuestionsAuthorRequestV1,
+  signal?: AbortSignal,
+): Promise<Readonly<Record<string, InteractionTransientQuestionAnswerV1>> | null> {
+  const result = await ui.askQuestions(request, { signal });
+  return result.status === 'answered' ? result.answers : null;
+}
+
 async function askQuestions(
   ui: InteractionUi | undefined,
   questions: readonly CodexQuestion[],
   title: string,
   signal?: AbortSignal,
 ): Promise<Readonly<Record<string, InteractionTransientQuestionAnswerV1>> | null> {
-  if (!ui || questions.length === 0) return null;
-  const pluginQuestions = questions.map(toPluginQuestion) as [
-    InteractionTransientAuthorQuestionV1,
-    ...InteractionTransientAuthorQuestionV1[],
-  ];
+  if (!ui) return null;
+  const request = buildQuestionsRequest(questions, title);
+  if (!request) return null;
   try {
-    const result = await ui.askQuestions({
-      kind: 'questions',
-      title,
-      questions: pluginQuestions,
-    }, { signal });
-    return result.status === 'answered' ? result.answers : null;
+    return await askQuestionsRequest(ui, request, signal);
   } catch {
     return null;
   }
@@ -254,8 +295,10 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
   client: DisposableCodexAppServerClient;
   ui?: InteractionUi;
   mcp?: SessionMcp;
+  sendUserMessage?: AsyncQuestionMessageSender;
+  onAsyncQuestionDeliveryError?: (error: unknown) => void;
   getThreadId(): string | null;
-}>): void {
+}>): (raw: unknown) => boolean {
   type RequestMessage = Readonly<{ id?: unknown }>;
   type TrackedRequestHandler = (
     raw: RecordLike,
@@ -263,6 +306,7 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
     message: RequestMessage,
   ) => Promise<unknown>;
   const pendingRequests = new Map<string, AbortController>();
+  const handledAsyncQuestionItemIds = new Set<string>();
   const requestKey = (value: unknown): string | null => (
     typeof value === 'string' || typeof value === 'number'
       ? `${typeof value}:${String(value)}`
@@ -292,6 +336,37 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
     pendingRequests.delete(key);
     controller.abort();
   });
+
+  const handleAsyncQuestionNotification = (raw: unknown): boolean => {
+    const ui = params.ui;
+    const sendUserMessage = params.sendUserMessage;
+    if (!ui || !sendUserMessage || !matchesCurrentThread(raw, params.getThreadId)) return false;
+    const item = readCodexAsyncUserInputItem(raw);
+    if (!item) return false;
+    const request = buildQuestionsRequest(normalizeAsyncQuestions(item), 'Codex has questions');
+    if (!request) return false;
+    if (handledAsyncQuestionItemIds.has(item.itemId)) return true;
+    handledAsyncQuestionItemIds.add(item.itemId);
+    void (async () => {
+      const answers = await askQuestionsRequest(ui, request);
+      if (!answers) return;
+      const answersByKey: Record<string, readonly string[]> = Object.create(null);
+      for (const [key, answer] of Object.entries(answers)) {
+        answersByKey[key] = readAnswerValues(answer);
+      }
+      const text = buildCodexAsyncUserInputReply({ item, answersByKey });
+      if (!text) return;
+      const digest = createHash('sha256').update(item.itemId).digest('hex').slice(0, 32);
+      await sendUserMessage({
+        idempotencyKey: `codex-async-question:${digest}`,
+        text,
+        toolCallId: item.itemId,
+      });
+    })().catch((error: unknown) => {
+      params.onAsyncQuestionDeliveryError?.(error);
+    });
+    return true;
+  };
 
   registerTrackedRequestHandler(
     'item/commandExecution/requestApproval',
@@ -451,4 +526,6 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
       }
     },
   );
+
+  return handleAsyncQuestionNotification;
 }

@@ -106,7 +106,7 @@ describe('external Agent and managed Provider archive generations', () => {
 
         const initial = await readCurrentCommittedPluginGenerations(
             resolvePluginStorePaths({ happyHomeDir }),
-            { bundledArtifacts: [] },
+            {},
         );
         const agentG = initial?.generations.get(PUBLIC_HANDOFF_AGENT_PLUGIN_ID);
         const providerP = initial?.generations.get(PUBLIC_HANDOFF_PROVIDER_PLUGIN_ID);
@@ -159,7 +159,7 @@ describe('external Agent and managed Provider archive generations', () => {
 
         const current = await readCurrentCommittedPluginGenerations(
             resolvePluginStorePaths({ happyHomeDir }),
-            { bundledArtifacts: [] },
+            {},
         );
         const agentH = current?.generations.get(PUBLIC_HANDOFF_AGENT_PLUGIN_ID);
         const providerQ = current?.generations.get(PUBLIC_HANDOFF_PROVIDER_PLUGIN_ID);

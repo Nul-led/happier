@@ -313,6 +313,7 @@ export function createCodexExternalSessionsContribution(params: Readonly<{
           limit: request.maxItems,
           searchTerm: request.searchTerm,
           searchMode: request.searchMode,
+          includeThreads: request.includeThreads,
           signal: request.signal,
           deadlineAtMs: request.deadlineAtMs,
           exec: request.exec,
@@ -331,8 +332,10 @@ export function createCodexExternalSessionsContribution(params: Readonly<{
         if (error instanceof CodexExternalSessionCandidateSourceChangedError) {
           return failed('source_invalid', error.message);
         }
+        // The rollout store was reachable but could not be read into a page:
+        // an Agent fault, never evidence that Codex is missing.
         return failed(
-          'agent_unavailable',
+          'agent_error',
           error instanceof Error ? error.message : 'Codex external-session listing failed.',
           true,
         );
@@ -384,7 +387,7 @@ export function createCodexExternalSessionsContribution(params: Readonly<{
           return failed('agent_error', error.message, false);
         }
         return failed(
-          'agent_unavailable',
+          'agent_error',
           error instanceof Error ? error.message : 'Codex external-session transcript operation failed.',
           true,
         );

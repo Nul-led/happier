@@ -38,6 +38,7 @@ export function resolveClaudeExternalSessionTakeoverPlan(
         environmentVariables: Object.freeze({
             CLAUDE_CONFIG_DIR: configDir,
         }),
+        applyConnectedAccountDefaults: true,
     });
 }
 

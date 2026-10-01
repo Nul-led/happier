@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { ensureDevExpoServer } from './expo_dev.mjs';
+import { createBackgroundRuntimeSnapshotPublisher } from './runtimeSnapshotPublisher.mjs';
 import { getExpoStatePaths, writePidState } from '../expo/expo.mjs';
 
 async function createExpoWorkspaceFixture({ workspaceBuildFails = false } = {}) {
@@ -198,6 +199,63 @@ test('ensureDevExpoServer starts from last-green outputs while the canonical UI 
   } finally {
     await writeFile(join(fixture.tmp, 'release-canonical-preflight'), 'go\n', 'utf8').catch(() => {});
     await startPromise?.catch(() => {});
+    await rm(fixture.tmp, { recursive: true, force: true });
+  }
+});
+
+test('completed UI workspace preparation retries an in-flight failed web publication through its existing trailing pass', async () => {
+  const fixture = await createExpoWorkspaceFixture();
+  let releaseFirstPublication;
+  const firstPublicationReleased = new Promise((resolve) => { releaseFirstPublication = resolve; });
+  let resolveFirstPublicationEntered;
+  const firstPublicationEntered = new Promise((resolve) => { resolveFirstPublicationEntered = resolve; });
+  let resolveWorkspacePrepared;
+  const workspacePrepared = new Promise((resolve) => { resolveWorkspacePrepared = resolve; });
+  let retryPublication = null;
+  const resolvedRequests = [];
+  let attempts = 0;
+  const publisher = createBackgroundRuntimeSnapshotPublisher({
+    resolveComponents: async ({ requestedComponents }) => {
+      resolvedRequests.push(requestedComponents);
+      return { components: requestedComponents, currentSnapshotId: 'snapshot-old' };
+    },
+    publishComponents: async ({ components }) => {
+      attempts += 1;
+      if (attempts === 1) {
+        resolveFirstPublicationEntered();
+        await firstPublicationReleased;
+        throw new Error('dependency refresh lock unavailable');
+      }
+      return { snapshotId: 'snapshot-web-new', changedComponents: components };
+    },
+    logger: { error() {} },
+  });
+  const firstPublication = publisher.markRefreshed(['web']);
+
+  try {
+    await firstPublicationEntered;
+    await startFixtureExpo({
+      ...fixture,
+      prepareExpoWorkspace: async () => { resolveWorkspacePrepared(); },
+      hasUsableWorkspaceLastGreen: async () => true,
+      onWorkspacePrepared: () => {
+        retryPublication = publisher.markRefreshed(['web']);
+      },
+    });
+    await workspacePrepared;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.ok(retryPublication, 'canonical UI preparation must notify the existing publisher');
+    releaseFirstPublication();
+    await Promise.all([firstPublication, retryPublication]);
+
+    assert.equal(attempts, 2);
+    assert.deepEqual(resolvedRequests, [['web'], ['web']]);
+  } finally {
+    releaseFirstPublication();
+    await firstPublication.catch(() => {});
+    publisher.close();
+    await delay(150);
     await rm(fixture.tmp, { recursive: true, force: true });
   }
 });

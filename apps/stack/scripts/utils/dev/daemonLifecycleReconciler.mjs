@@ -3,6 +3,7 @@ export function startOwnerDaemonLifecycleReconciler(
     enabled,
     observe,
     recover,
+    isRecoveryReady = async () => true,
     isShuttingDown = () => false,
     intervalMs = 1_000,
     absenceConfirmations = 2,
@@ -34,6 +35,12 @@ export function startOwnerDaemonLifecycleReconciler(
       consecutiveAbsences = 0;
       recoveryAttempted = false;
       return { skipped: true, reason: 'daemon-state-inconclusive', status: status || 'unknown' };
+    }
+
+    if (await isRecoveryReady({ observation }) !== true) {
+      consecutiveAbsences = 0;
+      recoveryAttempted = false;
+      return { skipped: true, reason: 'daemon-recovery-not-ready' };
     }
 
     consecutiveAbsences = Math.min(requiredAbsences, consecutiveAbsences + 1);

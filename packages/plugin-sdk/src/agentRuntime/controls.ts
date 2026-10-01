@@ -9,6 +9,7 @@ import type { JsonValue } from '../identity.js';
 import type { AgentRuntimeContext, AgentSessionRuntimeContext } from './context.js';
 import type {
   AgentSessionConnectedAccountSelection,
+  AgentSessionConfigurationSnapshot,
   AgentSessionOpenRequest,
   AgentSessionRuntime,
 } from './session.js';
@@ -208,6 +209,11 @@ export interface AgentSessionContinuationControl {
 }
 
 export interface AgentSessionRuntimeFactory {
+  /** Pure selected-runtime capability; may narrow the runtime's terminal/attach surfaces. */
+  readonly supportsTerminalPresentation?: (selection: Readonly<
+    Pick<AgentSessionOpenRequest, 'runtimeDescriptorV1' | 'launchEnvironment'>
+    & { configuration?: Pick<AgentSessionConfigurationSnapshot, 'options'> }
+  >) => boolean;
   readonly goals?: AgentSessionGoalControl;
   readonly catalog?: AgentSessionCatalogControl;
   readonly usageLimitRecovery?: AgentSessionUsageLimitRecoveryControl;

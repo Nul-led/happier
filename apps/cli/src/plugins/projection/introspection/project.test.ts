@@ -209,16 +209,16 @@ describe('plugin contribution lifecycle introspection', () => {
       diagnostics: [],
       runtimeFactsByQualifiedId: new Map([
         ['acme.example/actions/run', {
-          registration: { requirement: 'required', state: 'bound', generation: 'runtime:4' },
-          activation: { state: 'active', generation: 'runtime:4' },
+          registration: { requirement: 'required', state: 'bound', occurrenceId: 'runtime:4' },
+          activation: { state: 'active', occurrenceId: 'runtime:4' },
           projection: { state: 'projected' },
         }],
       ]),
     });
 
     expect(projection.contributions[0]).toMatchObject({
-      registration: { state: 'bound', generation: 'runtime:4' },
-      activation: { state: 'active', generation: 'runtime:4' },
+      registration: { state: 'bound', occurrenceId: 'runtime:4' },
+      activation: { state: 'active', occurrenceId: 'runtime:4' },
     });
   });
 
@@ -252,8 +252,8 @@ describe('plugin contribution lifecycle introspection', () => {
       diagnostics: [],
       runtimeFactsByQualifiedId: new Map([
         ['acme.example/actions/missing', {
-          registration: { requirement: 'required', state: 'bound', generation: 'runtime:4' },
-          activation: { state: 'active', generation: 'runtime:4' },
+          registration: { requirement: 'required', state: 'bound', occurrenceId: 'runtime:4' },
+          activation: { state: 'active', occurrenceId: 'runtime:4' },
           projection: { state: 'projected' },
         }],
       ]),

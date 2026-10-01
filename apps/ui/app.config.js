@@ -90,7 +90,7 @@ const DEFAULTS = {
     owner: "happier-dev",
     slug: "happier",
     easProjectId: "2a550bd7-e4d2-4f59-ab47-dcb778775cee",
-    linkHost: "app.happier.dev",
+    linkHost: "cloud.happier.dev",
 };
 
 // Allow opt-in overrides for local dev tooling without changing upstream defaults.
@@ -280,11 +280,15 @@ if (!process.env.EXPO_PUBLIC_HAPPIER_FEATURE_POLICY_ENV && resolvedFeaturePolicy
     process.env.EXPO_PUBLIC_HAPPIER_FEATURE_POLICY_ENV = resolvedFeaturePolicyEnv;
 }
 
-const linkHost = (process.env.EXPO_APP_LINK_HOST || DEFAULTS.linkHost).trim();
+const linkHostOverride = (process.env.EXPO_APP_LINK_HOST || '').trim();
+const linkHost = linkHostOverride || DEFAULTS.linkHost;
+const hostedLinkHosts = linkHostOverride
+    ? [linkHost]
+    : [DEFAULTS.linkHost, 'app.happier.dev'];
 const iosAssociatedDomainsRaw = (process.env.EXPO_IOS_ASSOCIATED_DOMAINS || '').trim();
 const iosAssociatedDomains = iosAssociatedDomainsRaw
     ? iosAssociatedDomainsRaw.split(/[\s,]+/).map(v => v.trim()).filter(Boolean)
-    : [`applinks:${linkHost}`];
+    : hostedLinkHosts.map(host => `applinks:${host}`);
 
 // NOTE:
 // The URL scheme is used for deep linking *and* by the Expo development client launcher flow.
@@ -444,13 +448,11 @@ const baseExpoConfig = {
                 {
                     "action": "VIEW",
                     "autoVerify": true,
-                    "data": [
-                        {
-                            "scheme": "https",
-                            "host": linkHost,
-                            "pathPrefix": "/"
-                        }
-                    ],
+                    "data": hostedLinkHosts.map(host => ({
+                        "scheme": "https",
+                        "host": host,
+                        "pathPrefix": "/"
+                    })),
                     "category": ["BROWSABLE", "DEFAULT"]
                 }
             ] : []
@@ -465,7 +467,6 @@ const baseExpoConfig = {
             expoBuildPropertiesPlugin,
             require("./plugins/withEinkCompatibility.js"),
             require("./plugins/withAndroidReactNativeArchitectures.js"),
-            require("./plugins/withReactNativeRepackRuntime.js"),
             ...(terminalNativeRendererEnabled ? [[
                 "./plugins/withTerminalNativeBuildInputs.js",
                 { buildIdentity: terminalNativeEvidenceBuildIdentity },

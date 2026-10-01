@@ -132,7 +132,7 @@ function formatFatalErrorForLog(error: unknown): string {
 
 export type PluginInvocationLogQuery = Readonly<{
   pluginId: string
-  generation?: string
+  occurrenceId?: string
   correlationId?: string
   cursor?: number
   limit?: number
@@ -172,7 +172,7 @@ function recordMatchesPluginInvocationLogQuery(
   query: PluginInvocationLogQuery,
 ): boolean {
   if (record.context.plugin.id !== query.pluginId) return false
-  if (query.generation !== undefined && record.context.generation !== query.generation) return false
+  if (query.occurrenceId !== undefined && record.context.occurrenceId !== query.occurrenceId) return false
   return query.correlationId === undefined || record.context.correlationId === query.correlationId
 }
 

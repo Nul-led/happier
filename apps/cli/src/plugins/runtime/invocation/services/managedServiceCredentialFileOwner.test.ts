@@ -44,7 +44,7 @@ describe('managed-service credential-file owner', () => {
 
         const lease = await owner.materialize({
             scope: Object.freeze({
-                generation: 'provider-p',
+                occurrenceId: 'provider-p',
                 pluginId: 'acme.provider',
                 contributionQualifiedId: 'acme.provider/providers/gateway',
                 sessionId: 'session-one',
@@ -96,7 +96,7 @@ describe('managed-service credential-file owner', () => {
 
             await expect(owner.materialize({
                 scope: Object.freeze({
-                    generation: 'provider-p',
+                    occurrenceId: 'provider-p',
                     pluginId: 'acme.provider',
                     contributionQualifiedId:
                         'acme.provider/providers/gateway',
@@ -124,7 +124,7 @@ describe('managed-service credential-file owner', () => {
 
         await expect(owner.materialize({
             scope: Object.freeze({
-                generation: 'provider-p',
+                occurrenceId: 'provider-p',
                 pluginId: 'acme.provider',
                 contributionQualifiedId: 'acme.provider/providers/gateway',
             }),
@@ -158,7 +158,7 @@ describe('managed-service credential-file owner', () => {
 
             await expect(owner.materialize({
                 scope: Object.freeze({
-                    generation: 'provider-p',
+                    occurrenceId: 'provider-p',
                     pluginId: 'acme.provider',
                     contributionQualifiedId:
                         'acme.provider/providers/gateway',
@@ -194,7 +194,7 @@ describe('managed-service credential-file owner', () => {
 
         const lease = await owner.materialize({
             scope: Object.freeze({
-                generation: 'provider-p',
+                occurrenceId: 'provider-p',
                 pluginId: 'acme.provider',
                 contributionQualifiedId: 'acme.provider/providers/gateway',
             }),
@@ -220,7 +220,7 @@ describe('managed-service credential-file owner', () => {
             });
             const lease = await owner.materialize({
                 scope: Object.freeze({
-                    generation: 'provider-p',
+                    occurrenceId: 'provider-p',
                     pluginId: 'acme.provider',
                     contributionQualifiedId:
                         'acme.provider/providers/gateway',

@@ -1,4 +1,5 @@
 import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
+import { compilePluginJsonSchema, isValidPluginJsonSchemaValue } from '@happier-dev/plugin-sdk/manifest';
 import type {
     PluginAccountCollection,
     PluginAccountCollectionDefinition,
@@ -105,6 +106,13 @@ export function createInMemoryAccountCollection<TDefinition extends PluginAccoun
     const rows = new Map<string, StoredRow>();
     let changeCursor = 0;
     let getCallCount = 0;
+
+    // The real host refuses a value its admitted schema does not describe, so a
+    // corpus row shape that outgrew its declaration must fail here too.
+    const declaredSchema = definition.schema;
+    const validate = compilePluginJsonSchema(
+        'jsonSchema' in declaredSchema ? declaredSchema.jsonSchema : declaredSchema,
+    );
 
     const rowIdOf = (value: Readonly<Record<string, JsonValue>>): string => {
         const candidate = value[rowIdField];
@@ -252,6 +260,9 @@ export function createInMemoryAccountCollection<TDefinition extends PluginAccoun
             }
             const conflicts: PluginCollectionMutationConflictV1[] = [];
             for (const operation of operations) {
+                if (operation.kind === 'put' && !isValidPluginJsonSchemaValue(validate, operation.value)) {
+                    throw invalidValueError('Collection value does not satisfy its admitted schema');
+                }
                 const rowId = operation.kind === 'put' ? rowIdOf(operation.value) : operation.rowId;
                 const conflict = conflictFor(rowId, operation.expectedRevision);
                 if (conflict) conflicts.push(conflict);

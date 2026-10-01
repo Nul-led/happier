@@ -37,6 +37,7 @@ export type CodexAppServerSessionControlsSnapshot = Readonly<{
     availableModes: SessionControlOption[];
     currentModeId: string | null;
     availableModels: SessionModelOption[];
+    modelsObserved: boolean;
     currentModelId: string | null;
     configOptions: SessionConfigOption[];
 }>;
@@ -90,18 +91,18 @@ function asRecord(value: unknown): MetadataRecord | null {
     return value as MetadataRecord;
 }
 
-function readListEntries(value: unknown): unknown[] {
+function readListEntries(value: unknown): unknown[] | null {
     let current: unknown = value;
     for (let depth = 0; depth < 3; depth += 1) {
         if (Array.isArray(current)) return current;
         const record = asRecord(current);
-        if (!record) return [];
+        if (!record) return null;
         if (Array.isArray(record.items)) return record.items;
         if (Array.isArray(record.data)) return record.data;
-        if (record.result === undefined) return [];
+        if (record.result === undefined) return null;
         current = record.result;
     }
-    return [];
+    return null;
 }
 
 function normalizeReasoningEffortLabel(value: string): string {
@@ -282,7 +283,7 @@ function normalizeSessionModelMasks(params: Readonly<{
     currentServiceTier?: string | null;
 }>): ModelMask[] {
     const out: ModelMask[] = [];
-    for (const entry of readListEntries(params.value)) {
+    for (const entry of readListEntries(params.value) ?? []) {
         const record = asRecord(entry);
         if (!record) continue;
         const id = normalizeString(record.id) ?? normalizeString(record.slug);
@@ -321,7 +322,7 @@ function normalizeSessionModelMasks(params: Readonly<{
 
 function normalizeCollaborationModeMasks(value: unknown): CollaborationModeMask[] {
     const out: CollaborationModeMask[] = [];
-    for (const entry of readListEntries(value)) {
+    for (const entry of readListEntries(value) ?? []) {
         const record = asRecord(entry);
         if (!record) continue;
         const id = normalizeString(record.id) ?? normalizeString(record.slug) ?? normalizeString(record.mode);
@@ -353,7 +354,7 @@ function resolveCurrentId(
     options: readonly SessionControlOption[],
     params?: Readonly<{ fallbackToFirst?: boolean }>,
 ): string | null {
-    for (const entry of readListEntries(value)) {
+    for (const entry of readListEntries(value) ?? []) {
         const record = asRecord(entry);
         if (!record) continue;
         const id = normalizeString(record.id) ?? normalizeString(record.slug);
@@ -444,10 +445,14 @@ export async function readCodexAppServerSessionControls(params: Readonly<{
         ? params.currentModelId ?? null
         : resolveCurrentId(modelsResponse, availableModels, { fallbackToFirst: true });
 
+    const modelEntries = readListEntries(modelsResponse);
+    const modelsObserved = modelEntries !== null && (modelEntries.length === 0 || availableModels.length > 0);
+
     return {
         availableModes,
         currentModeId,
         availableModels,
+        modelsObserved,
         currentModelId,
         configOptions: [],
     };

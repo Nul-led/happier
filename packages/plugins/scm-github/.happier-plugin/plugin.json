@@ -1,6 +1,7 @@
 {
   "brand": {
-    "iconResourceId": "brand-icon"
+    "iconResourceId": "brand-icon",
+    "monochrome": true
   },
   "contributes": {
     "accountCollections": [
@@ -3891,6 +3892,873 @@
             "purpose": "github-connected-account"
           }
         ],
+        "dangerLevel": "safe",
+        "description": "Reads checks, reviews, mergeability and branches when a pull request is opened.",
+        "execution": {
+          "target": "daemon"
+        },
+        "hostAccess": [
+          "github-api",
+          "github-connected-account"
+        ],
+        "id": "triage/read-github-pull-request-status",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "instance": {
+              "additionalProperties": false,
+              "properties": {
+                "binding": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "account": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "accountId": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
+                          "type": "string"
+                        },
+                        "service": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "localId": {
+                              "maxLength": 256,
+                              "minLength": 1,
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
+                              "type": "string"
+                            },
+                            "pluginId": {
+                              "maxLength": 256,
+                              "minLength": 3,
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "pluginId",
+                            "localId"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "service",
+                        "accountId"
+                      ],
+                      "type": "object"
+                    },
+                    "purpose": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 128
+                    }
+                  },
+                  "required": [
+                    "purpose",
+                    "account"
+                  ],
+                  "type": "object"
+                },
+                "configuration": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "token": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 1024
+                    },
+                    "v": {
+                      "const": 1
+                    }
+                  },
+                  "required": [
+                    "v",
+                    "token"
+                  ],
+                  "type": "object"
+                },
+                "instance": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "localId": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
+                          "type": "string"
+                        },
+                        "pluginId": {
+                          "maxLength": 256,
+                          "minLength": 3,
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "pluginId",
+                        "localId"
+                      ],
+                      "type": "object"
+                    },
+                    "sourceInstanceId": {
+                      "maxLength": 36,
+                      "minLength": 36,
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "sourceInstanceId"
+                  ],
+                  "type": "object"
+                },
+                "localInstanceKey": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 128
+                },
+                "locator": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "displayLabel": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 512
+                    },
+                    "displayPath": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 512
+                    },
+                    "v": {
+                      "const": 1
+                    },
+                    "webUrl": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 384
+                    }
+                  },
+                  "required": [
+                    "v",
+                    "displayLabel"
+                  ],
+                  "type": "object"
+                },
+                "v": {
+                  "const": 1
+                }
+              },
+              "required": [
+                "v",
+                "instance",
+                "binding",
+                "localInstanceKey",
+                "configuration"
+              ],
+              "type": "object"
+            },
+            "lastKnownLocator": {
+              "additionalProperties": false,
+              "properties": {
+                "displayPath": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 512
+                },
+                "routingToken": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 192
+                },
+                "v": {
+                  "const": 1
+                },
+                "webUrl": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 384
+                }
+              },
+              "required": [
+                "v"
+              ],
+              "type": "object"
+            },
+            "localRef": {
+              "additionalProperties": false,
+              "properties": {
+                "collisionScope": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 192
+                },
+                "entryId": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 128
+                },
+                "kindId": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 128
+                }
+              },
+              "required": [
+                "kindId",
+                "collisionScope",
+                "entryId"
+              ],
+              "type": "object"
+            },
+            "v": {
+              "const": 1
+            }
+          },
+          "required": [
+            "v",
+            "instance",
+            "localRef"
+          ],
+          "type": "object"
+        },
+        "placementBindings": [],
+        "resultSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "branch": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "additions": {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "base": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 512
+                        },
+                        "deletions": {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "head": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 512
+                        }
+                      },
+                      "required": [
+                        "head",
+                        "base"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "const": null
+                    }
+                  ]
+                },
+                "checks": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "failed": {
+                          "anyOf": [
+                            {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        },
+                        "incomplete": {
+                          "anyOf": [
+                            {
+                              "const": true
+                            },
+                            {
+                              "const": false
+                            }
+                          ]
+                        },
+                        "passed": {
+                          "anyOf": [
+                            {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        },
+                        "pending": {
+                          "anyOf": [
+                            {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        },
+                        "rows": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "completedAtMs": {
+                                "maximum": 9007199254740991,
+                                "minimum": -9007199254740991,
+                                "type": "integer"
+                              },
+                              "id": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 128
+                              },
+                              "name": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 512
+                              },
+                              "startedAtMs": {
+                                "maximum": 9007199254740991,
+                                "minimum": -9007199254740991,
+                                "type": "integer"
+                              },
+                              "state": {
+                                "anyOf": [
+                                  {
+                                    "const": "passed"
+                                  },
+                                  {
+                                    "const": "failed"
+                                  },
+                                  {
+                                    "const": "pending"
+                                  },
+                                  {
+                                    "const": "neutral"
+                                  },
+                                  {
+                                    "const": "unknown"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "state"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "state": {
+                          "anyOf": [
+                            {
+                              "const": "none"
+                            },
+                            {
+                              "const": "unknown"
+                            },
+                            {
+                              "const": "incomplete"
+                            },
+                            {
+                              "const": "complete"
+                            }
+                          ]
+                        },
+                        "total": {
+                          "anyOf": [
+                            {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "passed",
+                        "failed",
+                        "pending",
+                        "total",
+                        "rows",
+                        "incomplete"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "const": null
+                    }
+                  ]
+                },
+                "facts": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                        "type": "string",
+                        "x-happier-max-utf8-bytes": 64
+                      },
+                      "importance": {
+                        "anyOf": [
+                          {
+                            "const": "primary"
+                          },
+                          {
+                            "const": "secondary"
+                          },
+                          {
+                            "const": "supplementary"
+                          }
+                        ]
+                      },
+                      "label": {
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                        "type": "string",
+                        "x-happier-max-utf8-bytes": 64
+                      },
+                      "value": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "text"
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 64
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "actor"
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 64
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "atMs": {
+                                "maximum": 9007199254740991,
+                                "minimum": -9007199254740991,
+                                "type": "integer"
+                              },
+                              "format": {
+                                "anyOf": [
+                                  {
+                                    "const": "relative"
+                                  },
+                                  {
+                                    "const": "absolute"
+                                  }
+                                ]
+                              },
+                              "kind": {
+                                "const": "timestamp"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "atMs",
+                              "format"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "approximate": {
+                                "const": true
+                              },
+                              "format": {
+                                "anyOf": [
+                                  {
+                                    "const": "compact"
+                                  },
+                                  {
+                                    "const": "plain"
+                                  }
+                                ]
+                              },
+                              "kind": {
+                                "const": "number"
+                              },
+                              "value": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "value",
+                              "format"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "status"
+                              },
+                              "tone": {
+                                "anyOf": [
+                                  {
+                                    "const": "success"
+                                  },
+                                  {
+                                    "const": "warning"
+                                  },
+                                  {
+                                    "const": "danger"
+                                  },
+                                  {
+                                    "const": "info"
+                                  },
+                                  {
+                                    "const": "neutral"
+                                  }
+                                ]
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 64
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "value",
+                              "tone"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "detailOnly"
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "importance",
+                      "value"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "const": "status"
+                },
+                "merge": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "blocker": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
+                              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                              "type": "string",
+                              "x-happier-max-utf8-bytes": 512
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        },
+                        "state": {
+                          "anyOf": [
+                            {
+                              "const": "mergeable"
+                            },
+                            {
+                              "const": "blocked"
+                            },
+                            {
+                              "const": "conflicts"
+                            },
+                            {
+                              "const": "unknown"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "blocker"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "const": null
+                    }
+                  ]
+                },
+                "observedAtMs": {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                "projectionTruncated": {
+                  "const": true
+                },
+                "review": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "decision": {
+                          "anyOf": [
+                            {
+                              "const": "approved"
+                            },
+                            {
+                              "const": "changesRequested"
+                            },
+                            {
+                              "const": "reviewRequired"
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        },
+                        "incomplete": {
+                          "anyOf": [
+                            {
+                              "const": true
+                            },
+                            {
+                              "const": false
+                            }
+                          ]
+                        },
+                        "reviewers": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 512
+                              },
+                              "verb": {
+                                "anyOf": [
+                                  {
+                                    "const": "approved"
+                                  },
+                                  {
+                                    "const": "changesRequested"
+                                  },
+                                  {
+                                    "const": "commented"
+                                  },
+                                  {
+                                    "const": "dismissed"
+                                  },
+                                  {
+                                    "const": "pending"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "verb"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "decision",
+                        "reviewers",
+                        "incomplete"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "const": null
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "observedAtMs",
+                "checks",
+                "review",
+                "merge",
+                "branch",
+                "facts"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "failure": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "class": {
+                      "anyOf": [
+                        {
+                          "const": "authentication"
+                        },
+                        {
+                          "const": "permission"
+                        },
+                        {
+                          "const": "rateLimit"
+                        },
+                        {
+                          "const": "transient"
+                        },
+                        {
+                          "const": "unsupportedContract"
+                        },
+                        {
+                          "const": "unknown"
+                        }
+                      ]
+                    },
+                    "code": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 128
+                    },
+                    "detail": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 256
+                    },
+                    "retryNotBeforeMs": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "class",
+                    "code"
+                  ],
+                  "type": "object"
+                },
+                "kind": {
+                  "const": "unavailable"
+                }
+              },
+              "required": [
+                "kind",
+                "failure"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "scopes": [
+          "global"
+        ],
+        "surfaces": [
+          "plugin",
+          "ui"
+        ],
+        "title": "Read GitHub pull-request status"
+      },
+      {
+        "connectedAccountPurposeBindings": [
+          {
+            "path": "instance.binding.account",
+            "purpose": "github-connected-account"
+          }
+        ],
         "dangerLevel": "writesLocal",
         "description": "Rereads one GitHub pull request and prepares its source branch in the selected workspace.",
         "execution": {
@@ -6280,7 +7148,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read GitHub repository capabilities"
       },
@@ -6849,7 +7720,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Refresh the GitHub overview"
       },
@@ -7320,7 +8194,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read a GitHub timeline page"
       },
@@ -7756,7 +8633,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read a GitHub changed-file page"
       },
@@ -8798,7 +9678,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read one GitHub feedback connection"
       },
@@ -9380,7 +10263,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read the GitHub checks of a pull request"
       },
@@ -11997,7 +12883,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Merge this pull request"
       },
@@ -14572,7 +15461,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Close this pull request"
       },
@@ -17147,7 +18039,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Reopen this pull request"
       },
@@ -19736,7 +20631,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Mark this pull request ready for review"
       },
@@ -23388,7 +24286,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Submit this pull request review"
       },
@@ -26213,7 +27114,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Publish this pull request review comment"
       },
@@ -29037,7 +29941,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Reply to this pull request review thread"
       },
@@ -35175,7 +36082,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Update this branch"
       },
@@ -35652,7 +36562,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Request review from people"
       },
@@ -36129,7 +37042,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Withdraw review requests"
       },
@@ -36601,7 +37517,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Resolve or reopen a review conversation"
       },
@@ -54247,12 +55166,42 @@
           "displayName": "GitHub",
           "kinds": [
             {
+              "detailActions": true,
+              "detailTabs": [
+                {
+                  "id": "overview",
+                  "kind": "shared"
+                },
+                {
+                  "id": "activity",
+                  "kind": "shared"
+                },
+                {
+                  "id": "files",
+                  "kind": "shared"
+                },
+                {
+                  "id": "checks",
+                  "kind": "shared"
+                }
+              ],
               "displayName": "Pull request",
               "id": "pull-request",
               "pluralDisplayName": "Pull requests",
               "workflowSubject": "pullRequest"
             },
             {
+              "detailActions": true,
+              "detailTabs": [
+                {
+                  "id": "overview",
+                  "kind": "shared"
+                },
+                {
+                  "id": "activity",
+                  "kind": "shared"
+                }
+              ],
               "displayName": "Issue",
               "id": "issue",
               "pluralDisplayName": "Issues",
@@ -54268,6 +55217,7 @@
           "get": "triage/get-github-entry",
           "listInstances": "triage/list-github-instances",
           "prepareReviewWorkspace": "triage/prepare-github-review-workspace",
+          "readPullRequestStatus": "triage/read-github-pull-request-status",
           "scan": "triage/scan-github",
           "verifyReviewWorkspace": "triage/verify-github-review-workspace"
         },
@@ -54655,6 +55605,17 @@
             "plugins.github.ui.sessionsLabel": "Sessions linked to this GitHub issue",
             "plugins.github.ui.showEarlierIssueComments": "Show 40 earlier comments",
             "plugins.github.ui.someone": "Someone",
+            "plugins.github.ui.story.ask": "The ask",
+            "plugins.github.ui.story.changed": "What changed",
+            "plugins.github.ui.story.checks": "Checks",
+            "plugins.github.ui.story.checksFailing": "{count} failing",
+            "plugins.github.ui.story.checksPassing": "All passing",
+            "plugins.github.ui.story.checksRunning": "Running",
+            "plugins.github.ui.story.noDescription": "No description.",
+            "plugins.github.ui.story.report": "The report",
+            "plugins.github.ui.story.smallerFiles": "{count} smaller files",
+            "plugins.github.ui.story.totals": "+{additions} −{deletions} in {files} files",
+            "plugins.github.ui.story.totalsPartial": "+{additions} −{deletions} in {files}+ files",
             "plugins.github.ui.tab.checks": "Checks",
             "plugins.github.ui.tab.comments": "Comments",
             "plugins.github.ui.tab.feedback": "Feedback",
@@ -55027,6 +55988,17 @@
             "plugins.github.ui.sessionsLabel": "Сессии, связанные с этой задачей GitHub",
             "plugins.github.ui.showEarlierIssueComments": "Показать 40 предыдущих комментариев",
             "plugins.github.ui.someone": "Кто-то",
+            "plugins.github.ui.story.ask": "Запрос",
+            "plugins.github.ui.story.changed": "Что изменилось",
+            "plugins.github.ui.story.checks": "Проверки",
+            "plugins.github.ui.story.checksFailing": "{count} с ошибкой",
+            "plugins.github.ui.story.checksPassing": "Все пройдены",
+            "plugins.github.ui.story.checksRunning": "Выполняется",
+            "plugins.github.ui.story.noDescription": "Нет описания.",
+            "plugins.github.ui.story.report": "Отчёт",
+            "plugins.github.ui.story.smallerFiles": "Ещё {count} небольших файлов",
+            "plugins.github.ui.story.totals": "+{additions} −{deletions} в {files} файлах",
+            "plugins.github.ui.story.totalsPartial": "+{additions} −{deletions} в {files}+ файлах",
             "plugins.github.ui.tab.checks": "Проверки",
             "plugins.github.ui.tab.comments": "Комментарии",
             "plugins.github.ui.tab.feedback": "Отзывы",
@@ -55399,6 +56371,17 @@
             "plugins.github.ui.sessionsLabel": "Sesje związane z tym problemem GitHub",
             "plugins.github.ui.showEarlierIssueComments": "Pokaż 40 wcześniejszych komentarzy",
             "plugins.github.ui.someone": "Ktoś",
+            "plugins.github.ui.story.ask": "Prośba",
+            "plugins.github.ui.story.changed": "Co się zmieniło",
+            "plugins.github.ui.story.checks": "Kontrole",
+            "plugins.github.ui.story.checksFailing": "{count} nieudanych",
+            "plugins.github.ui.story.checksPassing": "Wszystkie zaliczone",
+            "plugins.github.ui.story.checksRunning": "W toku",
+            "plugins.github.ui.story.noDescription": "Brak opisu.",
+            "plugins.github.ui.story.report": "Zgłoszenie",
+            "plugins.github.ui.story.smallerFiles": "{count} mniejszych plików",
+            "plugins.github.ui.story.totals": "+{additions} −{deletions} w {files} plikach",
+            "plugins.github.ui.story.totalsPartial": "+{additions} −{deletions} w {files}+ plikach",
             "plugins.github.ui.tab.checks": "Sprawdziany",
             "plugins.github.ui.tab.comments": "Komentarze",
             "plugins.github.ui.tab.feedback": "Opinie",
@@ -55771,6 +56754,17 @@
             "plugins.github.ui.sessionsLabel": "Sesiones vinculadas a este problema de GitHub",
             "plugins.github.ui.showEarlierIssueComments": "Mostrar 40 comentarios anteriores",
             "plugins.github.ui.someone": "Alguien",
+            "plugins.github.ui.story.ask": "La petición",
+            "plugins.github.ui.story.changed": "Qué cambió",
+            "plugins.github.ui.story.checks": "Comprobaciones",
+            "plugins.github.ui.story.checksFailing": "{count} con fallos",
+            "plugins.github.ui.story.checksPassing": "Todas correctas",
+            "plugins.github.ui.story.checksRunning": "En curso",
+            "plugins.github.ui.story.noDescription": "Sin descripción.",
+            "plugins.github.ui.story.report": "El informe",
+            "plugins.github.ui.story.smallerFiles": "{count} archivos más pequeños",
+            "plugins.github.ui.story.totals": "+{additions} −{deletions} en {files} archivos",
+            "plugins.github.ui.story.totalsPartial": "+{additions} −{deletions} en {files}+ archivos",
             "plugins.github.ui.tab.checks": "Comprobaciones",
             "plugins.github.ui.tab.comments": "Comentarios",
             "plugins.github.ui.tab.feedback": "Comentarios",
@@ -56143,6 +57137,17 @@
             "plugins.github.ui.sessionsLabel": "Sessions liées à ce problème GitHub",
             "plugins.github.ui.showEarlierIssueComments": "Afficher les 40 commentaires précédents",
             "plugins.github.ui.someone": "Quelqu’un",
+            "plugins.github.ui.story.ask": "La demande",
+            "plugins.github.ui.story.changed": "Ce qui a changé",
+            "plugins.github.ui.story.checks": "Vérifications",
+            "plugins.github.ui.story.checksFailing": "{count} en échec",
+            "plugins.github.ui.story.checksPassing": "Toutes réussies",
+            "plugins.github.ui.story.checksRunning": "En cours",
+            "plugins.github.ui.story.noDescription": "Aucune description.",
+            "plugins.github.ui.story.report": "Le signalement",
+            "plugins.github.ui.story.smallerFiles": "{count} fichiers plus petits",
+            "plugins.github.ui.story.totals": "+{additions} −{deletions} dans {files} fichiers",
+            "plugins.github.ui.story.totalsPartial": "+{additions} −{deletions} dans {files}+ fichiers",
             "plugins.github.ui.tab.checks": "Vérifications",
             "plugins.github.ui.tab.comments": "Commentaires",
             "plugins.github.ui.tab.feedback": "Retours",
@@ -56515,6 +57520,17 @@
             "plugins.github.ui.sessionsLabel": "Sessioni correlate a questo problema GitHub",
             "plugins.github.ui.showEarlierIssueComments": "Mostra 40 commenti precedenti",
             "plugins.github.ui.someone": "Qualcuno",
+            "plugins.github.ui.story.ask": "La richiesta",
+            "plugins.github.ui.story.changed": "Cosa è cambiato",
+            "plugins.github.ui.story.checks": "Controlli",
+            "plugins.github.ui.story.checksFailing": "{count} non riusciti",
+            "plugins.github.ui.story.checksPassing": "Tutti superati",
+            "plugins.github.ui.story.checksRunning": "In corso",
+            "plugins.github.ui.story.noDescription": "Nessuna descrizione.",
+            "plugins.github.ui.story.report": "La segnalazione",
+            "plugins.github.ui.story.smallerFiles": "{count} file più piccoli",
+            "plugins.github.ui.story.totals": "+{additions} −{deletions} in {files} file",
+            "plugins.github.ui.story.totalsPartial": "+{additions} −{deletions} in {files}+ file",
             "plugins.github.ui.tab.checks": "Controlli",
             "plugins.github.ui.tab.comments": "Commenti",
             "plugins.github.ui.tab.feedback": "Riscontri",
@@ -56887,6 +57903,17 @@
             "plugins.github.ui.sessionsLabel": "Sessões vinculadas a esta questão do GitHub",
             "plugins.github.ui.showEarlierIssueComments": "Mostrar 40 comentários anteriores",
             "plugins.github.ui.someone": "Alguém",
+            "plugins.github.ui.story.ask": "O pedido",
+            "plugins.github.ui.story.changed": "O que mudou",
+            "plugins.github.ui.story.checks": "Verificações",
+            "plugins.github.ui.story.checksFailing": "{count} com falha",
+            "plugins.github.ui.story.checksPassing": "Todas aprovadas",
+            "plugins.github.ui.story.checksRunning": "Em execução",
+            "plugins.github.ui.story.noDescription": "Sem descrição.",
+            "plugins.github.ui.story.report": "O relato",
+            "plugins.github.ui.story.smallerFiles": "{count} arquivos menores",
+            "plugins.github.ui.story.totals": "+{additions} −{deletions} em {files} arquivos",
+            "plugins.github.ui.story.totalsPartial": "+{additions} −{deletions} em {files}+ arquivos",
             "plugins.github.ui.tab.checks": "Verificações",
             "plugins.github.ui.tab.comments": "Comentários",
             "plugins.github.ui.tab.feedback": "Comentários",
@@ -57259,6 +58286,17 @@
             "plugins.github.ui.sessionsLabel": "Les sessions vinculades a aquesta incidència del GitHub",
             "plugins.github.ui.showEarlierIssueComments": "Mostra 40 comentaris anteriors",
             "plugins.github.ui.someone": "Algú",
+            "plugins.github.ui.story.ask": "La petició",
+            "plugins.github.ui.story.changed": "Què ha canviat",
+            "plugins.github.ui.story.checks": "Comprovacions",
+            "plugins.github.ui.story.checksFailing": "{count} amb errors",
+            "plugins.github.ui.story.checksPassing": "Totes correctes",
+            "plugins.github.ui.story.checksRunning": "En curs",
+            "plugins.github.ui.story.noDescription": "Sense descripció.",
+            "plugins.github.ui.story.report": "L'informe",
+            "plugins.github.ui.story.smallerFiles": "{count} fitxers més petits",
+            "plugins.github.ui.story.totals": "+{additions} −{deletions} en {files} fitxers",
+            "plugins.github.ui.story.totalsPartial": "+{additions} −{deletions} en {files}+ fitxers",
             "plugins.github.ui.tab.checks": "Comprovacions",
             "plugins.github.ui.tab.comments": "Comentaris",
             "plugins.github.ui.tab.feedback": "Comentaris",
@@ -57631,6 +58669,17 @@
             "plugins.github.ui.sessionsLabel": "关联到这个 GitHub issue 的会话",
             "plugins.github.ui.showEarlierIssueComments": "显示之前的 40 条评论",
             "plugins.github.ui.someone": "某人",
+            "plugins.github.ui.story.ask": "需求",
+            "plugins.github.ui.story.changed": "改动内容",
+            "plugins.github.ui.story.checks": "检查",
+            "plugins.github.ui.story.checksFailing": "{count} 个失败",
+            "plugins.github.ui.story.checksPassing": "全部通过",
+            "plugins.github.ui.story.checksRunning": "运行中",
+            "plugins.github.ui.story.noDescription": "没有描述。",
+            "plugins.github.ui.story.report": "报告",
+            "plugins.github.ui.story.smallerFiles": "另有 {count} 个较小的文件",
+            "plugins.github.ui.story.totals": "{files} 个文件 +{additions} −{deletions}",
+            "plugins.github.ui.story.totalsPartial": "{files}+ 个文件 +{additions} −{deletions}",
             "plugins.github.ui.tab.checks": "检查",
             "plugins.github.ui.tab.comments": "评论",
             "plugins.github.ui.tab.feedback": "反馈",
@@ -58003,6 +59052,17 @@
             "plugins.github.ui.sessionsLabel": "連結到這位 GitHub 問題的會話",
             "plugins.github.ui.showEarlierIssueComments": "顯示先前的 40 則留言",
             "plugins.github.ui.someone": "某人",
+            "plugins.github.ui.story.ask": "需求",
+            "plugins.github.ui.story.changed": "變更內容",
+            "plugins.github.ui.story.checks": "檢查",
+            "plugins.github.ui.story.checksFailing": "{count} 個失敗",
+            "plugins.github.ui.story.checksPassing": "全部通過",
+            "plugins.github.ui.story.checksRunning": "執行中",
+            "plugins.github.ui.story.noDescription": "沒有描述。",
+            "plugins.github.ui.story.report": "報告",
+            "plugins.github.ui.story.smallerFiles": "另有 {count} 個較小的檔案",
+            "plugins.github.ui.story.totals": "{files} 個檔案 +{additions} −{deletions}",
+            "plugins.github.ui.story.totalsPartial": "{files}+ 個檔案 +{additions} −{deletions}",
             "plugins.github.ui.tab.checks": "檢查",
             "plugins.github.ui.tab.comments": "留言",
             "plugins.github.ui.tab.feedback": "回饋",
@@ -58375,6 +59435,17 @@
             "plugins.github.ui.sessionsLabel": "この GitHub issue に関連するセッション",
             "plugins.github.ui.showEarlierIssueComments": "過去のコメントを40件表示",
             "plugins.github.ui.someone": "不明なユーザー",
+            "plugins.github.ui.story.ask": "依頼内容",
+            "plugins.github.ui.story.changed": "変更点",
+            "plugins.github.ui.story.checks": "チェック",
+            "plugins.github.ui.story.checksFailing": "{count} 件失敗",
+            "plugins.github.ui.story.checksPassing": "すべて成功",
+            "plugins.github.ui.story.checksRunning": "実行中",
+            "plugins.github.ui.story.noDescription": "説明はありません。",
+            "plugins.github.ui.story.report": "報告",
+            "plugins.github.ui.story.smallerFiles": "ほかに小さなファイル {count} 件",
+            "plugins.github.ui.story.totals": "{files} ファイルで +{additions} −{deletions}",
+            "plugins.github.ui.story.totalsPartial": "{files}+ ファイルで +{additions} −{deletions}",
             "plugins.github.ui.tab.checks": "チェック",
             "plugins.github.ui.tab.comments": "コメント",
             "plugins.github.ui.tab.feedback": "フィードバック",
@@ -58747,6 +59818,17 @@
             "plugins.github.ui.sessionsLabel": "Mit diesem GitHub-Issue verknüpfte Sessions",
             "plugins.github.ui.showEarlierIssueComments": "40 frühere Kommentare anzeigen",
             "plugins.github.ui.someone": "Jemand",
+            "plugins.github.ui.story.ask": "Das Anliegen",
+            "plugins.github.ui.story.changed": "Was sich geändert hat",
+            "plugins.github.ui.story.checks": "Prüfungen",
+            "plugins.github.ui.story.checksFailing": "{count} fehlgeschlagen",
+            "plugins.github.ui.story.checksPassing": "Alle bestanden",
+            "plugins.github.ui.story.checksRunning": "Läuft",
+            "plugins.github.ui.story.noDescription": "Keine Beschreibung.",
+            "plugins.github.ui.story.report": "Die Meldung",
+            "plugins.github.ui.story.smallerFiles": "{count} kleinere Dateien",
+            "plugins.github.ui.story.totals": "+{additions} −{deletions} in {files} Dateien",
+            "plugins.github.ui.story.totalsPartial": "+{additions} −{deletions} in {files}+ Dateien",
             "plugins.github.ui.tab.checks": "Prüfungen",
             "plugins.github.ui.tab.comments": "Kommentare",
             "plugins.github.ui.tab.feedback": "Feedback",

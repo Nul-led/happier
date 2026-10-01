@@ -180,7 +180,7 @@ export async function authorizePluginExecLaunchForHost(
 export function createStableRunnerPluginExecService(
     params: Readonly<{
         signal: AbortSignal;
-        isGenerationCurrent(): boolean;
+        isOccurrenceCurrent(): boolean;
         agentCli: PluginAgentCliReadinessService;
         resolveSystemTool(
             request: Parameters<
@@ -209,7 +209,7 @@ export function createStableRunnerPluginExecService(
     const base = createStablePluginExecService({
         allowedExecutables: [],
         signal: params.signal,
-        isGenerationCurrent: params.isGenerationCurrent,
+        isOccurrenceCurrent: params.isOccurrenceCurrent,
         authorizeLaunch: (request, options) =>
             params.authorizeLaunch(
                 request,
@@ -382,7 +382,7 @@ export function createStablePluginExecService(params: Readonly<{
     environment?: Readonly<Record<string, string>>;
     allowedCwdScopes?: readonly PluginFileSystemScope[];
     signal: AbortSignal;
-    isGenerationCurrent(): boolean;
+    isOccurrenceCurrent(): boolean;
     resolveExecutable(executable: ManagedExecutableRef): Promise<ResolvedPluginExecutable>;
     resolvePath(path: PluginPath): Promise<string>;
     agentCli?: PluginAgentCliReadinessService;
@@ -411,8 +411,8 @@ export function createStablePluginExecService(params: Readonly<{
     ));
 
     function guard(signal?: AbortSignal): void {
-        if (!params.isGenerationCurrent()) {
-            fail('plugin_generation_stale', 'Plugin generation is stale');
+        if (!params.isOccurrenceCurrent()) {
+            fail('plugin_generation_stale', 'Plugin occurrenceId is stale');
         }
         if (params.signal.aborted || signal?.aborted) {
             fail('plugin_exec_aborted', 'Process operation was aborted');

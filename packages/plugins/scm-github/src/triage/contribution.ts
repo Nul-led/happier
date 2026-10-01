@@ -19,11 +19,12 @@ import type { GithubTriageKindIdV1 } from './types.js';
 /** The contribution's local id inside `contributesTo['happier.triage'].sources`. */
 export const GITHUB_TRIAGE_CONTRIBUTION_LOCAL_ID_V1 = 'github-forge';
 
-/** The five Action ids the contribution's operation roles bind to. */
+/** The Action ids the contribution's operation roles bind to. */
 export const GITHUB_TRIAGE_ACTION_IDS_V1 = Object.freeze({
   listInstances: 'triage/list-github-instances',
   scan: 'triage/scan-github',
   get: 'triage/get-github-entry',
+  readPullRequestStatus: 'triage/read-github-pull-request-status',
   prepareReviewWorkspace: 'triage/prepare-github-review-workspace',
   verifyReviewWorkspace: 'triage/verify-github-review-workspace',
 });
@@ -34,7 +35,7 @@ export const GITHUB_TRIAGE_ACTION_IDS_V1 = Object.freeze({
  * They bind to no Triage operation role. A mounted Plugin UI surface holds
  * `PluginUiHostApi`, which has no storage member and no transport of its own, so
  * an Action is the ONLY way this source's detail body can reach GitHub at all.
- * They are declared separately from the five role-bound Actions above precisely because
+ * They are declared separately from the role-bound Actions above precisely because
  * they are not roles: the aggregate never invokes them, and only this plugin's
  * own detail renderer does.
  */
@@ -91,11 +92,9 @@ export const GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1 = Object.freeze({
  * The same-plugin renderer bound to the required source-owned detail role, and the UI
  * artifact it mounts.
  *
- * These are two different identities and they are NOT interchangeable: the manifest's
- * `renderers[].artifact` is what the host looks up in the staged `dist/happier-plugin-ui`
- * graph, while `renderers[].id` is what the contribution's `surfaces.detail` binds. The
- * build config's `rendererId` names the ARTIFACT. `src/uiBuildConfig.test.ts` keeps the
- * `.mjs` build input and this TypeScript identity from drifting apart.
+ * These are two different identities: `renderers[].id` is what the contribution's
+ * `surfaces.detail` binds, while `renderers[].artifact` names the package's exact
+ * `./happier-plugin-ui/<artifactId>` export, which the SDK UI build resolves.
  */
 export const GITHUB_TRIAGE_DETAIL_RENDERER_ID_V1 = 'github-detail';
 export const GITHUB_TRIAGE_DETAIL_ARTIFACT_ID_V1 = 'github-detail-native';
@@ -144,12 +143,28 @@ export const GITHUB_TRIAGE_SOURCE_DESCRIPTOR_V1: TriageSourceDescriptorV1 =
       workflowSubject: 'pullRequest',
       displayName: 'Pull request',
       pluralDisplayName: 'Pull requests',
+      // r0.42: the Triage detail frame draws these tabs and asks this source
+      // for each as a panel; the writes render as the header `actions` panel.
+      detailTabs: Object.freeze([
+        Object.freeze({ kind: 'shared', id: 'overview' }),
+        Object.freeze({ kind: 'shared', id: 'activity' }),
+        Object.freeze({ kind: 'shared', id: 'files' }),
+        Object.freeze({ kind: 'shared', id: 'checks' }),
+      ]),
+      detailActions: true,
     }),
     Object.freeze({
       id: 'issue',
       workflowSubject: 'issue',
       displayName: 'Issue',
       pluralDisplayName: 'Issues',
+      // An issue has no changes of its own: Triage sources its Files and
+      // Checks from the linked fix PR.
+      detailTabs: Object.freeze([
+        Object.freeze({ kind: 'shared', id: 'overview' }),
+        Object.freeze({ kind: 'shared', id: 'activity' }),
+      ]),
+      detailActions: true,
     }),
   ]),
   });

@@ -325,7 +325,6 @@ test('ensureWorkspacePackagesBuiltForComponent builds internal dist-based worksp
   await ensureWorkspacePackagesBuiltForComponent(join(root, 'apps', 'ui'), {
     quiet: true,
     env: process.env,
-    admitPriorOutputsImmediately: true,
   });
 
   const out = await readFile(outputPath, 'utf-8');
@@ -334,28 +333,21 @@ test('ensureWorkspacePackagesBuiltForComponent builds internal dist-based worksp
   const preservedOutputTime = new Date(Date.now() - 60_000);
   await utimes(join(protocolDir, 'dist', 'index.d.ts'), preservedOutputTime, preservedOutputTime);
 
-  // A valid output is a read-only admission path. Make the package-lock directory impossible to
-  // create so this second call fails if it tries to acquire the mutation lock before checking.
-  const workspaceLockDir = join(root, '.project', 'tmp', 'workspace-dist-builds');
-  await rm(workspaceLockDir, { recursive: true, force: true });
-  await mkdir(join(root, '.project', 'tmp'), { recursive: true });
-  await writeFile(workspaceLockDir, 'lock-directory-must-not-be-touched\n', 'utf-8');
-
-  // Second run should be a no-op (no additional build or lock acquisition).
+  // An externally aged output invalidates currentness, so the canonical owner
+  // rebuilds instead of admitting a stale declaration solely because it exists.
   await ensureWorkspacePackagesBuiltForComponent(join(root, 'apps', 'ui'), { quiet: true, env: process.env });
   const out2 = await readFile(outputPath, 'utf-8');
   const occurrences = out2.split('\n').filter((l) => l.includes('/packages/protocol :: -s build')).length;
-  assert.equal(occurrences, 1);
+  assert.equal(occurrences, 2);
 
   // Source freshness is part of output validity, not an adapter concern.
-  await rm(workspaceLockDir, { force: true });
   await new Promise((resolve) => setTimeout(resolve, 20));
   await mkdir(join(protocolDir, 'src'), { recursive: true });
   await writeFile(join(protocolDir, 'src', 'index.ts'), 'export const changed = true;\n', 'utf-8');
   await ensureWorkspacePackagesBuiltForComponent(join(root, 'apps', 'ui'), { quiet: true, env: process.env });
   const out3 = await readFile(outputPath, 'utf-8');
   const occurrencesAfterSourceChange = out3.split('\n').filter((l) => l.includes('/packages/protocol :: -s build')).length;
-  assert.equal(occurrencesAfterSourceChange, 2);
+  assert.equal(occurrencesAfterSourceChange, 3);
 
   await new Promise((resolve) => setTimeout(resolve, 20));
   const protocolPackage = JSON.parse(await readFile(join(protocolDir, 'package.json'), 'utf-8'));
@@ -371,7 +363,7 @@ test('ensureWorkspacePackagesBuiltForComponent builds internal dist-based worksp
   await ensureWorkspacePackagesBuiltForComponent(join(root, 'apps', 'ui'), { quiet: true, env: process.env });
   const finalOut = await readFile(outputPath, 'utf-8');
   const finalOccurrences = finalOut.split('\n').filter((l) => l.includes('/packages/protocol :: -s build')).length;
-  assert.equal(finalOccurrences, 4, 'source/config/package changes rebuild, while test-only source does not');
+  assert.equal(finalOccurrences, 5, 'stale output and source/config/package changes rebuild, while test-only source does not');
 });
 
 test('ensureWorkspacePackagesBuiltForComponent builds unscoped internal workspace dependencies', async (t) => {
@@ -866,7 +858,6 @@ test('ensureWorkspacePackagesBuiltForComponent resolves TypeScript bin shims whe
   await ensureWorkspacePackagesBuiltForComponent(join(root, 'apps', 'ui'), {
     quiet: true,
     env: process.env,
-    admitPriorOutputsImmediately: true,
   });
 
   const out = await readFile(outputPath, 'utf-8');
@@ -1109,7 +1100,6 @@ test('ensureWorkspacePackagesBuiltForComponent rebuilds internal workspaces when
   await ensureWorkspacePackagesBuiltForComponent(join(root, 'apps', 'ui'), {
     quiet: true,
     env: process.env,
-    admitPriorOutputsImmediately: true,
   });
 
   const out = await readFile(outputPath, 'utf-8');
@@ -1117,7 +1107,7 @@ test('ensureWorkspacePackagesBuiltForComponent rebuilds internal workspaces when
   assert.equal(Boolean(await readFile(join(protocolDir, 'dist', 'machineTransfer', 'transferStream.js'), 'utf-8')), true);
 });
 
-test('ensureWorkspacePackagesBuiltForComponent admits structurally runnable prior outputs before refreshing stale inputs', async (t) => {
+test('ensureWorkspacePackagesBuiltForComponent rebuilds prior outputs without a matching input record', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'hs-ensure-workspaces-built-prior-'));
   t.after(async () => {
     await rm(root, { recursive: true, force: true });
@@ -1152,27 +1142,23 @@ test('ensureWorkspacePackagesBuiltForComponent admits structurally runnable prio
   await utimes(join(protocolDir, 'dist', 'index.d.ts'), new Date(baseTime - 20_000), new Date(baseTime - 20_000));
   await utimes(join(protocolDir, 'src', 'index.ts'), new Date(baseTime), new Date(baseTime));
 
-  const binDir = join(root, 'bin');
-  const outputPath = join(root, 'argv.txt');
-  await writeYarnWorkspaceBuildStub({ binDir, outputPath });
-  applyEnvOverrides(t, {
-    PATH: `${binDir}:/usr/bin:/bin`,
-    OUTPUT_PATH: outputPath,
-    HAPPIER_STACK_ENV_FILE: null,
-  });
-
   const admitted = await ensureWorkspacePackagesBuiltForComponentCanonical(
     join(root, 'apps', 'ui'),
     {
       quiet: true,
-      env: process.env,
-      admitPriorOutputsImmediately: true,
+      workspaceBuildBoundary: {
+        async prepareEnv(_packageDir, env) { return env; },
+        async runPackageBuild(_packageDir, { env }) {
+          await mkdir(env.HAPPIER_WORKSPACE_DIST_OUTPUT_DIR, { recursive: true });
+          await writeFile(join(env.HAPPIER_WORKSPACE_DIST_OUTPUT_DIR, 'index.js'), 'export const current = true;\n');
+          await writeFile(join(env.HAPPIER_WORKSPACE_DIST_OUTPUT_DIR, 'index.d.ts'), 'export declare const current: boolean;\n');
+        },
+      },
     },
   );
 
-  assert.deepEqual(admitted.built, []);
-  assert.equal(await readFile(join(protocolDir, 'dist', 'index.js'), 'utf-8'), 'export const prior = true;\n');
-  assert.doesNotMatch(await readFile(outputPath, 'utf-8'), /packages\/protocol :: -s build/);
+  assert.deepEqual(admitted.built, ['@happier-dev/protocol']);
+  assert.equal(await readFile(join(protocolDir, 'dist', 'index.js'), 'utf-8'), 'export const current = true;\n');
 });
 
 test('ensureWorkspacePackagesBuiltForComponent tolerates transient missing local imports while another local build finishes', async (t) => {

@@ -13,6 +13,8 @@ import {
     TriageSourceInstanceIdV1Schema,
 } from '@happier-dev/triage-protocol/v1';
 
+export const TRIAGE_READ_PULL_REQUEST_STATUS_ACTION_LOCAL_ID_V1 = 'entries/read-pull-request-status-v1';
+
 /**
  * The durable half of one mounted detail input.
  *

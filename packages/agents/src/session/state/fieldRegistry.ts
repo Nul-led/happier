@@ -3,6 +3,18 @@ import type { SessionStateFieldId } from '@happier-dev/protocol';
 import type { SessionStateFieldDescriptor } from './_types.js';
 
 export const SESSION_STATE_FIELD_REGISTRY = {
+  'intent.sessionRoles': {
+    id: 'intent.sessionRoles',
+    class: 'intent',
+    conflictPolicy: 'bindingOwned',
+    deliveryClass: 'durable_required',
+  },
+  'intent.role': {
+    id: 'intent.role',
+    class: 'intent',
+    conflictPolicy: 'bindingOwned',
+    deliveryClass: 'durable_required',
+  },
   'identity.runtimeDescriptor': {
     id: 'identity.runtimeDescriptor',
     class: 'identity',

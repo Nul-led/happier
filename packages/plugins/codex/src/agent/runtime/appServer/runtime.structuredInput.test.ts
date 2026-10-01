@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ExecService } from '@happier-dev/plugin-sdk/exec';
+import type { AgentSessionInputFilesService } from '@happier-dev/plugin-sdk/agents/runtime';
 
 const UPLOAD_PATH = '.happier/uploads/messages/m1/screenshot.png';
 
@@ -114,13 +115,15 @@ import { createCodexAppServerClient } from './client.js';
 import { createCodexNativeAppServerSessionRuntime } from './native.js';
 import { createCodexAppServerRuntime } from './runtime.js';
 
-function createRuntime() {
+function createRuntime(inputFiles?: AgentSessionInputFilesService) {
   const exec = Object.freeze({}) as unknown as ExecService;
   return createCodexAppServerRuntime({
     host: {
+      ...(inputFiles ? { inputFiles } : {}),
       baseProcessEnv: {},
       logger: {
         debug: vi.fn(),
+        warn: vi.fn(),
       },
       accountUsage: {
         resolveSourceContext: async () => null,
@@ -168,6 +171,23 @@ describe('Codex app-server structured input dispatch', () => {
     clientState.reset();
   });
 
+  it('delivers browser images through the verified host service without a text-only fallback', async () => {
+    const browserInput = { v: 1, imageInputs: [{ id: 'browser-image', kind: 'localImage',
+      path: '.happier/uploads/artifacts/session-1/capture/screen.png', mimeType: 'image/png',
+      sha256: 'a'.repeat(64), sizeBytes: 68,
+      provenance: { kind: 'browserSessionMedia', sessionId: 'session-1', storage: 'daemon' },
+    }] };
+    // Public host service boundary; byte verification itself is exercised at the host owner.
+    const runtime = createCodexNativeAppServerSessionRuntime(createRuntime({
+      readVerifiedImage: async () => ({ url: 'data:image/png;base64,verified-pixels', mimeType: 'image/png' }),
+    }), 'session-1');
+    await expect(runtime.send({ inputIds: ['browser-1'], input: { text: 'Inspect', structuredInput: browserInput },
+      delivery: { kind: 'newTurn', turnId: 'turn-browser' } })).resolves.toEqual({ status: 'admitted' });
+    expect(clientState.readTurnInput('turn/start')).toEqual([
+      { type: 'text', text: 'Inspect' }, { type: 'image', url: 'data:image/png;base64,verified-pixels' },
+    ]);
+  });
+
   it('forwards skill mentions, vendor plugin mentions and verified image attachments to turn/start', async () => {
     const runtime = createCodexNativeAppServerSessionRuntime(createRuntime(), 'session-1');
 
@@ -208,7 +228,7 @@ describe('Codex app-server structured input dispatch', () => {
     ]);
   });
 
-  it('falls back to text-only turn input when the app-server rejects structured items', async () => {
+  it('refuses unsupported image input instead of retrying a text-only turn', async () => {
     clientState.rejectStructuredTurnInput();
     const runtime = createCodexNativeAppServerSessionRuntime(createRuntime(), 'session-1');
 
@@ -216,14 +236,12 @@ describe('Codex app-server structured input dispatch', () => {
       inputIds: ['input-1'],
       input: { text: 'Use @gmail and $review', structuredInput: STRUCTURED_INPUT },
       delivery: { kind: 'newTurn', turnId: 'turn-1' },
-    })).resolves.toEqual({ status: 'admitted' });
+    })).resolves.toMatchObject({ status: 'unsupported' });
 
-    const turnStarts = clientState.readTurnInputs('turn/start');
-    expect(turnStarts).toHaveLength(2);
-    expect(turnStarts[1]).toEqual([{ type: 'text', text: 'Use @gmail and $review' }]);
+    expect(clientState.readTurnInputs('turn/start')).toHaveLength(1);
   });
 
-  it('falls back to text-only steer input when the app-server rejects structured items', async () => {
+  it('refuses unsupported image input instead of retrying text-only steer', async () => {
     const runtime = createCodexNativeAppServerSessionRuntime(createRuntime(), 'session-1');
 
     await expect(runtime.send({
@@ -237,11 +255,9 @@ describe('Codex app-server structured input dispatch', () => {
       inputIds: ['input-2'],
       input: { text: 'also look at $review', structuredInput: STRUCTURED_INPUT },
       delivery: { kind: 'steer', turnId: 'turn-1' },
-    })).resolves.toEqual({ status: 'admitted' });
+    })).resolves.toMatchObject({ status: 'unsupported' });
 
-    const steers = clientState.readTurnInputs('turn/steer');
-    expect(steers).toHaveLength(2);
-    expect(steers[1]).toEqual([{ type: 'text', text: 'also look at $review' }]);
+    expect(clientState.readTurnInputs('turn/steer')).toHaveLength(1);
   });
 
   it('sends a text-only turn input when the runtime input carries no structured input', async () => {

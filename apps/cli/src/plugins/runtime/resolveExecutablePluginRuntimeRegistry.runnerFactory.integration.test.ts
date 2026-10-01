@@ -329,7 +329,6 @@ describe('production registry session runner factory resolution', () => {
         const generationAuthority = await readCurrentCommittedPluginGenerations(
             paths,
             {
-                bundledArtifacts: [],
                 isolateInvalidInstalledGenerations: false,
             },
         );
@@ -462,7 +461,11 @@ describe('production registry session runner factory resolution', () => {
                 pluginId,
                 pluginVersion: immutableManifest.manifest.version,
                 localAgentId: AGENT_ID,
-                immutableGenerationId: admitted.immutableGenerationId,
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: admitted.immutableGenerationId,
+                    installSource: 'localPath',
+                },
             });
             expect(binding).not.toHaveProperty('manifestDigest');
             let retainedLeafPromise:
@@ -487,6 +490,8 @@ describe('production registry session runner factory resolution', () => {
                 status: 'approved' as const,
             }));
             const unavailablePluginServices = createUnavailablePluginServices();
+            const occurrenceId = registry.readPluginOccurrenceId?.(pluginId);
+            if (!occurrenceId) throw new Error('Expected current plugin occurrence');
             const engineRegistry = await resolveCliEngineRegistry({
                 contributes: registry.contributes,
                 runtimeRegistry: registry,
@@ -498,9 +503,8 @@ describe('production registry session runner factory resolution', () => {
                         pluginVersion: '1.0.0',
                         agentId: `${pluginId}/${AGENT_ID}`,
                         backendId: `${pluginId}/${AGENT_ID}`,
-                        generation: binding.immutableGenerationId,
-                        immutableGenerationId:
-                            binding.immutableGenerationId,
+                        occurrenceId,
+                        sourceCustody: binding.sourceCustody,
                         isCurrent: () => true,
                     },
                     createRuntime: runnerCreateRuntime,

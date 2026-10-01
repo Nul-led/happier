@@ -7,6 +7,7 @@ import {
   openCodeServerHealthPath,
   OPEN_CODE_V1_HEALTH_PATH,
   OPEN_CODE_V2_HEALTH_PATH,
+  OPEN_CODE_V2_INFO_PATH,
   readOpenCodeManagedServerDialect,
   readRequestedOpenCodeServerDialect,
   resolveRequestedOpenCodeServerDialect,
@@ -48,6 +49,19 @@ describe('readRequestedOpenCodeServerDialect', () => {
 });
 
 describe('resolveRequestedOpenCodeServerDialect', () => {
+  it('keeps an explicit configured generation authoritative for an external server', () => {
+    expect(resolveRequestedOpenCodeServerDialect({
+      configuredGeneration: 'stable',
+      values: { [HAPPIER_OPENCODE_SERVER_DIALECT_ENV_KEY]: 'v2' },
+      managedServerDialect: null,
+    })).toBe('v1');
+    expect(resolveRequestedOpenCodeServerDialect({
+      configuredGeneration: 'v2',
+      values: {},
+      managedServerDialect: null,
+    })).toBe('v2');
+  });
+
   it('asks for V2 when Happier itself is about to run the opencode2 binary', () => {
     // The binary decides which routes the child mounts. An owned `opencode2`
     // server serves only `/api/*`, so leaving the request dialect at `auto`
@@ -75,10 +89,10 @@ describe('resolveRequestedOpenCodeServerDialect', () => {
 });
 
 describe('usesOpenCodeConnectedServiceRequestAuth', () => {
-  it('detects a launch that carries the isolated connected-service selection', () => {
+  it('does not mistake direct connected-account materialization for request auth', () => {
     expect(usesOpenCodeConnectedServiceRequestAuth({
       [OPENCODE_CONNECTED_SERVICE_SELECTION_IDENTITY_ENV]: 'materialization-1',
-    })).toBe(true);
+    })).toBe(false);
   });
 
   it('detects a launch that carries the request-auth capability path', () => {
@@ -110,18 +124,26 @@ function healthProbeFetch(
 }
 
 describe('detectOpenCodeServerDialect', () => {
-  it('takes the proven v1 path with no probe when the beta was not requested', async () => {
+  it('detects released OpenCode 2.0.15 from authenticated /api/info when /api/health is absent', async () => {
+    const fetch = healthProbeFetch({
+      '/api/info': jsonResponse(200, { version: '2.0.15', pid: 123, urls: [], paths: { tmp: '/tmp' } }),
+    });
+    await expect(detectOpenCodeServerDialect({ fetch, requested: 'auto' }))
+      .resolves.toMatchObject({ dialect: 'v2', probe: { path: '/api/info', status: 200 } });
+  });
+
+  it('keeps explicit stable and V2 requests authoritative without re-probing', async () => {
     const fetch = vi.fn<OpenCodeRuntimeFetch>(async () => jsonResponse(200, { healthy: true }));
 
-    const detection = await detectOpenCodeServerDialect({ fetch, requested: 'auto' });
+    await expect(detectOpenCodeServerDialect({ fetch, requested: 'v1' }))
+      .resolves.toEqual({ dialect: 'v1', requested: 'v1', probe: null });
+    await expect(detectOpenCodeServerDialect({ fetch, requested: 'v2' }))
+      .resolves.toEqual({ dialect: 'v2', requested: 'v2', probe: null });
 
-    expect(detection).toEqual({ dialect: 'v1', requested: 'auto', probe: null });
-    // A server that happens to expose `/api` must not move an unopted session
-    // off the transport it has always used, so nothing is asked of it.
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('selects v2 for the exact surface the pinned V2 server serves', async () => {
+  it('auto-detects the exact surface the pinned V2 server serves', async () => {
     // `packages/server/src/api.ts` builds `makeDefaultApi(...)`, whose only
     // liveness route is `GET /api/health` answering the literal
     // `{ healthy: true }` of `packages/protocol/src/groups/health.ts`. No
@@ -131,7 +153,7 @@ describe('detectOpenCodeServerDialect', () => {
       [OPEN_CODE_V2_HEALTH_PATH]: jsonResponse(200, { healthy: true }),
     });
 
-    const detection = await detectOpenCodeServerDialect({ fetch, requested: 'v2' });
+    const detection = await detectOpenCodeServerDialect({ fetch, requested: 'auto' });
 
     expect(detection.dialect).toBe('v2');
     expect(detection.probe).toMatchObject({ path: OPEN_CODE_V2_HEALTH_PATH, status: 200 });
@@ -151,7 +173,7 @@ describe('detectOpenCodeServerDialect', () => {
       [OPEN_CODE_V2_HEALTH_PATH]: jsonResponse(200, { healthy: true }),
     });
 
-    await expect(detectOpenCodeServerDialect({ fetch, requested: 'v2' }))
+    await expect(detectOpenCodeServerDialect({ fetch, requested: 'auto' }))
       .resolves.toMatchObject({ dialect: 'v2' });
 
     expect(fetch.mock.calls.map((call) => call[0]?.timeoutMs)).toEqual([2_000, 2_000]);
@@ -168,7 +190,7 @@ describe('detectOpenCodeServerDialect', () => {
       [OPEN_CODE_V2_HEALTH_PATH]: jsonResponse(200, { healthy: true }),
     });
 
-    const detection = await detectOpenCodeServerDialect({ fetch, requested: 'v2' });
+    const detection = await detectOpenCodeServerDialect({ fetch, requested: 'auto' });
 
     expect(detection.dialect).toBe('v1');
     expect(detection.probe).toMatchObject({ path: OPEN_CODE_V1_HEALTH_PATH, status: 200 });
@@ -181,7 +203,7 @@ describe('detectOpenCodeServerDialect', () => {
       [OPEN_CODE_V1_HEALTH_PATH]: jsonResponse(200, { healthy: true, version: '1.14.0' }),
     });
 
-    const detection = await detectOpenCodeServerDialect({ fetch, requested: 'v2' });
+    const detection = await detectOpenCodeServerDialect({ fetch, requested: 'auto' });
 
     expect(detection.dialect).toBe('v1');
     expect(detection.probe).toMatchObject({ path: OPEN_CODE_V1_HEALTH_PATH, status: 200 });
@@ -196,14 +218,14 @@ describe('detectOpenCodeServerDialect', () => {
       fetch: healthProbeFetch({
         [OPEN_CODE_V2_HEALTH_PATH]: jsonResponse(200, { healthy: true, pid: 'not-a-number' }),
       }),
-      requested: 'v2',
+      requested: 'auto',
     })).resolves.toMatchObject({ dialect: 'v2' });
 
     await expect(detectOpenCodeServerDialect({
       fetch: healthProbeFetch({
         [OPEN_CODE_V2_HEALTH_PATH]: jsonResponse(200, { pid: 123 }),
       }),
-      requested: 'v2',
+      requested: 'auto',
     })).resolves.toMatchObject({ dialect: 'v1' });
   });
 
@@ -212,14 +234,14 @@ describe('detectOpenCodeServerDialect', () => {
       [OPEN_CODE_V2_HEALTH_PATH]: jsonResponse(200, { healthy: false }),
     });
 
-    await expect(detectOpenCodeServerDialect({ fetch, requested: 'v2' }))
+    await expect(detectOpenCodeServerDialect({ fetch, requested: 'auto' }))
       .resolves.toMatchObject({ dialect: 'v1' });
   });
 
   it('falls back to v1 when the requested server has no /api surface', async () => {
     const fetch = vi.fn<OpenCodeRuntimeFetch>(async () => jsonResponse(404, { error: 'not found' }));
 
-    const detection = await detectOpenCodeServerDialect({ fetch, requested: 'v2' });
+    const detection = await detectOpenCodeServerDialect({ fetch, requested: 'auto' });
 
     expect(detection.dialect).toBe('v1');
     expect(detection.probe).toMatchObject({ path: OPEN_CODE_V2_HEALTH_PATH, status: 404 });
@@ -240,7 +262,7 @@ describe('detectOpenCodeServerDialect', () => {
       },
     });
 
-    await expect(detectOpenCodeServerDialect({ fetch, requested: 'v2' }))
+    await expect(detectOpenCodeServerDialect({ fetch, requested: 'auto' }))
       .resolves.toMatchObject({ dialect: 'v1' });
   });
 
@@ -250,7 +272,7 @@ describe('detectOpenCodeServerDialect', () => {
       throw probeError;
     });
 
-    const detection = await detectOpenCodeServerDialect({ fetch, requested: 'v2' });
+    const detection = await detectOpenCodeServerDialect({ fetch, requested: 'auto' });
 
     expect(detection.dialect).toBe('v1');
     expect(detection.probe).toMatchObject({
@@ -265,6 +287,9 @@ describe('openCodeServerHealthPath', () => {
   it('names the liveness route each generation actually mounts', () => {
     expect(openCodeServerHealthPath('v1')).toBe(OPEN_CODE_V1_HEALTH_PATH);
     expect(openCodeServerHealthPath('v2')).toBe(OPEN_CODE_V2_HEALTH_PATH);
+    expect(openCodeServerHealthPath('v2', '/usr/local/bin/opencode')).toBe(OPEN_CODE_V2_INFO_PATH);
+    expect(openCodeServerHealthPath('v2', '/custom/bin/opencode-current')).toBe(OPEN_CODE_V2_INFO_PATH);
+    expect(openCodeServerHealthPath('v2', '/usr/local/bin/opencode2')).toBe(OPEN_CODE_V2_HEALTH_PATH);
   });
 });
 
@@ -324,18 +349,18 @@ describe('normalizeOpenCodeV2InstanceEvent', () => {
   });
 
   it('renames the V2 text delta onto the part-delta type the domain observes', () => {
-    // V2 replaced V1's `message.part.delta` with `session.next.text.delta`.
+    // Released V2 replaced V1's `message.part.delta` with `session.text.delta`.
     // The domain reads only `messageID` from that event, to observe which
     // assistant message the running turn owns.
     expect(normalizeOpenCodeV2InstanceEvent(
       {
         id: 'evt_3',
-        type: 'session.next.text.delta',
+        type: 'session.text.delta',
         data: {
           timestamp: 17,
           sessionID: 'ses_1',
           assistantMessageID: 'msg_42',
-          textID: 'txt_1',
+          ordinal: 1,
           delta: 'hel',
         },
         location: { directory: '/tmp/project' },
@@ -344,31 +369,33 @@ describe('normalizeOpenCodeV2InstanceEvent', () => {
     )).toEqual({
       type: 'message.part.delta',
       properties: {
-        timestamp: 17,
         sessionID: 'ses_1',
-        assistantMessageID: 'msg_42',
-        textID: 'txt_1',
+        partID: 'msg_42:text:1',
+        partType: 'text',
         delta: 'hel',
         messageID: 'msg_42',
       },
     });
   });
 
-  it('drops a V2 text delta that names no assistant message', () => {
+  it('keeps a schema-invalid text delta observable without inventing an identity', () => {
     expect(normalizeOpenCodeV2InstanceEvent(
-      { type: 'session.next.text.delta', data: { sessionID: 'ses_1', delta: 'x' } },
+      { type: 'session.text.delta', data: { sessionID: 'ses_1', delta: 'x' } },
       null,
-    )).toBeNull();
+    )).toEqual({
+      type: 'message.part.delta',
+      properties: { sessionID: 'ses_1', delta: 'x', partID: '', partType: 'text', messageID: undefined },
+    });
   });
 
   it('renames the V2 permission ask and remaps its action and resources', () => {
-    // `comparators/opencode/packages/schema/src/permission.ts`: the V2 ask is
-    // `permission.v2.asked` and its request names the permission in `action`
+    // Released `packages/schema/src/permission.ts` publishes `permission.asked`
+    // and names the permission in `action`
     // with `resources` where V1 carried `patterns`.
     expect(normalizeOpenCodeV2InstanceEvent(
       {
         id: 'evt_4',
-        type: 'permission.v2.asked',
+        type: 'permission.asked',
         data: {
           id: 'per_1',
           sessionID: 'ses_1',
@@ -387,28 +414,31 @@ describe('normalizeOpenCodeV2InstanceEvent', () => {
         permission: 'bash',
         patterns: ['rm *'],
         metadata: { reason: 'destructive' },
+        always: [],
       },
     });
   });
 
-  it('renames the V2 question ask, whose request fields already match the domain', () => {
+  it('projects a released V2 form onto the incumbent question owner', () => {
     expect(normalizeOpenCodeV2InstanceEvent(
       {
         id: 'evt_5',
-        type: 'question.v2.asked',
+        type: 'form.created',
         data: {
-          id: 'que_1',
-          sessionID: 'ses_1',
-          questions: [{ question: 'Ship it?', header: 'Ship', options: [{ label: 'Yes', description: '' }] }],
+          form: {
+            id: 'form_1',
+            sessionID: 'ses_1',
+            fields: [{ key: 'ship', type: 'string', title: 'Ship', description: 'Ship it?', options: [{ label: 'Yes', value: 'yes' }] }],
+          },
         },
       },
       '/tmp/project',
     )).toEqual({
       type: 'question.asked',
       properties: {
-        id: 'que_1',
+        id: 'form_1',
         sessionID: 'ses_1',
-        questions: [{ question: 'Ship it?', header: 'Ship', options: [{ label: 'Yes', description: '' }] }],
+        questions: [{ question: 'Ship it?', header: 'Ship', options: [{ label: 'Yes' }], multiple: false }],
       },
     });
   });
@@ -430,7 +460,7 @@ describe('normalizeOpenCodeV2InstanceEvent provider identity', () => {
     expect(normalizeOpenCodeV2InstanceEvent(
       {
         id: 'evt_exact',
-        type: 'session.next.text.delta',
+        type: 'session.text.delta',
         data: {
           sessionID: 'ses_1',
           assistantMessageID: PROVIDER_MINTED_MESSAGE_ID,
@@ -443,23 +473,32 @@ describe('normalizeOpenCodeV2InstanceEvent provider identity', () => {
       type: 'message.part.delta',
       properties: {
         sessionID: 'ses_1',
-        assistantMessageID: PROVIDER_MINTED_MESSAGE_ID,
         delta: 'hel',
+        partID: `${PROVIDER_MINTED_MESSAGE_ID}:text:0`,
+        partType: 'text',
         messageID: PROVIDER_MINTED_MESSAGE_ID,
       },
     });
   });
 
-  it('drops a text delta whose assistant message id is only whitespace', () => {
+  it('does not mint an identity for a whitespace-only assistant message id', () => {
     expect(normalizeOpenCodeV2InstanceEvent(
       {
         id: 'evt_blank',
-        type: 'session.next.text.delta',
+        type: 'session.text.delta',
         data: { sessionID: 'ses_1', assistantMessageID: '  \n ', delta: 'hel' },
         location: { directory: '/tmp/project' },
       },
       '/tmp/project',
-    )).toBeNull();
+    )).toEqual({
+      type: 'message.part.delta',
+      properties: {
+        sessionID: 'ses_1',
+        delta: 'hel',
+        partID: '',
+        partType: 'text',
+        messageID: '  \n ',
+      },
+    });
   });
 });
-

@@ -11,15 +11,17 @@ import {
   PluginIdSchema,
   PluginInstallReviewPrincipalDigestSchema,
   PluginInstallReviewPrincipalPresentationV1Schema,
+  PluginManifestV2Schema,
+  ManagedPluginSourceCustodyV1Schema,
   PluginReleaseFactsV1Schema,
   type PluginId,
+  type ParsedPluginManifestV2,
   PluginUpdatePolicyV1Schema,
   type PluginUpdatePolicyV1,
 } from '@happier-dev/protocol';
 
 import { writeFileAtomically, writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
-import { resolveCliRuntimeRootPath } from '@/packagedRuntime/assets/resolveCliRuntimeAssetPath';
 import { pluginInstallReviewPrincipalPresentationMatchesDigest } from '@/plugins/daemon/installReviewPrincipal';
 import { asHostProtocolZod } from '@/plugins/runtime/protocolComposableZodAdapter';
 import {
@@ -33,7 +35,6 @@ import {
 
 import {
   pluginSourceProvenanceForDistribution,
-  pluginSourceProvenanceForKind,
   PluginSourceProvenanceSchema,
 } from '@/plugins/manifest/sourceProvenance';
 import { PluginAccessSelectionSchema } from '../install/accessScopeRegistry';
@@ -41,7 +42,6 @@ import {
   AlgorithmQualifiedIntegritySchema,
   PluginDistributionIdentitySchema,
   PluginTrustRecordSchema,
-  isPluginTrustRecordAuthorized,
   pluginDistributionRollbackLineagesEqual,
   type PluginDistributionIdentity,
 } from '../install/trustIdentity';
@@ -117,8 +117,7 @@ export const ValidatedAgentSessionRunnerFactoriesRecordV1Schema = z.object({
   schemaVersion: z.literal(1),
   pluginId: asHostProtocolZod(PluginIdSchema),
   immutableGenerationId: PortableStorageIdSchema,
-  manifestAuthority:
-    z.enum(['external', 'bundled_first_party']),
+  manifestAuthority: z.literal('external'),
   factories: z.array(ValidatedAgentSessionRunnerFactoryFactV1Schema).max(256),
 }).strict().superRefine((record, context) => {
   const ids = record.factories.map((factory) => factory.localAgentId);
@@ -153,13 +152,6 @@ function validatedAgentSessionRunnerFactoriesRecordPath(
 // hard inventory bound and the independent 512 MiB byte ceiling.
 export const MAXIMUM_IMMUTABLE_GENERATION_FILES = 16_384;
 
-const OWNED_DEVELOPMENT_DRAFT_FILE_NAME = '.owned-development-draft.v1.json';
-const OwnedDevelopmentDraftSchema = z.object({
-  t: z.literal('happier_owned_plugin_development_draft_v1'),
-  schemaVersion: z.literal(1),
-  immutableGenerationId: PortableStorageIdSchema,
-}).strict();
-
 // This is an exact storage-identity fact, not a health, revocation, or
 // currentness registry. Its only purpose is to prevent a completed retirement
 // from being undone by the old directory reappearing after cleanup/restart.
@@ -184,6 +176,9 @@ export const ImmutablePluginGenerationRecordSchema = z.object({
    * no reader can re-derive this from the materialized bytes.
    */
   sourceProvenance: PluginSourceProvenanceSchema,
+  sourceCustody: asHostProtocolZod(
+    ManagedPluginSourceCustodyV1Schema,
+  ).optional(),
 }).strict().superRefine((record, context) => {
   const paths = record.files.map((file) => file.relativePath);
   if (new Set(paths).size !== paths.length || paths.some((path, index) => index > 0 && paths[index - 1]! >= path)) {
@@ -191,6 +186,17 @@ export const ImmutablePluginGenerationRecordSchema = z.object({
   }
   if (!record.files.some((file) => file.relativePath === record.manifestRelativePath)) {
     context.addIssue({ code: 'custom', path: ['manifestRelativePath'], message: 'Generation manifest must be present in the structural inventory' });
+  }
+  if (
+    record.sourceCustody
+    && record.sourceCustody.immutableGenerationId
+      !== record.immutableGenerationId
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['sourceCustody', 'immutableGenerationId'],
+      message: 'Generation source custody must name the generation record identity',
+    });
   }
 });
 export type ImmutablePluginGenerationRecord = z.infer<typeof ImmutablePluginGenerationRecordSchema>;
@@ -299,6 +305,7 @@ export type PluginRollbackRetentionRecord = {
   availability?: PluginInstallationAvailabilityProjection;
   installReviewPrincipalDigest?: z.infer<typeof PluginInstallReviewPrincipalDigestSchema>;
   installReviewPrincipalPresentation?: z.infer<typeof PluginInstallReviewPrincipalPresentationV1Schema>;
+  approvedAuthorityManifest?: ParsedPluginManifestV2;
 };
 
 export const PluginRollbackRetentionRecordSchema: z.ZodType<PluginRollbackRetentionRecord> = z.object({
@@ -312,6 +319,7 @@ export const PluginRollbackRetentionRecordSchema: z.ZodType<PluginRollbackRetent
   availability: PluginInstallationAvailabilityProjectionSchema.optional(),
   installReviewPrincipalDigest: asHostProtocolZod(PluginInstallReviewPrincipalDigestSchema).optional(),
   installReviewPrincipalPresentation: asHostProtocolZod(PluginInstallReviewPrincipalPresentationV1Schema).optional(),
+  approvedAuthorityManifest: asHostProtocolZod(PluginManifestV2Schema).optional(),
 }).strict().superRefine((record, context) => {
   if (record.distribution.kind === 'localPath' && record.admittedIntegrity) {
     context.addIssue({ code: 'custom', path: ['admittedIntegrity'], message: 'Local path rollback retention cannot declare acquisition integrity' });
@@ -339,6 +347,7 @@ export type PluginInstallationStateRecord = {
   availability?: PluginInstallationAvailabilityProjection;
   installReviewPrincipalDigest?: z.infer<typeof PluginInstallReviewPrincipalDigestSchema>;
   installReviewPrincipalPresentation?: z.infer<typeof PluginInstallReviewPrincipalPresentationV1Schema>;
+  approvedAuthorityManifest?: ParsedPluginManifestV2;
 };
 
 const PluginInstallationStateRecordSchema: z.ZodType<PluginInstallationStateRecord> = z.object({
@@ -355,6 +364,7 @@ const PluginInstallationStateRecordSchema: z.ZodType<PluginInstallationStateReco
   availability: PluginInstallationAvailabilityProjectionSchema.optional(),
   installReviewPrincipalDigest: asHostProtocolZod(PluginInstallReviewPrincipalDigestSchema).optional(),
   installReviewPrincipalPresentation: asHostProtocolZod(PluginInstallReviewPrincipalPresentationV1Schema).optional(),
+  approvedAuthorityManifest: asHostProtocolZod(PluginManifestV2Schema).optional(),
 }).strict().superRefine((record, context) => {
   if (record.source.distribution.kind === 'localPath' && record.source.admittedIntegrity) {
     context.addIssue({ code: 'custom', path: ['source', 'admittedIntegrity'], message: 'Local path installation cannot declare acquisition integrity' });
@@ -369,18 +379,6 @@ const PluginInstallationStateRecordSchema: z.ZodType<PluginInstallationStateReco
   validateInstallReviewPrincipalPair(record, context);
 });
 
-export type BundledMaterializationEpochRecord = Readonly<{
-  materializationId: z.infer<typeof PortableStorageIdSchema>;
-  semanticKey: string;
-  observedAt: number;
-}>;
-
-const BundledMaterializationEpochRecordSchema: z.ZodType<BundledMaterializationEpochRecord> = z.object({
-  materializationId: PortableStorageIdSchema,
-  semanticKey: z.string().min(1),
-  observedAt: z.number().int().nonnegative(),
-}).strict();
-
 export type PluginInstallationStateRevision = {
   t: 'happier_plugin_installations_v1';
   schemaVersion: 1;
@@ -389,7 +387,6 @@ export type PluginInstallationStateRevision = {
   plugins: Record<PluginId, PluginInstallationStateRecord>;
   rollbackRetention: PluginRollbackRetentionRecord[];
   hardRevocationRevisions?: Record<PluginId, number>;
-  bundledMaterializationEpochs?: Record<PluginId, BundledMaterializationEpochRecord>;
   runtimeCatalog?: z.infer<typeof PluginStateFileV1Schema>;
   retainedRuntimeCatalog?: Record<
     z.infer<typeof PortableStorageIdSchema>,
@@ -407,10 +404,6 @@ const CanonicalPluginInstallationStateRevisionSchema: z.ZodType<PluginInstallati
   hardRevocationRevisions: z.record(
     asHostProtocolZod(PluginIdSchema),
     z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  ).optional(),
-  bundledMaterializationEpochs: z.record(
-    asHostProtocolZod(PluginIdSchema),
-    BundledMaterializationEpochRecordSchema,
   ).optional(),
   runtimeCatalog: PluginStateFileV1Schema.optional(),
   retainedRuntimeCatalog: z.record(PortableStorageIdSchema, PluginStateRecordSchema).optional(),
@@ -511,7 +504,7 @@ export const PluginInstallationStateRevisionSchema: z.ZodType<PluginInstallation
   CanonicalPluginInstallationStateRevisionSchema;
 
 type PluginExecutionAuthority = Readonly<{
-  pluginGenerations: PluginRegistryCommitRecord['pluginGenerations'];
+  pluginOccurrenceIds: PluginRegistryCommitRecord['pluginOccurrenceIds'];
   plugins: PluginInstallationStateRevision['plugins'];
   runtimeCatalog?: PluginInstallationStateRevision['runtimeCatalog'];
 }>;
@@ -521,7 +514,7 @@ function pluginExecutionAuthority(
   state: PluginInstallationStateRevision,
 ): PluginExecutionAuthority {
   return {
-    pluginGenerations: commit.pluginGenerations,
+    pluginOccurrenceIds: commit.pluginOccurrenceIds,
     plugins: state.plugins,
     runtimeCatalog: state.runtimeCatalog,
   };
@@ -702,6 +695,11 @@ function createImmutablePluginGenerationRecord(input: Readonly<{
   immutableGenerationId?: string;
   files: readonly ImmutablePluginGenerationFile[];
 }>): ImmutablePluginGenerationRecord {
+  const immutableGenerationId = input.immutableGenerationId
+    ?? `gen-${input.createdAtMs}-${randomUUID()}`;
+  const distribution = PluginDistributionIdentitySchema.parse(
+    input.distribution,
+  );
   const files = [...input.files].sort((left, right) => (
     left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0
   ));
@@ -719,13 +717,16 @@ function createImmutablePluginGenerationRecord(input: Readonly<{
     t: 'happier_plugin_generation_v1',
     schemaVersion: 1,
     pluginId: input.pluginId,
-    immutableGenerationId: input.immutableGenerationId ?? `gen-${input.createdAtMs}-${randomUUID()}`,
+    immutableGenerationId,
     createdAtMs: input.createdAtMs,
     files,
     manifestRelativePath,
-    sourceProvenance: pluginSourceProvenanceForDistribution(
-      PluginDistributionIdentitySchema.parse(input.distribution),
-    ),
+    sourceProvenance: pluginSourceProvenanceForDistribution(distribution),
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId,
+      installSource: distribution.kind,
+    },
   });
 }
 
@@ -739,7 +740,6 @@ export async function createImmutablePluginGenerationRecordFromSource(input: Rea
   immutableGenerationId?: string;
   singleFileRelativePath?: string;
   generatedManifestContents?: string;
-  excludeOwnedDevelopmentDraftMarker?: true;
 }>): Promise<ImmutablePluginGenerationRecord> {
   const rootPath = await realpath(input.sourceRootPath);
   const manifestRelativePath = PortableRelativePathSchema.parse(input.manifestRelativePath.split(sep).join('/'));
@@ -774,10 +774,6 @@ export async function createImmutablePluginGenerationRecordFromSource(input: Rea
       const relativePath = PortableRelativePathSchema.parse(
         relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name,
       );
-      if (
-        input.excludeOwnedDevelopmentDraftMarker
-        && relativePath === OWNED_DEVELOPMENT_DRAFT_FILE_NAME
-      ) continue;
       const absolutePath = join(directoryPath, entry.name);
       const metadata = await lstat(absolutePath);
       if (metadata.isSymbolicLink()) {
@@ -964,7 +960,7 @@ async function verifyPersistedGeneration(root: string, expected: ImmutablePlugin
 export async function persistValidatedAgentSessionRunnerFactories(input: Readonly<{
   paths: PluginStorePaths;
   record: ImmutablePluginGenerationRecord;
-  manifestAuthority: 'external' | 'bundled_first_party';
+  manifestAuthority: 'external';
   factories: readonly z.input<
     typeof ValidatedAgentSessionRunnerFactoryFactV1Schema
   >[];
@@ -1054,214 +1050,15 @@ export type RejectedCommittedPluginGeneration = Readonly<{
   message: string;
 }>;
 
-export type BundledImmutablePluginArtifact = Readonly<{
-  packageName: string;
-  /**
-   * The package root export, which resolves the installed plugin root and is the
-   * TypeScript compiler's own emit.
-   */
-  packageEntryRelativePath: string;
-  /**
-   * The activation module the daemon imports. It is published by the bundled-plugin
-   * publisher outside the compiler's output directory, so it is a different file from
-   * the package root export.
-   */
-  daemonEntryRelativePath?: string | null;
-  /**
-   * Structural generation facts only. Provenance is not one of them: the host
-   * itself ships these bytes, so `admitBundledImmutablePluginGeneration`
-   * stamps that custody fact rather than the artifact generator restating it.
-   */
-  record: Omit<ImmutablePluginGenerationRecord, 'sourceProvenance'>;
-}>;
-
-/**
- * Host custody of one exact plugin generation: the host itself ships these
- * bytes under this generation id.
- *
- * This is the only derivation of first-party runner authority. A plugin's own
- * `happier.*` id is a claim its manifest makes about itself, and an installed
- * plugin may legitimately carry one while it is being developed from a local
- * working tree — so the id can never stand in for custody. An ambiguous
- * inventory (more than one artifact for the same plugin) resolves to no
- * custody rather than picking one.
- */
-export function resolveBundledImmutablePluginArtifact(input: Readonly<{
-  bundledArtifacts: readonly BundledImmutablePluginArtifact[];
-  pluginId: string;
-  immutableGenerationId: string;
-}>): BundledImmutablePluginArtifact | null {
-  const forPlugin = input.bundledArtifacts.filter(
-    (artifact) => artifact.record.pluginId === input.pluginId,
-  );
-  const artifact = forPlugin.length === 1 ? forPlugin[0]! : null;
-  return artifact?.record.immutableGenerationId === input.immutableGenerationId
-    ? artifact
-    : null;
-}
-
-function bundledPackageNameSegments(packageName: string): string[] {
-  const segments = packageName.split('/');
-  if (segments.some((segment) => (
-    segment.length === 0
-    || segment === '.'
-    || segment === '..'
-    || segment.includes('\\')
-  ))) {
-    throw new Error(`Bundled plugin package name is not a contained package path: '${packageName}'`);
-  }
-  return segments;
-}
-
-async function resolveBundledPackageEntry(
-  packageName: string,
-  packageEntryRelativePath: string,
-): Promise<string> {
-  // Standalone daemon code is embedded in its binary, while the packaged
-  // workspace closure is staged beside that binary. A bundled artifact already
-  // declares its exact package entry, so resolve that contained physical path
-  // directly instead of asking the embedded Bun runtime to resolve a package.
-  const packageRoot = join(
-    resolveCliRuntimeRootPath(),
-    'node_modules',
-    ...bundledPackageNameSegments(packageName),
-  );
-  const normalizedEntryRelativePath = PortableRelativePathSchema.parse(packageEntryRelativePath);
-  await assertContainedRegularFile(
-    packageRoot,
-    'package.json',
-    'Bundled plugin package metadata',
-  );
-  let packageMetadata: unknown;
-  try {
-    packageMetadata = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
-  } catch {
-    throw new Error(`Bundled plugin package metadata is invalid for '${packageName}'`);
-  }
-  const parsedPackageMetadata = z.object({ name: z.string() }).passthrough().safeParse(packageMetadata);
-  if (!parsedPackageMetadata.success || parsedPackageMetadata.data.name !== packageName) {
-    throw new Error(`Bundled plugin package metadata name mismatch for '${packageName}'`);
-  }
-  return join(packageRoot, ...normalizedEntryRelativePath.split('/'));
-}
-
-async function admitBundledImmutablePluginGeneration(input: Readonly<{
-  paths: PluginStorePaths;
-  artifact: BundledImmutablePluginArtifact;
-  resolvePackageEntry: (
-    packageName: string,
-    packageEntryRelativePath: string,
-  ) => Promise<string>;
-}>): Promise<CurrentCommittedPluginGeneration> {
-  const artifact = Object.freeze({
-    ...input.artifact,
-    packageEntryRelativePath: PortableRelativePathSchema.parse(
-      input.artifact.packageEntryRelativePath,
-    ),
-    record: ImmutablePluginGenerationRecordSchema.parse({
-      ...input.artifact.record,
-      sourceProvenance: pluginSourceProvenanceForKind('bundled'),
-    }),
-  });
-  try {
-    const prepared = await readPreparedImmutablePluginGeneration({
-      paths: input.paths,
-      immutableGenerationId: artifact.record.immutableGenerationId,
-    });
-    if (
-      prepared.record.pluginId !== artifact.record.pluginId
-      || !isDeepStrictEqual(prepared.record, artifact.record)
-    ) {
-      throw new Error(
-        `Bundled plugin generation custody mismatch for '${artifact.record.pluginId}'`,
-      );
-    }
-    return Object.freeze({
-      pluginId: artifact.record.pluginId,
-      immutableGenerationId: artifact.record.immutableGenerationId,
-      rootPath: prepared.rootPath,
-      record: prepared.record,
-    });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') throw error;
-  }
-  const lexicalEntryPath = resolve(await input.resolvePackageEntry(
-    artifact.packageName,
-    artifact.packageEntryRelativePath,
-  ));
-  const entrySegments = artifact.packageEntryRelativePath.split('/');
-  let lexicalRootPath = lexicalEntryPath;
-  for (let index = 0; index < entrySegments.length; index += 1) lexicalRootPath = dirname(lexicalRootPath);
-  await assertContainedRegularFile(
-    lexicalRootPath,
-    artifact.record.manifestRelativePath,
-    'Bundled plugin manifest',
-  );
-  await assertContainedRegularFile(
-    lexicalRootPath,
-    artifact.packageEntryRelativePath,
-    'Bundled plugin package entry',
-  );
-  const entryPath = await realpath(lexicalEntryPath);
-  const rootPath = await realpath(lexicalRootPath);
-  const actualRelativeEntry = relative(rootPath, entryPath);
-  if (
-    entryPath === rootPath
-    || !isCanonicalAbsolutePathInsideRoot(rootPath, entryPath)
-    || actualRelativeEntry.split(sep).join('/') !== artifact.packageEntryRelativePath
-  ) {
-    throw new Error(`Bundled plugin package entry identity mismatch for '${artifact.record.pluginId}'`);
-  }
-  if (!artifact.record.files.some((file) => file.relativePath === artifact.packageEntryRelativePath)) {
-    throw new Error(`Bundled plugin package entry is absent from immutable inventory for '${artifact.record.pluginId}'`);
-  }
-  const daemonEntryRelativePath = artifact.daemonEntryRelativePath ?? null;
-  if (daemonEntryRelativePath !== null) {
-    await assertContainedRegularFile(
-      lexicalRootPath,
-      daemonEntryRelativePath,
-      'Bundled plugin daemon entry',
-    );
-    if (!artifact.record.files.some((file) => file.relativePath === daemonEntryRelativePath)) {
-      throw new Error(`Bundled plugin daemon entry is absent from immutable inventory for '${artifact.record.pluginId}'`);
-    }
-  }
-  const prepared = await prepareImmutablePluginGeneration({
-    paths: input.paths,
-    sourceRootPath: rootPath,
-    record: artifact.record,
-  });
-  return Object.freeze({
-    pluginId: artifact.record.pluginId,
-    immutableGenerationId: artifact.record.immutableGenerationId,
-    rootPath: prepared.rootPath,
-    record: artifact.record,
-  });
-}
-
-/**
- * Joins the sole durable installed-current record and generated bundled
- * artifact identities to their structurally admitted immutable generations.
- * The installed record is re-read after admission so callers never receive a
- * generation set assembled across a concurrent execution-authority
- * replacement. Ordinary currentness subsequently compares only durable
- * execution authority; it does not re-walk or hash admitted generation roots.
- */
 export async function readCurrentCommittedPluginGenerations(
   paths: PluginStorePaths,
   options?: Readonly<{
-    bundledArtifacts?: readonly BundledImmutablePluginArtifact[];
-    resolveBundledPackageEntry?: (
-      packageName: string,
-      packageEntryRelativePath: string,
-    ) => Promise<string>;
     isolateInvalidInstalledGenerations?: boolean;
   }>,
 ): Promise<Readonly<{
   commit: PluginRegistryCommitRecord | null;
   generations: ReadonlyMap<string, CurrentCommittedPluginGeneration>;
   rejectedGenerations: ReadonlyMap<string, RejectedCommittedPluginGeneration>;
-  unavailableBundledPackageNames: ReadonlySet<string>;
   isCurrent: () => Promise<boolean>;
   /**
    * Reads only the current durable execution selection for one plugin. It does
@@ -1274,8 +1071,7 @@ export async function readCurrentCommittedPluginGenerations(
   ) => Promise<CurrentPluginExecutionSelection | null>;
 }> | null> {
   const commit = await readPluginRegistryCommitRecord(paths);
-  const bundledArtifacts = options?.bundledArtifacts ?? [];
-  if (!commit && bundledArtifacts.length === 0) return null;
+  if (!commit) return null;
 
   const generations = new Map<string, CurrentCommittedPluginGeneration>();
   const rejectedGenerations = new Map<string, RejectedCommittedPluginGeneration>();
@@ -1285,7 +1081,7 @@ export async function readCurrentCommittedPluginGenerations(
   const executionAuthority = commit && installationState
     ? pluginExecutionAuthority(commit, installationState)
     : null;
-  for (const [pluginId, reference] of Object.entries(commit?.pluginGenerations ?? {})) {
+  for (const [pluginId, reference] of Object.entries(commit?.pluginOccurrenceIds ?? {})) {
     try {
       await assertGenerationNotRetired(paths, reference.immutableGenerationId);
       const generationRootPath = join(paths.generationsDir, reference.immutableGenerationId);
@@ -1307,13 +1103,6 @@ export async function readCurrentCommittedPluginGenerations(
       if (catalogTrust && JSON.stringify(installation.trust) !== JSON.stringify(catalogTrust)) {
         throw new Error(`Committed plugin generation catalog trust identity mismatch for '${pluginId}'`);
       }
-      if (!isPluginTrustRecordAuthorized(installation.trust, {
-        pluginId,
-        distribution: installation.source.distribution,
-        realm: 'daemon',
-      })) {
-        throw new Error(`Committed plugin generation trust identity mismatch for '${pluginId}'`);
-      }
       const admitted = Object.freeze({
         pluginId,
         immutableGenerationId: record.immutableGenerationId,
@@ -1330,38 +1119,6 @@ export async function readCurrentCommittedPluginGenerations(
         message: error instanceof Error ? error.message : String(error),
       }));
     }
-  }
-
-  const unavailableBundledPackageNames = new Set<string>();
-  for (const artifact of bundledArtifacts) {
-    let admitted: CurrentCommittedPluginGeneration;
-    try {
-      await assertGenerationNotRetired(paths, artifact.record.immutableGenerationId);
-      admitted = await admitBundledImmutablePluginGeneration({
-        paths,
-        artifact,
-        resolvePackageEntry: options?.resolveBundledPackageEntry ?? resolveBundledPackageEntry,
-      });
-    } catch (error) {
-      unavailableBundledPackageNames.add(artifact.packageName);
-      // Keep the reason with its plugin so the host can report which bundled
-      // plugin was quarantined and why, instead of discarding it here. An
-      // already-admitted plugin keeps its admission: a superseded bundled
-      // artifact must not retract a generation this runtime accepted.
-      const bundledPluginId = artifact.record.pluginId;
-      if (!generations.has(bundledPluginId) && !rejectedGenerations.has(bundledPluginId)) {
-        rejectedGenerations.set(bundledPluginId, Object.freeze({
-          pluginId: bundledPluginId,
-          immutableGenerationId: artifact.record.immutableGenerationId,
-          message: error instanceof Error ? error.message : String(error),
-        }));
-      }
-      continue;
-    }
-    if (generations.has(admitted.pluginId)) {
-      throw new Error(`Plugin generation authority collision for '${admitted.pluginId}'`);
-    }
-    generations.set(admitted.pluginId, admitted);
   }
 
   let after = await readPluginRegistryCommitRecord(paths);
@@ -1390,7 +1147,6 @@ export async function readCurrentCommittedPluginGenerations(
     commit,
     generations,
     rejectedGenerations,
-    unavailableBundledPackageNames,
     async isCurrent(): Promise<boolean> {
       const current = await readPluginRegistryCommitRecord(paths);
       try {
@@ -1442,19 +1198,12 @@ export async function readCurrentCommittedPluginGenerations(
           current = confirmed;
           continue;
         }
-        const reference = current.pluginGenerations[pluginId];
+        const reference = current.pluginOccurrenceIds[pluginId];
         const installation = currentInstallationState.plugins[pluginId];
         if (!reference || !installation?.trust) return null;
         const catalogTrust = currentInstallationState.runtimeCatalog
           ?.plugins[pluginId]?.install.trust;
-        if (
-          (catalogTrust && !isDeepStrictEqual(catalogTrust, installation.trust))
-          || !isPluginTrustRecordAuthorized(installation.trust, {
-            pluginId,
-            distribution: installation.source.distribution,
-            realm: 'daemon',
-          })
-        ) return null;
+        if (catalogTrust && !isDeepStrictEqual(catalogTrust, installation.trust)) return null;
         return Object.freeze({
           pluginId,
           immutableGenerationId: reference.immutableGenerationId,
@@ -1476,7 +1225,7 @@ export async function readPluginRegistryCommitInstallationAuthority(
   const parsed = PluginRegistryCommitRecordSchema.parse(commit);
   const isEmptyBootstrap = parsed.revision === 0
     && parsed.baseRevision === null
-    && Object.keys(parsed.pluginGenerations).length === 0
+    && Object.keys(parsed.pluginOccurrenceIds).length === 0
     && parsed.installationState.revisionId === 'state-0';
   const state = isEmptyBootstrap
     ? null
@@ -1485,13 +1234,13 @@ export async function readPluginRegistryCommitInstallationAuthority(
         reference: parsed.installationState,
         commit,
       });
-  for (const pluginId of Object.keys(parsed.pluginGenerations)) {
+  for (const pluginId of Object.keys(parsed.pluginOccurrenceIds)) {
     if (!state?.plugins[pluginId]) {
       throw new Error(`Plugin registry generation map references '${pluginId}' without a canonical installation`);
     }
   }
   const currentGenerationIds = new Set(
-    Object.values(parsed.pluginGenerations).map((reference) => reference.immutableGenerationId),
+    Object.values(parsed.pluginOccurrenceIds).map((reference) => reference.immutableGenerationId),
   );
   for (const retention of state?.rollbackRetention ?? []) {
     if (currentGenerationIds.has(retention.immutableGenerationId)) {
@@ -1510,7 +1259,7 @@ export async function verifyPluginRegistryCommitGenerationReferences(
 ): Promise<void> {
   const parsed = PluginRegistryCommitRecordSchema.parse(commit);
   const state = await readPluginRegistryCommitInstallationAuthority(paths, commit);
-  for (const [pluginId, reference] of Object.entries(parsed.pluginGenerations)) {
+  for (const [pluginId, reference] of Object.entries(parsed.pluginOccurrenceIds)) {
     // An unchanged-reference allowance can preserve unrelated corrupt/missing
     // bytes across a transaction, but it cannot republish an identity that
     // this store has already retired.
@@ -1525,7 +1274,7 @@ export async function verifyPluginRegistryCommitGenerationReferences(
       }
       await verifyPersistedGeneration(rootPath, record);
     } catch (error) {
-      const prior = options?.allowInvalidUnchangedReferencesFrom?.pluginGenerations[pluginId];
+      const prior = options?.allowInvalidUnchangedReferencesFrom?.pluginOccurrenceIds[pluginId];
       if (prior && JSON.stringify(prior) === JSON.stringify(reference)) continue;
       throw error;
     }
@@ -1782,342 +1531,6 @@ export async function prepareOwnedImmutablePluginGeneration(input: Readonly<{
   }
 }
 
-function normalizeDevelopmentChangedPath(path: string): string {
-  const normalized = path.replaceAll('\\', '/').replace(/^\.\/+/, '').replace(/\/+$/u, '');
-  if (!normalized || normalized === '.') {
-    throw new Error('Development generation changes must name a path below the plugin root');
-  }
-  return PortableRelativePathSchema.parse(normalized);
-}
-
-async function readDevelopmentChangedSourceFiles(input: Readonly<{
-  sourceRootPath: string;
-  changedPaths: readonly string[];
-  priorFiles: readonly ImmutablePluginGenerationFile[];
-}>): Promise<Readonly<{
-  files: readonly ImmutablePluginGenerationFile[];
-  sourceFileRelativePaths: ReadonlySet<string>;
-}>> {
-  const rootPath = await realpath(input.sourceRootPath);
-  const files = new Map(input.priorFiles.map((file) => [file.relativePath, file]));
-  const sourceFileRelativePaths = new Set<string>();
-  const changedPaths = [...new Set(input.changedPaths.map(normalizeDevelopmentChangedPath))].sort();
-  if (changedPaths.length === 0) {
-    throw new Error('Development generation changes require at least one observed path');
-  }
-
-  for (const changedPath of changedPaths) {
-    for (const relativePath of files.keys()) {
-      if (relativePath === changedPath || relativePath.startsWith(`${changedPath}/`)) {
-        files.delete(relativePath);
-      }
-    }
-
-    const changedSegments = changedPath.split('/');
-    let changedSourcePath = rootPath;
-    let changedSourceMetadata: Awaited<ReturnType<typeof lstat>> | null = null;
-    let missing = false;
-    for (const segment of changedSegments) {
-      changedSourcePath = join(changedSourcePath, segment);
-      try {
-        changedSourceMetadata = await lstat(changedSourcePath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') {
-          missing = true;
-          break;
-        }
-        throw error;
-      }
-      if (changedSourceMetadata.isSymbolicLink()) {
-        throw new Error(`Immutable plugin generation source contains a symbolic link: ${changedPath}`);
-      }
-    }
-    if (missing) continue;
-    if (!changedSourceMetadata) throw new Error(`Development generation change is unavailable: ${changedPath}`);
-
-    const pending = changedSourceMetadata.isDirectory()
-      ? [changedPath]
-      : [];
-    if (!changedSourceMetadata.isDirectory()) {
-      if (!changedSourceMetadata.isFile()) {
-        throw new Error(`Immutable plugin generation source contains a non-file entry: ${changedPath}`);
-      }
-      const file = Object.freeze({
-        relativePath: changedPath,
-        byteLength: changedSourceMetadata.size,
-      });
-      files.set(changedPath, file);
-      sourceFileRelativePaths.add(changedPath);
-    }
-
-    while (pending.length > 0) {
-      const relativeDirectory = pending.pop()!;
-      const directoryPath = join(rootPath, ...relativeDirectory.split('/'));
-      const entries = await readdir(directoryPath, { withFileTypes: true, encoding: 'utf8' });
-      for (const entry of entries) {
-        const relativePath = PortableRelativePathSchema.parse(`${relativeDirectory}/${entry.name}`);
-        const absolutePath = join(directoryPath, entry.name);
-        const metadata = await lstat(absolutePath);
-        if (metadata.isSymbolicLink()) {
-          throw new Error(`Immutable plugin generation source contains a symbolic link: ${relativePath}`);
-        }
-        if (metadata.isDirectory()) {
-          pending.push(relativePath);
-          continue;
-        }
-        if (!metadata.isFile()) {
-          throw new Error(`Immutable plugin generation source contains a non-file entry: ${relativePath}`);
-        }
-        files.set(relativePath, Object.freeze({
-          relativePath,
-          byteLength: metadata.size,
-        }));
-        sourceFileRelativePaths.add(relativePath);
-      }
-    }
-  }
-
-  return Object.freeze({
-    files: Object.freeze([...files.values()]),
-    sourceFileRelativePaths,
-  });
-}
-
-export type OwnedPluginDevelopmentGenerationDraft = Readonly<{
-  rootPath: string;
-  immutableGenerationId: string;
-  runWithIntegrityFence: <T>(operation: () => Promise<T>) => Promise<T>;
-  finalize: (input: Readonly<{
-    pluginId: string;
-    manifestRelativePath: string;
-    generatedManifestContents: string;
-    distribution: z.input<typeof PluginDistributionIdentitySchema>;
-    updatePolicy: PluginUpdatePolicyV1;
-    createdAtMs: number;
-  }>) => Promise<OwnedPreparedImmutablePluginGeneration>;
-  cleanup: () => Promise<void>;
-}>;
-
-async function readOwnedDevelopmentGenerationDraftStructure(
-  rootPath: string,
-): Promise<readonly Readonly<{ relativePath: string; byteLength: number }>[]> {
-  const files: Array<Readonly<{ relativePath: string; byteLength: number }>> = [];
-  const pending = [''];
-  while (pending.length > 0) {
-    const relativeDirectory = pending.pop()!;
-    const directoryPath = relativeDirectory
-      ? join(rootPath, ...relativeDirectory.split('/'))
-      : rootPath;
-    const entries = await readdir(directoryPath, { withFileTypes: true, encoding: 'utf8' });
-    entries.sort((left, right) => left.name.localeCompare(right.name));
-    for (const entry of entries) {
-      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
-      const path = join(directoryPath, entry.name);
-      const metadata = await lstat(path);
-      if (metadata.isSymbolicLink()) {
-        throw new Error(`Owned development generation contains a symbolic link: ${relativePath}`);
-      }
-      if (metadata.isDirectory()) {
-        pending.push(relativePath);
-        continue;
-      }
-      if (!metadata.isFile()) {
-        throw new Error(`Owned development generation contains a non-file entry: ${relativePath}`);
-      }
-      if (metadata.nlink > 1) {
-        throw new Error(`Owned development generation contains a writable inode alias: ${relativePath}`);
-      }
-      files.push({ relativePath, byteLength: metadata.size });
-    }
-  }
-  files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
-  return Object.freeze(files);
-}
-
-async function createOwnedDevelopmentGenerationDraft(input: Readonly<{
-  paths: PluginStorePaths;
-  immutableGenerationId?: string;
-  populate: (rootPath: string) => Promise<void>;
-}>): Promise<OwnedPluginDevelopmentGenerationDraft> {
-  const immutableGenerationId = PortableStorageIdSchema.parse(
-    input.immutableGenerationId ?? `gen-${Date.now()}-${randomUUID()}`,
-  );
-  await assertGenerationNotRetired(input.paths, immutableGenerationId);
-  await mkdir(input.paths.generationsDir, { recursive: true });
-  const rootPath = join(input.paths.generationsDir, immutableGenerationId);
-  const custody = retainProcessLocalPreparedPluginGeneration(
-    input.paths,
-    immutableGenerationId,
-  );
-  let finalized = false;
-  let adopted = false;
-  let cleaned = false;
-  const cleanup = async (): Promise<void> => {
-    if (cleaned) return;
-    cleaned = true;
-    if (!adopted) await rm(rootPath, { recursive: true, force: true });
-    custody.release();
-  };
-  try {
-    await mkdir(rootPath);
-    const draftMarkerPath = join(rootPath, OWNED_DEVELOPMENT_DRAFT_FILE_NAME);
-    await writeJsonAtomic(draftMarkerPath, OwnedDevelopmentDraftSchema.parse({
-      t: 'happier_owned_plugin_development_draft_v1',
-      schemaVersion: 1,
-      immutableGenerationId,
-    }));
-    await flushFileDurably(draftMarkerPath);
-    await flushDirectoryDurablyDefault(rootPath);
-    await flushDirectoryDurablyDefault(input.paths.generationsDir);
-    await input.populate(rootPath);
-  } catch (error) {
-    await cleanup();
-    throw error;
-  }
-  return Object.freeze({
-    rootPath,
-    immutableGenerationId,
-    async runWithIntegrityFence<T>(operation: () => Promise<T>): Promise<T> {
-      if (cleaned || finalized) {
-        throw new Error(`Development generation '${immutableGenerationId}' is not mutable draft custody`);
-      }
-      const before = await readOwnedDevelopmentGenerationDraftStructure(rootPath);
-      const result = await operation();
-      if (!isDeepStrictEqual(
-        await readOwnedDevelopmentGenerationDraftStructure(rootPath),
-        before,
-      )) {
-        throw new Error('Owned plugin development generation changed during evaluation');
-      }
-      return result;
-    },
-    async finalize(finalizeInput) {
-      if (finalized) throw new Error(`Development generation '${immutableGenerationId}' is already finalized`);
-      if (cleaned) throw new Error(`Development generation '${immutableGenerationId}' is no longer owned`);
-      const manifestRelativePath = PortableRelativePathSchema.parse(
-        finalizeInput.manifestRelativePath.replaceAll('\\', '/'),
-      );
-      const manifestPath = join(rootPath, ...manifestRelativePath.split('/'));
-      try {
-        await lstat(manifestPath);
-        throw new Error('Host-generated plugin manifest collides with an author source file');
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') throw error;
-      }
-      await mkdir(dirname(manifestPath), { recursive: true });
-      await writeFile(manifestPath, finalizeInput.generatedManifestContents, 'utf8');
-      const record = await createImmutablePluginGenerationRecordFromSource({
-        pluginId: finalizeInput.pluginId,
-        sourceRootPath: rootPath,
-        manifestRelativePath,
-        distribution: finalizeInput.distribution,
-        updatePolicy: finalizeInput.updatePolicy,
-        createdAtMs: finalizeInput.createdAtMs,
-        immutableGenerationId,
-        excludeOwnedDevelopmentDraftMarker: true,
-      });
-      for (const file of record.files) {
-        await assertContainedRegularFile(
-          rootPath,
-          file.relativePath,
-          'Owned development generation materialization file',
-          { expectedByteLength: file.byteLength, requireExclusiveInode: true },
-        );
-        await flushFileDurably(join(rootPath, ...file.relativePath.split('/')));
-      }
-      const generationRecordPath = join(rootPath, 'plugin-generation.v1.json');
-      await writeJsonAtomic(generationRecordPath, record);
-      await flushFileDurably(generationRecordPath);
-      await rm(join(rootPath, OWNED_DEVELOPMENT_DRAFT_FILE_NAME));
-      await flushDirectoryDurablyDefault(rootPath);
-      await flushDirectoryDurablyDefault(input.paths.generationsDir);
-      await verifyPersistedGeneration(rootPath, record);
-      finalized = true;
-      return createOwnedPreparedImmutablePluginGenerationHandle({
-        rootPath,
-        record,
-        adopt() {
-          adopted = true;
-        },
-        cleanup,
-      });
-    },
-    cleanup,
-  });
-}
-
-export async function prepareOwnedPluginDevelopmentGeneration(input: Readonly<{
-  paths: PluginStorePaths;
-  populate: (rootPath: string) => Promise<void>;
-}>): Promise<OwnedPluginDevelopmentGenerationDraft> {
-  return await createOwnedDevelopmentGenerationDraft(input);
-}
-
-export async function prepareOwnedPluginDevelopmentGenerationFromEdit(input: Readonly<{
-  paths: PluginStorePaths;
-  sourceRootPath: string;
-  changedPaths: readonly string[];
-  priorReference: PluginRegistryGenerationReference;
-  generatedManifestRelativePath: string;
-}>): Promise<OwnedPluginDevelopmentGenerationDraft> {
-  const sourceRootPath = await realpath(input.sourceRootPath);
-  const priorReference = PluginRegistryGenerationReferenceSchema.parse(input.priorReference);
-  await assertGenerationNotRetired(input.paths, priorReference.immutableGenerationId);
-  const priorRootPath = join(input.paths.generationsDir, priorReference.immutableGenerationId);
-  const priorRecord = await readGenerationRecord(
-    join(priorRootPath, 'plugin-generation.v1.json'),
-  );
-  if (
-    priorRecord.immutableGenerationId !== priorReference.immutableGenerationId
-  ) {
-    throw new Error('Development generation base identity mismatch');
-  }
-  const changed = await readDevelopmentChangedSourceFiles({
-    sourceRootPath,
-    changedPaths: input.changedPaths,
-    priorFiles: priorRecord.files,
-  });
-  const generatedManifestRelativePath = PortableRelativePathSchema.parse(
-    input.generatedManifestRelativePath.replaceAll('\\', '/'),
-  );
-  return await createOwnedDevelopmentGenerationDraft({
-    paths: input.paths,
-    populate: async (rootPath) => {
-      const directories = new Set<string>([rootPath]);
-      for (const file of changed.files) {
-        if (file.relativePath === generatedManifestRelativePath) continue;
-        const destination = join(rootPath, ...file.relativePath.split('/'));
-        const destinationDirectory = dirname(destination);
-        if (!directories.has(destinationDirectory)) {
-          await mkdir(destinationDirectory, { recursive: true });
-          directories.add(destinationDirectory);
-        }
-        if (changed.sourceFileRelativePaths.has(file.relativePath)) {
-          const source = join(sourceRootPath, ...file.relativePath.split('/'));
-          await assertContainedRegularFile(
-            sourceRootPath,
-            file.relativePath,
-            'Owned development generation edit source',
-            { expectedByteLength: file.byteLength },
-          );
-          await copyOwnedPluginGenerationFile(source, destination);
-        } else {
-          await copyOwnedPluginGenerationFile(
-            join(priorRootPath, ...file.relativePath.split('/')),
-            destination,
-          );
-        }
-        await assertContainedRegularFile(
-          rootPath,
-          file.relativePath,
-          'Owned development generation edit destination',
-          { expectedByteLength: file.byteLength, requireExclusiveInode: true },
-        );
-      }
-    },
-  });
-}
-
 export async function readPreparedImmutablePluginGeneration(input: Readonly<{
   paths: PluginStorePaths;
   immutableGenerationId: string;
@@ -2229,51 +1642,12 @@ export async function readCurrentPluginHardRevocationRevision(input: Readonly<{
   );
 }
 
-async function readCurrentPluginBundledAuthorityBarriers(input: Readonly<{
-  paths: PluginStorePaths;
-  pluginId: string;
-  immutableGenerationId: string;
-}>): Promise<Readonly<{
-  installedAuthorityPresent: boolean;
-}>> {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const before = await readPluginRegistryCommitRecord(input.paths);
-    if (!before) {
-      if (!await readPluginRegistryCommitRecord(input.paths)) {
-        return Object.freeze({
-          installedAuthorityPresent: false,
-        });
-      }
-      continue;
-    }
-    const state = await readPluginRegistryCommitInstallationAuthority(input.paths, before);
-    const after = await readPluginRegistryCommitRecord(input.paths);
-    if (pluginRegistryCommitRecordsEqual(after, before)) {
-      return Object.freeze({
-        installedAuthorityPresent: Boolean(
-          before.pluginGenerations[input.pluginId]
-          || state?.plugins[input.pluginId],
-        ),
-      });
-    }
-  }
-  throw new Error(
-    `Plugin '${input.pluginId}' bundled authority barriers changed during read`,
-  );
-}
-
 export async function readCurrentPluginImmutableGenerationIntegrityCurrentness(
   input: Readonly<{
     paths: PluginStorePaths;
     pluginId: string;
     immutableGenerationId: string;
-    bundledArtifacts?: readonly BundledImmutablePluginArtifact[];
-    retainedManifestAuthority?: 'external' | 'bundled_first_party';
     requiredAgentSessionRunnerFactoryLocalAgentId?: string;
-    resolveBundledPackageEntry?: (
-      packageName: string,
-      packageEntryRelativePath: string,
-    ) => Promise<string>;
   }>,
 ): Promise<boolean> {
   const pluginId = PluginIdSchema.parse(input.pluginId);
@@ -2285,60 +1659,8 @@ export async function readCurrentPluginImmutableGenerationIntegrityCurrentness(
   } catch {
     return false;
   }
-  const bundledArtifacts = (input.bundledArtifacts ?? []).filter(
-    (artifact) => artifact.record.pluginId === pluginId,
-  );
   const requiredAgentSessionRunnerFactoryLocalAgentId =
     input.requiredAgentSessionRunnerFactoryLocalAgentId?.trim();
-  let retainedManifestAuthority = input.retainedManifestAuthority;
-  if (bundledArtifacts.length > 1) return false;
-  const exactBundledArtifact = resolveBundledImmutablePluginArtifact({
-    bundledArtifacts,
-    pluginId,
-    immutableGenerationId,
-  });
-  if (exactBundledArtifact) {
-    if (retainedManifestAuthority === 'external') return false;
-    try {
-      const beforeBarriers = await readCurrentPluginBundledAuthorityBarriers({
-        paths: input.paths,
-        pluginId,
-        immutableGenerationId,
-      });
-      if (beforeBarriers.installedAuthorityPresent) return false;
-      const generation = await admitBundledImmutablePluginGeneration({
-        paths: input.paths,
-        artifact: exactBundledArtifact,
-        resolvePackageEntry:
-          input.resolveBundledPackageEntry
-          ?? resolveBundledPackageEntry,
-      });
-      // Runner custody is generation-store based. Copy the already admitted
-      // generated bundle into that one immutable owner before publishing or
-      // retaining runner authority, then recheck the generated source bytes.
-      const prepared = await prepareImmutablePluginGeneration({
-        paths: input.paths,
-        sourceRootPath: generation.rootPath,
-        record: generation.record,
-      });
-      if (
-        generation.record.pluginId !== pluginId
-        || prepared.reference.immutableGenerationId
-          !== immutableGenerationId
-      ) {
-        return false;
-      }
-      const afterBarriers = await readCurrentPluginBundledAuthorityBarriers({
-        paths: input.paths,
-        pluginId,
-        immutableGenerationId,
-      });
-      return !afterBarriers.installedAuthorityPresent;
-    } catch {
-      return false;
-    }
-  }
-
   if (requiredAgentSessionRunnerFactoryLocalAgentId) {
     try {
       const prepared = await readPreparedImmutablePluginGeneration({
@@ -2355,49 +1677,10 @@ export async function readCurrentPluginImmutableGenerationIntegrityCurrentness(
           === requiredAgentSessionRunnerFactoryLocalAgentId)) {
         return false;
       }
-      if (
-        retainedManifestAuthority !== undefined
-        && retainedManifestAuthority !== factories.manifestAuthority
-      ) {
-        return false;
-      }
-      retainedManifestAuthority = factories.manifestAuthority;
     } catch {
       return false;
     }
   }
-  if (
-    retainedManifestAuthority === 'bundled_first_party'
-  ) {
-    try {
-      const beforeBarriers = await readCurrentPluginBundledAuthorityBarriers({
-        paths: input.paths,
-        pluginId,
-        immutableGenerationId,
-      });
-      if (beforeBarriers.installedAuthorityPresent) return false;
-      const prepared = await readPreparedImmutablePluginGeneration({
-        paths: input.paths,
-        immutableGenerationId,
-      });
-      if (prepared.record.pluginId !== pluginId) return false;
-      const afterBarriers = await readCurrentPluginBundledAuthorityBarriers({
-        paths: input.paths,
-        pluginId,
-        immutableGenerationId,
-      });
-      return !afterBarriers.installedAuthorityPresent;
-    } catch {
-      return false;
-    }
-  }
-
-  // A known bundle for this plugin with a different generation is an explicit
-  // replacement, not permission to fall through to same-id installed bytes.
-  if (
-    bundledArtifacts.length > 0
-    && retainedManifestAuthority !== 'external'
-  ) return false;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const before = await readPluginRegistryCommitRecord(input.paths);
     if (!before) return false;
@@ -2432,6 +1715,8 @@ export async function cleanupUnreferencedPluginGenerations(input: Readonly<{
   retireGeneration?: (generation: Readonly<{
     pluginId: string;
     immutableGenerationId: string;
+    sourceCustody?: z.infer<typeof ManagedPluginSourceCustodyV1Schema>;
+    sourceProvenance: z.infer<typeof PluginSourceProvenanceSchema>;
   }>) => Promise<void>;
   isCommitCurrent?: () => Promise<boolean>;
   withCommitFence?: <T>(operation: () => Promise<T>) => Promise<T>;
@@ -2449,20 +1734,20 @@ export async function cleanupUnreferencedPluginGenerations(input: Readonly<{
   if (state.revisionId !== commit.installationState.revisionId) {
     throw new Error('Cleanup installation state revision does not match the durable registry commit');
   }
-  for (const [pluginId, generation] of Object.entries(commit.pluginGenerations)) {
+  for (const [pluginId, generation] of Object.entries(commit.pluginOccurrenceIds)) {
     const plugin = state.plugins[pluginId];
     if (!plugin) {
       throw new Error(`Cleanup installation state is incomplete for current plugin '${pluginId}'`);
     }
   }
-  const currentGenerationIds = new Set(Object.values(commit.pluginGenerations).map((generation) => generation.immutableGenerationId));
+  const currentGenerationIds = new Set(Object.values(commit.pluginOccurrenceIds).map((generation) => generation.immutableGenerationId));
   const retainedGenerationIds = new Set(state.rollbackRetention.map((retention) => retention.immutableGenerationId));
   for (const generationId of retainedGenerationIds) {
     if (currentGenerationIds.has(generationId)) {
       throw new Error(`Current generation '${generationId}' cannot also be a rollback retention record`);
     }
   }
-  const referenced = [...new Set(Object.values(commit.pluginGenerations).map((entry) => entry.immutableGenerationId))].sort();
+  const referenced = [...new Set(Object.values(commit.pluginOccurrenceIds).map((entry) => entry.immutableGenerationId))].sort();
   const runnerRetainedGenerationIds = input.readRunnerRetainedGenerationIds
     ? await input.readRunnerRetainedGenerationIds()
     : input.runnerRetainedGenerationIds ?? new Set<string>();
@@ -2570,21 +1855,6 @@ export async function cleanupUnreferencedPluginGenerations(input: Readonly<{
             retirementAlreadyCompleted: true,
           };
         }
-        try {
-          const marker = OwnedDevelopmentDraftSchema.parse(JSON.parse(await readFile(
-            join(generationRoot, OWNED_DEVELOPMENT_DRAFT_FILE_NAME),
-            'utf8',
-          )) as unknown);
-          if (marker.immutableGenerationId !== generationId) {
-            throw new Error(`Owned development draft identity mismatch for '${generationId}'`);
-          }
-          await rm(generationRoot, { recursive: true, force: false });
-          await flushDirectoryDurably(input.paths.generationsDir);
-          removed.add(generationId);
-          return { claimed: false };
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') throw error;
-        }
         const record = await readGenerationRecord(
           join(generationRoot, 'plugin-generation.v1.json'),
         );
@@ -2627,6 +1897,10 @@ export async function cleanupUnreferencedPluginGenerations(input: Readonly<{
           await input.retireGeneration({
             pluginId: retirementClaim.record.pluginId,
             immutableGenerationId: retirementClaim.record.immutableGenerationId,
+            ...(retirementClaim.record.sourceCustody
+              ? { sourceCustody: retirementClaim.record.sourceCustody }
+              : {}),
+            sourceProvenance: retirementClaim.record.sourceProvenance,
           });
         }
         await persistRetiredPluginGenerationMarker({

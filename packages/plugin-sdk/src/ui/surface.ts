@@ -1,6 +1,5 @@
 import type { PluginManifest } from '../manifest.js';
 import type { UiRenderer, UiView } from '../ui.js';
-import type { PluginUiBuildTarget } from './build/config.js';
 import type { PluginUiSettingsPageV1 } from './publicContract.js';
 
 type DistributiveOmit<T, TKey extends PropertyKey> = T extends unknown
@@ -11,7 +10,7 @@ type PluginManifestContributes = NonNullable<PluginManifest['contributes']>;
 type PluginUiContributionInput = NonNullable<PluginManifestContributes['ui']>;
 // The broad manifest projection deliberately accepts advanced raw declarations.
 // The high-level surface descriptor needs the canonical discriminated author
-// grammar so a renderer kind and its build target remain correlated.
+// grammar while executable entrypoints remain owned by package exports.
 
 export type UiSurfaceRendererDefinition =
     | DistributiveOmit<Exclude<UiRenderer, Readonly<{ kind: 'hostedHtml' }>>, 'id' | 'artifact' | 'source'>
@@ -40,7 +39,7 @@ export type UiSurfaceAppPageDefinitionFor<
     container: 'appPage';
 }>
     ? Readonly<
-        DistributiveOmit<TView, 'id' | 'renderer' | 'container' | 'target' | 'fallbackRenderers'> & {
+        DistributiveOmit<TView, 'id' | 'renderer' | 'container' | 'target' | 'placement' | 'fallbackRenderers'> & {
             id: TId;
             placement: 'appPage';
             target?: never;
@@ -49,7 +48,7 @@ export type UiSurfaceAppPageDefinitionFor<
     >
     : never;
 export type UiSurfaceAppPageDefinition<TRenderer extends UiSurfaceRendererDefinition> =
-    UiSurfaceAppPageDefinitionFor<UiView, TRenderer>;
+    UiSurfaceAppPageDefinitionFor<UiView & { container: 'appPage' }, TRenderer>;
 
 export type UiSurfaceDetailedDefinitionFor<
     TView,
@@ -62,7 +61,7 @@ export type UiSurfaceDetailedDefinitionFor<
     ? TContainer extends 'appPage'
         ? never
         : Readonly<
-            DistributiveOmit<TView, 'id' | 'renderer' | 'container' | 'target' | 'fallbackRenderers'> & {
+            DistributiveOmit<TView, 'id' | 'renderer' | 'container' | 'target' | 'placement' | 'fallbackRenderers'> & {
                 id: TId;
                 placement: TContainer;
                 target: TTarget;
@@ -96,15 +95,6 @@ export type UiSurfaceRendererOnlyDefinition<TRenderer extends UiSurfaceRendererD
     renderer: TRenderer;
 }>;
 
-export type UiSurfaceReactNativeBuild = Omit<
-    Extract<PluginUiBuildTarget, Readonly<{ kind: 'reactNative' }>>,
-    'kind' | 'rendererId'
->;
-export type UiSurfaceHostedWebBuild = Omit<
-    Extract<PluginUiBuildTarget, Readonly<{ kind: 'hostedWeb' }>>,
-    'kind' | 'rendererId'
->;
-
 /**
  * The common cold-manifest surface shorthand. It derives the renderer and
  * executable artifact id from the surface id. Raw `ui.views` / `ui.renderers`
@@ -116,22 +106,17 @@ export type UiSurface =
     | UiSurfaceRendererOnlyDefinition<UiSurfaceRendererDefinition>;
 
 /**
- * One high-level surface declaration with its matching author build input.
- * Executable surfaces require exactly one build descriptor; declarative
- * surfaces intentionally emit no artifact target.
+ * One high-level surface declaration. Executable entrypoints are discovered
+ * from the plugin package's exact exports rather than duplicated here.
  */
 export type UiSurfaceReactNativeDefinition = (
     | UiSurfacePlacement<UiSurfaceReactNativeRendererDefinition>
     | UiSurfaceRendererOnlyDefinition<UiSurfaceReactNativeRendererDefinition>
-) & Readonly<{
-    build: UiSurfaceReactNativeBuild;
-}>;
+);
 export type UiSurfaceHostedWebDefinition = (
     | UiSurfacePlacement<UiSurfaceHostedWebRendererDefinition>
     | UiSurfaceRendererOnlyDefinition<UiSurfaceHostedWebRendererDefinition>
-) & Readonly<{
-    build: UiSurfaceHostedWebBuild;
-}>;
+);
 export type UiSurfaceDeclarativeDefinition =
     | UiSurfacePlacement<UiSurfaceDeclarativeRendererDefinition>
     | UiSurfaceRendererOnlyDefinition<UiSurfaceDeclarativeRendererDefinition>;
@@ -151,8 +136,7 @@ export type UiAuthoringInput = PluginUiContributionInput & Readonly<{
 /**
  * Declares one correlated surface definition exactly once. The returned value
  * is consumed by `definePlugin({ ui: { surfaces: [...] } })` for cold manifest
- * projection and by {@link buildUiSurfaceTargets} for the existing build-config
- * owner. `defineUiSurface` remains the separate React artifact entrypoint.
+ * projection. `defineUiSurface` remains the separate React artifact entrypoint.
  */
 export function defineUiSurfaceDefinition<const TSurface extends UiSurfaceDefinition>(
     surface: TSurface,
@@ -163,52 +147,6 @@ export function defineUiSurfaceDefinition<const TSurface extends UiSurfaceDefini
 /** The one canonical renderer/artifact identity derived by high-level surfaces. */
 export function uiSurfaceRendererId(surfaceId: string): string {
     return `${surfaceId}-renderer`;
-}
-
-function isReactNativeUiSurface(
-    surface: UiSurfaceDefinition,
-): surface is UiSurfaceReactNativeDefinition {
-    return surface.renderer.kind === 'reactNative';
-}
-
-function isHostedWebUiSurface(
-    surface: UiSurfaceDefinition,
-): surface is UiSurfaceHostedWebDefinition {
-    return surface.renderer.kind === 'hostedWeb';
-}
-
-/**
- * Projects one `defineUiSurfaceDefinition` declaration into the existing build
- * target grammar. It does not load, register, or validate a second build catalog.
- */
-export function buildUiSurfaceTargets(surface: UiSurfaceDefinition): readonly PluginUiBuildTarget[] {
-    const rendererId = uiSurfaceRendererId(surface.id);
-    if (isReactNativeUiSurface(surface)) {
-        if (!('build' in surface) || surface.build === undefined) {
-            throw new TypeError(`defineUiSurfaceDefinition executable surface ${surface.id} requires build metadata`);
-        }
-        const target: Extract<PluginUiBuildTarget, Readonly<{ kind: 'reactNative' }>> = {
-            kind: 'reactNative',
-            rendererId,
-            ...surface.build,
-        };
-        return Object.freeze([Object.freeze(target)]);
-    }
-    if (isHostedWebUiSurface(surface)) {
-        if (!('build' in surface) || surface.build === undefined) {
-            throw new TypeError(`defineUiSurfaceDefinition executable surface ${surface.id} requires build metadata`);
-        }
-        const target: Extract<PluginUiBuildTarget, Readonly<{ kind: 'hostedWeb' }>> = {
-            kind: 'hostedWeb',
-            rendererId,
-            ...surface.build,
-        };
-        return Object.freeze([Object.freeze(target)]);
-    }
-    if (surface.renderer.kind === 'declarative' || surface.renderer.kind === 'hostedHtml') {
-        return Object.freeze([]);
-    }
-    throw new TypeError(`defineUiSurfaceDefinition ${surface.id} has an unsupported renderer kind`);
 }
 
 function isUiSurfaceRecord(value: unknown): value is Readonly<Record<string, unknown>> {

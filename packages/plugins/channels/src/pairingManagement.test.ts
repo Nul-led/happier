@@ -55,7 +55,6 @@ const pairingConnectionAuthority = {
   providerPluginId: materialization.pluginId,
   providerContributionSelection: {
     contributionId: 'pairing-test-provider',
-    immutableGenerationId: 'pairing-test-generation',
   },
   providerSetupInput: { source: 'pairing-test' },
   credentialRef: null,
@@ -71,7 +70,6 @@ const checkpointedPollConnectionAuthority = {
   ...pairingConnectionAuthority,
   providerContributionSelection: {
     contributionId: 'checkpointed-poll-test-provider',
-    immutableGenerationId: 'checkpointed-poll-test-generation',
   },
 } as const satisfies ConversationConnectionFixtureAuthority;
 
@@ -86,12 +84,14 @@ function targetedCheckpointedPollContribution(): TargetedContributionsService {
         dispose() {},
         async readCurrent(): Promise<TargetedContributionSnapshot<TContribution>> {
           return {
-            generation: 'channels-test-generation',
+            occurrenceId: 'channels-test-occurrence',
+            sourceCustody: { kind: 'development', registeredRootId: 'channels-test-root' },
             contributions: [{
               contributor: {
                 pluginId: materialization.pluginId,
                 contributionId: 'checkpointed-poll-test-provider',
-                immutableGenerationId: 'checkpointed-poll-test-generation',
+                occurrenceId: 'checkpointed-poll-test-occurrence',
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'checkpointed-poll-test-generation', installSource: 'npm' },
               },
               protocol: { id: 'happier.channels/providers', version: 1 },
               operations: {
@@ -213,11 +213,11 @@ function pairingEndpointResolveAction(contributionId: string, immutableGeneratio
 
 const pairingEndpointResolve = pairingEndpointResolveAction(
   pairingConnectionAuthority.providerContributionSelection.contributionId,
-  pairingConnectionAuthority.providerContributionSelection.immutableGenerationId,
+  'pairing-test-generation',
 );
 const checkpointedPollEndpointResolve = pairingEndpointResolveAction(
   checkpointedPollConnectionAuthority.providerContributionSelection.contributionId,
-  checkpointedPollConnectionAuthority.providerContributionSelection.immutableGenerationId,
+  'checkpointed-poll-test-generation',
 );
 
 /** The pairing connection's own admitted provider, exposing endpoint resolution. */
@@ -231,11 +231,14 @@ function targetedPairingContribution(): TargetedContributionsService {
         dispose() {},
         async readCurrent(): Promise<TargetedContributionSnapshot<TContribution>> {
           return {
-            generation: 'channels-test-generation',
+            occurrenceId: 'channels-test-occurrence',
+            sourceCustody: { kind: 'development', registeredRootId: 'channels-test-root' },
             contributions: [{
               contributor: {
                 pluginId: materialization.pluginId,
                 ...pairingConnectionAuthority.providerContributionSelection,
+                occurrenceId: 'checkpointed-poll-test-occurrence',
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'checkpointed-poll-test-generation', installSource: 'npm' },
               },
               protocol: { id: 'happier.channels/providers', version: 1 },
               operations: { endpointResolve: pairingEndpointResolve },

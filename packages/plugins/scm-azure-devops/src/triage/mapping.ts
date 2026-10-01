@@ -15,8 +15,8 @@ import type {
 } from './types.js';
 
 /**
- * Azure's own word for an abandoned pull request, and the one fact that separates it from a
- * completed one once both project to the `closed` presentation.
+ * Azure's own word for an abandoned pull request. A completed one projects `resolved` and an
+ * abandoned one `closed` (`CONTRACT.md` §4, r0.42); the label stays the Reactivate decision.
  *
  * It is exported because the detail surface decides whether to offer *Reactivate* from exactly
  * this label. Spelling it twice is how the control would keep appearing on completed pull

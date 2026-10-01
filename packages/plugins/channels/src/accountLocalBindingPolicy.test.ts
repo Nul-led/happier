@@ -36,7 +36,6 @@ const replacementAuthority = {
   providerPluginId: 'happier.channel.example',
   providerContributionSelection: {
     contributionId: 'replacement-contribution',
-    immutableGenerationId: 'replacement-generation',
   },
   providerSetupInput: {},
   credentialRef: null,
@@ -59,7 +58,6 @@ const oldAuthority = {
   ...replacementAuthority,
   providerContributionSelection: {
     contributionId: 'old-contribution',
-    immutableGenerationId: 'old-generation',
   },
   transportOrigin: {
     serverIdentityId: 'server-old',
@@ -124,11 +122,9 @@ describe('readConversationConnectionUpdateRow frozen provider selection', () => 
 
     expect(current.providerContributionSelection).toEqual({
       contributionId: 'replacement-contribution',
-      immutableGenerationId: 'replacement-generation',
     });
     expect(current.lifecycle.pendingOldTransportStop?.providerContributionSelection).toEqual({
       contributionId: 'old-contribution',
-      immutableGenerationId: 'old-generation',
     });
     expect(current.lifecycle.pendingOldTransportStop?.predecessorCheckpointedPollInvocation).toEqual({
       connectionRevision: 3,
@@ -175,7 +171,6 @@ describe('readConversationConnectionUpdateRow frozen provider selection', () => 
       row: connectionRow(frozenOldStop({
         providerContributionSelection: {
           contributionId: 7,
-          immutableGenerationId: 'old-generation',
         },
       })),
       connectionId: CONNECTION_ID,

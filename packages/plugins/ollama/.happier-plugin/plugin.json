@@ -185,6 +185,9 @@
         "id": "ollama-process",
         "reason": "Run the declared Ollama executable.",
         "scope": {
+          "envKeys": [
+            "OLLAMA_HOST"
+          ],
           "executables": [
             {
               "id": "ollama-cli",

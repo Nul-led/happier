@@ -1,6 +1,7 @@
 /** @moduleRealm daemon */
 import {
     PluginMachineMaterializationRefV1Schema as canonicalPluginMachineMaterializationRefV1Schema,
+    type PluginSourceCustodyV1 as ProtocolPluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import type { PluginAutomationRunCause } from './automations.js';
 import type { PluginServices } from './services/index.js';
@@ -13,6 +14,8 @@ import type {
     PluginMachineExecutionOriginV1,
     PluginMachineMaterializationRefV1,
 } from './executionOrigin.js';
+/** Canonical durable plugin-source custody projected from Protocol. */
+export type PluginSourceCustodyV1 = ProtocolPluginSourceCustodyV1;
 
 /**
  * Runtime Protocol parser projected through the SDK's portable materialization
@@ -78,10 +81,12 @@ export type PluginInvocationCaller =
         kind: 'plugin';
         pluginId: string;
         contribution: PluginInvocationContributionIdentity;
-        /** Immutable installed generation for the immediate caller. */
-        immutableGenerationId: string;
-        /** Current host-stamped materialization for the immediate caller. */
-        materialization: PluginMachineMaterializationRefV1;
+        /** Process-local identity of the immediate caller's admitted occurrence. */
+        occurrenceId: string;
+        /** Durable source custody used only when a host owner freezes provenance. */
+        sourceCustody: PluginSourceCustodyV1;
+        /** Current host-stamped materialization when the caller has Account-release custody. */
+        materialization?: PluginMachineMaterializationRefV1;
         originSurface?: PluginInvocationOriginSurface;
     }>
     | Readonly<{

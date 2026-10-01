@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   projectExecutablePluginToolCatalog,
-  projectGenerationBoundExecutablePluginToolCatalog,
+  projectOccurrenceBoundExecutablePluginToolCatalog,
 } from './toolCatalog';
 
 function createRegistry(
@@ -118,24 +118,22 @@ describe('projectExecutablePluginToolCatalog', () => {
     }))).toEqual([]);
   });
 
-  it('binds transport-facing tools to the exact contributor generation and drops unbound entries', () => {
+  it('binds transport-facing tools to the exact contributor occurrence and drops unbound entries', () => {
     const registry = createRegistry('visible') as {
-      contributes: {
-        immutableGenerationIdsByPluginId?: Readonly<Record<string, string>>;
-      };
+      readPluginOccurrenceId?: (pluginId: string) => string | null;
     };
-    registry.contributes.immutableGenerationIdsByPluginId = {
-      'acme.review.plugin': 'immutable-generation-7',
-    };
+    registry.readPluginOccurrenceId = (pluginId) => (
+      pluginId === 'acme.review.plugin' ? 'occurrence-7' : null
+    );
 
-    expect(projectGenerationBoundExecutablePluginToolCatalog(registry as never)).toEqual([
+    expect(projectOccurrenceBoundExecutablePluginToolCatalog(registry as never)).toEqual([
       expect.objectContaining({
         toolId: 'acme.review.plugin/review-tool',
-        expectedContributorImmutableGenerationId: 'immutable-generation-7',
+        expectedContributorOccurrenceId: 'occurrence-7',
       }),
     ]);
 
-    registry.contributes.immutableGenerationIdsByPluginId = {};
-    expect(projectGenerationBoundExecutablePluginToolCatalog(registry as never)).toEqual([]);
+    registry.readPluginOccurrenceId = () => null;
+    expect(projectOccurrenceBoundExecutablePluginToolCatalog(registry as never)).toEqual([]);
   });
 });

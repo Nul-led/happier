@@ -36,14 +36,16 @@ async function brandFixture(params: Readonly<{
     pluginId: string;
     bytes: Uint8Array;
     write?: boolean;
+    monochrome?: boolean;
 }>): Promise<Readonly<{
     contribution: ResolvedResourceContribution;
-    generation: Readonly<{
+    occurrenceId: Readonly<{
         pluginId: string;
         immutableGenerationId: string;
         rootPath: string;
         files: ImmutablePluginGenerationRecord['files'];
         brandIconResourceId: string;
+        brandMonochrome?: boolean;
     }>;
 }>> {
     const rootPath = await mkdtemp(join(tmpdir(), 'happier-plugin-brand-'));
@@ -76,12 +78,13 @@ async function brandFixture(params: Readonly<{
                 digest: digest(params.bytes),
             },
         },
-        generation: Object.freeze({
+        occurrenceId: Object.freeze({
             pluginId: params.pluginId,
             immutableGenerationId: `${params.pluginId}-g1`,
             rootPath,
             files: [{ relativePath, byteLength: params.bytes.byteLength }],
             brandIconResourceId: 'brand-icon',
+            ...(params.monochrome === undefined ? {} : { brandMonochrome: params.monochrome }),
         }),
     });
 }
@@ -89,10 +92,10 @@ async function brandFixture(params: Readonly<{
 describe('portable plugin brand Resource admission', () => {
     it('projects one verified square packaged PNG without exposing its bytes or path', async () => {
         const bytes = await createPng(64, 64);
-        const fixture = await brandFixture({ pluginId: 'acme.brand', bytes });
+        const fixture = await brandFixture({ pluginId: 'acme.brand', bytes, monochrome: true });
         const owner = await createStablePluginResourcesOwner({
             registry: { resources: [fixture.contribution] } as Pick<ResolvedContributionRegistry, 'resources'>,
-            generations: new Map([['acme.brand', fixture.generation]]),
+            generations: new Map([['acme.brand', fixture.occurrenceId]]),
         });
 
         expect(owner.getPluginBrandAsset('acme.brand')).toEqual({
@@ -101,6 +104,7 @@ describe('portable plugin brand Resource admission', () => {
             width: 64,
             height: 64,
             digest: digest(bytes),
+            monochrome: true,
         });
         expect(owner.getPluginBrandAsset('acme.brand')).not.toHaveProperty('bytes');
         expect(owner.getPluginBrandAsset('acme.brand')).not.toHaveProperty('path');
@@ -149,12 +153,12 @@ describe('portable plugin brand Resource admission', () => {
                 ],
             } as Pick<ResolvedContributionRegistry, 'resources'>,
             generations: new Map([
-                ['acme.malformed', malformed.generation],
-                ['acme.missing', missing.generation],
-                ['acme.rectangular', rectangular.generation],
-                ['acme.too-small', tooSmall.generation],
-                ['acme.too-large', tooLarge.generation],
-                ['acme.oversized', oversized.generation],
+                ['acme.malformed', malformed.occurrenceId],
+                ['acme.missing', missing.occurrenceId],
+                ['acme.rectangular', rectangular.occurrenceId],
+                ['acme.too-small', tooSmall.occurrenceId],
+                ['acme.too-large', tooLarge.occurrenceId],
+                ['acme.oversized', oversized.occurrenceId],
             ]),
         });
 
@@ -169,7 +173,7 @@ describe('portable plugin brand Resource admission', () => {
         expect(Buffer.from((await owner.bind({
             pluginId: 'acme.rectangular',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         }).read('brand-icon')).bytes)).toEqual(rectangularBytes);
     });
 });

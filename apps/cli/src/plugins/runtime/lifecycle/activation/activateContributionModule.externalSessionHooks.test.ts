@@ -15,7 +15,7 @@ import { activateContributionModule } from './activateContributionModule';
 import {
     createDeclarativeAcpAgentRuntimeRegistry,
     createTargetAgentRuntimeRegistry,
-} from '../contributions/targetAgents';
+} from '../contributions/targetAgents.testkit';
 
 const PLUGIN_ID = 'acme.external-session-hooks';
 const AGENT_ID = 'assistant';
@@ -264,7 +264,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
         const resolveRelativeModule = vi.fn();
         const result = await activateContributionModule({
             pluginId: PLUGIN_ID,
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             manifest,
             moduleNamespace: {
                 activate(api: PluginApi) {
@@ -279,7 +279,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
                     );
                 },
             },
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveRelativeModule,
         });
 
@@ -334,20 +334,20 @@ describe('real-loader External Session hook aggregate conformance', () => {
             activationTargets: [target(manifest)],
             targetRegistrations: result.registrations.map((registration) => ({
                 pluginId: PLUGIN_ID,
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 registration,
             })),
             immutableGenerationIdsByPluginId,
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: retirement.signal,
             onDuplicate: vi.fn(),
         });
         const registry = createDeclarativeAcpAgentRuntimeRegistry({
             agents,
             registered,
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             immutableGenerationIdsByPluginId,
-            isGenerationActive: () => true,
+            isOccurrenceCurrent: () => true,
             retirementSignal: retirement.signal,
         });
         const lease = registry.get(AGENT_ID);
@@ -362,7 +362,11 @@ describe('real-loader External Session hook aggregate conformance', () => {
             agentId: AGENT_ID,
             qualifiedAgentId: `${PLUGIN_ID}/agents/${AGENT_ID}`,
             localAgentId: AGENT_ID,
-            immutableGenerationId: 'immutable-generation-7',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'immutable-generation-7',
+                installSource: 'localPath',
+            },
         });
         expect(lease).not.toHaveProperty('issueRunnerExecutionGrant');
         expect(lease).not.toHaveProperty('manifestDigest');
@@ -381,7 +385,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
     it('rejects a competing primary factory for a declarative ACP auxiliary registration', async () => {
         const result = await activateContributionModule({
             pluginId: PLUGIN_ID,
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             manifest: externalSessionManifest('acp'),
             moduleNamespace: {
                 activate(api: PluginApi) {
@@ -392,7 +396,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
                     );
                 },
             },
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(result.status).toBe('unavailable');
@@ -416,14 +420,14 @@ describe('real-loader External Session hook aggregate conformance', () => {
             const mutableHooks = createHooks();
             const result = await activateContributionModule({
                 pluginId: PLUGIN_ID,
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 manifest,
                 moduleNamespace: {
                     activate(api: PluginApi) {
                         for (const name of order) register(api, name, mutableHooks);
                     },
                 },
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 resolveRelativeModule: async (module) => {
                     expect(module).toBe('./agent-runtime.js');
                     return {
@@ -462,10 +466,10 @@ describe('real-loader External Session hook aggregate conformance', () => {
                 activationTargets: [target(manifest)],
                 targetRegistrations: result.registrations.map((registration) => ({
                     pluginId: PLUGIN_ID,
-                    generation: 'generation-7',
+                    occurrenceId: 'generation-7',
                     registration,
                 })),
-                isGenerationActive: () => !retirement.signal.aborted,
+                isOccurrenceCurrent: () => !retirement.signal.aborted,
                 retirementSignal: retirement.signal,
                 onDuplicate: vi.fn(),
             });
@@ -473,7 +477,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
             expect(lease).toMatchObject({
                 pluginId: PLUGIN_ID,
                 agentId: AGENT_ID,
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 hasPrimaryRuntime: true,
             });
             expect(Object.keys(lease?.externalSessionHooks ?? {})).toEqual([
@@ -513,7 +517,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
 
         const result = await activateContributionModule({
             pluginId: PLUGIN_ID,
-            generation: 'generation-companion',
+            occurrenceId: 'generation-companion',
             manifest: externalSessionManifest(),
             moduleNamespace: {
                 activate(api: PluginApi) {
@@ -526,7 +530,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
                     );
                 },
             },
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveRelativeModule,
             persistValidatedAgentSessionRunnerFactories,
         });
@@ -549,7 +553,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
         const persistValidatedAgentSessionRunnerFactories = vi.fn();
         const result = await activateContributionModule({
             pluginId: PLUGIN_ID,
-            generation: 'generation-companion-omitted-locator-export',
+            occurrenceId: 'generation-companion-omitted-locator-export',
             manifest: externalSessionManifest(),
             moduleNamespace: {
                 activate(api: PluginApi) {
@@ -566,7 +570,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
                     );
                 },
             },
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveRelativeModule: async () => ({
                 module: { agentRuntimeFactory, externalSessions },
                 normalizedModulePath: 'agent-runtime.js',
@@ -594,7 +598,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
         const persistValidatedAgentSessionRunnerFactories = vi.fn();
         const result = await activateContributionModule({
             pluginId: PLUGIN_ID,
-            generation: 'generation-companion-undefined-on-both-sides',
+            occurrenceId: 'generation-companion-undefined-on-both-sides',
             manifest: externalSessionManifest('custom', {
                 includeExternalSessions: false,
             }),
@@ -610,7 +614,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
                     });
                 },
             },
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveRelativeModule: async () => ({
                 module: { agentRuntimeFactory },
                 normalizedModulePath: 'agent-runtime.js',
@@ -647,7 +651,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
             const persistValidatedAgentSessionRunnerFactories = vi.fn();
             const result = await activateContributionModule({
                 pluginId: PLUGIN_ID,
-                generation: 'generation-companion-mismatch',
+                occurrenceId: 'generation-companion-mismatch',
                 manifest: externalSessionManifest(),
                 moduleNamespace: {
                     activate(api: PluginApi) {
@@ -665,7 +669,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
                         );
                     },
                 },
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 resolveRelativeModule: async () => ({
                     module: {
                         agentRuntimeFactory,
@@ -763,10 +767,10 @@ describe('real-loader External Session hook aggregate conformance', () => {
             if (!manifest.ok) throw new Error('Expected valid manifest fixture');
             const result = await activateContributionModule({
                 pluginId: PLUGIN_ID,
-                generation: 'generation-7',
+                occurrenceId: 'generation-7',
                 manifest: manifest.manifest,
                 moduleNamespace: { activate },
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 ...(missingRight ? { forceActivation: true } : {}),
             });
 

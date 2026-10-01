@@ -308,7 +308,7 @@ describe('Voice author source contract', () => {
       roles: ['realtime_conversation'],
       platforms: ['web'],
       capabilities: { turn: { cancelResponse: false, bargeIn: false } },
-      client: { artifactId: 'voice-runtime-web', modulePath: './voice', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     });
     if (provider.kind !== 'conversation') throw new Error('Expected a conversation Voice provider');
 
@@ -430,7 +430,7 @@ describe('Voice author source contract', () => {
         agent: 'codex',
         supportedRuntimeVersions: ['1.2.3'],
       },
-      client: { artifactId: 'voice-runtime-web', modulePath: './voice', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     })).toMatchObject({
       execution: {
         kind: 'experimental_agent_session_realtime',
@@ -449,7 +449,7 @@ describe('Voice author source contract', () => {
         kind: 'experimental_agent_session_realtime',
         agent: 'codex',
       },
-      client: { artifactId: 'voice-runtime-web', modulePath: './voice', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     })).toMatchObject({
       execution: {
         kind: 'experimental_agent_session_realtime',

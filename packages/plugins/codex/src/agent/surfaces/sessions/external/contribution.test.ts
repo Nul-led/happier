@@ -258,6 +258,35 @@ describe('Codex public Agent External Sessions contribution', () => {
     }
   });
 
+  it('reports an unreadable rollout as an Agent fault rather than an unavailable Agent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-codex-public-unreadable-rollout-'));
+    try {
+      const codexHome = join(root, 'codex-home');
+      const sessionsDir = join(codexHome, 'sessions', '2026', '07', '23');
+      const remoteSessionId = '11111111-1111-1111-1111-111111111111';
+      await mkdir(sessionsDir, { recursive: true });
+      await writeFile(join(sessionsDir, `rollout-2026-07-23T08-00-00-${remoteSessionId}.jsonl`), Buffer.concat([
+        Buffer.from(jsonl({ type: 'session_meta', payload: { id: remoteSessionId, cwd: '/repo' } })),
+        Buffer.from('{"type":"response_item","payload":{"type":"message","role":"user","content":"'),
+        Buffer.from([0xff, 0xfe]),
+        Buffer.from('"}}\n'),
+      ]));
+      const contribution = createCodexExternalSessionsContribution({
+        env: { CODEX_HOME: codexHome } as NodeJS.ProcessEnv,
+      });
+
+      await expect(contribution.pageTranscript({
+        source: { kind: 'codexHome', home: 'user', homePath: codexHome },
+        remoteSessionId,
+        direction: 'older',
+        maxItems: 20,
+        ...invocation(),
+      })).resolves.toMatchObject({ ok: false, code: 'agent_error' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('returns typed unsupported rather than an authoritative empty page for newer paging', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-codex-public-newer-unsupported-'));
     try {
@@ -838,7 +867,18 @@ describe('Codex public Agent External Sessions contribution', () => {
     expect(await contribution.resolveLinkIdentity({
       source,
       remoteSessionId: exactRemoteSessionId,
-      linkData: { codexBackendMode: 'appServer' },
+      linkData: {
+        codexBackendMode: 'appServer',
+        runtimeDescriptorV1: {
+          v: 1,
+          agentId: 'codex',
+          agent: {
+            backendMode: 'appServer',
+            providerSessionId: exactRemoteSessionId,
+            appServerTransport: 'daemonProxy',
+          },
+        },
+      },
       ...invocation(),
     })).toMatchObject({
       ok: true,
@@ -846,7 +886,10 @@ describe('Codex public Agent External Sessions contribution', () => {
         remoteSessionId: exactRemoteSessionId,
         linkData: {
           runtimeDescriptorV1: {
-            agent: { providerSessionId: exactRemoteSessionId },
+            agent: {
+              providerSessionId: exactRemoteSessionId,
+              appServerTransport: 'daemonProxy',
+            },
           },
         },
       },

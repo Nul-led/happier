@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { posix } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { buildStackStableScopeId } from '../auth/stable_scope_id.mjs';
 import { REQUIRED_MANAGED_LIMA_GUEST_TOOLCHAIN } from '../managed_lima/provisioner.mjs';
@@ -6,98 +9,292 @@ import { resolveEffectiveDbProvider } from '../server/effective_db_provider.mjs'
 
 export const DEFAULT_REMOTE_STACK_STARTUP_TIMEOUT_MS = 30 * 60_000;
 
-export const REMOTE_DEPENDENCY_ADMISSION = Object.freeze({
-  directCommands: Object.freeze([
-    'node',
-    'npm',
-    'npx',
-    'pnpm',
-    'tsc',
-    'vitest',
-    'yarn',
-  ]),
-  corepackSubcommands: Object.freeze(['npm', 'pnpm', 'yarn']),
-});
-
+// Both dispatchers evaluate this policy. The native artifact is generated once,
+// while argv and path normalization remain thin transport adapters.
 export const REMOTE_COMMAND_CLASSIFICATION = Object.freeze({
-  primaryOnlyDirectCommands: Object.freeze(['git']),
-  sourceSearchDirectCommands: Object.freeze(['find', 'grep', 'rg']),
-  validationDirectCommands: Object.freeze(['tsc', 'vitest']),
-  validationScriptFamilies: Object.freeze(['build', 'check', 'lint', 'test', 'typecheck', 'vitest']),
+  packageManagerCommands: Object.freeze(['npm', 'npx', 'pnpm', 'yarn']),
+  sourceTestComponents: Object.freeze(['apps/cli', 'apps/ui']),
+  sourceTestConfigs: Object.freeze(['vitest.config.ts']),
+  sourceTestScripts: Object.freeze(['vitest', 'vitest:local']),
 });
-
+const DEFAULT_COMMAND_POLICY = Object.freeze({
+  placement: 'worker-eligible', commandClass: 'unclassified', bootstrap: '0',
+  validation: '0', kind: 'runtime', heavyClass: '', workerTool: '',
+  workerArguments: '0', runnerKnown: '0', componentOverride: '',
+  generator: '0', generatorCheck: '0', componentFromNative: '0',
+});
+const validation = { validation: '1', bootstrap: '1', heavyClass: 'validation' };
+const COMMAND_RULES = [
+  { when: { hasScript: ['1'] }, set: { bootstrap: '1' } },
+  { when: { command: ['git'] }, set: { placement: 'primary-only', commandClass: 'vcs-authority' } },
+  { when: { command: ['find', 'grep', 'rg'] }, set: { commandClass: 'source-search' } },
+  { when: { command: ['rg'] }, set: { workerTool: 'rg' } },
+  { when: { command: ['tsc', 'vitest'] }, set: validation },
+  { when: { command: ['hstack-exec'] }, set: { validation: '1', heavyClass: 'validation' } },
+  { when: { family: ['build', 'check', 'lint', 'test', 'tsc', 'typecheck', 'vitest'] }, set: validation },
+  { when: { family: ['install'] }, set: { commandClass: 'dependency-install', heavyClass: 'dependency-install' } },
+  { when: { family: ['test', 'vitest'] }, set: { workerTool: 'vitest' } },
+  { when: { command: ['tsc'] }, set: { kind: 'typecheck', workerTool: 'typescript-native' } },
+  { when: { family: ['tsc', 'typecheck'] }, set: { kind: 'typecheck', workerTool: 'typescript-native' } },
+  { when: { command: ['node', 'nodejs'], entry: ['runTypeScriptCli.mjs'] }, set: { ...validation, kind: 'typecheck', workerTool: 'typescript-native' } },
+  { when: { command: ['vitest'] }, set: { runnerKnown: '1', workerTool: 'vitest', workerArguments: '1' } },
+  { when: { command: ['node', 'nodejs', 'tsx'], entry: ['vitest.mjs'] }, set: { ...validation, runnerKnown: '1', workerTool: 'vitest', workerArguments: '1' } },
+  { when: { managerNode: ['1'], entry: ['run-vitest-with-heartbeat.mjs'] }, set: { ...validation, runnerKnown: '1', workerTool: 'vitest', workerArguments: '1' } },
+  { when: { script: REMOTE_COMMAND_CLASSIFICATION.sourceTestScripts }, set: { runnerKnown: '1' } },
+  // Unknown native suites may consume emitted workspace packages. Only proven
+  // source-resolving suites skip publication; all runners admit dependencies.
+  { when: { command: ['node', 'nodejs'], nativeTest: ['1'] }, set: { ...validation, componentFromNative: '1' } },
+  { when: { command: ['node', 'nodejs'], nativeTest: ['1'], nativeTestPath: ['packages/plugin-sdk/scripts/generateActionTypeMap.test.mjs'] }, set: { kind: 'source-test' } },
+  { when: { command: ['node', 'nodejs'], nativeTest: ['1'], stackScope: ['1'] }, set: { kind: 'runtime', componentOverride: 'apps/stack' } },
+  { when: { command: ['node'], stripTypes: ['1'], entryPath: ['apps/cli/scripts/build-owned/generateBundledPluginEntries.ts', 'scripts/build-owned/generateBundledPluginEntries.ts'] }, set: { generator: '1', workerTool: 'bundled-plugin-generator', heavyClass: 'validation', placement: 'primary-only' } },
+  { when: { command: ['node'], stripTypes: ['1'], entryPath: ['apps/cli/scripts/build-owned/generateBundledPluginEntries.ts', 'scripts/build-owned/generateBundledPluginEntries.ts'], mode: ['check'] }, set: { ...validation, placement: 'worker-eligible', generatorCheck: '1', componentOverride: 'apps/cli' } },
+  { when: { script: ['check:first-party-plugins:finite', 'check:first-party-plugins:finite:local', 'plugins:aggregate:finite', 'test:migration:bundled-plugin-projections', 'test:migration:governance'] }, set: { ...validation, generatorCheck: '1', componentOverride: 'apps/cli' } },
+];
+const FINAL_COMMAND_RULES = [
+  { when: { validation: ['1'] }, set: { commandClass: 'targeted-validation' } },
+  { when: { validation: ['1'], component: ['.'] }, set: { commandClass: 'full-validation' } },
+  { when: { kind: ['runtime'], runnerKnown: ['1'], component: REMOTE_COMMAND_CLASSIFICATION.sourceTestComponents, config: REMOTE_COMMAND_CLASSIFICATION.sourceTestConfigs, resolverOverride: ['0'] }, set: { kind: 'source-test' } },
+];
 function commandBasename(value) {
   return String(value ?? '').trim().replaceAll('\\', '/').split('/').at(-1);
 }
-
-export function classifyRemoteCommand(commandArgs, { cwd = '.' } = {}) {
-  if (!Array.isArray(commandArgs) || commandArgs.length === 0) {
-    return { placement: 'worker-eligible', commandClass: 'unclassified' };
-  }
-  if (REMOTE_COMMAND_CLASSIFICATION.primaryOnlyDirectCommands.includes(commandBasename(commandArgs[0]))) {
-    return { placement: 'primary-only', commandClass: 'vcs-authority' };
-  }
-  if (REMOTE_COMMAND_CLASSIFICATION.sourceSearchDirectCommands.includes(commandBasename(commandArgs[0]))) {
-    return { placement: 'worker-eligible', commandClass: 'source-search' };
-  }
-  const directCommand = commandBasename(commandArgs[0]);
-  const isNativeTypeScriptCli = directCommand === 'node'
-    && commandBasename(commandArgs[1]) === 'runTypeScriptCli.mjs';
-  const isNestedPreferredExecution = directCommand === 'hstack-exec';
-  if (
-    REMOTE_COMMAND_CLASSIFICATION.validationDirectCommands.includes(commandBasename(commandArgs[0]))
-    || isNativeTypeScriptCli
-    || isNestedPreferredExecution
-    || REMOTE_COMMAND_CLASSIFICATION.validationScriptFamilies.includes(resolvePackageManagerScriptFamily(commandArgs))
-  ) {
-    return {
-      placement: 'worker-eligible',
-      commandClass: isRepositoryRootCwd(cwd) ? 'full-validation' : 'targeted-validation',
-    };
-  }
-  return { placement: 'worker-eligible', commandClass: 'unclassified' };
+function normalizeCommandPath(value) {
+  return posix.normalize(String(value ?? '.').replaceAll('\\', '/')).replace(/\/+$/u, '') || '.';
 }
+const COMMAND_REPO_ROOT = fileURLToPath(new URL('../../../../../', import.meta.url)).replaceAll('\\', '/').replace(/\/$/u, '');
 
-function resolvePackageManagerScriptFamily(commandArgs) {
-  const args = Array.isArray(commandArgs) ? commandArgs.map((value) => String(value ?? '').trim()) : [];
-  let commandIndex = 0;
-  if (commandBasename(args[0]) === 'corepack') commandIndex = 1;
-  const command = commandBasename(args[commandIndex]);
-  if (!REMOTE_DEPENDENCY_ADMISSION.corepackSubcommands.includes(command)) return '';
-
-  const scriptArgs = args.slice(commandIndex + 1);
-  for (let index = 0; index < scriptArgs.length; index += 1) {
-    const argument = scriptArgs[index];
-    if (argument === 'run') continue;
-    if (argument === '--cwd' || argument === '-C') {
-      index += 1;
-      continue;
-    }
-    if (argument.startsWith('-')) continue;
-    return argument.split(':', 1)[0];
+function nativeTestComponent(testPath) {
+  let parent = posix.dirname(testPath);
+  if (parent.startsWith('/') || parent === '..' || parent.startsWith('../')) return '';
+  while (parent !== '.') {
+    if (existsSync(COMMAND_REPO_ROOT + '/' + parent + '/package.json')) return parent;
+    parent = posix.dirname(parent);
   }
   return '';
 }
-
-function isRepositoryRootCwd(cwd) {
-  const normalized = String(cwd ?? '.').trim().replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/+$/, '');
-  return normalized === '' || normalized === '.';
-}
-
-export function requiresRemoteWorkspacePreparation(commandArgs, { cwd = '.' } = {}) {
-  return classifyRemoteCommand(commandArgs, { cwd }).commandClass === 'targeted-validation';
-}
-
-export function requiresRemoteDependencyBootstrap(commandArgs) {
-  if (!Array.isArray(commandArgs) || commandArgs.length === 0) return false;
-  const command = commandBasename(commandArgs[0]);
-  if (command === 'corepack') {
-    return REMOTE_DEPENDENCY_ADMISSION.corepackSubcommands.includes(
-      String(commandArgs[1] ?? '').trim(),
-    );
+function applyCommandRules(facts, rules, policy) {
+  for (const rule of rules) {
+    if (Object.entries(rule.when).every(([key, values]) => values.includes(String(facts[key] ?? policy[key] ?? '')))) Object.assign(policy, rule.set);
   }
-  return REMOTE_DEPENDENCY_ADMISSION.directCommands.includes(command);
+  return policy;
 }
+function normalizeCommandArguments(commandArgs, cwd) {
+  let args = Array.isArray(commandArgs) ? commandArgs.map(String) : [];
+  if (args[0] === '--') args = args.slice(1);
+  if (args[0]?.startsWith('--script=')) args = ['corepack', 'yarn', '-s', args[0].slice(9), ...args.slice(1)];
+  const command = commandBasename(args[0]);
+  const managerIndex = command === 'corepack' ? 1 : 0;
+  const manager = commandBasename(args[managerIndex]);
+  let script = '', entry = commandBasename(args[1]), managerCwd = '', managerNode = '0';
+  if (REMOTE_COMMAND_CLASSIFICATION.packageManagerCommands.includes(manager)) {
+    for (let index = managerIndex + 1; index < args.length; index += 1) {
+      const arg = args[index];
+      if (arg === '--cwd' || arg === '-C') { managerCwd = args[++index] ?? '.'; continue; }
+      if (arg.startsWith('--cwd=')) { managerCwd = arg.slice(6); continue; }
+      if (arg === 'workspace' && manager === 'yarn') { index += 1; continue; }
+      if (arg === 'run' || arg.startsWith('-')) continue;
+      script = arg;
+      if (arg === 'node') { managerNode = '1'; entry = commandBasename(args[index + 1]); }
+      break;
+    }
+  }
+  const stripTypes = args[1] === '--experimental-strip-types' ? '1' : '0';
+  if (stripTypes === '1') entry = commandBasename(args[2]);
+  const rawEntryPath = String(args[stripTypes === '1' ? 2 : 1] ?? '').replaceAll('\\', '/');
+  const entryPath = posix.normalize(rawEntryPath.startsWith(COMMAND_REPO_ROOT + '/') ? rawEntryPath.slice(COMMAND_REPO_ROOT.length + 1) : rawEntryPath);
+  let config = 'vitest.config.ts', resolverOverride = '0', project = '', mode = 'write';
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (/^(?:--root|--workspace|--project)(?:=|$)/u.test(arg) || arg.startsWith('-r')) resolverOverride = '1';
+    if (arg === '--config' || arg === '-c') config = args[++index] ?? '';
+    else if (arg.startsWith('--config=')) config = arg.slice(9);
+    else if (arg.startsWith('-c') && arg.length > 2) config = arg.slice(2);
+    else if (arg === '--project' || arg === '-p') project = args[++index] ?? '';
+    else if (arg.startsWith('--project=')) project = arg.slice(10);
+    else if (arg === '--mode') mode = args[++index] ?? '';
+    else if (arg.startsWith('--mode=')) mode = arg.slice(7);
+  }
+  const slashCwd = String(cwd ?? '.').replaceAll('\\', '/');
+  const testPaths = args.slice(1).filter(arg => !arg.startsWith('-') && /\.(?:[cm]?[jt]s)$/u.test(arg)).map(arg => {
+    const path = arg.replaceAll('\\', '/');
+    return posix.normalize(path.startsWith(COMMAND_REPO_ROOT + '/') ? path.slice(COMMAND_REPO_ROOT.length + 1) : posix.join(slashCwd, path));
+  });
+  const testComponents = testPaths.map(nativeTestComponent);
+  return {
+    command, script, family: script.split(':', 1)[0], entry, entryPath, managerNode,
+    hasScript: script ? '1' : '0', nativeTest: args.includes('--test') ? '1' : '0',
+    stripTypes, mode, config: normalizeCommandPath(config), resolverOverride,
+    component: normalizeCommandPath(slashCwd), managerCwd, project,
+    nativeTestPath: testPaths.length === 1 ? testPaths[0] : '',
+    nativeComponent: testComponents.length && testComponents.every(component => component === testComponents[0]) ? testComponents[0] : '',
+    stackScope: /^apps\/stack(?:\/|$)/u.test(posix.normalize(slashCwd))
+      || args.some(arg => /(?:^|\/)apps\/stack\//u.test(arg.replaceAll('\\', '/'))) ? '1' : '0',
+  };
+}
+export function resolveRemoteCommandPolicy(commandArgs, { cwd = '.' } = {}) {
+  const facts = normalizeCommandArguments(commandArgs, cwd);
+  const policy = applyCommandRules(facts, COMMAND_RULES, { ...DEFAULT_COMMAND_POLICY });
+  if (facts.managerCwd) facts.component = posix.join(facts.component, facts.managerCwd.replaceAll('\\', '/'));
+  else if (policy.kind === 'typecheck' && facts.project) {
+    const project = facts.project.replaceAll('\\', '/');
+    facts.component = posix.join(facts.component, project.endsWith('.json') ? posix.dirname(project) : project);
+  }
+  if (policy.componentOverride) facts.component = policy.componentOverride;
+  else if (policy.componentFromNative === '1' && facts.nativeComponent) facts.component = facts.nativeComponent;
+  facts.component = normalizeCommandPath(facts.component);
+  applyCommandRules(facts, FINAL_COMMAND_RULES, policy);
+  return { ...policy, component: normalizeCommandPath(facts.component) };
+}
+export function classifyRemoteCommand(commandArgs, options = {}) {
+  const policy = resolveRemoteCommandPolicy(commandArgs, options);
+  return { placement: policy.placement, commandClass: policy.commandClass, requiresDependencyBootstrap: policy.bootstrap === '1' };
+}
+export function resolveRemoteValidationComponentRelativeDir(commandArgs, options = {}) {
+  return resolveRemoteCommandPolicy(commandArgs, options).component;
+}
+export function requiresRemoteWorkspacePreparation(commandArgs, options = {}) {
+  return classifyRemoteCommand(commandArgs, options).commandClass === 'targeted-validation';
+}
+export function resolveRemoteValidationKind(commandArgs, options = {}) {
+  return resolveRemoteCommandPolicy(commandArgs, options).kind;
+}
+export function requiresRemoteDependencyBootstrap(commandArgs, options = {}) {
+  return classifyRemoteCommand(commandArgs, options).requiresDependencyBootstrap;
+}
+function renderShellCommandRules(rules) {
+  return rules.map(({ when, set }) => {
+    const conditions = Object.entries(when).map(([key, values]) => (
+      '{ ' + values.map(value => '[ "$policy_' + key + '" = ' + posixQuote(value) + ' ]').join(' || ') + '; }'
+    )).join(' && ');
+    return '  if ' + conditions + '; then\n' + Object.entries(set).map(([key, value]) => '    policy_' + key + '=' + posixQuote(value)).join('\n') + '\n  fi';
+  }).join('\n');
+}
+export function renderNativeCommandPolicy() {
+  return [
+    '# Generated by native_execution_projection.mjs --write-command-policy.',
+    '# Rule authority: remote_commands.mjs. Do not edit this projection.',
+    'native_command_policy_base() {',
+    ...Object.entries(DEFAULT_COMMAND_POLICY).map(([key, value]) => '  policy_' + key + '=' + posixQuote(value)),
+    renderShellCommandRules(COMMAND_RULES), '}',
+    'native_command_policy_finish() {', renderShellCommandRules(FINAL_COMMAND_RULES), '}',
+    'native_package_manager() { case "$1" in ' + REMOTE_COMMAND_CLASSIFICATION.packageManagerCommands.join('|') + ') return 0 ;; *) return 1 ;; esac; }',
+    NATIVE_COMMAND_NORMALIZATION, '',
+  ].join('\n');
+}
+
+const NATIVE_COMMAND_NORMALIZATION = `
+# Extract argv facts only; dispatch decisions come from the table above.
+native_normalize_path() {
+  native_path=$1
+  while :; do case "$native_path" in *\\\\*) native_path="\${native_path%%\\\\*}/\${native_path#*\\\\}" ;; *) break ;; esac; done
+  native_result=; native_absolute=
+  case "$native_path" in /*) native_absolute=/ ;; esac
+  while [ -n "$native_path" ]; do
+    native_segment=\${native_path%%/*}
+    if [ "$native_path" = "$native_segment" ]; then native_path=; else native_path=\${native_path#*/}; fi
+    case "$native_segment" in
+      ''|.) ;;
+      ..) case "$native_result" in '') native_result=.. ;; ..|../*) native_result="$native_result/.." ;; */*) native_result=\${native_result%/*} ;; *) native_result= ;; esac ;;
+      *) if [ -z "$native_result" ]; then native_result=$native_segment; else native_result="$native_result/$native_segment"; fi ;;
+    esac
+  done
+  native_result="$native_absolute$native_result"
+  [ -n "$native_result" ] || native_result=.
+}
+native_command_basename() {
+  native_basename=$1
+  while :; do case "$native_basename" in *\\\\*) native_basename="\${native_basename%%\\\\*}/\${native_basename#*\\\\}" ;; *) break ;; esac; done
+  native_basename=\${native_basename##*/}
+}
+resolve_native_command_policy() {
+  [ "\${1-}" = -- ] && shift
+  case "\${1-}" in --script=*) native_script=\${1#--script=}; shift; [ "\${1-}" = -- ] && shift; set -- corepack yarn -s "$native_script" "$@" ;; esac
+  native_command_basename "\${1-}"; policy_command=$native_basename
+  native_command_basename "\${2-}"; policy_entry=$native_basename
+  policy_script=; policy_hasScript=0; policy_managerNode=0; policy_stripTypes=0
+  native_manager_cwd=; native_project=; policy_mode=write
+  policy_nativeTest=0; policy_config=vitest.config.ts; policy_resolverOverride=0
+  native_cwd=\${invoked_cwd#"$repo_root"}
+  native_cwd=\${native_cwd#/}
+  [ "\${explicit_relative_cwd_set-0}" = 1 ] && native_cwd=$explicit_relative_cwd
+  native_normalize_path "$native_cwd"; policy_component=$native_result
+  policy_stackScope=0
+  case "$policy_component" in apps/stack|apps/stack/*) policy_stackScope=1 ;; esac
+  if [ "\${2-}" = --experimental-strip-types ]; then policy_stripTypes=1; native_command_basename "\${3-}"; policy_entry=$native_basename; fi
+  native_entry_path=\${2-}
+  [ "$policy_stripTypes" = 1 ] && native_entry_path=\${3-}
+  native_normalize_path "$native_entry_path"; policy_entryPath=$native_result
+  case "$policy_entryPath" in "$repo_root"/*) policy_entryPath=\${policy_entryPath#"$repo_root"/} ;; esac
+  native_pending=
+  for native_arg in "$@"; do
+    case "$native_pending" in
+      config) policy_config=$native_arg; native_pending=; continue ;;
+      project) native_project=$native_arg; native_pending=; continue ;;
+      mode) policy_mode=$native_arg; native_pending=; continue ;;
+    esac
+    case "$native_arg" in
+      --test) policy_nativeTest=1 ;;
+      --config|-c) native_pending=config; policy_config= ;;
+      --config=*) policy_config=\${native_arg#--config=} ;;
+      -c?*) policy_config=\${native_arg#-c} ;;
+      --project|-p) native_pending=project; [ "$native_arg" = --project ] && policy_resolverOverride=1 ;;
+      --project=*) native_project=\${native_arg#--project=}; policy_resolverOverride=1 ;;
+      --root|--root=*|--workspace|--workspace=*|-r*) policy_resolverOverride=1 ;;
+      --mode) native_pending=mode ;;
+      --mode=*) policy_mode=\${native_arg#--mode=} ;;
+    esac
+    case "$native_arg" in apps/stack/*|./apps/stack/*|*/apps/stack/*) policy_stackScope=1 ;; esac
+  done
+  native_normalize_path "$policy_config"; policy_config=$native_result
+  policy_nativeTestPath=; native_test_count=0; native_test_component=; native_test_component_mixed=0
+  for native_arg in "$@"; do
+    case "$native_arg" in -*) continue ;; *.mjs|*.cjs|*.js|*.ts|*.mts|*.cts) ;; *) continue ;; esac
+    native_normalize_path "$native_arg"; native_test_path=$native_result
+    case "$native_test_path" in "$repo_root"/*) native_test_path=\${native_test_path#"$repo_root"/} ;; *) native_normalize_path "$policy_component/$native_test_path"; native_test_path=$native_result ;; esac
+    native_test_count=$((native_test_count + 1))
+    policy_nativeTestPath=$native_test_path
+    native_parent=\${native_test_path%/*}
+    [ "$native_parent" != "$native_test_path" ] || native_parent=.
+    native_component=
+    case "$native_parent" in /*|..|../*) native_parent=. ;; esac
+    while [ "$native_parent" != . ]; do
+      if [ -f "$repo_root/$native_parent/package.json" ]; then native_component=$native_parent; break; fi
+      case "$native_parent" in */*) native_parent=\${native_parent%/*} ;; *) native_parent=. ;; esac
+    done
+    if [ "$native_test_count" -eq 1 ]; then native_test_component=$native_component
+    elif [ "$native_test_component" != "$native_component" ]; then native_test_component_mixed=1; fi
+  done
+  [ "$native_test_count" -eq 1 ] || policy_nativeTestPath=
+  [ "$native_test_component_mixed" -eq 0 ] || native_test_component=
+  native_command_basename "\${1-}"; native_manager=$native_basename
+  if [ "$native_manager" = corepack ]; then shift; native_command_basename "\${1-}"; native_manager=$native_basename; fi
+  if native_package_manager "$native_manager"; then
+    [ "$#" -gt 0 ] && shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        run|-s|--silent) shift ;;
+        --cwd|-C) shift; native_manager_cwd=\${1-.}; [ "$#" -gt 0 ] && shift ;;
+        --cwd=*) native_manager_cwd=\${1#--cwd=}; shift ;;
+        workspace) if [ "$native_manager" = yarn ]; then shift; [ "$#" -gt 0 ] && shift; else policy_script=$1; break; fi ;;
+        -*) shift ;;
+        *) policy_script=$1; if [ "$1" = node ]; then policy_managerNode=1; native_command_basename "\${2-}"; policy_entry=$native_basename; fi; break ;;
+      esac
+    done
+  fi
+  [ -n "$policy_script" ] && policy_hasScript=1
+  policy_family=\${policy_script%%:*}
+  native_command_policy_base
+  if [ -n "$native_manager_cwd" ]; then native_normalize_path "$policy_component/$native_manager_cwd"; policy_component=$native_result
+  elif [ "$policy_kind" = typecheck ] && [ -n "$native_project" ]; then
+    native_normalize_path "$native_project"; native_project=$native_result
+    case "$native_project" in *.json) case "$native_project" in */*) native_project=\${native_project%/*} ;; *) native_project=. ;; esac ;; esac
+    native_normalize_path "$policy_component/$native_project"; policy_component=$native_result
+  fi
+  [ -n "$policy_componentOverride" ] && policy_component=$policy_componentOverride
+  if [ -z "$policy_componentOverride" ] && [ "$policy_componentFromNative" = 1 ] && [ -n "$native_test_component" ]; then policy_component=$native_test_component; fi
+  native_command_policy_finish
+}
+`;
 
 function posixQuote(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
@@ -175,9 +372,9 @@ function resolveRemoteExecutionPidFile(target, executionId) {
 
 export function buildRemoteExecCommand(
   target,
-  { executionId, cwd = '.', commandArgs, environment = {} } = {},
+  { executionId, cwd = '.', commandArgs, environment = {}, preparation = null, admissionClass = '' } = {},
 ) {
-  const args = Array.isArray(commandArgs) ? commandArgs.map(String) : [];
+  let args = Array.isArray(commandArgs) ? commandArgs.map(String) : [];
   if (args.length === 0 || !args[0]) {
     throw new Error('[dev-targets] remote command is required');
   }
@@ -188,6 +385,24 @@ export function buildRemoteExecCommand(
   const environmentEntries = normalizeRemoteEnvironment(environment);
   const normalizedExecutionId = requireRemoteExecutionId(executionId);
   const pidFile = resolveRemoteExecutionPidFile(target, normalizedExecutionId);
+  if (target.platform !== 'windows' && (preparation || admissionClass)) {
+    const repoDir = requireRemoteRelativeWorkingDirectory(target, '.');
+    const body = ['set -euo pipefail', `cd -- ${posixQuote(repoDir)}`];
+    const cacheEnv = `env ${posixQuote(`HAPPIER_STACK_PM_CACHE_BASE_DIR=${String(target.cliHomeDir).replace(/[\\/]+$/, '')}/cache`)}`;
+    if (preparation?.bootstrap) {
+      body.push(`${cacheEnv} node ./apps/stack/scripts/utils/dev_targets/remote_dependency_bootstrap.mjs ${posixQuote(`--validation-kind=${preparation.validationKind}`)} ${posixQuote(`--component-relative-dir=${preparation.bootstrapComponentRelativeDir ?? '.'}`)}`);
+    }
+    if (preparation?.componentRelativeDir != null) {
+      requireRemoteRelativeWorkingDirectory(target, preparation.componentRelativeDir);
+      body.push(`${cacheEnv} node ./apps/stack/scripts/utils/dev_targets/remote_validation_preparation.mjs ${posixQuote(`--component-relative-dir=${preparation.componentRelativeDir}`)} ${posixQuote(`--validation-kind=${preparation.validationKind}`)}`);
+    }
+    body.push(`cd -- ${posixQuote(workingDirectory)}`, `exec ${args.map(posixQuote).join(' ')}`);
+    args = ['bash', '-c', body.join('; ')];
+    if (admissionClass) {
+      args = [`${repoDir}/apps/stack/bin/hstack-exec`, '--heavyweight-admission',
+        `--class=${admissionClass}`, `--machine=${target.name}`, '--', ...args];
+    }
+  }
   if (target.platform === 'windows') {
     return wrapRemoteScript(
       target,

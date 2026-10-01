@@ -1,8 +1,12 @@
-import { resolve } from 'node:path';
+import { realpath, rm } from 'node:fs/promises';
+import { dirname, isAbsolute, relative, resolve, sep, win32 } from 'node:path';
+import { writeSecureTempTextFileSync } from '@happier-dev/plugin-sdk/fs';
+import { logger } from '@/ui/logger';
 
 import type { ExecService } from '@happier-dev/plugin-sdk/exec';
 import type { JsonValue, PluginPath } from '@happier-dev/plugin-sdk';
 import type { AgentCliRuntimeDescriptor } from '@happier-dev/cli-common/agents';
+import type { AgentCliLaunchSpec } from '@/packagedRuntime/managedTools/agentCliLaunchSpec';
 import type {
     AgentCliAuthContributionV1,
     AgentCliSessionCommandBuildOptionsResultV1,
@@ -15,14 +19,17 @@ import type {
     AgentPreflightSessionControlsCommandV1,
     AgentPreflightSessionControlsContributionV1,
     AgentPreflightSessionControlsProbeContextV1,
+    AgentPreflightSessionControlsProbeInputV1,
     AgentProviderCliAttachDeclarationV1,
     AgentSessionStartupContributionV1,
     AgentTerminalPromptSubmitVerificationPolicyV1,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import {
+    buildQualifiedPluginContributionKey,
     isPluginAgentCliAuthBackgroundCheckSafe,
     StrictJsonValueSchema,
     type PluginAgentCliMetadata,
+    type RuntimeDescriptorV1,
 } from '@happier-dev/protocol';
 import { type PluginSystemToolContributionV1 } from '@happier-dev/protocol/plugins/contributions/system-tools';
 
@@ -43,6 +50,7 @@ import {
 import { createPluginExecSystemToolResolver } from '@/plugins/runtime/exec/system/tools/resolveGrant';
 import type {
     ManagedServiceSessionBaseUrlResolver,
+    ManagedServiceSessionClientAccessResolver,
 } from '@/plugins/runtime/invocation/services/managedServiceEndpointProjection';
 import type {
     ConnectedServiceProviderRuntimeAuthAdapter,
@@ -132,6 +140,7 @@ export function projectAgentExperimentalVendorResumeSupportCatalogEntry(params: 
  * with their established host owners.
  */
 export function projectAgentConnectedAccountLaunchCatalogEntry(params: Readonly<{
+    pluginId: string;
     agentId: CatalogAgentId;
     connectedAccountLaunch: AgentConnectedAccountLaunchContributionV1;
     hostAccess?: ResolvedAgentContribution['hostAccess'];
@@ -149,7 +158,19 @@ export function projectAgentConnectedAccountLaunchCatalogEntry(params: Readonly<
     const requestAuthUses = params.connectedAccountLaunch.requestAuthUses;
     const fileEnvironmentUses = params.connectedAccountLaunch.fileEnvironmentUses;
     const environmentUses = params.connectedAccountLaunch.environmentUses;
-    const switchContinuity = params.connectedAccountLaunch.switchContinuity;
+    const declaredSwitchContinuity = params.connectedAccountLaunch.switchContinuity;
+    const stateSharing = declaredSwitchContinuity?.providerStateSharingRequired;
+    const switchContinuity = declaredSwitchContinuity && stateSharing?.serviceIds
+        ? Object.freeze({
+            ...declaredSwitchContinuity,
+            providerStateSharingRequired: Object.freeze({
+                ...stateSharing,
+                serviceIds: Object.freeze(stateSharing.serviceIds.map((localId) =>
+                    buildQualifiedPluginContributionKey({ pluginId: params.pluginId, localId }),
+                )),
+            }),
+        })
+        : declaredSwitchContinuity;
     const stateSharingDescriptor = params.connectedAccountLaunch.stateSharingDescriptor;
     const continuity = params.connectedAccountLaunch.continuity;
     const nativeAuthCodec = continuity?.nativeAuthCodec;
@@ -391,9 +412,72 @@ export function projectAgentProviderCliAttachCatalogEntry(params: Readonly<{
     localAgentId: string;
     providerCliAttach: AgentProviderCliAttachDeclarationV1;
     resolveManagedServiceSessionBaseUrl?: ManagedServiceSessionBaseUrlResolver;
+    resolveManagedServiceSessionClientAccess?: ManagedServiceSessionClientAccessResolver;
+    resolvePluginSettings?: () => Promise<AgentCliSessionCommandPluginSettingsV1 | null>;
+    systemTools?: readonly PluginSystemToolContributionV1[];
+    runtimeSpec?: AgentCliRuntimeDescriptor | null;
+    agentCliSystemTool?: AgentCliSystemToolBinding | null;
 }>): Pick<ResolvedCatalogEntry, 'resolveHostAgentRuntimeSurfaces'> {
-    const providerCliAttach = params.providerCliAttach;
+    const providerCliAttach = params.providerCliAttach as
+        AgentProviderCliAttachDeclarationV1 & Readonly<{
+            cliVersionArgs?: readonly string[];
+            managedServiceAccess?: Readonly<{
+                credentialEnvironmentKey: string;
+                credentialEnvironmentAliases?: readonly string[];
+                resolveTargetBaseUrl(
+                    target: Parameters<AgentProviderCliAttachDeclarationV1['createArgs']>[0],
+                ): string | null;
+            }>;
+        }>;
+    const commandToolIds = providerCliAttach.commandToolIds;
+    const resolveCommandToolId = providerCliAttach.resolveCommandToolId;
+    if ((commandToolIds === undefined) !== (resolveCommandToolId === undefined)) {
+        throw new TypeError(
+            'Agent provider CLI attach declaration must set commandToolIds and resolveCommandToolId together',
+        );
+    }
+    const declaredSystemToolIds = new Set((params.systemTools ?? []).map((tool) => tool.id));
+    for (const toolId of commandToolIds ?? []) {
+        if (!declaredSystemToolIds.has(toolId)) {
+            throw new TypeError(`Agent '${params.agentId}' provider attach command tool '${toolId}' is not declared`);
+        }
+    }
+    const resolveSelectedLaunch = commandToolIds && resolveCommandToolId
+        ? async (environment: NodeJS.ProcessEnv = process.env): Promise<AgentCliLaunchSpec> => {
+            const settings = await params.resolvePluginSettings?.() ?? null;
+            const toolId = resolveSettingsSelectedSystemToolId({
+                commandToolIds,
+                resolveCommandToolId,
+                accountSettings: settings?.account ?? null,
+            });
+            if (!toolId) {
+                throw new Error(`Agent '${params.agentId}' provider attach command tool selection is unavailable`);
+            }
+            const resolved = await createProviderScopedSystemToolResolver({
+                environment: Object.freeze(Object.fromEntries(
+                    Object.entries(environment).filter(
+                        (entry): entry is [string, string] => typeof entry[1] === 'string',
+                    ),
+                )),
+                systemTools: params.systemTools ?? [],
+                agentId: params.agentId,
+                runtimeSpec: params.runtimeSpec,
+                agentCliSystemTool: params.agentCliSystemTool,
+            }).resolve({
+                toolId,
+                purpose: `Attach ${params.agentId} CLI session`,
+            });
+            return Object.freeze({
+                source: resolved.source === 'user_config' ? 'override' as const : resolved.source,
+                resolvedPath: resolved.executablePath,
+                command: resolved.launch.executablePath,
+                args: Object.freeze([...(resolved.launch.args ?? [])]),
+            });
+        }
+        : undefined;
     const resolveManagedServiceSessionBaseUrl = params.resolveManagedServiceSessionBaseUrl;
+    const resolveManagedServiceSessionClientAccess =
+        params.resolveManagedServiceSessionClientAccess;
     return Object.freeze({
         resolveHostAgentRuntimeSurfaces: async () => {
             const { createProviderCliAttachSurface } = await import(
@@ -405,6 +489,49 @@ export function projectAgentProviderCliAttachCatalogEntry(params: Readonly<{
                     resolveTarget: providerCliAttach.resolveTarget,
                     createArgs: providerCliAttach.createArgs,
                     resolveReachability: providerCliAttach.resolveReachability,
+                    ...(resolveSelectedLaunch ? { resolveLaunchSpec: resolveSelectedLaunch } : {}),
+                    ...(providerCliAttach.cliVersionArgs
+                        ? { cliVersionArgs: providerCliAttach.cliVersionArgs }
+                        : {}),
+                    ...(providerCliAttach.managedServiceAccess
+                        && resolveManagedServiceSessionClientAccess
+                        ? {
+                            managedServiceTargetBaseUrl:
+                                providerCliAttach.managedServiceAccess
+                                    .resolveTargetBaseUrl,
+                            managedServiceCredentialEnvironmentKey:
+                                providerCliAttach.managedServiceAccess
+                                    .credentialEnvironmentKey,
+                            ...(providerCliAttach.managedServiceAccess
+                                .credentialEnvironmentAliases
+                                ? {
+                                    managedServiceCredentialEnvironmentAliases:
+                                        providerCliAttach.managedServiceAccess
+                                            .credentialEnvironmentAliases,
+                                }
+                                : {}),
+                            resolveManagedServiceAccess: async (
+                                input: Readonly<{
+                                    sessionId: string;
+                                    targetBaseUrl: string;
+                                }>,
+                            ) => (
+                                await resolveManagedServiceSessionClientAccess({
+                                    pluginId: params.pluginId,
+                                    sessionId: input.sessionId,
+                                    contributionId:
+                                        resolveAgentContributionQualifiedId({
+                                            pluginId: params.pluginId,
+                                            localId: params.localAgentId,
+                                        }),
+                                    targetBaseUrl: input.targetBaseUrl,
+                                    environmentKey:
+                                        providerCliAttach.managedServiceAccess!
+                                            .credentialEnvironmentKey,
+                                })
+                            ),
+                        }
+                        : {}),
                     ...(resolveManagedServiceSessionBaseUrl
                         ? {
                             readFallbackServerBaseUrl: async (input) => (
@@ -497,14 +624,14 @@ export function projectAgentCliAuthCatalogEntry(params: Readonly<{
                 ...(params.cli.executable.alternativeBinaryNames ?? []),
             ],
             isSafeForBackgroundChecks: isPluginAgentCliAuthBackgroundCheckSafe(params.cli),
-            detectAuthStatus: async (): Promise<CliAuthStatusDraft> => {
+            detectAuthStatus: async ({ processEnv = process.env }): Promise<CliAuthStatusDraft> => {
                 if (!params.isCurrent()) {
                     return { state: 'unknown', reason: 'probe_failed' };
                 }
-                const staticCredential = staticProbe?.readPresentCredential();
+                const staticCredential = staticProbe?.readPresentCredential(processEnv);
                 if (staticCredential) return staticCredential;
                 const executableEnvironment = Object.freeze(Object.fromEntries(
-                    Object.entries(process.env).filter(
+                    Object.entries(processEnv).filter(
                         (entry): entry is [string, string] => typeof entry[1] === 'string',
                     ),
                 ));
@@ -534,6 +661,7 @@ export function projectAgentCliAuthCatalogEntry(params: Readonly<{
                                     resolvedPath: resolved.executablePath,
                                     args: [...args],
                                     timeoutMs,
+                                    processEnv: executableEnvironment,
                                 });
                                 return params.isCurrent() ? result : unavailable();
                             } catch {
@@ -566,12 +694,11 @@ function readPreflightProbeEnvironment(
 }
 
 function readPreflightProbeInput(params: Readonly<{
+    runtimeDescriptorV1?: RuntimeDescriptorV1;
+    runtimeKindOverride?: string;
     accountSettings?: Readonly<Record<string, unknown>> | null;
     environment: Readonly<Record<string, string>>;
-}>): Readonly<{
-    accountSettings: Readonly<Record<string, JsonValue>> | null;
-    environment: Readonly<Record<string, boolean>>;
-}> {
+}>): AgentPreflightSessionControlsProbeInputV1 {
     const source = params.accountSettings;
     const settings: Record<string, JsonValue> = {};
     if (source) {
@@ -579,6 +706,8 @@ function readPreflightProbeInput(params: Readonly<{
             const parsed = StrictJsonValueSchema.safeParse(value);
             if (!parsed.success) {
                 return Object.freeze({
+                    ...(params.runtimeDescriptorV1 ? { runtimeDescriptorV1: params.runtimeDescriptorV1 } : {}),
+                    ...(typeof params.runtimeKindOverride === 'string' ? { runtimeKindOverride: params.runtimeKindOverride } : {}),
                     accountSettings: null,
                     environment: Object.freeze(Object.fromEntries(
                         Object.keys(params.environment).map((key) => [key, true]),
@@ -589,11 +718,26 @@ function readPreflightProbeInput(params: Readonly<{
         }
     }
     return Object.freeze({
+        ...(params.runtimeDescriptorV1 ? { runtimeDescriptorV1: params.runtimeDescriptorV1 } : {}),
+        ...(typeof params.runtimeKindOverride === 'string' ? { runtimeKindOverride: params.runtimeKindOverride } : {}),
         accountSettings: source ? Object.freeze(settings) : null,
         environment: Object.freeze(Object.fromEntries(
             Object.keys(params.environment).map((key) => [key, true]),
         )),
     });
+}
+
+function resolveSettingsSelectedSystemToolId(params: Readonly<{
+    commandToolIds: readonly string[];
+    resolveCommandToolId(input: Readonly<{
+        accountSettings: Readonly<Record<string, JsonValue>> | null;
+    }>): string | null | undefined;
+    accountSettings: Readonly<Record<string, JsonValue>> | null;
+}>): string | null {
+    const selected = params.resolveCommandToolId({ accountSettings: params.accountSettings });
+    return typeof selected === 'string' && params.commandToolIds.includes(selected)
+        ? selected
+        : null;
 }
 
 function applyPreflightCommandEnvironment(
@@ -616,6 +760,59 @@ function applyPreflightCommandEnvironment(
     return Object.freeze(selected);
 }
 
+async function withPreparedPreflightCommand<T>(
+    command: AgentPreflightSessionControlsCommandV1,
+    input: AgentPreflightSessionControlsProbeInputV1 & Readonly<{ bypassCache?: boolean }>,
+    environment: Readonly<Record<string, string>>,
+    run: (args: readonly string[], env: Readonly<Record<string, string>>) => Promise<T>,
+): Promise<T> {
+    const selectedEnvironment = applyPreflightCommandEnvironment(environment, command);
+    const artifacts: string[] = [];
+    try {
+        const prepared = command.prepareCommand?.(input);
+        if (prepared === undefined) return await run(command.args, selectedEnvironment);
+        if (!prepared || !Array.isArray(prepared.args) || Object.keys(prepared).some((key) => key !== 'args')) {
+            throw new TypeError('Invalid prepared preflight command');
+        }
+        const args: string[] = [];
+        for (const argument of prepared.args) {
+            if (typeof argument === 'string') { args.push(argument); continue; }
+            if (!argument || typeof argument !== 'object') throw new TypeError('Invalid prepared preflight argument');
+            if (argument.kind === 'temporaryTextFile') {
+                if (Object.keys(argument).some((key) => !['kind', 'suffix', 'contents'].includes(key))
+                    || typeof argument.suffix !== 'string' || typeof argument.contents !== 'string') {
+                    throw new TypeError('Invalid preflight text artifact');
+                }
+                const path = writeSecureTempTextFileSync({ prefix: 'happier-agent-preflight', suffix: argument.suffix, contents: argument.contents });
+                artifacts.push(dirname(path));
+                args.push(path);
+            } else if (argument.kind === 'environmentPath') {
+                if (Object.keys(argument).some((key) => !['kind', 'key', 'relativePath'].includes(key))
+                    || typeof argument.key !== 'string' || !command.environmentKeys?.includes(argument.key)
+                    || typeof argument.relativePath !== 'string' || argument.relativePath.includes('\0')
+                    || isAbsolute(argument.relativePath) || win32.isAbsolute(argument.relativePath)) {
+                    throw new TypeError('Invalid preflight environment path');
+                }
+                const relativePath: string = argument.relativePath;
+                const parts = relativePath.split(/[\\/]/);
+                if (parts.some((part) => !part || part === '..' || part === '.')) throw new TypeError('Invalid preflight relative path');
+                const root = selectedEnvironment[argument.key];
+                if (!root || !isAbsolute(root)) throw new TypeError('Preflight environment root is unavailable');
+                const canonicalRoot = await realpath(root);
+                const path = await realpath(resolve(canonicalRoot, ...parts));
+                const relation = relative(canonicalRoot, path);
+                if (relation === '..' || relation.startsWith(`..${sep}`) || isAbsolute(relation)) {
+                    throw new TypeError('Preflight environment path escapes its root');
+                }
+                args.push(path);
+            } else { throw new TypeError('Unknown prepared preflight argument'); }
+        }
+        return await run(args, selectedEnvironment);
+    } finally {
+        await Promise.all(artifacts.map((path) => rm(path, { recursive: true, force: true })));
+    }
+}
+
 function isExactPreflightCommand(
     command: AgentPreflightSessionControlsCommandV1,
     requested: Readonly<{ toolId: string; args: readonly string[] }>,
@@ -634,9 +831,20 @@ function resolveDeclaredPreflightCommand(
         contribution.models?.fallback?.command,
         ...(contribution.jsonRpcCommands ?? []),
     ];
-    return candidates.find((candidate): candidate is AgentPreflightSessionControlsCommandV1 => (
+    const exact = candidates.find((candidate): candidate is AgentPreflightSessionControlsCommandV1 => (
         candidate !== undefined && isExactPreflightCommand(candidate, requested)
-    )) ?? null;
+    ));
+    if (exact) return exact;
+
+    const models = contribution.models;
+    if (!models?.commandToolIds?.includes(requested.toolId)) return null;
+    const selected = [models.command, models.fallback?.command]
+        .find((candidate): candidate is AgentPreflightSessionControlsCommandV1 => (
+            candidate !== undefined
+            && candidate.args.length === requested.args.length
+            && candidate.args.every((arg, index) => arg === requested.args[index])
+        ));
+    return selected ? Object.freeze({ ...selected, toolId: requested.toolId }) : null;
 }
 
 function readPreflightCommandResult(
@@ -680,18 +888,61 @@ export function projectAgentPreflightSessionControlsCatalogEntry(params: Readonl
     | 'getPreflightSessionControlsProbeAdapter'
 > {
     const contribution = params.preflightSessionControls;
+    const declaredSystemToolIds = new Set(params.systemTools.map((tool) => tool.id));
+    for (const toolId of contribution.models?.commandToolIds ?? []) {
+        if (!declaredSystemToolIds.has(toolId)) {
+            throw new TypeError(`Agent '${params.agentId}' preflight command tool '${toolId}' is not declared`);
+        }
+    }
     const requiresAccountSettings = contribution.resolveProbeVariant !== undefined
+        || contribution.models?.resolveCommandToolId !== undefined
         || (contribution.jsonRpcCommands?.length ?? 0) > 0;
-    const resolveVariant = (input: Readonly<{
+    const resolveBaseVariant = (input: Readonly<{
+        runtimeDescriptorV1?: RuntimeDescriptorV1;
+        runtimeKindOverride?: string;
         accountSettings?: Readonly<Record<string, unknown>> | null;
         env?: NodeJS.ProcessEnv;
     }>): string | null => {
         if (!params.isCurrent() || !contribution.resolveProbeVariant) return null;
         const output = contribution.resolveProbeVariant(readPreflightProbeInput({
+            runtimeDescriptorV1: input.runtimeDescriptorV1,
+            runtimeKindOverride: input.runtimeKindOverride,
             accountSettings: input.accountSettings,
             environment: readPreflightProbeEnvironment(input.env),
         }));
         return typeof output === 'string' && output.length > 0 ? output : null;
+    };
+    const resolveModelsCommandToolId = (input: Readonly<{
+        runtimeDescriptorV1?: RuntimeDescriptorV1;
+        runtimeKindOverride?: string;
+        accountSettings?: Readonly<Record<string, unknown>> | null;
+        env?: NodeJS.ProcessEnv;
+    }>): string | null => {
+        const models = contribution.models;
+        if (!models) return null;
+        if (!models.resolveCommandToolId) return models.command.toolId;
+        const probeInput = readPreflightProbeInput({
+            runtimeDescriptorV1: input.runtimeDescriptorV1,
+            runtimeKindOverride: input.runtimeKindOverride,
+            accountSettings: input.accountSettings,
+            environment: readPreflightProbeEnvironment(input.env),
+        });
+        return resolveSettingsSelectedSystemToolId({
+            commandToolIds: models.commandToolIds ?? [],
+            resolveCommandToolId: models.resolveCommandToolId,
+            accountSettings: probeInput.accountSettings,
+        });
+    };
+    const resolveModelsVariant = (input: Readonly<{
+        runtimeDescriptorV1?: RuntimeDescriptorV1;
+        runtimeKindOverride?: string;
+        accountSettings?: Readonly<Record<string, unknown>> | null;
+        env?: NodeJS.ProcessEnv;
+    }>): string | null => {
+        const base = resolveBaseVariant(input);
+        if (!contribution.models?.resolveCommandToolId) return base;
+        const toolId = resolveModelsCommandToolId(input) ?? 'unavailable';
+        return [base, `tool:${toolId}`].filter((part): part is string => Boolean(part)).join('|');
     };
     const createContext = (
         probeParams: PreflightSessionControlsProbeParams,
@@ -699,6 +950,8 @@ export function projectAgentPreflightSessionControlsCatalogEntry(params: Readonl
         const signal = createPreflightProbeSignal(probeParams.signal, params.retirementSignal);
         const environment = readPreflightProbeEnvironment(probeParams.env);
         const input = readPreflightProbeInput({
+            runtimeDescriptorV1: probeParams.runtimeDescriptorV1,
+            runtimeKindOverride: probeParams.runtimeKindOverride,
             accountSettings: probeParams.accountSettings,
             environment,
         });
@@ -710,7 +963,7 @@ export function projectAgentPreflightSessionControlsCatalogEntry(params: Readonl
             runtimeSpec: params.runtimeSpec,
             agentCliSystemTool: params.agentCliSystemTool,
             signal,
-            isGenerationCurrent: params.isCurrent,
+            isOccurrenceCurrent: params.isCurrent,
         });
         const assertCurrent = (): void => {
             if (!params.isCurrent() || signal.aborted) {
@@ -735,18 +988,24 @@ export function projectAgentPreflightSessionControlsCatalogEntry(params: Readonl
                         cwd: probeParams.cwd,
                         signal,
                     });
-                    const result = await exec.run({
-                        executable: resolved.executable,
-                        args: command.args,
-                        cwd: { root: 'workspace', relativePath: '' },
-                        env: applyPreflightCommandEnvironment(environment, command),
-                        maxStdoutBytes: PREFLIGHT_COMMAND_OUTPUT_MAX_BYTES,
-                        maxStderrBytes: PREFLIGHT_COMMAND_OUTPUT_MAX_BYTES,
-                        timeoutMs: probeParams.timeoutMs,
-                    }, { signal });
-                    assertCurrent();
-                    return readPreflightCommandResult(result);
+                    return await withPreparedPreflightCommand(command, { ...input, bypassCache: probeParams.bypassCache }, environment, async (args, env) => {
+                        assertCurrent();
+                        const result = await exec.run({
+                            executable: resolved.executable,
+                            args,
+                            cwd: { root: 'workspace', relativePath: '' },
+                            env,
+                            maxStdoutBytes: PREFLIGHT_COMMAND_OUTPUT_MAX_BYTES,
+                            maxStderrBytes: PREFLIGHT_COMMAND_OUTPUT_MAX_BYTES,
+                            timeoutMs: probeParams.timeoutMs,
+                        }, { signal });
+                        assertCurrent();
+                        const observed = readPreflightCommandResult(result);
+                        if (!observed.ok) logger.info('[agent-preflight] Command failed', { agentId: params.agentId, toolId: command.toolId });
+                        return observed;
+                    });
                 } catch {
+                    logger.info('[agent-preflight] Command unavailable', { agentId: params.agentId, toolId: command.toolId });
                     return unavailable();
                 }
             };
@@ -763,41 +1022,45 @@ export function projectAgentPreflightSessionControlsCatalogEntry(params: Readonl
                     cwd: probeParams.cwd,
                     signal,
                 });
-                const handle = await exec.clients.spawn({
-                    kind: 'jsonRpc',
-                    launch: {
-                        executable: resolved.executable,
-                        args: command.args,
-                        cwd: { root: 'workspace', relativePath: '' },
-                        env: applyPreflightCommandEnvironment(environment, command),
-                        maxStderrBytes: PREFLIGHT_COMMAND_OUTPUT_MAX_BYTES,
-                    },
-                    framing: 'jsonLines',
-                    maxFrameBytes: PREFLIGHT_JSON_RPC_MAX_FRAME_BYTES,
-                    requestTimeoutMs: probeParams.timeoutMs,
-                }, { signal });
-                try {
-                    const client = Object.freeze({
-                        request: async (method: string, requestParams?: JsonValue): Promise<JsonValue> => (
-                            await handle.client.request(method, requestParams, { signal })
-                        ),
-                        notify: async (method: string, notificationParams?: JsonValue): Promise<void> => {
-                            if (notificationParams === undefined) {
-                                await handle.client.notify(method);
-                                return;
-                            }
-                            await handle.client.notify(method, notificationParams);
-                        },
-                    });
-                    const result = await inspect(client, signal);
+                return await withPreparedPreflightCommand(command, { ...input, bypassCache: probeParams.bypassCache }, environment, async (args, env) => {
                     assertCurrent();
-                    return result;
-                } finally {
-                    await handle.dispose();
-                }
+                    const handle = await exec.clients.spawn({
+                        kind: 'jsonRpc',
+                        launch: {
+                            executable: resolved.executable,
+                            args,
+                            cwd: { root: 'workspace', relativePath: '' },
+                            env,
+                            maxStderrBytes: PREFLIGHT_COMMAND_OUTPUT_MAX_BYTES,
+                        },
+                        framing: 'jsonLines',
+                        maxFrameBytes: PREFLIGHT_JSON_RPC_MAX_FRAME_BYTES,
+                        requestTimeoutMs: probeParams.timeoutMs,
+                    }, { signal });
+                    try {
+                        const client = Object.freeze({
+                            request: async (method: string, requestParams?: JsonValue): Promise<JsonValue> => (
+                                await handle.client.request(method, requestParams, { signal })
+                            ),
+                            notify: async (method: string, notificationParams?: JsonValue): Promise<void> => {
+                                if (notificationParams === undefined) {
+                                    await handle.client.notify(method);
+                                    return;
+                                }
+                                await handle.client.notify(method, notificationParams);
+                            },
+                        });
+                        const result = await inspect(client, signal);
+                        assertCurrent();
+                        return result;
+                    } finally {
+                        await handle.dispose();
+                    }
+                });
             };
         return Object.freeze({
             ...input,
+            bypassCache: probeParams.bypassCache,
             signal,
             runDeclaredSystemToolCommand,
             withDeclaredJsonRpcClient,
@@ -814,10 +1077,14 @@ export function projectAgentPreflightSessionControlsCatalogEntry(params: Readonl
         ...(contribution.resolveProbeVariant
             ? {
                 resolveSessionControlsProbeVariant: (variantParams: SessionControlsProbeVariantInput) => (
-                    resolveVariant(variantParams)
+                    resolveBaseVariant(variantParams)
                 ),
+            }
+            : {}),
+        ...(contribution.resolveProbeVariant || contribution.models?.resolveCommandToolId
+            ? {
                 resolveModelsProbeVariant: (variantParams: ModelsProbeVariantInput) => (
-                    resolveVariant(variantParams)
+                    resolveModelsVariant(variantParams)
                 ),
             }
             : {}),
@@ -830,8 +1097,22 @@ export function projectAgentPreflightSessionControlsCatalogEntry(params: Readonl
             ...(contribution.models
                 ? {
                     probeModelsRaw: async (probeParams: PreflightSessionControlsProbeParams) => {
-                        const primary = await createContext(probeParams).runDeclaredSystemToolCommand({
-                            toolId: contribution.models!.command.toolId,
+                        const deadlineMs = Date.now() + Math.max(1, probeParams.timeoutMs);
+                        const withRemainingTimeout = (): PreflightSessionControlsProbeParams | null => {
+                            const timeoutMs = deadlineMs - Date.now();
+                            return timeoutMs > 0 ? { ...probeParams, timeoutMs } : null;
+                        };
+                        const toolId = resolveModelsCommandToolId({
+                            runtimeDescriptorV1: probeParams.runtimeDescriptorV1,
+                            runtimeKindOverride: probeParams.runtimeKindOverride,
+                            accountSettings: probeParams.accountSettings,
+                            env: probeParams.env,
+                        });
+                        if (!toolId) return null;
+                        const primaryParams = withRemainingTimeout();
+                        if (!primaryParams) return null;
+                        const primary = await createContext(primaryParams).runDeclaredSystemToolCommand({
+                            toolId,
                             args: contribution.models!.command.args,
                         });
                         if (primary.ok) {
@@ -842,8 +1123,10 @@ export function projectAgentPreflightSessionControlsCatalogEntry(params: Readonl
                         }
                         const fallback = contribution.models!.fallback;
                         if (!fallback) return null;
-                        const fallbackResult = await createContext(probeParams).runDeclaredSystemToolCommand({
-                            toolId: fallback.command.toolId,
+                        const fallbackParams = withRemainingTimeout();
+                        if (!fallbackParams) return null;
+                        const fallbackResult = await createContext(fallbackParams).runDeclaredSystemToolCommand({
+                            toolId,
                             args: fallback.command.args,
                         });
                         if (!fallbackResult.ok) return null;
@@ -1083,33 +1366,10 @@ function createProviderScopedStableExecService(params: Readonly<{
     runtimeSpec?: AgentCliRuntimeDescriptor | null;
     agentCliSystemTool?: AgentCliSystemToolBinding | null;
     signal?: AbortSignal;
-    isGenerationCurrent?: () => boolean;
+    isOccurrenceCurrent?: () => boolean;
 }>): ExecService {
     const workspaceRoot = resolve(params.cwd);
-    const definitions = projectPluginSystemToolContributions(params.systemTools);
-    const unboundSystemTools = createPluginExecSystemToolResolver({
-        definitions,
-        baseEnv: params.environment,
-        // Stable invocation services consume the launch immediately, so no
-        // legacy grant identity crosses this projection boundary.
-        registerGrant() {},
-    });
-    const boundDefinition = params.agentCliSystemTool
-        ? definitions.find((definition) => definition.toolId === params.agentCliSystemTool?.toolId)
-        : undefined;
-    const systemTools = params.agentId
-        && params.runtimeSpec
-        && params.agentCliSystemTool
-        && boundDefinition
-        ? createAgentCliSystemToolService({
-            agentId: params.agentId,
-            runtimeSpec: params.runtimeSpec,
-            binding: params.agentCliSystemTool,
-            definition: boundDefinition,
-            processEnv: { ...params.environment },
-            delegate: unboundSystemTools,
-        })
-        : unboundSystemTools;
+    const systemTools = createProviderScopedSystemToolResolver(params);
     return createStablePluginExecService({
         allowedExecutables: params.systemTools.map((tool) => Object.freeze({
             kind: 'systemTool' as const,
@@ -1123,7 +1383,7 @@ function createProviderScopedStableExecService(params: Readonly<{
             access: Object.freeze(['read' as const]),
         }]),
         signal: params.signal ?? new AbortController().signal,
-        isGenerationCurrent: params.isGenerationCurrent ?? (() => true),
+        isOccurrenceCurrent: params.isOccurrenceCurrent ?? (() => true),
         async resolveExecutable() {
             throw new Error('Provider preflight executables must resolve through a declared system tool');
         },
@@ -1144,4 +1404,37 @@ function createProviderScopedStableExecService(params: Readonly<{
         },
         systemTools,
     });
+}
+
+function createProviderScopedSystemToolResolver(params: Readonly<{
+    environment: Readonly<Record<string, string>>;
+    systemTools: readonly PluginSystemToolContributionV1[];
+    agentId?: CatalogAgentId;
+    runtimeSpec?: AgentCliRuntimeDescriptor | null;
+    agentCliSystemTool?: AgentCliSystemToolBinding | null;
+}>) {
+    const definitions = projectPluginSystemToolContributions(params.systemTools);
+    const unboundSystemTools = createPluginExecSystemToolResolver({
+        definitions,
+        baseEnv: params.environment,
+        // Stable invocation services consume the launch immediately, so no
+        // legacy grant identity crosses this projection boundary.
+        registerGrant() {},
+    });
+    const boundDefinition = params.agentCliSystemTool
+        ? definitions.find((definition) => definition.toolId === params.agentCliSystemTool?.toolId)
+        : undefined;
+    return params.agentId
+        && params.runtimeSpec
+        && params.agentCliSystemTool
+        && boundDefinition
+        ? createAgentCliSystemToolService({
+            agentId: params.agentId,
+            runtimeSpec: params.runtimeSpec,
+            binding: params.agentCliSystemTool,
+            definition: boundDefinition,
+            processEnv: { ...params.environment },
+            delegate: unboundSystemTools,
+        })
+        : unboundSystemTools;
 }

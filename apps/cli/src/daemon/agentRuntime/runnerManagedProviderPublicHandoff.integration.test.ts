@@ -578,7 +578,7 @@ describe('representative public Provider-to-SVC09 handoff', () => {
         composedPhase = 'P/G generation admission and initial registry';
         const generationAuthority = await readCurrentCommittedPluginGenerations(
             resolvePluginStorePaths({ happyHomeDir }),
-            { bundledArtifacts: [] },
+            {},
         );
         if (!generationAuthority) {
             throw new Error(
@@ -697,7 +697,11 @@ describe('representative public Provider-to-SVC09 handoff', () => {
             pluginId: FIXTURE_AGENT_PLUGIN_ID,
             agentId: FIXTURE_AGENT_ROUTING_ID,
             localAgentId: FIXTURE_AGENT_ID,
-            immutableGenerationId: agentGeneration.immutableGenerationId,
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: agentGeneration.immutableGenerationId,
+                installSource: 'archive',
+            },
             locator: {
                 module: './agentRuntime.js',
                 export: 'publicHandoffAgentRuntimeFactory',
@@ -971,6 +975,7 @@ describe('representative public Provider-to-SVC09 handoff', () => {
                     },
                 },
                 daemonSessionMutationCustody: {
+                    stageTranscriptMessage: async () => { throw new Error('Unexpected recording attachment in this fixture'); },
                     stageTranscriptEvent: async () => ({ persisted: true, delivered: true }),
                 },
                 api: {} as never,
@@ -1063,10 +1068,9 @@ describe('representative public Provider-to-SVC09 handoff', () => {
         expect(authorityAMarker).toMatchObject({
             agentRuntimeDaemonServiceAuthorityFilePath:
                 authorityA.path,
-            runnerAgentImmutableGenerationId:
-                agentGeneration.immutableGenerationId,
+            runnerAgentSourceCustodyV1: retainedAgent.sourceCustody,
             runnerManagedDependencyRetentionV1: {
-                sourceGenerationIds: [],
+                sourceCustodies: [],
                 qualifiedDependencyIds: [],
             },
         });
@@ -1087,8 +1091,7 @@ describe('representative public Provider-to-SVC09 handoff', () => {
         expect(tracked).toMatchObject({
             agentRuntimeDaemonServiceCapabilityHash:
                 authorityA.capabilityDigest,
-            runnerAgentImmutableGenerationId:
-                agentGeneration.immutableGenerationId,
+            runnerAgentSourceCustodyV1: retainedAgent.sourceCustody,
         });
         expect(tracked.runnerAgentBootstrapIdentity).toBeUndefined();
         expect(JSON.stringify(authorityAMarker))
@@ -1354,8 +1357,12 @@ describe('representative public Provider-to-SVC09 handoff', () => {
         expect(source.identity).toMatchObject({
             pluginId: FIXTURE_AGENT_PLUGIN_ID,
             agentId: FIXTURE_AGENT_ROUTING_ID,
-            immutableGenerationId:
-                agentGeneration.immutableGenerationId,
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId:
+                    agentGeneration.immutableGenerationId,
+                installSource: 'archive',
+            },
         });
         const managedServicesCustodyPort =
             source.managedServicesCustodyPort;
@@ -1458,9 +1465,9 @@ describe('representative public Provider-to-SVC09 handoff', () => {
                     pluginId: source.identity.pluginId,
                     pluginVersion: source.identity.pluginVersion,
                     agentId: source.identity.agentId,
-                    generation: source.identity.generation,
+                    occurrenceId: source.identity.occurrenceId,
                     ...input,
-                    isGenerationCurrent: source.identity.isCurrent,
+                    isOccurrenceCurrent: source.identity.isCurrent,
                 }),
             authorizeNewTurn: source.authorizeNewTurn,
             attestSessionOpen: source.attestSessionOpen,
@@ -1670,8 +1677,11 @@ describe('representative public Provider-to-SVC09 handoff', () => {
         expect(commitAdoptionRequest.claim).toMatchObject({
             pluginId: FIXTURE_PROVIDER_PLUGIN_ID,
             providerLocalId: FIXTURE_PROVIDER_ID,
-            immutableGenerationId:
-                providerGeneration.immutableGenerationId,
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId:
+                    providerGeneration.immutableGenerationId,
+            },
         });
         expect(runnerSuperviseRequest.scope).toEqual(
             commitAdoptionRequest.claim,
@@ -1683,8 +1693,8 @@ describe('representative public Provider-to-SVC09 handoff', () => {
             .toMatchObject({
                 adoptedManagedProviderAuthority: {
                     pluginId: FIXTURE_PROVIDER_PLUGIN_ID,
-                    immutableGenerationId:
-                        commitAdoptionRequest.claim.immutableGenerationId,
+                    sourceCustody:
+                        commitAdoptionRequest.claim.sourceCustody,
                     manifestAuthority: 'external',
                     hardRevocationRevisionAtAdmission:
                         expect.any(Number),
@@ -1766,7 +1776,7 @@ describe('representative public Provider-to-SVC09 handoff', () => {
         const currentGenerationAuthority =
             await readCurrentCommittedPluginGenerations(
                 resolvePluginStorePaths({ happyHomeDir }),
-                { bundledArtifacts: [] },
+                {},
             );
         const agentHGeneration = currentGenerationAuthority?.generations.get(
             FIXTURE_AGENT_PLUGIN_ID,
@@ -1820,8 +1830,12 @@ describe('representative public Provider-to-SVC09 handoff', () => {
                     agentHGeneration.immutableGenerationId,
                 sessionRunnerFactoryBinding: {
                     pluginId: FIXTURE_AGENT_PLUGIN_ID,
-                    immutableGenerationId:
-                        agentHGeneration.immutableGenerationId,
+                    sourceCustody: {
+                        kind: 'managed',
+                        immutableGenerationId:
+                            agentHGeneration.immutableGenerationId,
+                        installSource: 'archive',
+                    },
                     agentId: FIXTURE_AGENT_ROUTING_ID,
                     localAgentId: FIXTURE_AGENT_ID,
                     locator: {
@@ -1837,8 +1851,12 @@ describe('representative public Provider-to-SVC09 handoff', () => {
                 localId: FIXTURE_PROVIDER_ID,
             });
         expect(currentProviderRuntime).toMatchObject({
-            immutableGenerationId:
-                providerQGeneration.immutableGenerationId,
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId:
+                    providerQGeneration.immutableGenerationId,
+                installSource: 'archive',
+            },
         });
         await currentRegistryLease.release();
 
@@ -2256,15 +2274,15 @@ describe('representative public Provider-to-SVC09 handoff', () => {
                 kind: 'immutableGeneration',
                 pluginId: FIXTURE_PROVIDER_PLUGIN_ID,
                 immutableGenerationId:
-                    commitAdoptionRequest.claim.immutableGenerationId,
+                    providerGeneration.immutableGenerationId,
             },
         });
         await vi.waitFor(() => {
             expect(providerChild?.disposed).toHaveBeenCalledOnce();
             expect(tracked.agentRuntimeRunnerRestartDisposition)
                 .toBeUndefined();
-            expect(tracked.runnerAgentImmutableGenerationId)
-                .toBe(authorityC.document.retainedAgent.immutableGenerationId);
+            expect(tracked.runnerAgentSourceCustodyV1)
+                .toEqual(authorityC.document.retainedAgent.sourceCustody);
             expect(tracked.agentRuntimeDaemonServiceCapabilityHash)
                 .toBe(authorityC.capabilityDigest);
         });
@@ -2316,8 +2334,8 @@ describe('representative public Provider-to-SVC09 handoff', () => {
             changedPluginIds: [FIXTURE_PROVIDER_PLUGIN_ID],
             runningSessionDisposition: 'retainRunningSessions',
         });
-        expect(tracked.runnerAgentImmutableGenerationId)
-            .toBe(authorityC.document.retainedAgent.immutableGenerationId);
+        expect(tracked.runnerAgentSourceCustodyV1)
+            .toEqual(authorityC.document.retainedAgent.sourceCustody);
         expect(tracked.agentRuntimeDaemonServiceCapabilityHash)
             .toBe(authorityC.capabilityDigest);
         await expect(dispatchExactRetainedPublicPStart(

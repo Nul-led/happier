@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { resolveCodexAcpSessionModeSyncTarget } from './permissionMode.js';
 
 describe('Codex ACP permission-mode session-mode policy', () => {
+  it('uses known V2 choices without treating unknown current or stale V1 as already applied', () => {
+    expect(resolveCodexAcpSessionModeSyncTarget({ permissionMode: 'safe-yolo', metadata: {
+      sessionModesV2: { v: 2, agentId: 'codex', updatedAt: 2, currentModeId: null, availableModes: [{ id: 'mode_untrusted', name: 'Untrusted' }] },
+      sessionModesV1: { currentModeId: 'mode_untrusted', availableModes: [{ id: 'mode_untrusted', name: 'Untrusted' }] },
+    } })).toBe('mode_untrusted');
+  });
   it('resolves a mode switch target from canonical session-mode metadata', () => {
     expect(resolveCodexAcpSessionModeSyncTarget({
       permissionMode: 'safe-yolo',

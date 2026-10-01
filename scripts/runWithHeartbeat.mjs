@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { exitWithCommandResult, spawnForegroundCommand } from '../apps/stack/scripts/utils/proc/proc.mjs';
 
 function formatDuration(ms) {
     const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -52,7 +52,8 @@ if (!cmd) {
 const startedAtMs = Date.now();
 let lastOutputAtMs = startedAtMs;
 
-const child = spawn(cmd, cmdArgs, {
+const child = spawnForegroundCommand(cmd, cmdArgs, {
+    ownedProcessGroup: true,
     stdio: ['inherit', 'pipe', 'pipe'],
     env: process.env,
 });
@@ -75,20 +76,9 @@ const interval = setInterval(() => {
 }, intervalMs);
 interval.unref();
 
-const forwardSignal = (signal) => {
-    try {
-        child.kill(signal);
-    } catch {
-        // ignore
-    }
-};
-process.on('SIGINT', () => forwardSignal('SIGINT'));
-process.on('SIGTERM', () => forwardSignal('SIGTERM'));
-
 child.on('close', (code, signal) => {
     clearInterval(interval);
-    if (signal) process.exit(1);
-    process.exit(code ?? 1);
+    exitWithCommandResult({ status: code, signal });
 });
 child.on('error', (err) => {
     clearInterval(interval);
@@ -96,4 +86,3 @@ child.on('error', (err) => {
     console.error(`[${label}] failed to spawn: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
 });
-

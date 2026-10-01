@@ -8,8 +8,8 @@
  * helpers here are lookup/display facts only.
  *
  * Capability facts (per the official model-config docs):
- * - 1M-capable: Sonnet 5, Fable 5, Mythos 5, Opus 4.6 and later, Sonnet 4.6.
- * - Always-1M on the API (no opt-in needed): Opus 5, Sonnet 5, Fable 5, Mythos 5, Opus 4.8, Opus 4.7 — the explicit
+ * - 1M-capable: Sonnet 5, Fable 5 and later, Mythos 5, Opus 4.6 and later, Sonnet 4.6.
+ * - Always-1M on the API (no opt-in needed): Opus 5 and later, Sonnet 5, Fable 5 and later, Mythos 5, Opus 4.8, Opus 4.7 — the explicit
  *   `[1m]` toggle is only meaningful where 1M is opt-in (Sonnet 4.6, Opus 4.6).
  *
  * The Provider catalog owns that model membership. These Claude-Agent helpers

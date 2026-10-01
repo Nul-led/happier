@@ -139,7 +139,7 @@ async function main() {
     try {
       // eslint-disable-next-line no-console
       console.log(`[typecheck] ${target}: running ${pm.name} ${script}`);
-      await run(pm.cmd, pm.argsForScript(script), { cwd: dir, env: process.env });
+      await run(pm.cmd, pm.argsForScript(script), { cwd: dir, env: process.env, ownedProcessGroup: true });
       results.push({ target, ok: true, skipped: false, dir, pm: pm.name, script });
     } catch (e) {
       results.push({ target, ok: false, skipped: false, dir, pm: pm.name, script, error: String(e?.message ?? e) });

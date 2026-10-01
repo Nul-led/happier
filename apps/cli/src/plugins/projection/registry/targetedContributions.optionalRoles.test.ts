@@ -9,6 +9,7 @@ import { defineContributionProtocol } from '@happier-dev/plugin-sdk/contribution
 import { defineProtocolObject } from '@happier-dev/plugin-sdk/protocol';
 
 import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import { resolveAdmittedTargetedContributions } from './targetedContributions';
 import type {
     ResolvedPluginContributionPointDeclaration,
@@ -19,6 +20,8 @@ const targetPluginId = 'examples.target';
 const contributorPluginId = 'examples.contributor';
 const pointId = 'providers';
 const protocol = { id: 'provider', version: 1 } as const;
+const targetOccurrenceId = createPluginRuntimeOccurrenceId(targetPluginId);
+const contributorOccurrenceId = createPluginRuntimeOccurrenceId(contributorPluginId);
 
 /** Builds a canonical target manifest declaration for the admission owner. */
 function point(params: Readonly<{ optionalSurface?: boolean }> = {}): ResolvedPluginContributionPointDeclaration {
@@ -88,9 +91,9 @@ function admit(params: Readonly<{
         targetedPluginContributions: [params.contribution],
         actions: [],
         uiRenderersV2: [],
-        immutableGenerationIdsByPluginId: {
-            [targetPluginId]: 'immutable-target-a',
-            [contributorPluginId]: 'immutable-contributor-a',
+        occurrenceIdsByPluginId: {
+            [targetPluginId]: targetOccurrenceId,
+            [contributorPluginId]: contributorOccurrenceId,
         },
     });
 }
@@ -111,7 +114,7 @@ describe('targeted contribution optional-role admission', () => {
             .toEqual(['action_not_found']);
         expect(result.read({ targetPluginId, pointId, protocol }))
             .toMatchObject({
-                target: { immutableGenerationId: 'immutable-target-a' },
+                target: { occurrenceId: targetOccurrenceId },
                 contributions: [],
             });
     });
@@ -132,7 +135,7 @@ describe('targeted contribution optional-role admission', () => {
             .toEqual(['renderer_not_found']);
         expect(result.read({ targetPluginId, pointId, protocol }))
             .toMatchObject({
-                target: { immutableGenerationId: 'immutable-target-a' },
+                target: { occurrenceId: targetOccurrenceId },
                 contributions: [],
             });
     });

@@ -104,6 +104,14 @@ export const publicAuthoringDefinition: PublicAuthoringDefinition = {
     description: 'Kitchen-sink public SDK example for actions, hooks, native Agent runtime, UI, and descriptor authoring.',
     runtime: { apiVersion: Number(PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.toolchain.runtime) as 1 },
     entrypoints: { daemon: './dist/daemon.js' },
+    roles: {
+        'security-reviewer': {
+            name: 'Security reviewer',
+            instructions: 'Review security boundaries and report evidence. Do not edit files.',
+            runsAs: { kind: 'background_run', intent: 'review' },
+            workspaceWrites: 'deny', secondOpinion: 'off', enabled: true,
+        },
+    },
     hostAccess: {
         required: [
             {
@@ -212,7 +220,6 @@ export const publicAuthoringDefinition: PublicAuthoringDefinition = {
                 target: 'client',
                 client: {
                     artifactId: 'review-client-actions',
-                    modulePath: './activate',
                     exportName: 'activate',
                 },
                 platforms: ['web', 'ios', 'android'],
@@ -229,7 +236,6 @@ export const publicAuthoringDefinition: PublicAuthoringDefinition = {
                 target: 'client',
                 client: {
                     artifactId: 'voice-runtime-web',
-                    modulePath: './voiceProvider',
                     exportName: 'activate',
                 },
                 platforms: ['web'],
@@ -605,7 +611,7 @@ export const publicAuthoringDefinition: PublicAuthoringDefinition = {
                 // instance policy and no placement: the host owns geometry and
                 // the declared renderer chain owns technical fallback.
                 id: 'review-status-widget',
-                container: 'sessionWidget',
+                container: 'widget',
                 target: { kind: 'session' },
                 renderer: 'review-native',
                 fallbackRenderers: ['review-web'],
@@ -844,7 +850,6 @@ export const publicAuthoringDefinition: PublicAuthoringDefinition = {
                 },
                 client: {
                     artifactId: 'voice-runtime-web',
-                    modulePath: './voiceProvider',
                     exportName: 'activate',
                 },
             },
@@ -900,7 +905,6 @@ export const publicAuthoringDefinition: PublicAuthoringDefinition = {
                 },
                 client: {
                     artifactId: 'voice-runtime-web',
-                    modulePath: './voiceProvider',
                     exportName: 'activate',
                 },
             },

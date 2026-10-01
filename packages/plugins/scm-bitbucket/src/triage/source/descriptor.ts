@@ -25,7 +25,7 @@ export const BITBUCKET_TRIAGE_ACTION_IDS = Object.freeze({
 /**
  * The same-plugin renderer bound to the required source-owned detail role, and the UI artifact it
  * mounts. The role is required, so this identity must not move once the source is admitted, and
- * `uiBuildIdentity.mjs` must keep naming the same artifact: a manifest that names an artifact no
+ * The exact `./happier-plugin-ui/<artifactId>` package export must name the same artifact: a manifest that names an artifact no
  * build target produces passes conformance and then fails at mount.
  */
 export const BITBUCKET_TRIAGE_DETAIL_RENDERER_ID = 'bitbucket-detail';
@@ -70,6 +70,15 @@ export const BITBUCKET_TRIAGE_DESCRIPTOR: TriageSourceDescriptorV1 = Object.free
       workflowSubject: 'pullRequest',
       displayName: 'Pull request',
       pluralDisplayName: 'Pull requests',
+      // r0.42: the Triage detail frame draws these tabs and asks this source
+      // for each as a panel; the writes render as the header `actions` panel.
+      detailTabs: Object.freeze([
+        Object.freeze({ kind: 'shared', id: 'overview' }),
+        Object.freeze({ kind: 'shared', id: 'activity' }),
+        Object.freeze({ kind: 'shared', id: 'files' }),
+        Object.freeze({ kind: 'shared', id: 'checks' }),
+      ]),
+      detailActions: true,
     }),
   ]),
 }) as TriageSourceDescriptorV1;

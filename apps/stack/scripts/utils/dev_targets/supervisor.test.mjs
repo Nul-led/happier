@@ -1062,7 +1062,7 @@ test('dev target supervisor borrows independent synchronization without mutating
           return {
             code: 0,
             ...(command === 'mutagen' && args[0] === 'sync' && args[1] === 'list'
-              ? { out: JSON.stringify([{ name: 'happier-linux', status: 'watching', successfulCycles: 1 }]) }
+              ? { out: JSON.stringify([{ name: 'happier-linux', paused: false, status: 'watching', successfulCycles: 1, alpha: { connected: true, scanned: true }, beta: { connected: true, scanned: true } }]) }
               : {}),
           };
         },
@@ -1148,7 +1148,7 @@ test('dev target supervisor borrows an all-target independent project when only 
           return {
             code: 0,
             ...(command === 'mutagen' && args[0] === 'sync' && args[1] === 'list'
-              ? { out: JSON.stringify([{ name: sessionName, status: 'watching', successfulCycles: 1 }]) }
+              ? { out: JSON.stringify([{ name: sessionName, paused: false, status: 'watching', successfulCycles: 1, alpha: { connected: true, scanned: true }, beta: { connected: true, scanned: true } }]) }
               : {}),
           };
         },
@@ -2492,6 +2492,86 @@ test('a co-located server stays available when deferred daemon or Expo preparati
   }
 });
 
+test('a co-located worker launches only after current workspace bytes reach its target', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hstack-dev-target-worker-workspace-order-'));
+  const events = [];
+  let releaseWorkspacePreparation;
+  const workspacePreparationRelease = new Promise((resolve) => {
+    releaseWorkspacePreparation = resolve;
+  });
+  let markWorkspacePreparationEntered;
+  const workspacePreparationEntered = new Promise((resolve) => {
+    markWorkspacePreparationEntered = resolve;
+  });
+  let controller = null;
+  try {
+    const credentialPath = join(root, 'access.key');
+    await writeFile(credentialPath, '{"token":"secret"}\n', { mode: 0o600 });
+    const target = {
+      name: 'mac-current-workspace',
+      platform: 'posix',
+      ssh: 'mac-current-workspace-ssh',
+      repoDir: '/Users/test/happier',
+      cliHomeDir: '/Users/test/.happier/mac-current-workspace',
+    };
+    const startup = startStackDevTargets({
+      stackName: 'repo-test-current-workspace',
+      stackBaseDir: join(root, 'stack'),
+      sourceDir: '/source/happier',
+      localServerPort: 3005,
+      localExpoPort: 8081,
+      publicServerUrl: 'http://127.0.0.1:3005',
+      activeServerId: 'stack_repo-test-current-workspace__id_default',
+      credentialPath,
+      remoteServerRuntimeConfig: remoteLightSqliteRuntimeConfig,
+      remoteWorkspacePreparation: async () => {
+        events.push('workspace:begin');
+        markWorkspacePreparationEntered();
+        await workspacePreparationRelease;
+        events.push('workspace:ready');
+      },
+      targetPlans: [{
+        target,
+        commands: false,
+        services: { server: true, expo: true, daemon: true },
+      }],
+      env: {},
+    }, {
+      runProcess: async () => ({ code: 0 }),
+      flushSync: async () => { events.push('sync:flush'); },
+      runDependencyBootstrap: async () => ({ code: 0 }),
+      spawnProcess: ({ label, command, args, env }) => {
+        const worker = { label, command, args, env, exitCode: null };
+        if (label === `remote:${target.name}`) {
+          events.push(args.includes('-N') ? 'tunnel:spawn' : 'worker:spawn');
+        }
+        return worker;
+      },
+      stopProcess: async (worker) => { worker.exitCode = 0; },
+      waitForProcess: async () => await new Promise(() => {}),
+      waitForServerReady: async () => {},
+      waitForExpoReady: async () => {},
+      waitForRetry: async () => await new Promise(() => {}),
+      logger: { error() {}, warn() {} },
+    });
+
+    await workspacePreparationEntered;
+    assert.equal(events.includes('worker:spawn'), false);
+    releaseWorkspacePreparation();
+    controller = await startup;
+    const deadline = Date.now() + 1_000;
+    while (!events.includes('worker:spawn') && Date.now() < deadline) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.ok(events.indexOf('workspace:ready') < events.indexOf('sync:flush'));
+    assert.ok(events.indexOf('sync:flush') < events.indexOf('worker:spawn'));
+  } finally {
+    releaseWorkspacePreparation?.();
+    await controller?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('deferred companion preparation recreates failed workspace work on retry', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hstack-dev-target-workspace-preparation-retry-'));
   const targetStates = [];
@@ -2499,6 +2579,8 @@ test('deferred companion preparation recreates failed workspace work on retry', 
   let preparationCalls = 0;
   let controller = null;
   try {
+    const credentialPath = join(root, 'access.key');
+    await writeFile(credentialPath, '{"token":"test-token"}\n', 'utf8');
     const target = {
       name: 'mac-retry',
       platform: 'posix',
@@ -2514,7 +2596,7 @@ test('deferred companion preparation recreates failed workspace work on retry', 
       localExpoPort: 8081,
       publicServerUrl: 'http://127.0.0.1:3005',
       activeServerId: 'stack_repo-test-retry__id_default',
-      credentialPath: null,
+      credentialPath,
       remoteServerRuntimeConfig: remoteLightSqliteRuntimeConfig,
       remoteWorkspacePreparation: async () => {
         preparationCalls += 1;
@@ -2523,7 +2605,7 @@ test('deferred companion preparation recreates failed workspace work on retry', 
       targetPlans: [{
         target,
         commands: false,
-        services: { server: true, expo: true, daemon: false },
+        services: { server: true, expo: true, daemon: true },
       }],
       onTargetStateChange: (state) => targetStates.push(state),
       env: {},
@@ -2557,18 +2639,22 @@ test('deferred companion preparation recreates failed workspace work on retry', 
     ]);
     assert.equal(recovered, true);
     assert.equal(preparationCalls, 2);
-    assert.ok(targetStates.some((state) => state.status === 'degraded'));
+    assert.equal(targetStates.some((state) => state.status === 'degraded'), false);
   } finally {
     await controller?.close();
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test('a co-located target begins credential seeding before server readiness without starting dependency bootstrap', async () => {
+test('a co-located target seeds credentials while publication is pending but does not launch stale workspace bytes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hstack-dev-target-credential-first-'));
   const spawned = [];
   const processCalls = [];
   let dependencyBootstrapCalls = 0;
+  let releaseWorkspacePreparation;
+  const workspacePreparationPending = new Promise((resolve) => {
+    releaseWorkspacePreparation = resolve;
+  });
   let controller = null;
   try {
     const credentialPath = join(root, 'access.key');
@@ -2581,7 +2667,7 @@ test('a co-located target begins credential seeding before server readiness with
       cliHomeDir: '/Users/test/.happier/mac',
     };
 
-    controller = await startStackDevTargets(
+    const startup = startStackDevTargets(
       {
         stackName: 'repo-test',
         stackBaseDir: join(root, 'stack'),
@@ -2592,7 +2678,7 @@ test('a co-located target begins credential seeding before server readiness with
         activeServerId: 'stack_repo-test__id_default',
         credentialPath,
         remoteServerRuntimeConfig: remoteLightSqliteRuntimeConfig,
-        remoteWorkspacePreparation: new Promise(() => {}),
+        remoteWorkspacePreparation: workspacePreparationPending,
         targetPlans: [{
           target,
           commands: false,
@@ -2622,11 +2708,17 @@ test('a co-located target begins credential seeding before server readiness with
       },
     );
 
-    await new Promise((resolve) => setImmediate(resolve));
+    const credentialDeadline = Date.now() + 1_000;
+    while (
+      processCalls.filter(({ command }) => command === 'scp').length === 0
+      && Date.now() < credentialDeadline
+    ) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     assert.equal(
       spawned.filter((child) => child.label === 'remote:mac' && !child.args.includes('-N')).length,
-      1,
-      'the remote Stack worker must start while readiness remains pending',
+      0,
+      'the remote Stack worker must wait for the current workspace publication',
     );
     assert.equal(
       processCalls.filter(({ command }) => command === 'scp').length,
@@ -2638,7 +2730,15 @@ test('a co-located target begins credential seeding before server readiness with
       0,
       'workspace and dependency preparation must remain deferred until the server is ready',
     );
+    releaseWorkspacePreparation();
+    controller = await startup;
+    assert.equal(
+      spawned.filter((child) => child.label === 'remote:mac' && !child.args.includes('-N')).length,
+      1,
+      'the remote Stack worker starts once current workspace bytes have been flushed',
+    );
   } finally {
+    releaseWorkspacePreparation?.();
     await controller?.close();
     await rm(root, { recursive: true, force: true });
   }

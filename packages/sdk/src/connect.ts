@@ -18,16 +18,37 @@ import {
 import { SessionListActionInputV1Schema } from '@happier-dev/protocol/actions/actionSpecs';
 import {
   ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1,
+  ACCOUNT_API_TOKEN_CHILDREN_CREATE_HTTP_PATH_V1,
+  ACCOUNT_API_TOKEN_CHILDREN_REVOKE_HTTP_PATH_V1,
+  ACCOUNT_API_TOKEN_SELF_HTTP_PATH_V1,
+  AccountApiTokenChildCreateRequestV1Schema,
+  AccountApiTokenChildRevokeRequestV1Schema,
+  AccountApiTokenSelfV1Schema,
+  AccountApiTokensCreateActionOutputV1Schema,
+  AccountApiTokensRevokeActionOutputV1Schema,
   AccountApiTokensServerErrorV1Schema,
+  type AccountApiTokenChildCreateRequestV1,
+  type AccountApiTokenSelfV1,
+  type AccountApiTokensCreateActionOutputV1,
+  type AccountApiTokensRevokeActionOutputV1,
 } from '@happier-dev/protocol/auth/accountApiTokens';
 import { SessionIdSchema } from '@happier-dev/protocol/sessions/idsV1';
+import {
+  buildAccountStoredContentCompatibilityHttpHeadersV1,
+  CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+} from '@happier-dev/protocol';
 import type { WorkflowProjectTargetV1 } from '@happier-dev/protocol/workflows';
-import { Agent, request as requestWithUndici } from 'undici';
+import { createHttpExchange } from '#http';
+import type { HttpExchange, HttpResponse, HttpResponseBody } from './http/httpExchange.js';
 
 import { createGeneratedActions, MUTATING_PUBLIC_ACTION_IDS } from './actions/generated.js';
 import { createClientCredential, waitForClientMaterial, type ClientCredential } from './clientCredential.js';
 import { waitForClientCleanupGrace } from './cleanupGrace.js';
 import { HappierActionError, HappierClientClosedError, HappierTransportError } from './errors.js';
+import { createSessionController } from './live/sessionController.js';
+import { createSessionContentEncryption, openSessionDataKey } from './live/openSessionDataKey.js';
+import { createEmbed, type HappierEmbed } from './fluent/embed.js';
+import type { HappierSessionLiveOptions } from './live/types.js';
 import {
   createMachineSessions,
   createSessions,
@@ -131,16 +152,10 @@ class ExternalActionResponseBodyTooLargeError extends Error {
   }
 }
 
-type ExternalActionResponseBody = AsyncIterable<Uint8Array> & Readonly<{
-  once?: (event: 'error', listener: (error: Error) => void) => unknown;
-  destroy: (error?: Error) => unknown;
-}>;
-
-function rejectOversizedExternalActionResponse(body: ExternalActionResponseBody): never {
+function rejectOversizedExternalActionResponse(body: HttpResponseBody): never {
   const error = new ExternalActionResponseBodyTooLargeError();
-  // Undici requires every response body to be consumed or explicitly
-  // destroyed. Stop an oversized response immediately so it cannot occupy a
-  // connection until the remote endpoint finishes sending it.
+  // Stop an oversized response immediately rather than retaining its connection
+  // or browser stream until the endpoint finishes sending it.
   body.once?.('error', () => undefined);
   body.destroy();
   throw error;
@@ -161,7 +176,7 @@ function declaredResponseByteLength(
  * cannot turn a finite API contract into an unbounded SDK allocation.
  */
 async function readExternalActionResponseJson(
-  body: ExternalActionResponseBody,
+  body: HttpResponseBody,
   headers: Readonly<Record<string, string | string[] | undefined>>,
   maximumBytes = EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
 ): Promise<unknown> {
@@ -323,8 +338,25 @@ function isMachineBootstrapNotServed(error: unknown): boolean {
 
 export type HappierMachineExecutionRuns = HappierExecutionRuns<HappierMachineActionExecutionOptions>;
 
+/** Home-owned token operations, independent of a Machine or Action target. */
+export type HappierApiTokens = Readonly<{
+  createChild: (
+    input: Omit<AccountApiTokenChildCreateRequestV1, 'tokenId'>,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ) => Promise<AccountApiTokensCreateActionOutputV1>;
+  revokeChild: (
+    tokenId: string,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ) => Promise<AccountApiTokensRevokeActionOutputV1>;
+  self: (options?: Readonly<{ signal?: AbortSignal }>) => Promise<AccountApiTokenSelfV1>;
+}>;
+
+const ChildTokenCreateInputSchema = AccountApiTokenChildCreateRequestV1Schema.omit({ tokenId: true });
+
 export type HappierClient = Readonly<{
   actions: HappierActions;
+  apiTokens: HappierApiTokens;
+  embed: HappierEmbed;
   machines: Readonly<{
     list: (options?: MachineListOptions) => Promise<readonly HappierMachine[]>;
   }>;
@@ -335,7 +367,7 @@ export type HappierClient = Readonly<{
 }>;
 
 export type HappierMachineClient = Readonly<
-  Omit<HappierClient, 'actions' | 'machine' | 'sessions' | 'runs'> & Readonly<{
+  Omit<HappierClient, 'actions' | 'machine' | 'sessions' | 'runs' | 'embed'> & Readonly<{
     actions: HappierMachineActions;
     sessions: HappierMachineSessions;
     runs: HappierMachineExecutionRuns;
@@ -349,7 +381,7 @@ type ClientCloseCleanup = () => Promise<void>;
 
 type ClientLifecycle = Readonly<{
   controller: AbortController;
-  dispatcher: Agent;
+  http: HttpExchange;
   isClosed: () => boolean;
   close: () => Promise<void>;
   registerCloseCleanup: (cleanup: ClientCloseCleanup) => () => void;
@@ -357,7 +389,7 @@ type ClientLifecycle = Readonly<{
 
 function createClientLifecycle(disposeCredential: () => void): ClientLifecycle {
   const controller = new AbortController();
-  const dispatcher = new Agent();
+  const http = createHttpExchange();
   const cleanup = new Set<ClientCloseCleanup>();
   let closePromise: Promise<void> | undefined;
 
@@ -379,10 +411,7 @@ function createClientLifecycle(disposeCredential: () => void): ClientLifecycle {
     void (async () => {
       try {
         await waitForClientCleanupGrace(Promise.allSettled([...cleanup].map((finalizer) => finalizer())));
-        const destroy = Reflect.get(dispatcher, 'destroy') as unknown;
-        if (typeof destroy === 'function') {
-          await destroy.call(dispatcher);
-        }
+        await http.close();
         resolveClose?.();
       } catch (error) {
         rejectClose?.(error);
@@ -395,7 +424,7 @@ function createClientLifecycle(disposeCredential: () => void): ClientLifecycle {
 
   return {
     controller,
-    dispatcher,
+    http,
     isClosed: () => controller.signal.aborted,
     close,
     registerCloseCleanup,
@@ -515,21 +544,17 @@ function createClient(
     const requestSignal = params.allowAfterClose === true
       ? params.signal
       : combinedSignal(params.signal, lifecycle.controller.signal);
-    let response: Awaited<ReturnType<typeof requestWithUndici>>;
+    let response: HttpResponse;
     try {
-      // Session Actions may wait for their declared maximum. Native Node fetch
-      // applies Undici's hidden 300-second header limit, which is shorter than
-      // a valid Action wait. Caller cancellation remains the SDK deadline.
-      response = await requestWithUndici(new URL(params.path, endpoint), {
+      response = await lifecycle.http.request(new URL(params.path, endpoint), {
         method: params.method,
         headers: {
+          ...buildAccountStoredContentCompatibilityHttpHeadersV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
           authorization: `Bearer ${credential.bearer}`,
           ...(params.body === undefined ? {} : { 'content-type': 'application/json' }),
         },
         ...(params.body === undefined ? {} : { body: params.body }),
         ...(requestSignal === undefined ? {} : { signal: requestSignal }),
-        dispatcher: lifecycle.dispatcher,
-        headersTimeout: 0,
       });
     } catch (error) {
       if (lifecycle.controller.signal.aborted && params.allowAfterClose !== true) {
@@ -598,6 +623,50 @@ function createClient(
     }
     return body;
   };
+
+  const requestApiToken = async (path: string, method: 'GET' | 'POST', body?: unknown, signal?: AbortSignal) => {
+    try {
+      return await requestJson({ path: path.slice(1), method,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal });
+    } catch (error) {
+      if (error instanceof HappierTransportError
+        && (error.status === 404 || error.status === 405 || error.status === 501)) {
+        throw new HappierTransportError('This endpoint does not support Home API-token operations.', {
+          code: 'unsupported_endpoint', status: error.status,
+        });
+      }
+      throw error;
+    }
+  };
+  const invalidApiTokenOutput = () => new HappierTransportError('The Home returned an invalid API-token response.', {
+    code: 'invalid_api_token_output',
+  });
+  const apiTokens = Object.freeze({
+    async createChild(input, options) {
+      const parsedInput = ChildTokenCreateInputSchema.parse(input);
+      const tokenId = globalThis.crypto.randomUUID();
+      const result = AccountApiTokensCreateActionOutputV1Schema.safeParse(await requestApiToken(
+        ACCOUNT_API_TOKEN_CHILDREN_CREATE_HTTP_PATH_V1, 'POST', { ...parsedInput, tokenId }, options?.signal,
+      ));
+      if (!result.success || result.data.apiToken.tokenId !== tokenId) throw invalidApiTokenOutput();
+      return result.data;
+    },
+    async revokeChild(tokenId, options) {
+      const input = AccountApiTokenChildRevokeRequestV1Schema.parse({ tokenId });
+      const result = AccountApiTokensRevokeActionOutputV1Schema.safeParse(await requestApiToken(
+        ACCOUNT_API_TOKEN_CHILDREN_REVOKE_HTTP_PATH_V1, 'POST', input, options?.signal,
+      ));
+      if (!result.success) throw invalidApiTokenOutput();
+      return result.data;
+    },
+    async self(options) {
+      const result = AccountApiTokenSelfV1Schema.safeParse(await requestApiToken(
+        ACCOUNT_API_TOKEN_SELF_HTTP_PATH_V1, 'GET', undefined, options?.signal,
+      ));
+      if (!result.success) throw invalidApiTokenOutput();
+      return result.data;
+    },
+  } satisfies HappierApiTokens);
 
   const executeRequest = async <K extends PublicActionId>(
     actionId: K,
@@ -837,6 +906,7 @@ function createClient(
         await executeRequest('transcript.unfollow', input, { target }, true);
       },
       sessionId: id,
+      notifications: { endpoint: endpoint.origin, token: credential.bearer },
       closeSignal: lifecycle.controller.signal,
       registerCloseCleanup: lifecycle.registerCloseCleanup,
       options,
@@ -851,6 +921,32 @@ function createClient(
       }));
     },
   });
+  const createLiveSession = (liveExecute: ActionExecute, targetForSession: (sessionId: string) => ActionTarget) =>
+    (sessionId: string, options?: HappierSessionLiveOptions) => {
+      const id = requireSessionId(sessionId);
+      const target = targetForSession(id);
+      const scopedExecute: ActionExecute = (actionId, input, executionOptions) => liveExecute(actionId, input, {
+        ...executionOptions, target,
+      });
+      return createSessionController({
+        endpoint: endpoint.origin, token: credential.bearer, sessionId: id,
+        hasContentCredential: credential.encryption !== undefined,
+        read: (path, signal) => requestJson({ path, method: 'GET', signal }),
+        execute: scopedExecute,
+        release: async (leaseId) => { await executeRequest('transcript.unfollow', { sessionId: id, leaseId }, { target }, true); },
+        openContent: async (session, signal) => {
+          if (session.encryptionMode === 'plain') return { context: { mode: 'plain' }, dispose: () => undefined };
+          if (!credential.encryption) throw new HappierTransportError('The Session content is locked.', { code: 'session_content_locked' });
+          const material = await waitForClientMaterial(credential.encryption.getMaterial(() => requestJson({
+            path: ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1.slice(1), method: 'POST', body: '{}',
+          })), signal);
+          signal.throwIfAborted();
+          const key = openSessionDataKey(session.dataEncryptionKey, material.machineKey);
+          return { context: { mode: 'e2ee', encryption: createSessionContentEncryption(key) }, dispose: () => key.fill(0) };
+        },
+        closeSignal: lifecycle.controller.signal, registerCloseCleanup: lifecycle.registerCloseCleanup, options,
+      });
+    };
   const machine = (machineId: string) => createClient(endpoint, credential, lifecycle, {
     kind: 'machine',
     machineId: requireMachineId(machineId),
@@ -879,6 +975,7 @@ function createClient(
     const sessions = createMachineSessions({
       execute: machineExecute,
       followTranscript: createFollowTranscript(machineExecute, () => defaultTarget),
+      live: createLiveSession(machineExecute, () => defaultTarget),
       requireSessionId,
       spawn: (input, options) => machineExecute('session.spawn_new', input, options),
     });
@@ -890,6 +987,7 @@ function createClient(
     });
     return Object.freeze({
       actions: createMachineActions(machineRawExecute),
+      apiTokens,
       machines,
       sessions,
       runs,
@@ -906,7 +1004,21 @@ function createClient(
     sessionTarget,
     spawn: (input, options) => execute('session.spawn_new', input, options),
     followTranscript,
+    live: createLiveSession(execute, sessionTarget),
     requireSessionId,
+  });
+  const encryption = credential.encryption;
+  const embed = createEmbed({
+    apiTokens,
+    machineSessions: (machineId) => machine(machineId).sessions,
+    sessions,
+    requireSessionId,
+    readSession: (sessionId, signal) => requestJson({ path: `v2/sessions/${encodeURIComponent(sessionId)}`, method: 'GET', signal }),
+    getAccountMaterial: encryption === undefined ? undefined : (signal) => waitForClientMaterial(
+      encryption.getMaterial(() => requestJson({
+        path: ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1.slice(1), method: 'POST', body: '{}',
+      })), signal ?? lifecycle.controller.signal,
+    ),
   });
   const runs = createExecutionRuns<ActionExecutionOptions>({
     execute,
@@ -918,6 +1030,8 @@ function createClient(
 
   return Object.freeze({
     actions,
+    apiTokens,
+    embed,
     machines,
     sessions,
     runs,

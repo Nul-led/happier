@@ -125,6 +125,12 @@
               "resume"
             ],
             "runtimeActivitySnapshots": true,
+            "startupInstructions": {
+              "revisionChanges": "resume",
+              "versions": [
+                1
+              ]
+            },
             "workStateSources": [
               {
                 "id": "goals",
@@ -132,7 +138,8 @@
                   "goal"
                 ]
               }
-            ]
+            ],
+            "workspaceWrites": "deny"
           },
           "surfaces": [
             "terminal",
@@ -232,6 +239,16 @@
                 ]
               }
             },
+            "nativeUpdate": {
+              "args": [
+                "update"
+              ],
+              "installPaths": [
+                ".local/share/claude",
+                ".local/bin/claude.exe"
+              ]
+            },
+            "npmPackageName": "@anthropic-ai/claude-code",
             "recommendationOrder": 10
           }
         },
@@ -523,7 +540,105 @@
           "staticModels": [
             {
               "contextWindowTokens": 1000000,
-              "description": "Latest highest-capability Claude model for the hardest coding and reasoning tasks.",
+              "description": "Latest Claude model for demanding reasoning and long-running agentic work.",
+              "id": "claude-fable-5-1",
+              "modelOptions": [
+                {
+                  "currentValue": "high",
+                  "id": "reasoning_effort",
+                  "name": "Thinking",
+                  "options": [
+                    {
+                      "name": "Low",
+                      "value": "low"
+                    },
+                    {
+                      "name": "Medium",
+                      "value": "medium"
+                    },
+                    {
+                      "name": "High",
+                      "value": "high"
+                    },
+                    {
+                      "name": "XHigh",
+                      "value": "xhigh"
+                    },
+                    {
+                      "name": "Max",
+                      "value": "max"
+                    }
+                  ],
+                  "type": "select"
+                },
+                {
+                  "currentValue": "false",
+                  "description": "Maximum coding effort. Forces XHigh Thinking effort while enabled.",
+                  "id": "ultracode",
+                  "name": "Ultracode",
+                  "overridesWhenOn": {
+                    "forcedValue": "xhigh",
+                    "optionIds": [
+                      "reasoning_effort"
+                    ]
+                  },
+                  "type": "boolean"
+                }
+              ],
+              "name": "Fable 5.1"
+            },
+            {
+              "contextWindowTokens": 1000000,
+              "description": "Latest Opus model for long-running agentic coding and knowledge work.",
+              "id": "claude-opus-5-5",
+              "modelOptions": [
+                {
+                  "currentValue": "medium",
+                  "id": "reasoning_effort",
+                  "name": "Thinking",
+                  "options": [
+                    {
+                      "name": "Low",
+                      "value": "low"
+                    },
+                    {
+                      "name": "Medium",
+                      "value": "medium"
+                    },
+                    {
+                      "name": "High",
+                      "value": "high"
+                    },
+                    {
+                      "name": "XHigh",
+                      "value": "xhigh"
+                    },
+                    {
+                      "name": "Max",
+                      "value": "max"
+                    }
+                  ],
+                  "type": "select"
+                },
+                {
+                  "currentValue": "false",
+                  "description": "Maximum coding effort. Forces XHigh Thinking effort while enabled.",
+                  "id": "ultracode",
+                  "name": "Ultracode",
+                  "overridesWhenOn": {
+                    "forcedValue": "xhigh",
+                    "optionIds": [
+                      "reasoning_effort"
+                    ]
+                  },
+                  "type": "boolean"
+                }
+              ],
+              "name": "Opus 5.5"
+            },
+            {
+              "contextWindowTokens": 1000000,
+              "description": "Prior Opus model for complex coding and reasoning tasks.",
               "id": "claude-opus-5",
               "modelOptions": [
                 {
@@ -621,7 +736,7 @@
             },
             {
               "contextWindowTokens": 1000000,
-              "description": "Newest highest-capability generally available Claude model for the hardest coding and reasoning tasks.",
+              "description": "Prior Fable model for demanding coding and reasoning tasks.",
               "id": "claude-fable-5",
               "modelOptions": [
                 {
@@ -719,7 +834,7 @@
             },
             {
               "contextWindowTokens": 1000000,
-              "description": "Newest highest-capability Claude model for the hardest coding and reasoning tasks.",
+              "description": "Earlier Opus model for complex coding and reasoning tasks.",
               "id": "claude-opus-4-8",
               "modelOptions": [
                 {
@@ -985,7 +1100,33 @@
             },
             "default": true,
             "description": {
-              "fallback": "Use the official @anthropic-ai/claude-agent-sdk for remote mode.",
+              "fallback": "Query Anthropic for the models available to the selected connected account or native Claude Code login.",
+              "key": "settingsAgents.plugins.claude.fields.claudeDynamicModelProbeEnabled.subtitle"
+            },
+            "id": "claudeDynamicModelProbeEnabled",
+            "presentation": {
+              "control": "switch"
+            },
+            "schema": {
+              "description": "Enable dynamic Claude model discovery",
+              "type": "boolean"
+            },
+            "title": {
+              "fallback": "Discover models dynamically",
+              "key": "settingsAgents.plugins.claude.fields.claudeDynamicModelProbeEnabled.title"
+            }
+          },
+          {
+            "analytics": {
+              "identityScope": "person",
+              "privacy": "safe",
+              "trackChanges": true,
+              "trackCurrentState": true,
+              "valueKind": "boolean"
+            },
+            "default": true,
+            "description": {
+              "fallback": "Use the Claude Agent SDK runtime for remote mode.",
               "key": "settingsAgents.plugins.claude.fields.claudeRemoteAgentSdkEnabled.subtitle"
             },
             "id": "claudeRemoteAgentSdkEnabled",
@@ -1063,7 +1204,7 @@
             },
             "default": "auto",
             "description": {
-              "fallback": "Choose which terminal multiplexer Happier uses for unified Claude sessions.",
+              "fallback": "Choose which terminal host Happier uses for unified Claude sessions.",
               "key": "settingsAgents.plugins.claude.fields.claudeUnifiedTerminalHost.subtitle"
             },
             "id": "claudeUnifiedTerminalHost",
@@ -1102,6 +1243,17 @@
                     "key": "settingsAgents.plugins.claude.fields.claudeUnifiedTerminalHost.options.zellij.title"
                   },
                   "value": "zellij"
+                },
+                {
+                  "description": {
+                    "fallback": "Use Herdr for terminal sessions on this machine.",
+                    "key": "settingsAgents.plugins.claude.fields.claudeUnifiedTerminalHost.options.herdr.subtitle"
+                  },
+                  "title": {
+                    "fallback": "Herdr",
+                    "key": "settingsAgents.plugins.claude.fields.claudeUnifiedTerminalHost.options.herdr.title"
+                  },
+                  "value": "herdr"
                 }
               ]
             },
@@ -1110,7 +1262,8 @@
               "enum": [
                 "auto",
                 "tmux",
-                "zellij"
+                "zellij",
+                "herdr"
               ],
               "type": "string"
             },
@@ -1778,6 +1931,7 @@
                 "key": "settingsAgents.plugins.claude.sections.claudeRemoteSdk.footer"
               },
               "fields": [
+                "claudeDynamicModelProbeEnabled",
                 "claudeRemoteAgentSdkEnabled",
                 "claudeRemoteDebugEnabled",
                 "claudeRemoteVerboseEnabled",
@@ -2213,6 +2367,19 @@
   },
   "id": "happier.agent.claude",
   "runtime": {
+    "agentFactories": [
+      {
+        "loadMode": "immutable-js",
+        "localAgentId": "claude",
+        "locator": {
+          "export": "createClaudeAgentRuntime",
+          "externalSessionsExport": "claudeExternalSessionsContribution",
+          "module": "./agent/runtime/nativeRuntime",
+          "runtimeApiVersion": 1
+        },
+        "normalizedModulePath": ".happier-plugin/agent/runtime/nativeRuntime.js"
+      }
+    ],
     "apiVersion": 1
   },
   "schemaVersion": 2,

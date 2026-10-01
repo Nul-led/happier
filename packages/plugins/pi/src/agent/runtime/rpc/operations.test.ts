@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
 import type {
   ManagedExecutableRef } from '@happier-dev/plugin-sdk/managed-services';
@@ -24,6 +25,7 @@ import { buildPiCompletedContextCompactionPayload } from './events.js';
 import { createPiRuntimeOperations } from './operations.js';
 
 type Capture = {
+  initialRecords?: readonly unknown[];
   specs: Extract<PluginProtocolClientSpec, { kind: 'jsonStream' }>[];
   written: unknown[];
   availableCommands?: readonly Readonly<{
@@ -58,6 +60,7 @@ function createRuntimeContext(capture: Capture) {
   const client = {
     subscribe(listener) {
       capture.listener = listener;
+      for (const record of capture.initialRecords ?? []) void listener(record);
       return { dispose: () => {
         if (capture.listener === listener) capture.listener = undefined;
       } };
@@ -1375,47 +1378,70 @@ describe('createPiRuntimeOperations', () => {
     await expect(update).resolves.toEqual({ status: 'applied', changed: ['options'] });
   });
 
-  it('binds Pi runtime models and republishes them after configuration changes', async () => {
+  it('cleans up the generated model extension when the host rejects its models binding', async () => {
     const capture: Capture = { specs: [], written: [] };
+    await expect(createPiRuntimeOperations({
+      ...createRuntimeContext(capture),
+      models: { bind() { throw new Error('host binding unavailable'); } },
+      cwd: '/tmp/pi-workspace', env: {}, sessionId: 'happier-session-1',
+    })).rejects.toThrow('host binding unavailable');
+    const args = capture.specs[0]!.launch.args!;
+    const extensionFlag = args.indexOf('--extension');
+    expect(extensionFlag).toBeGreaterThanOrEqual(0);
+    expect(existsSync(args[extensionFlag + 1]!)).toBe(false);
+  });
+
+  it('retains early discovery completion and reprojects current model options without renewing catalog age', async () => {
+    const capture: Capture = { specs: [], written: [], initialRecords: [{
+      type: 'happier-pi-model-catalog',
+      models: [{ provider: 'openai', id: 'gpt-6', name: 'GPT 6', reasoning: true }],
+    }] };
     let source: AgentSessionModelsSource | null = null;
     const disposeBinding = vi.fn();
     const runtime = await createPiRuntimeOperations({
       ...createRuntimeContext(capture),
-      models: {
-        bind(nextSource) {
-          source = nextSource;
-          return { dispose: disposeBinding };
-        },
-      },
-      cwd: '/tmp/pi-workspace',
-      env: {},
-      sessionId: 'happier-session-1',
-      initialSessionId: 'pi-provider-session-1',
+      models: { bind(nextSource) { source = nextSource; return { dispose: disposeBinding }; } },
+      cwd: '/tmp/pi-workspace', env: {}, sessionId: 'happier-session-1', initialSessionId: 'pi-provider-session-1',
     });
-
-    expect(source?.read()).toEqual({ models: null });
+    const extensionFlag = capture.specs[0]!.launch.args!.indexOf('--extension');
+    const extensionPath = capture.specs[0]!.launch.args![extensionFlag + 1]!;
+    expect(extensionFlag).toBeGreaterThanOrEqual(0);
+    expect(readFileSync(extensionPath, 'utf8')).toContain('process.stdout.write');
+    const observedAt = source?.read().observedAt;
+    expect(observedAt).toEqual(expect.any(Number));
     const update = runtime.updateConfiguration!(configuration({ reasoning_effort: 'high' }));
     await waitForWrittenCount(capture, 1);
     await ackCommandAt(capture, 0);
-    await expect(update).resolves.toEqual({ status: 'applied', changed: ['options'] });
-    await waitForWrittenCount(capture, 3);
+    await update;
+    await waitForWrittenCount(capture, 2);
     await ackCommandAt(capture, 1, {
-      model: { provider: 'openai', id: 'gpt-4o-mini' },
-      thinkingLevel: 'high',
+      model: { provider: 'openai', id: 'gpt-6' }, thinkingLevel: 'high',
     });
-    await ackCommandAt(capture, 2, {
-      models: [{ provider: 'openai', id: 'gpt-4o-mini', name: 'GPT-4o mini', reasoning: true }],
+    await vi.waitFor(() => expect(source?.read()).toMatchObject({
+      currentModelId: 'openai/gpt-6',
+      models: [{ id: 'openai/gpt-6', modelOptions: [{ currentValue: 'high' }] }],
+      observedAt: expect.any(Number),
+    }));
+    expect(source?.read().observedAt).toBe(observedAt);
+    const updateAgain = runtime.updateConfiguration!(configuration({ reasoning_effort: 'low' }));
+    await waitForWrittenCount(capture, 3);
+    await ackCommandAt(capture, 2);
+    await updateAgain;
+    await waitForWrittenCount(capture, 4);
+    await ackCommandAt(capture, 3, {
+      model: { provider: 'openai', id: 'gpt-6' }, thinkingLevel: 'low',
     });
-    await vi.waitFor(() => {
-      expect(source?.read()).toMatchObject({ currentModelId: 'openai/gpt-4o-mini' });
-    });
-    expect(source?.read()).toMatchObject({
-      currentModelId: 'openai/gpt-4o-mini',
-      models: [{ id: 'openai/gpt-4o-mini' }],
-    });
-
+    await vi.waitFor(() => expect(source?.read()).toMatchObject({
+      models: [{ id: 'openai/gpt-6', modelOptions: [{ currentValue: 'low' }] }], observedAt,
+    }));
+    expect(capture.written.some((record) => isRecord(record) && record.type === 'get_available_models')).toBe(false);
+    await emit(capture, { type: 'happier-pi-model-catalog', error: 'refresh-unsupported', models: [
+      { provider: 'openai', id: 'stale-local-model' },
+    ] });
+    expect(source?.read()).toMatchObject({ models: [{ id: 'openai/gpt-6' }], observedAt });
     await runtime.dispose();
     expect(disposeBinding).toHaveBeenCalledTimes(1);
+    expect(existsSync(extensionPath)).toBe(false);
   });
 
   it('does not infer typed provider acceptance from Pi turn evidence before the exact RPC response', async () => {
@@ -1940,7 +1966,21 @@ describe('createPiRuntimeOperations', () => {
     await runtime.dispose();
   });
 
-  it('keeps a transient rate-limit turn open when Pi resumes after an agent_end without retry intent', async () => {
+  it.each([
+    {
+      name: 'rate-limit failure',
+      provider: 'zai',
+      errorMessage: '429: {"code":"1302","message":"Rate limit reached for requests"}',
+    },
+    {
+      name: 'Connected Service broker refresh failure',
+      provider: 'openai-codex',
+      errorMessage: 'OAuth refresh failed for openai-codex: happier_broker_bridge_status_500',
+    },
+  ])('keeps a transient $name turn open when Pi resumes after an agent_end without retry intent', async ({
+    provider,
+    errorMessage,
+  }) => {
     const capture: Capture = { specs: [], written: [] };
     const runtime = await createRuntime(capture);
     const events: AgentSessionRuntimeEvent[] = [];
@@ -1954,13 +1994,13 @@ describe('createPiRuntimeOperations', () => {
     await emit(capture, {
       type: 'message_end',
       terminalStatus: 'failed',
-      provider: 'zai',
+      provider,
       message: {
         role: 'assistant',
-        provider: 'zai',
+        provider,
         content: [],
         stopReason: 'error',
-        errorMessage: '429: {"code":"1302","message":"Rate limit reached for requests"}',
+        errorMessage,
       },
     });
     await emit(capture, { type: 'agent_end' });

@@ -2,13 +2,15 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import cliDistBuildManifest from '../../utils/cli/cliDistBuildManifestLoader.mjs';
+export { publishPinnedRunnerSnapshotFixture } from '../../../../../packages/cli-common/tests/pinnedRunnerSnapshot.fixture.mjs';
 
-export function writeStubCliDistBuildManifest(cliDir, { entrypointDir = 'dist' } = {}) {
+export function writeStubCliDistBuildManifest(cliDir, { entrypointDir = 'dist', inputFingerprint } = {}) {
   return cliDistBuildManifest.writeCliDistBuildManifest(
     join(cliDir, entrypointDir, 'index.mjs'),
     {
       outputDir: join(cliDir, entrypointDir),
       builtAt: '2026-07-09T00:00:00.000Z',
+      inputFingerprint,
     },
   );
 }

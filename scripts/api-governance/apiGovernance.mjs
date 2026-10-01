@@ -45,6 +45,14 @@ const ENTRYPOINT_INVENTORY_DECLARATION_MODULE = /^dist\/[A-Za-z0-9][A-Za-z0-9._/
  * do not give one package permission to import another package's internals.
  */
 export const API_GOVERNANCE_PROFILES = Object.freeze({
+  embed: Object.freeze({
+    id: 'embed',
+    packageName: '@happier-dev/embed',
+    packageRoot: 'packages/embed',
+    kind: 'entrypoint-declarations',
+    title: 'Embed public API',
+    declarationTitle: 'Embed public declaration report',
+  }),
   'plugin-sdk': Object.freeze({
     id: 'plugin-sdk',
     packageName: '@happier-dev/plugin-sdk',

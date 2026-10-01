@@ -99,10 +99,13 @@ export function createOpenCodeExecutionRunConversation(params: Readonly<{
         return { status: 'rejected', diagnostic: diagnostic('opencode_input_missing_text') };
       }
       try {
-        const promptParts = buildOpenCodePromptParts({
+        const promptProjection = buildOpenCodePromptParts({
           text: request.input.text,
           structuredInput: request.input.structuredInput,
         });
+        const promptParts = Array.isArray(promptProjection)
+          ? promptProjection
+          : await promptProjection;
         activeTurnId = request.delivery.turnId;
         params.operations.beginTurnLifecycle(request.delivery.turnId);
         await params.operations.sendTurnPrompt(request.input.text, {

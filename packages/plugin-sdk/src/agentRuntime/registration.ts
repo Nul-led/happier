@@ -2,6 +2,7 @@ import type { AgentProviderBindingAdapter } from './providerBinding.js';
 import type {
   AgentTerminalSessionStateUpdate,
   AttachSessionMetadata,
+  RuntimeDescriptorV1,
 } from './projections.js';
 import type { JsonValue } from '../identity.js';
 import type { AgentConnectedAccountContinuityV1 } from './connectedAccountContinuity.js';
@@ -178,14 +179,48 @@ export type AgentProviderCliAttachReachabilityV1 =
   | Readonly<{ kind: 'http'; url: string }>
   | Readonly<{ kind: 'localSocket'; path: string }>;
 
+export type AgentProviderCliAttachHostFactsV1 = Readonly<{
+  /** Version text read from the exact CLI launch selected by the host. */
+  cliVersion: string | null;
+}>;
+
+export type AgentSettingsSelectedSystemToolInputV1 = Readonly<{
+  accountSettings: Readonly<Record<string, JsonValue>> | null;
+}>;
+
+export type AgentSettingsSelectedSystemToolV1 = Readonly<{
+  /** Static allowlist for a settings-dependent executable selection. */
+  commandToolIds?: readonly string[];
+  /** Selects one declared tool id; the host rejects values outside commandToolIds. */
+  resolveCommandToolId?: (
+    input: AgentSettingsSelectedSystemToolInputV1,
+  ) => string | null | undefined;
+}>;
+
 export type AgentProviderCliAttachDeclarationV1 = Readonly<{
   resolveTarget(params: Readonly<{
     metadata: AttachSessionMetadata;
     fallbackServerBaseUrl?: string | null;
   }>): AgentProviderCliAttachTargetResolutionV1;
-  createArgs(target: AgentProviderCliAttachTargetV1): readonly string[];
-  resolveReachability(target: AgentProviderCliAttachTargetV1): AgentProviderCliAttachReachabilityV1 | null;
-}>;
+  /** Optional provider-owned argv used by the host to read the exact selected CLI version. */
+  cliVersionArgs?: readonly string[];
+  /** Static destinations for exact host-owned managed-service access. */
+  managedServiceAccess?: Readonly<{
+    /** Primary environment destination used to request the host-owned credential. */
+    credentialEnvironmentKey: string;
+    /** Additional provider-recognized destinations that receive the same exact credential. */
+    credentialEnvironmentAliases?: readonly string[];
+    resolveTargetBaseUrl(target: AgentProviderCliAttachTargetV1): string | null;
+  }>;
+  createArgs(
+    target: AgentProviderCliAttachTargetV1,
+    host: AgentProviderCliAttachHostFactsV1,
+  ): readonly string[];
+  resolveReachability(
+    target: AgentProviderCliAttachTargetV1,
+    host: AgentProviderCliAttachHostFactsV1,
+  ): AgentProviderCliAttachReachabilityV1 | null;
+}> & AgentSettingsSelectedSystemToolV1;
 
 /**
  * Agent-owned CLI arguments after the host parser has consumed its generic
@@ -203,7 +238,7 @@ export type AgentCliSessionCommandParsedArgsV1 = Readonly<{
 /** Exact non-secret Settings records owned by the Agent, kept scope-qualified. */
 export type AgentCliSessionCommandPluginSettingsV1 = Readonly<Partial<Record<
   'account' | 'daemon',
-  Readonly<Record<string, unknown>>
+  Readonly<Record<string, JsonValue>>
 >>>;
 
 export type AgentCliSessionCommandBuildInputV1 = Readonly<{
@@ -437,15 +472,27 @@ export type AgentConnectedAccountLaunchContributionV1 = Readonly<{
 }>;
 
 /**
- * Static command facts for one preflight inspection. The host resolves the
- * declared system tool, materializes its environment, and owns the deadline
- * and process lifecycle. An Agent can narrow the environment by exact names
+ * Declared tool, selector arguments and environment policy for one preflight inspection.
+ * An optional preparation callback receives settings, environment presence and refresh
+ * facts only; it returns argument descriptors, never raw environment values or process
+ * handles. The host materializes temporary text and allowlisted environment-root paths,
+ * cleans artifacts, and owns the deadline and process lifecycle.
+ * An Agent can narrow the environment by exact names
  * and opt out of the host's default `CI=1` projection when its native CLI
  * requires that behavior.
  */
 export type AgentPreflightSessionControlsCommandV1 = Readonly<{
   toolId: string;
   args: readonly string[];
+  /** Host materializes prepared arguments; the declared tool and environment policy remain authoritative. */
+  prepareCommand?: (
+    input: AgentPreflightSessionControlsProbeInputV1 & Readonly<{ bypassCache?: boolean }>,
+  ) => Readonly<{
+    args: readonly (string
+      | Readonly<{ kind: 'temporaryTextFile'; suffix: string; contents: string }>
+      | Readonly<{ kind: 'environmentPath'; key: string; relativePath: string }>
+    )[];
+  }>;
   environmentKeys?: readonly string[];
   environmentExcludeKeys?: readonly string[];
   ci?: 'omit';
@@ -476,6 +523,9 @@ export type AgentPreflightJsonRpcRequestClientV1 = Readonly<{
 }>;
 
 export type AgentPreflightSessionControlsProbeInputV1 = Readonly<{
+  runtimeDescriptorV1?: RuntimeDescriptorV1;
+  /** Supported 0.2 preflight wire input; interpretation belongs to the Agent. */
+  runtimeKindOverride?: string;
   accountSettings: Readonly<Record<string, JsonValue>> | null;
   environment: Readonly<Record<string, boolean>>;
 }>;
@@ -486,6 +536,7 @@ export type AgentPreflightSessionControlsProbeInputV1 = Readonly<{
  */
 export type AgentPreflightSessionControlsProbeContextV1 =
   AgentPreflightSessionControlsProbeInputV1 & Readonly<{
+    bypassCache?: boolean;
     signal: AbortSignal;
     runDeclaredSystemToolCommand(input: Readonly<{
       toolId: string;
@@ -514,7 +565,7 @@ export type AgentPreflightSessionControlsModelsV1 = Readonly<{
       result: AgentPreflightSessionControlsCommandResultV1,
     ) => Promise<unknown | null> | unknown | null;
   }>;
-}>;
+}> & AgentSettingsSelectedSystemToolV1;
 
 /**
  * Focused Agent-native preflight declaration captured with Agent runtime

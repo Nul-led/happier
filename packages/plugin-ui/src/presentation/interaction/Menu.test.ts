@@ -129,4 +129,22 @@ describe('shared menu selection and keyboard semantics', () => {
       available: { top: 240, bottom: 320, left: 600, right: 480 },
     })).toBe('left');
   });
+
+  it('keeps an explicit side unless asked to flip it, and flips only to a roomier opposite side', () => {
+    const cramped = { top: 4, bottom: 700, left: 320, right: 480 };
+    expect(resolveHappierPopoverPlacement({ placement: 'top', preferredMinAvailable: 72, available: cramped })).toBe('top');
+    expect(resolveHappierPopoverPlacement({ placement: 'top', preferredMinAvailable: 72, available: cramped, flip: true })).toBe('bottom');
+    expect(resolveHappierPopoverPlacement({
+      placement: 'top',
+      preferredMinAvailable: 72,
+      available: { top: 40, bottom: 20, left: 320, right: 480 },
+      flip: true,
+    })).toBe('top');
+    expect(resolveHappierPopoverPlacement({
+      placement: 'top',
+      preferredMinAvailable: 72,
+      available: { top: 300, bottom: 700, left: 320, right: 480 },
+      flip: true,
+    })).toBe('top');
+  });
 });

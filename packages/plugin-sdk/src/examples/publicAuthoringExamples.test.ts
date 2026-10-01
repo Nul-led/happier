@@ -832,6 +832,31 @@ function publishedAuthoringDocumentationKey(documentPath: string): string {
 const documentedSnippetSupportFiles = new Map<string, readonly Readonly<{
     destination: string;
 } & ({ source: string } | { content: string })>[]>([
+    ['quickstart.mdx#4', [{
+        destination: 'ui/surfaces.ts',
+        // The quickstart intentionally shows the scaffold's author entry and
+        // keeps its one declarative surface in the separate generated leaf.
+        // Stage that leaf so the published multi-file example is compiled as
+        // written instead of treating its relative import as a missing API.
+        content: [
+            "import { defineUiSurfaceDefinition } from '@happier-dev/plugin-sdk';",
+            '',
+            'export const mainSurface = defineUiSurfaceDefinition({',
+            "  id: 'main',",
+            "  placement: 'appPage',",
+            "  title: { key: 'scaffold.main.title', fallback: 'My plugin' },",
+            '  renderer: {',
+            "    kind: 'declarative',",
+            '    root: {',
+            "      kind: 'group',",
+            "      title: { key: 'scaffold.main.title', fallback: 'My plugin' },",
+            '      children: [],',
+            '    },',
+            '  },',
+            '});',
+            '',
+        ].join('\n'),
+    }]],
     ['ui/hosted-web.mdx#1', [{
         destination: 'ui/summaryDocument.ts',
         // Models the author's generated string module for declaration compilation,
@@ -969,13 +994,15 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
                 protocol: { id: protocol.id, version: protocol.version },
             });
             expect(snapshot).toEqual({
-                generation: expect.any(String),
+                occurrenceId: expect.any(String),
+                sourceCustody: expect.any(Object),
                 contributions: [{
                     protocol: expect.any(Object),
                     contributor: {
                         pluginId: 'examples.action-contract-consumer',
                         contributionId: 'local-document-reviewer',
-                        immutableGenerationId: expect.any(String),
+                        occurrenceId: expect.any(String),
+                        sourceCustody: expect.any(Object),
                     },
                     operations: expect.any(Object),
                 }],
@@ -1309,9 +1336,6 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
 
             if (example.ui === 'hostedWeb' || example.ui === 'both') {
                 expect(packageJson.scripts?.['build:ui']).toBe('happier-plugin-build-ui --project-root .');
-                expect(devDependencies.vite).toBe(
-                    PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.vite,
-                );
                 expect(
                     example.ui === 'hostedWeb' ? devDependencies.react : dependencies.react,
                 ).toBe(PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies.react);
@@ -1329,13 +1353,7 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
                     'react-native-web': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies['react-native-web'],
                 });
                 expect(devDependencies).toMatchObject({
-                    vite: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.vite,
-                    '@vitejs/plugin-react': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@vitejs/plugin-react'],
                     '@types/react': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@types/react'],
-                    '@callstack/repack': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@callstack/repack'],
-                    '@react-native-community/cli': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@react-native-community/cli'],
-                    '@rspack/core': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@rspack/core'],
-                    '@swc/helpers': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@swc/helpers'],
                 });
                 expect(
                     existsSync(join(root, 'rspack.config.mjs')),
@@ -1345,6 +1363,15 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
                     existsSync(join(root, 'react-native.config.cjs')),
                     `${example.name}/react-native.config.cjs`,
                 ).toBe(false);
+            }
+            for (const retiredDependency of [
+                '@callstack/repack',
+                '@react-native-community/cli',
+                '@rspack/core',
+                '@vitejs/plugin-react',
+                'vite',
+            ]) {
+                expect(devDependencies).not.toHaveProperty(retiredDependency);
             }
         }
     });
@@ -1522,7 +1549,7 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
             }),
             expect.objectContaining({
                 id: 'review-status-widget',
-                container: 'sessionWidget',
+                container: 'widget',
                 target: { kind: 'session' },
                 renderer: 'review-native',
                 fallbackRenderers: ['review-web'],
@@ -1584,7 +1611,6 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
             target: 'client',
             client: {
                 artifactId: 'review-client-actions',
-                modulePath: './activate',
                 exportName: 'activate',
             },
             platforms: supportedPlatforms,
@@ -1599,42 +1625,17 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
             execution: actionExecution,
         }));
 
-        const buildModule = await import(pathToFileURL(
-            join(examplesRoot, 'public-authoring', 'pluginUiBuild.ts'),
-        ).href) as Readonly<{
-            pluginUiBuildConfig?: Readonly<{
-                targets?: readonly Readonly<{
-                    rendererId: string;
-                    entry: string;
-                    kind: 'reactNative' | 'hostedWeb';
-                    platforms?: readonly string[];
-                    module?: Readonly<{
-                        containerName: string;
-                        modulePath: string;
-                        exportName: string;
-                    }>;
-                }>[];
-            }>;
-        }>;
-        const target = buildModule.pluginUiBuildConfig?.targets?.find(
-            ({ rendererId }) => rendererId === actionExecution.client.artifactId,
-        );
-        expect(target).toEqual({
-            rendererId: 'review-client-actions',
-            entry: 'ui/reviewClientActions.ts',
-            kind: 'reactNative',
-            platforms: supportedPlatforms,
-            module: {
-                containerName: 'examples_public_authoring_review_client_actions',
-                modulePath: './activate',
-                exportName: 'activate',
-            },
-        });
-        if (!target) {
-            throw new TypeError('public_authoring_cross_platform_client_target_missing');
-        }
+        const publicAuthoringPackage = JSON.parse(readFileSync(
+            join(examplesRoot, 'public-authoring', 'package.json'),
+            'utf8',
+        )) as { exports?: Record<string, string> };
+        const targetEntry = publicAuthoringPackage.exports?.[
+            `./happier-plugin-ui/${actionExecution.client.artifactId}`
+        ];
+        expect(targetEntry).toBe('./ui/reviewClientActions.ts');
+        if (!targetEntry) throw new TypeError('public_authoring_cross_platform_client_target_missing');
         expect(sourceExportsName(
-            join(examplesRoot, 'public-authoring', target.entry),
+            join(examplesRoot, 'public-authoring', targetEntry),
             actionExecution.client.exportName,
         )).toBe(true);
         const sdkPackageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
@@ -1680,9 +1681,6 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
 
         for (const platform of supportedPlatforms) {
             expect(actionExecution.platforms).toContain(platform);
-            expect(target.platforms).toContain(platform);
-            expect(target.module?.modulePath).toBe(actionExecution.client.modulePath);
-            expect(target.module?.exportName).toBe(actionExecution.client.exportName);
         }
 
         const nativeSurface = readFileSync(
@@ -1714,7 +1712,6 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
             target: 'client',
             client: {
                 artifactId: 'voice-runtime-web',
-                modulePath: './voiceProvider',
                 exportName: 'activate',
             },
             platforms: ['web'],
@@ -1726,18 +1723,17 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
             id: 'open-review-status-web-only-fixture',
             execution: webOnlyActionExecution,
         }));
-        const voiceTarget = buildModule.pluginUiBuildConfig?.targets?.find(
-            ({ rendererId }) => rendererId === webOnlyActionExecution.client.artifactId,
-        );
-        expect(voiceTarget).toEqual(expect.objectContaining({
-            rendererId: 'voice-runtime-web',
-            entry: 'voiceProvider.ts',
-            kind: 'reactNative',
-            platforms: ['web'],
-        }));
+        const voiceTarget = publicAuthoringPackage.exports?.[
+            `./happier-plugin-ui/${webOnlyActionExecution.client.artifactId}`
+        ];
+        expect(voiceTarget).toBe('./voiceProvider.ts');
+        if (!voiceTarget) throw new TypeError('public_authoring_web_only_client_target_missing');
+        expect(sourceExportsName(
+            join(examplesRoot, 'public-authoring', voiceTarget),
+            webOnlyActionExecution.client.exportName,
+        )).toBe(true);
         for (const platform of ['ios', 'android'] as const) {
             expect(webOnlyActionExecution.platforms).not.toContain(platform);
-            expect(voiceTarget?.platforms).not.toContain(platform);
         }
 
         const voiceClientModule = await import(pathToFileURL(
@@ -1862,10 +1858,6 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
             join(examplesRoot, 'public-authoring', 'definition.ts'),
             'utf8',
         );
-        const publicAuthoringBuild = readFileSync(
-            join(examplesRoot, 'public-authoring', 'pluginUiBuild.ts'),
-            'utf8',
-        );
         const publicAuthoringVoice = readFileSync(
             join(examplesRoot, 'public-authoring', 'voiceProvider.ts'),
             'utf8',
@@ -1882,7 +1874,6 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         expect(publicAuthoringDaemon).toContain("from '@happier-dev/plugin-sdk'");
         expect(publicAuthoringManifest.entrypoints).toEqual({ daemon: './dist/daemon.js' });
         expect(publicAuthoringManifest.activation?.events ?? []).not.toContainEqual({ kind: 'startup' });
-        expect(publicAuthoringBuild).toContain("from '@happier-dev/plugin-sdk/ui/build'");
         expect(publicAuthoringDefinitionSource).toContain('run: runReviewSummary');
         expect(publicAuthoringDefinitionSource).toContain('handler: observeSessionSpawned');
         expect(publicAuthoringDefinitionSource).toContain('factory: createReviewAgentRuntime');
@@ -2321,7 +2312,7 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
             'hdev plugins dev typecheck .',
             'hdev plugins dev build .',
             'hdev plugins test .',
-            'hdev plugins install . --dev --trust --json',
+            'hdev plugins install . --dev --json',
             'hdev plugins reload --json',
             'hdev daemon restart --restart-session-runners --json',
             'hdev plugins pack . --out ../session-agent.tgz',
@@ -3162,7 +3153,7 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
                 const candidate = JSON.parse(new TextDecoder().decode(response.bytes)) as unknown;
                 const normalized = normalizePluginDeclarativeDocumentV1({
                     pluginId: manifest.id,
-                    generation: 'public-authoring-project-companion-dashboard-test',
+                    occurrenceId: 'public-authoring-project-companion-dashboard-test',
                     document: candidate,
                     actions: [],
                     resourceContentTypes: {
@@ -3873,23 +3864,19 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         expect(uiIndex).toContain(
             "await context.hostApi.executeAction('save-note', { note: 'hello' }, { signal: context.signal });",
         );
-        expect(uiArtifacts).toContain("platforms: ['web', 'ios', 'android']");
-        expect(uiArtifacts).not.toContain("platforms: ['web']");
-        expect(uiArtifacts).toContain("entry: 'src/ui/index.ts'");
-        expect(uiArtifacts).not.toContain("entry: 'ui/index.ts'");
+        expect(uiArtifacts).toContain('platform-neutral CommonJS bundle');
+        expect(uiArtifacts).toContain('./happier-plugin-ui/<artifactId>');
+        expect(uiArtifacts).not.toContain('pluginUiBuild.ts` config');
         expect(reactNative).toContain("import { definePlugin, defineUiSurfaceDefinition } from '@happier-dev/plugin-sdk';");
         expect(reactNative).toContain('const mainSurface = defineUiSurfaceDefinition({');
         expect(reactNative).toContain("placement: 'appPage'");
         expect(reactNative).toContain("kind: 'reactNative'");
-        expect(reactNative).toContain("platforms: ['web', 'ios', 'android']");
-        expect(reactNative).toContain("containerName: 'happier_plugin_com_example_my_plugin_main_renderer'");
         expect(reactNative).toContain('surfaces: [mainSurface]');
-        expect(reactNative).toContain(
-            "import { buildUiSurfaceTargets, defineBuildConfig } from '@happier-dev/plugin-sdk/ui/build';",
-        );
-        expect(reactNative).toContain("import { mainSurface } from './src/ui/surfaces.ts';");
-        expect(reactNative).toContain('targets: [...buildUiSurfaceTargets(mainSurface)]');
-        expect(reactNative.match(/entry: 'src\/ui\/PluginPanel\.tsx'/gu)).toHaveLength(1);
+        expect(reactNative).toContain('"./happier-plugin-ui/main-renderer": "./src/ui/mainRenderer.tsx"');
+        expect(reactNative).toContain('one universal CommonJS artifact');
+        expect(reactNative).toContain('There is no\nplatform matrix or author-owned bundler configuration.');
+        expect(reactNative).not.toContain('defineBuildConfig');
+        expect(reactNative).not.toContain('buildUiSurfaceTargets');
         expect(reactNative).not.toContain("rendererId: 'main-renderer'");
         expect(reactNative).not.toContain("from './plugin.js'");
         expect(reactNative).not.toContain("container: 'appPage'");
@@ -3903,7 +3890,7 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         expect(reactNative).not.toContain('manifest declares surface identity, placement');
         expect(testing).toContain('`createPluginUiTestkit`');
         expect(testing).toMatch(/does not prove\s+layout, styling, native reconciliation, CSP\/origin/u);
-        expect(testing).toMatch(/installed discovery, on-demand activation, generation\s+replacement/u);
+        expect(testing).toMatch(/installed discovery, on-demand activation, occurrence\s+replacement/u);
     });
 
     it('states hosted-web availability as a per-host fact on every overview page', () => {
@@ -4404,130 +4391,6 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
             'src/index.ts',
         )).href) as { activate?: unknown };
         expect(developmentModule.activate).toBeTypeOf('function');
-    });
-
-    it('declares UI build inputs through the stable public build subpath', async () => {
-        // `public-authoring` is checked here with every other UI example: it was
-        // previously excluded, which is exactly why its two declared build
-        // entries could stay absent from the tree while this suite was green.
-        const uiExamples = [
-            ...requiredExamples.filter((name) => name !== 'descriptor-only'),
-            'projects-tasks',
-            'public-authoring',
-            'production-hosted-reference',
-        ];
-        for (const exampleName of uiExamples) {
-            const buildPath = join(examplesRoot, exampleName, 'pluginUiBuild.ts');
-            expect(readFileSync(buildPath, 'utf8')).toContain("from '@happier-dev/plugin-sdk/ui/build'");
-            const module = await import(pathToFileURL(buildPath).href) as {
-                pluginUiBuildConfig?: {
-                    outDir?: string;
-                    targets?: readonly {
-                        entry: string;
-                        kind: 'reactNative' | 'hostedWeb';
-                        module?: Readonly<{
-                            containerName: string;
-                            modulePath: string;
-                            exportName: string;
-                        }>;
-                        platforms?: readonly string[];
-                        rendererId: string;
-                    }[];
-                };
-            };
-            expect(module.pluginUiBuildConfig?.targets?.length).toBeGreaterThan(0);
-            expect(module.pluginUiBuildConfig?.outDir).toMatch(/^dist\//u);
-            expect(module.pluginUiBuildConfig).not.toHaveProperty('surfaces');
-            expect(module.pluginUiBuildConfig).not.toHaveProperty('runBundler');
-            const manifest = readExampleManifest(exampleName);
-            const byRendererId = (
-                left: Readonly<{ rendererId: string }>,
-                right: Readonly<{ rendererId: string }>,
-            ): number => left.rendererId.localeCompare(right.rendererId);
-            const executableRenderers = manifest.contributes.ui.renderers
-                .filter((renderer) => renderer.kind === 'reactNative' || renderer.kind === 'hostedWeb')
-                .map((renderer) => ({ rendererId: renderer.id, kind: renderer.kind }))
-                .sort(byRendererId);
-            const targets = module.pluginUiBuildConfig?.targets ?? [];
-            const rendererIds = new Set(executableRenderers.map(({ rendererId }) => rendererId));
-            // Every executable renderer must be backed by a matching build
-            // target. A package may also build non-renderer artifacts (the
-            // public-authoring Voice client bundle), so those are checked for a
-            // resolvable entry rather than a renderer export contract.
-            expect(targets.filter(({ rendererId }) => rendererIds.has(rendererId))
-                .map(({ rendererId, kind }) => ({ rendererId, kind }))
-                .sort(byRendererId))
-                .toEqual(executableRenderers);
-            const hostedWebTargets = targets.filter((target) => target.kind === 'hostedWeb');
-            const hasHostedWebRenderer = executableRenderers.some((renderer) => renderer.kind === 'hostedWeb');
-            expect(hostedWebTargets.some((target) => rendererIds.has(target.rendererId)))
-                .toBe(hasHostedWebRenderer);
-            for (const target of hostedWebTargets) {
-                expect(target).not.toHaveProperty('platforms');
-            }
-            const reactNativeTargets = targets.filter((target) => target.kind === 'reactNative');
-            const hasReactNativeRenderer = executableRenderers.some((renderer) => renderer.kind === 'reactNative');
-            expect(reactNativeTargets.some((target) => rendererIds.has(target.rendererId)))
-                .toBe(hasReactNativeRenderer);
-            for (const target of reactNativeTargets.filter((entry) => rendererIds.has(entry.rendererId))) {
-                // A public executable React Native reference is one package
-                // graph with its web/iOS/Android siblings, not a web-only
-                // source illustration that asks each platform to supply a
-                // substitute build later.
-                expect(target.platforms).toEqual(expect.arrayContaining(['web', 'ios', 'android']));
-                expect(target.platforms?.length).toBeGreaterThan(0);
-                expect(target.module).toEqual(expect.objectContaining({
-                    containerName: expect.any(String),
-                    modulePath: expect.any(String),
-                    exportName: expect.any(String),
-                }));
-            }
-            for (const target of targets) {
-                expect(target).not.toHaveProperty('bundlerConfig');
-            }
-            for (const configPath of ['vite.config.mjs', 'rspack.config.mjs', 'react-native.config.cjs']) {
-                expect(existsSync(join(examplesRoot, exampleName, configPath)), `${exampleName}/${configPath}`)
-                    .toBe(false);
-            }
-            for (const target of targets) {
-                const sourcePath = join(examplesRoot, exampleName, target.entry);
-                if (!rendererIds.has(target.rendererId)) continue;
-                if (target.kind === 'reactNative') {
-                    // RN source imports React Native's Flow-typed platform
-                    // runtime, which Node/Vitest cannot parse. The authoring
-                    // contract here is the declared source export; the managed
-                    // Vite/Re.Pack candidate build is the executable oracle.
-                    expect(sourceExportsName(sourcePath, 'renderSurface'), `${exampleName}:${target.rendererId}`).toBe(true);
-                } else {
-                    expect(sourceExportsName(sourcePath, 'connectHostedWebPanel'), `${exampleName}:${target.rendererId}`).toBe(true);
-                }
-            }
-
-        }
-
-        const publicAuthoringBuild = await import(pathToFileURL(join(
-            examplesRoot,
-            'public-authoring',
-            'pluginUiBuild.ts',
-        )).href) as { pluginUiBuildConfig?: { outDir?: string } };
-        expect(publicAuthoringBuild.pluginUiBuildConfig?.outDir).toBe('dist/ui');
-    });
-
-    it('keeps public-authoring target-only while the managed-builder test fixture owns the advanced extension seam', () => {
-        const publicAuthoringRoot = join(examplesRoot, 'public-authoring');
-        const buildSource = readFileSync(join(publicAuthoringRoot, 'pluginUiBuild.ts'), 'utf8');
-        expect(buildSource).not.toContain('bundlerConfig');
-        for (const configPath of [
-            'build/vite.review-native.config.mjs',
-            'build/vite.review-openable-native.config.mjs',
-            'build/vite.review-openable-web.config.ts',
-            'build/vite.review-web.config.ts',
-            'build/vite.voice-runtime-web.config.mjs',
-            'rspack.config.mjs',
-            'react-native.config.cjs',
-        ]) {
-            expect(existsSync(join(publicAuthoringRoot, configPath)), configPath).toBe(false);
-        }
     });
 
     it('emits declaration-portable examples that name only published SDK specifiers', async () => {

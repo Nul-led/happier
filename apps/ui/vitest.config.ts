@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config'
-import { resolve } from 'node:path'
+import { resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { resolveVitestFeatureTestExcludeGlobs } from '../../scripts/testing/featureTestGating'
@@ -10,6 +10,9 @@ import {
 } from '../../scripts/testing/vitestWorkspacePackageResolution'
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+const packageRoot = fileURLToPath(new URL('.', import.meta.url));
+// Vitest's --root does not change process.cwd(); aliases and setup belong to this package.
+const resolve = (...paths: string[]) => resolvePath(packageRoot, ...paths);
 const MAX_VITEST_FORKS = 6;
 const maxForksEnv = Number.parseInt(process.env.VITEST_UI_MAX_FORKS ?? '', 10);
 const maxForks = Number.isFinite(maxForksEnv) && maxForksEnv > 0
@@ -67,6 +70,14 @@ const workspacePackages: readonly WorkspacePackageSpec[] = [
         packageSourceRoot: resolve('../../packages/connection-supervisor/src'),
     },
     {
+        packageName: '@happier-dev/sync-client',
+        packageSourceRoot: resolve('../../packages/sync-client/src'),
+    },
+    {
+        packageName: '@happier-dev/session-core',
+        packageSourceRoot: resolve('../../packages/session-core/src'),
+    },
+    {
         packageName: '@happier-dev/iroh-native',
         packageSourceRoot: resolve('../../packages/iroh-native/src'),
     },
@@ -80,6 +91,26 @@ const workspacePackages: readonly WorkspacePackageSpec[] = [
         // package rebuild.
         packageName: '@happier-dev/plugin-ui',
         packageSourceRoot: resolve('../../packages/plugin-ui/src'),
+    },
+    {
+        packageName: '@happier-dev/plugin-sdk',
+        packageSourceRoot: resolve('../../packages/plugin-sdk/src'),
+    },
+    {
+        packageName: '@happier-dev/peer-mediation',
+        packageSourceRoot: resolve('../../packages/peer-mediation/src'),
+    },
+    {
+        packageName: '@happier-dev/peer-transport',
+        packageSourceRoot: resolve('../../packages/peer-transport/src'),
+    },
+    {
+        packageName: '@happier-dev/transfers',
+        packageSourceRoot: resolve('../../packages/transfers/src'),
+    },
+    {
+        packageName: '@happier-dev/voice-modelpacks',
+        packageSourceRoot: resolve('../../packages/voice-modelpacks/src'),
     },
     ...readBundledPluginWorkspacePackageSpecs(repoRoot),
 ] as const;
@@ -133,8 +164,8 @@ export default defineConfig({
                 // React Navigation carries a nested React Native peer in this Yarn v1 layout.
                 // Inline it so Vite applies the node-safe React Native alias instead of asking
                 // Node to parse the peer's untransformed Flow entrypoint.
-                // `@react-navigation/elements` (reached from `native-stack`, which the plugin
-                // Module Federation host share scope provides) additionally imports a `.png`
+                // `@react-navigation/elements` (reached from `native-stack`, which the Plugin UI
+                // same-realm host module map provides) additionally imports a `.png`
                 // Node's ESM loader cannot open; inlining lets Vite resolve it as an asset.
                 // `@legendapp/list/section-list` imports `react-native` directly.
                 // Externalized, Node resolves that to React Native's Flow
@@ -180,6 +211,12 @@ export default defineConfig({
         dedupe: ['react', 'react-dom'],
         // IMPORTANT: keep `@` after more specific `@/...` aliases (Vite resolves aliases in-order).
         alias: [
+            // Unit tests exercise authored artifact logic without an app's published byte inventory.
+            // The artifact-cache config retains the generated inventory and its preparation contract.
+            {
+                find: /^(?:\.\/|.*[\\/]sync[\\/]domains[\\/]plugins[\\/]availability[\\/])generatedBundledPluginUiArtifacts(?:\.js)?$/,
+                replacement: resolve('./sources/dev/testkit/mocks/bundledPluginUiAssets.ts'),
+            },
             // Reanimated's package exports can resolve to ESM internals with extensionless relative imports.
             // Route all Vitest imports to the node-safe stub before Vite/Node load those internals.
             { find: /^react-native-reanimated(?:\/.*)?$/, replacement: resolve('./sources/dev/reactNativeReanimatedStub.ts') },
@@ -210,7 +247,7 @@ export default defineConfig({
             { find: 'expo-video', replacement: resolve('./sources/dev/expoVideoStub.ts') },
             { find: 'expo-router/drawer', replacement: resolve('./sources/dev/expoRouterDrawerStub.ts') },
             // `expo-router` pulls in RN internals via its native dev-server helpers.
-            { find: 'expo-router', replacement: resolve('./sources/dev/expoRouterStub.ts') },
+            { find: /^expo-router$/, replacement: resolve('./sources/dev/expoRouterStub.ts') },
             // `react-native-gesture-handler` imports React Native internals (Flow syntax) in node.
             { find: 'react-native-gesture-handler', replacement: resolve('./sources/dev/reactNativeGestureHandlerStub.ts') },
             // `react-native-webview` depends on RN native modules and internals.

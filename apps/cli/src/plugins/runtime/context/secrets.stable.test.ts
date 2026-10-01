@@ -13,7 +13,7 @@ import {
 } from './secrets';
 
 async function createFixture(params?: Readonly<{
-    isGenerationCurrent?: () => boolean;
+    isOccurrenceCurrent?: () => boolean;
 }>) {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-stable-secrets-'));
     const registerRawForRedaction = vi.fn<(value: string) => void>();
@@ -31,7 +31,7 @@ async function createFixture(params?: Readonly<{
             daemon: daemonCustody.resolve,
         }).resolve,
         signal: new AbortController().signal,
-        isGenerationCurrent: params?.isGenerationCurrent ?? (() => true),
+        isOccurrenceCurrent: params?.isOccurrenceCurrent ?? (() => true),
         registerRawForRedaction,
     });
     return { happyHomeDir, service, registerRawForRedaction };
@@ -91,7 +91,7 @@ describe('stable scoped plugin secrets service', () => {
     it('fails closed after its generation retires before reaching the encrypted owner', async () => {
         let current = true;
         const { service, registerRawForRedaction } = await createFixture({
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
         });
         await service.status('webhook-token');
         await service.set('webhook-token', 'deferred-secret');

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mountThroughReactNativeWeb } from '../rnwMount.testSupport.js';
 import { createHostApiStub, createSurfaceContext } from '../surfaceFixture.testSupport.js';
 import { isHappierTabSelected } from '../presentation/navigation/Tabs.js';
-import { Tabs, Text } from './index.js';
+import { Tabs, Text, useTabPanelActivity } from './index.js';
 import { PluginUiProvider } from './PluginUiProvider.js';
 
 function mountTabs(element: React.ReactElement, context = createSurfaceContext()) {
@@ -173,5 +173,63 @@ describe('controlled Tabs', () => {
     expect(document.activeElement).toBe(tabs[0]);
     expect(tabs.map((tab) => tab.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false']);
     mount.unmount();
+  });
+});
+
+describe('a tab strip owned by the host frame', () => {
+  it('renders only the selected panel, with its active interval, and no tablist', async () => {
+    const seen: boolean[] = [];
+    function Probe() {
+      const activity = useTabPanelActivity();
+      seen.push(activity.active && !activity.activeSignal.aborted);
+      return <Text value="Files content" />;
+    }
+    const mount = mountTabs(
+      <Tabs value="files" onValueChange={() => undefined} ariaLabel="Entry detail" tabList="host">
+        <Tabs.Item value="overview" title="Overview"><Text value="Overview content" /></Tabs.Item>
+        <Tabs.Item value="files" title="Files"><Probe /></Tabs.Item>
+      </Tabs>,
+    );
+
+    expect(mount.container.querySelector('[role="tablist"]')).toBeNull();
+    expect(mount.container.querySelector('[role="tab"]')).toBeNull();
+    // The strip that names this panel lives in another surface, so the panel
+    // claims no tabpanel role it cannot label.
+    expect(mount.container.querySelector('[role="tabpanel"]')).toBeNull();
+    expect(mount.container.textContent).toContain('Files content');
+    expect(mount.container.textContent).not.toContain('Overview content');
+    expect(seen.at(-1)).toBe(true);
+  });
+});
+
+describe('a tabbed region that fills its parent', () => {
+  // A panel that hosts a bounded view (a live Session, a self-scrolling source
+  // panel) needs the tab root and the active panel to take the remaining
+  // height; content-sized Tabs inside a scroll area must keep their height.
+  function fillOf(element: HTMLElement | null | undefined): string | undefined {
+    return element?.style.flexGrow;
+  }
+
+  it('gives the root and the active panel the remaining height only when asked to fill', () => {
+    const filled = mountTabs(
+      <Tabs testID="filled" value="session" onValueChange={() => undefined} ariaLabel="Entry detail" layout="fill">
+        <Tabs.Item value="details" title="Details" retention="retain"><Text value="Details content" /></Tabs.Item>
+        <Tabs.Item value="session" title="Session"><Text value="Session content" /></Tabs.Item>
+      </Tabs>,
+    );
+    const filledRoot = filled.container.querySelector<HTMLElement>('[data-testid="filled"]');
+    const filledPanel = filled.container.querySelector<HTMLElement>('[role="tabpanel"]');
+    expect(fillOf(filledRoot)).toBe('1');
+    expect(fillOf(filledPanel)).toBe('1');
+    filled.unmount();
+
+    const content = mountTabs(
+      <Tabs testID="content" value="session" onValueChange={() => undefined} ariaLabel="Entry detail">
+        <Tabs.Item value="session" title="Session"><Text value="Session content" /></Tabs.Item>
+      </Tabs>,
+    );
+    expect(fillOf(content.container.querySelector<HTMLElement>('[data-testid="content"]'))).not.toBe('1');
+    expect(fillOf(content.container.querySelector<HTMLElement>('[role="tabpanel"]'))).not.toBe('1');
+    content.unmount();
   });
 });

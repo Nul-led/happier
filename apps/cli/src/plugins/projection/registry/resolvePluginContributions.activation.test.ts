@@ -182,17 +182,18 @@ describe('resolved plugin activation projection', () => {
       manifestPath: '/plugins/com.acme.voice/.happier-plugin/plugin.json',
       daemonEntryPath: null, devDaemonEntryPath: null,
       generatedUiArtifactsManifest: {
-        version: 1,
+        version: 2,
         entries: [{
-          contributionId: 'voice-runtime', tier: 'reactNative', platform: 'web',
-          entry: 'react-native/voice-runtime/index.js', files: [{
-            relativePath: 'react-native/voice-runtime/index.js',
+          artifactId: 'voice-runtime', tier: 'reactNative',
+          entry: 'react-native/voice-runtime/entry.cjs.bundle', files: [{
+            relativePath: 'react-native/voice-runtime/entry.cjs.bundle',
             digest: `sha256:${'2'.repeat(64)}`,
             byteSize: 1,
           }],
           digest: `sha256:${'1'.repeat(64)}`,
-          builtWith: { bundler: 'vite', version: '7.0.0' },
-          hostUiApiVersion: '1.0.0', compat: { react: '19.2.0', reactNative: '0.83.4' },
+          builtWith: { bundler: 'esbuild', version: '0.25.0' },
+          executable: { exports: ['activate'] },
+          hostUiApiRange: '^1.0.0',
         }],
       },
       sourceSpec: { kind: 'path', locator: '/plugins/com.acme.voice', trustPolicy: 'local_trusted', installPolicy: 'link' },
@@ -203,7 +204,7 @@ describe('resolved plugin activation projection', () => {
           id: 'conversation', title: 'Conversation', kind: 'conversation',
           roles: ['realtime_conversation', 'turn_control'], platforms: ['web'],
           capabilities: { turn: { cancelResponse: true, bargeIn: true } },
-          client: { artifactId: 'voice-runtime', modulePath: './voiceRuntime', exportName: 'activate' },
+          client: { artifactId: 'voice-runtime', exportName: 'activate' },
         }] },
       }),
     };
@@ -214,7 +215,7 @@ describe('resolved plugin activation projection', () => {
     expect(createResolvedContributionRegistry(projected).voiceProviders).toMatchObject([{
       pluginId: 'com.acme.voice', pluginRootPath: '/plugins/com.acme.voice',
       identity: { pluginId: 'com.acme.voice', localId: 'conversation' },
-      generatedUiArtifactsManifest: { entries: [{ contributionId: 'voice-runtime' }] },
+      generatedUiArtifactsManifest: { entries: [{ artifactId: 'voice-runtime' }] },
       definition: { client: { exportName: 'activate' } },
     }]);
   });

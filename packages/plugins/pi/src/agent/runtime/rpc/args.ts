@@ -74,6 +74,7 @@ function resolvePiRequestAuthExtensionArgs(env: Readonly<Record<string, string |
 }
 
 export function buildPiRpcArgs(opts?: Readonly<{
+  modelDiscoveryExtensionPath?: string;
   permissionMode?: PiPermissionMode;
   thinkingLevel?: string | null;
   resumeSessionId?: string | null;
@@ -92,6 +93,7 @@ export function buildPiRpcArgs(opts?: Readonly<{
     : null;
   const args: string[] = [
     ...resolvePiRequestAuthExtensionArgs(opts?.env),
+    ...(opts?.modelDiscoveryExtensionPath ? ['--extension', opts.modelDiscoveryExtensionPath] : []),
     ...(opts?.happierToolsExtension
       ? [
           '--extension',

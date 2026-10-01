@@ -1,5 +1,9 @@
 import type { AgentRuntimeFactoryContext, PluginInvocationContext } from '../invocation.js';
-import type { SubagentSummary, WorkStateService } from '../services/sessions.js';
+import type {
+  StructuredImageInputV1,
+  SubagentSummary,
+  WorkStateService,
+} from '../services/sessions.js';
 import type {
   AgentModelDescriptor,
   TerminalControlPort,
@@ -149,6 +153,10 @@ export type AgentTranscriptSessionEventPublicationResult = Readonly<{
 }>;
 
 export interface AgentTranscriptSessionEventPublisher {
+  /** Bind the Agent's exact native Session to the host's ordered durable source importer. */
+  followSource?(
+    request: Readonly<{ providerSessionId: string; replay: 'historical' | 'fresh' }>,
+  ): Promise<Readonly<{ dispose(): Promise<void> }>>;
   /**
    * Publishes one protocol-validated Session event into the host-owned durable
    * transcript. Resolution means the canonical outbox accepted durable custody;
@@ -284,6 +292,9 @@ export type AgentTerminalHostResolutionReason =
   | 'zellij_forced'
   | 'zellij_unavailable'
   | 'zellij_unavailable_tmux_fallback'
+  | 'herdr_forced'
+  | 'herdr_unavailable'
+  | 'herdr_attach_unsupported_on_windows'
   | 'windows_console_available'
   | 'windows_console_forced'
   | 'windows_console_unavailable'
@@ -320,6 +331,8 @@ export type AgentTerminalHostLaunchInput = Readonly<{
 export type AgentTerminalHostCreateOrAttachRequest = Readonly<{
   preference: TerminalHostPreference;
   sessionName: string;
+  /** Optional pane label, independent of the terminal host's server namespace. */
+  label?: string;
   workingDirectory: string;
   launch: AgentTerminalHostLaunchInput;
   isolatedEnv: boolean;
@@ -380,6 +393,8 @@ export type AgentSessionModel = Readonly<
 >;
 
 export type AgentSessionModelsSnapshot = Readonly<{
+  /** Last catalog observation time; zero identifies static or current-only model facts. */
+  observedAt?: number;
   models: readonly AgentSessionModel[] | null;
   currentModelId?: string | null;
 }>;
@@ -391,6 +406,23 @@ export type AgentSessionModelsSource = Readonly<{
 
 export type AgentSessionModelsService = Readonly<{
   bind(source: AgentSessionModelsSource): Disposable;
+}>;
+
+/** Native mode inventory and accepted current facts, never a desired configuration intent. */
+export type AgentSessionModesSnapshot = Readonly<{
+  observedAt?: number;
+  /** null means unobserved or unbound; [] is an observed withdrawal. */
+  modes: readonly Readonly<{ id: string; name: string; description?: string }>[] | null;
+  currentModeId?: string | null;
+}>;
+
+export type AgentSessionModesSource = Readonly<{
+  read(): AgentSessionModesSnapshot;
+  subscribe(listener: (snapshot: AgentSessionModesSnapshot) => void): Disposable;
+}>;
+
+export type AgentSessionModesService = Readonly<{
+  bind(source: AgentSessionModesSource): Disposable;
 }>;
 
 export type AgentSessionInFlightConfigurationOutcome = Readonly<
@@ -424,6 +456,8 @@ export type AgentSessionActiveInputBinding = Readonly<{
   canSteer(): boolean;
   canInterruptForPendingInput?(): boolean;
   onPromptQueued(): void;
+  /** Host Pending truth retired this exact input's delivery custody; neither acceptance nor cancellation. */
+  onInputRetired?(inputId: string): void;
   applyPermissionIntentDuringTurn(
     permissionIntent: AgentPermissionIntent,
   ): AgentSessionInFlightConfigurationOutcome | Promise<AgentSessionInFlightConfigurationOutcome>;
@@ -518,6 +552,20 @@ export type AgentSessionNativeHomeService = Readonly<{
   readFiles(fileIds: readonly string[]): Promise<Readonly<Record<string, Uint8Array>>>;
 }>;
 
+export type AgentSessionVerifiedImageInput = Readonly<{
+  url: string;
+  mimeType: string;
+  filename?: string;
+}>;
+
+/** Host-owned byte verification for one admitted Session image input. */
+export type AgentSessionInputFilesService = Readonly<{
+  readVerifiedImage(
+    input: StructuredImageInputV1,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<AgentSessionVerifiedImageInput | null>;
+}>;
+
 export type AgentSessionSubagentObservation = Readonly<{
   observationId: string;
   groupId?: string;
@@ -543,6 +591,7 @@ export type AgentSessionHostServices = Readonly<{
   features: AgentFeatureDecisionService;
   terminalHost?: AgentTerminalHostService;
   models: AgentSessionModelsService;
+  modes: AgentSessionModesService;
   activeInput: AgentSessionActiveInputService;
   sessionHooks: AgentSessionHooksService;
   transcripts: AgentTranscriptSessionEventPublisher & Readonly<{
@@ -554,6 +603,7 @@ export type AgentSessionHostServices = Readonly<{
   toolExecution: AgentToolExecutionService;
   /** Correlated provider-native child evidence; the host owns canonical child lifecycle and custody. */
   subagents: AgentSessionSubagentObservationPublisher;
+  inputFiles?: AgentSessionInputFilesService;
   nativeHome?: AgentSessionNativeHomeService;
   happierTools?: AgentSessionHappierToolsService;
 }>;

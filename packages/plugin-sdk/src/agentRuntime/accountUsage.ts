@@ -71,6 +71,21 @@ export type AgentAccountUsageRecoveryCredits = Readonly<{
   credits: AgentAccountUsageRecoveryCredit[];
 }>;
 
+/** Provider-observed subscription attached to the same account-usage record. */
+export type AgentAccountUsageSubscription = Readonly<{
+  status: 'subscribed' | 'none' | 'unavailable';
+  renewal: 'on' | 'off' | 'unknown';
+  observedAtMs: number;
+  staleAfterMs: number;
+  currentPeriodStartAtMs?: number;
+  currentPeriodEndAtMs?: number;
+  lastRefreshError?: Readonly<{
+    observedAtMs: number;
+    code: 'network' | 'malformed' | 'provider_backoff' | 'auth_failure' | 'missing_auth';
+    status?: number;
+  }>;
+}>;
+
 export type AgentAccountUsageMeter = Readonly<{
   meterId: string;
   label: string;
@@ -194,6 +209,7 @@ export type AgentAccountUsageSnapshot = Readonly<{
     | 'error_last_known_good';
   planLabel?: string | null;
   accountLabel?: string | null;
+  subscription?: AgentAccountUsageSubscription;
   recoveryCredits?: AgentAccountUsageRecoveryCredits;
   meters: AgentAccountUsageMeter[];
   diagnostics?: AgentAccountUsageDiagnostic[];

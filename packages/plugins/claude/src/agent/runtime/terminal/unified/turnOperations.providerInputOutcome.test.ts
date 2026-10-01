@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   createEventsFixture,
@@ -9,6 +9,76 @@ import {
 import { createClaudeUnifiedTerminalTurnOperations } from './turnOperations.testkit.js';
 
 describe('Claude Unified provider input outcomes', () => {
+  it.each(['after injection', 'during injection'] as const)('does not credit a delayed JSONL echo to a newer identical input: %s', async (echoTiming) => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service);
+    // The OS file-follow boundary delivers native rows; all projection/lifecycle/arbiter logic is real.
+    vi.mocked(ctx.agentRuntime.transcripts.fileFollow.follow).mockResolvedValue({
+      id: 'acceptance-evidence-follow',
+      drainNow: async () => undefined,
+      close: async () => undefined,
+    });
+    const runtime = createClaudeUnifiedTerminalTurnOperations({
+      ctx,
+      directory: '/tmp/claude-project',
+      happierSessionId: 'happy-acceptance-evidence',
+      hostPreference: 'zellij',
+      launchEnv: {},
+      permissionMode: 'default',
+      nativeOperationsOnly: true,
+    });
+    const accepted: string[] = [];
+    runtime.setOnPromptAcceptedByProvider((input) => { accepted.push(...(input.localIds ?? [])); });
+    try {
+      await runtime.startProviderSession();
+      const hooks = vi.mocked(ctx.agentRuntime.sessionHooks.startServer).mock.calls[0]?.[0];
+      if (!hooks?.onSessionHook) throw new Error('Hook server was not started');
+      await hooks.onSessionHook('claude-evidence', {
+        hook_event_name: 'SessionStart', session_id: 'claude-evidence',
+        transcript_path: '/tmp/claude-evidence.jsonl', source: 'startup',
+      });
+      await runtime.sendTurnPrompt('same prompt', { localId: 'first', localIds: ['first'], userMessageSeq: 1 });
+      await hooks.onSessionHook('claude-evidence', {
+        hook_event_name: 'UserPromptSubmit', session_id: 'claude-evidence',
+        prompt: 'same prompt', prompt_id: 'native-prompt-first', turnId: 'shared-turn',
+      });
+      expect(accepted).toEqual(['first']);
+      const follow = vi.mocked(ctx.agentRuntime.transcripts.fileFollow.follow).mock.calls[0]?.[0];
+      if (!follow) throw new Error('Transcript follow was not bound');
+      const emitDelayedEcho = () => runtime.observeSourceTranscript({
+        providerSessionId: 'claude-evidence', sourceId: 'source:first-echo',
+        row: { type: 'user', uuid: 'different-jsonl-uuid', promptId: 'native-prompt-first',
+          sessionId: 'claude-evidence', isSidechain: false, message: { role: 'user', content: 'same prompt' } },
+      });
+      if (echoTiming === 'during injection') {
+        runtime.beginTurnLifecycle();
+        terminalHost.service.injectUserPrompt.mockImplementationOnce(async (_handle, input) => {
+          await emitDelayedEcho();
+          return {
+            status: 'injected', injectedAt: 1_100, bytesWritten: input.text.length,
+            hostKind: terminalHost.handle.kind, hostSessionName: terminalHost.handle.sessionName,
+          };
+        });
+      }
+      await runtime.sendTurnPrompt('same prompt', { localId: 'second', localIds: ['second'], userMessageSeq: 2 });
+      if (echoTiming === 'after injection') await emitDelayedEcho();
+      expect(accepted).toEqual(['first']);
+      await hooks.onSessionHook('claude-evidence', {
+        hook_event_name: 'UserPromptSubmit', session_id: 'claude-evidence',
+        prompt: 'same prompt', prompt_id: 'native-prompt-second', turnId: 'shared-turn',
+      });
+      await runtime.observeSourceTranscript({
+        providerSessionId: 'claude-evidence', sourceId: 'source:second-echo',
+        row: { type: 'user', uuid: 'second-jsonl-uuid', promptId: 'native-prompt-second', promptSource: 'queued',
+          sessionId: 'claude-evidence', isSidechain: false, message: { role: 'user', content: 'same prompt' } },
+      });
+      expect(accepted).toEqual(['first', 'second']);
+    } finally {
+      await runtime.resetOrDisposeRuntime();
+    }
+  });
+
   it('reports pre-Enter terminal ambiguity immediately so the host can durably block the Pending row', async () => {
     const terminalHost = createTerminalHostFixture();
     const events = createEventsFixture();

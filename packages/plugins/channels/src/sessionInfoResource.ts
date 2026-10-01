@@ -22,11 +22,11 @@ export const SESSION_INFO_RESOURCE_RUNTIME: PluginDynamicResourceRuntime = {
       version: 1,
       root: {
         kind: 'group',
-        title: 'External conversations',
-        description: 'Conversation bridges associated with this Session.',
+        title: { key: 'plugins.channels.session.title', fallback: 'External conversations' },
+        description: { key: 'plugins.channels.session.emptyDescription', fallback: 'Conversations bound to this Session will appear here.' },
         children: [
-          { kind: 'status', label: 'Conversations', value: String(conversations) },
-          { kind: 'status', label: 'Need attention', value: String(attention) },
+          { kind: 'status', label: { key: 'plugins.channels.session.title', fallback: 'External conversations' }, value: String(conversations) },
+          { kind: 'status', label: { key: 'plugins.channels.session.composerChipAttention', fallback: 'External delivery needs attention' }, value: String(attention) },
         ],
       },
     }));

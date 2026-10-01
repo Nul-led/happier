@@ -414,7 +414,7 @@ async function resolveCurrentnessInputs(input: Readonly<{
 }>) {
     const generationAuthority = await readCurrentCommittedPluginGenerations(
         resolvePluginStorePaths({ happyHomeDir: input.happyHomeDir }),
-        { bundledArtifacts: [], isolateInvalidInstalledGenerations: false },
+        { isolateInvalidInstalledGenerations: false },
     );
     const admitted = generationAuthority?.generations.get(PLUGIN_ID);
     if (!generationAuthority || !admitted) {
@@ -563,7 +563,7 @@ describe('current global External Sessions publication', () => {
                 sessionId: SESSION_ID,
                 correlationId: 'current-global-owner-preservation',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             const firstPage = await current.list({
                 agentId: ROUTING_AGENT_ID,
@@ -755,7 +755,7 @@ describe('current global External Sessions publication', () => {
                 sessionId: SESSION_ID,
                 correlationId: 'current-global-pair-h',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             await writeExternalSessionsPlugin({ pluginRoot: iPluginRoot, version: 'I' });
             await seedCurrentLocalPathPluginFixture({
@@ -818,7 +818,7 @@ describe('current global External Sessions publication', () => {
                 sessionId: SESSION_ID,
                 correlationId: 'current-global-pair-i',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             await expect(iService.list({
                 agentId: ROUTING_AGENT_ID,
@@ -910,7 +910,7 @@ describe('current global External Sessions publication', () => {
                 sessionId: SESSION_ID,
                 correlationId: 'current-global-background-agent',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             await expect(agentService.list({
                 agentId: ROUTING_AGENT_ID,
@@ -1250,14 +1250,14 @@ describe('current global External Sessions publication', () => {
                     sessionId: `${SESSION_ID}-cold-first`,
                     correlationId: 'current-global-cold-first',
                     signal: new AbortController().signal,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                 }),
                 createCurrent({
                     binding,
                     sessionId: `${SESSION_ID}-cold-second`,
                     correlationId: 'current-global-cold-second',
                     signal: new AbortController().signal,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                 }),
             ]);
 

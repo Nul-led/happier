@@ -48,6 +48,31 @@ function makeSnapshot(overrides?: Partial<ScmWorkingSnapshot>): ScmWorkingSnapsh
 }
 
 describe('evaluateScmRemoteMutationPreconditions', () => {
+    it('preserves an active operation after files are resolved so remote mutation remains blocked', () => {
+        expect(evaluateScmRemoteMutationPreconditions({
+            kind: 'push',
+            snapshot: makeSnapshot({
+                operationState: { kind: 'rebase', canContinue: true, canAbort: true, unresolvedCount: 0 },
+            }),
+            hasExplicitTarget: true,
+            policy: {
+                requireUpstreamWhenNoExplicitTarget: true,
+                requireActiveHead: false,
+                blockPushOnConflicts: true,
+                blockPushWhenBehind: true,
+                requireCleanPull: true,
+                blockActiveOperation: true,
+            },
+            mapReasonToError: (_kind, reason) => ({
+                ok: false,
+                errorCode: reason === 'operation_in_progress'
+                    ? SCM_OPERATION_ERROR_CODES.BRANCH_OPERATION_IN_PROGRESS
+                    : SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+                error: reason,
+            }),
+        })).toMatchObject({ ok: false, errorCode: SCM_OPERATION_ERROR_CODES.BRANCH_OPERATION_IN_PROGRESS });
+    });
+
     it('normalizes snapshots and maps policy failures through the caller-owned error mapper', () => {
         const result = evaluateScmRemoteMutationPreconditions({
             kind: 'push',

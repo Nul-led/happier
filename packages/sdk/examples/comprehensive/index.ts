@@ -44,7 +44,7 @@ try {
   let session: HappierSession;
   try {
     session = await happier.sessions.spawn({
-      directory: workspacePath,
+      directory: { kind: 'path', path: workspacePath },
       agent: agentId,
       initialMessage: 'Say hello, then wait.',
     });

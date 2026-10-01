@@ -355,6 +355,9 @@ describe('CORE-A curated package exports', () => {
             'createExecutionRunHostBackendFromSessionRuntime',
             'createPluginActionHandlerNotStartedError',
             'createPluginRegistrationScope',
+            'normalizePluginAccountCollectionMigrationRuntimeProjection',
+            'normalizePluginDaemonDatabaseRuntimeProjection',
+            'projectPluginAccountCollectionDeclaration',
             'readPluginActionInputParser',
             'readPluginActionResultParser',
         ]);

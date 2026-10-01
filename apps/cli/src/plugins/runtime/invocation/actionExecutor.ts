@@ -3,6 +3,7 @@ import {
   createPluginActionPresentUserGate,
   projectPluginActionFailureCode,
   type ApprovalExecutionOriginV1,
+  type PluginSourceCustodyV1,
   type TargetActionApprovalReplayPlacementV1,
   type PluginActionPresentUserGatePolicy,
 } from '@happier-dev/protocol';
@@ -43,6 +44,8 @@ export type ResolvedTargetAction = NormalizedTargetActionPolicy & Readonly<{
   input: unknown;
   accountId?: string;
   resourceId?: string;
+  /** Durable source authority for replay; live admission remains occurrence-fenced. */
+  sourceCustody: PluginSourceCustodyV1;
   /** Host-stamped Action-settings decision, distinct from plugin confirmation. */
   approvalRequiredByActionSettings?: true;
   policyFingerprint: string;
@@ -57,7 +60,8 @@ export type ResolvedTargetAction = NormalizedTargetActionPolicy & Readonly<{
 export function resolveCatalogTargetActionPolicy(params: Readonly<{
   pluginId: string;
   localId: string;
-  generation: string;
+  occurrenceId: string;
+  sourceCustody: PluginSourceCustodyV1;
   dangerLevel: ResolvedTargetAction['dangerLevel'];
   scopes: ResolvedTargetAction['scopes'];
   surfaces: ResolvedTargetAction['surfaces'];
@@ -70,7 +74,8 @@ export function resolveCatalogTargetActionPolicy(params: Readonly<{
     qualifiedId: `${params.pluginId}/actions/${params.localId}`,
     pluginId: params.pluginId,
     localId: params.localId,
-    generation: params.generation,
+    occurrenceId: params.occurrenceId,
+    sourceCustody: params.sourceCustody,
     dangerLevel: params.dangerLevel,
     scopes: params.scopes,
     surfaces: params.surfaces,
@@ -127,7 +132,6 @@ type TargetActionPolicyFingerprintInput = NormalizedTargetActionPolicy & Readonl
 export function fingerprintTargetActionPolicy(action: TargetActionPolicyFingerprintInput): string {
   return createHash('sha256').update(stable({
     qualifiedId: action.qualifiedId,
-    generation: action.generation,
     dangerLevel: action.dangerLevel,
     scopes: action.scopes,
     surfaces: action.surfaces,
@@ -238,7 +242,7 @@ function isCurrentServiceBinding(
   action: ResolvedTargetAction,
   serviceBinding: PluginInvocationServiceBinding,
 ): boolean {
-  return serviceBinding.generation === action.generation;
+  return serviceBinding.occurrenceId === action.occurrenceId;
 }
 
 function bindResolvedPolicy(action: ResolvedTargetAction): ResolvedTargetAction {
@@ -254,7 +258,7 @@ export function resolvePresentUserGatePolicy(
 ): PluginActionPresentUserGatePolicy {
   return Object.freeze({
     qualifiedId: action.qualifiedId,
-    generation: action.generation,
+    occurrenceId: action.occurrenceId,
     dangerLevel: action.dangerLevel,
     scopes: action.scopes,
     surfaces: action.surfaces,
@@ -299,7 +303,7 @@ export function createTargetActionExecutor(deps: Readonly<{
   requestCurrentIntent?: (request: TargetActionCurrentIntentRequest) => Promise<TargetActionCurrentIntentResult>;
   invoke: (action: ResolvedTargetAction, args: Readonly<{ surface: string; sessionId?: string; signal?: AbortSignal }>, serviceBinding: PluginInvocationServiceBinding) => Promise<TargetActionExecutionResult>;
   redactFailureText?: (action: ResolvedTargetAction, value: string) => string;
-  diagnostic?: (fact: Readonly<{ qualifiedId: string; generation: string; surface: string; status: string; code?: string }>) => void | Promise<void>;
+  diagnostic?: (fact: Readonly<{ qualifiedId: string; occurrenceId: string; surface: string; status: string; code?: string }>) => void | Promise<void>;
 }>) {
   type ExecuteArgs = Readonly<{
     pluginId: string;
@@ -365,7 +369,7 @@ export function createTargetActionExecutor(deps: Readonly<{
         try {
           await deps.diagnostic?.({
             qualifiedId: action?.qualifiedId ?? `${args.pluginId}/actions/${args.localId}`,
-            generation: action?.generation ?? 'unavailable',
+            occurrenceId: action?.occurrenceId ?? 'unavailable',
             surface: args.surface, status: publicResult.status, ...('code' in publicResult ? { code: publicResult.code } : {}),
           });
         } catch { /* Diagnostics are failure-isolated from authorization and execution. */ }

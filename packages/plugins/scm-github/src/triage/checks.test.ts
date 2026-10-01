@@ -35,6 +35,18 @@ function emptyStatus(): StubHttpResponse {
 }
 
 describe('GitHub pull-request checks', () => {
+  it('does not claim passing counts or an all-passing verdict when a completed conclusion is missing', async () => {
+    const { surface } = await readChecks((request) => request.url.includes('/check-runs')
+      ? { status: 200, body: githubCheckRunsResponse({ runs: [
+        githubCheckRun({ id: 9_001, name: 'build', status: 'completed', conclusion: null }),
+      ] }) } : emptyStatus());
+    expect(surface.state).toBe('unknown');
+    expect(surface.passingCount).toBeNull();
+    expect(surface.failingCount).toBeNull();
+    expect(surface.runningCount).toBeNull();
+    expect(surface.rowState).toBeNull();
+  });
+
   it('reads both the check runs and the commit statuses, each on its own request', async () => {
     const { transport } = await readChecks((request) => (request.url.includes('/check-runs')
       ? { status: 200, body: githubCheckRunsResponse({ runs: [] }) }

@@ -57,6 +57,21 @@ const APPROVED_CATALOG_VOCABULARY = [
   'Progress', 'Banner',
   'PluginNavigation', 'Tooltip', 'Dialog', 'Sheet', 'Drawer',
   'Grid', 'Tree', 'Skeleton', 'DiffViewer', 'KeyHint',
+  // r0.42 (Triage plan): the numbered story-rail step, one presentation owner.
+  'Step',
+  // configuration-surfaces r1 U9 (03b amendment r0.14): visual tiles, one presentation owner.
+  'SelectionTiles',
+  // configuration-surfaces r1 U9 (03b amendment r0.14): the page header, one presentation owner.
+  'PageHeader',
+  // configuration-surfaces pilot (consumed by that plan): measured list+detail and column layouts.
+  'ListDetailLayout', 'Columns', 'Column',
+  // r0.41 (Triage plan): the generic Collection (table, list, board, grid and their detail containers).
+  'Collection',
+  // Embeddable Happier plan 05: a host-mediated live Session (one controller, composable parts).
+  'SessionProvider', 'SessionTranscript', 'SessionComposer', 'SessionChat',
+  // Pane states and shell columns: existing public adapters over shared presentation owners.
+  'FreshnessLine', 'NavigationList', 'NavigationList.Group', 'NavigationList.Row',
+  'DetailsPane', 'PaneHeaderContent', 'Avatar', 'AgentCursor', 'PresenceCapsule', 'StatusCapsule',
 ] as const;
 
 type DeclarativeDisposition = Readonly<{
@@ -1048,17 +1063,30 @@ const GRADUATED_FAMILIES: readonly GraduatedFamily[] = [
     proofTier: 'behavior-owning' as const,
     phase: 'graduated' as const,
     publiclyExported: true,
-    sharedModule: 'presentation/form/Fields.tsx',
+    // D6: a Toggle is the one shared switch that Happier core's Switch
+    // adapters (web and native) render too; core's action/declarative forms
+    // reach it through HappierToggle. Its former core-local web drawing is gone.
+    sharedModule: symbol === 'Toggle' ? 'presentation/form/Switch.tsx' : 'presentation/form/Fields.tsx',
     sharedSymbol: symbol === 'FormActions'
         ? 'HappierFormActions'
-        : `Happier${symbol}`,
+        : symbol === 'Toggle' ? 'HappierSwitch' : `Happier${symbol}`,
     pluginOwner: { module: 'components/Form.tsx', symbol },
     coreConsumers: symbol === 'ValidationMessage' || symbol === 'FormActions'
       ? ['components/plugins/surfaces/DeclarativePluginSurface.tsx']
-      : [
-          'components/sessions/actions/ActionInputFields.tsx',
-          'components/plugins/surfaces/DeclarativePluginSurface.tsx',
-        ],
+      : symbol === 'Toggle'
+        ? ['components/ui/forms/Switch.web.tsx', 'components/ui/forms/Switch.tsx']
+        : [
+            'components/sessions/actions/ActionInputFields.tsx',
+            'components/plugins/surfaces/DeclarativePluginSurface.tsx',
+          ],
+    ...(symbol === 'Toggle'
+      ? {
+          deletedCoreDuplicates: [
+            { path: 'components/ui/forms/Switch.web.tsx', symbol: 'TRACK_WIDTH' },
+            { path: 'components/ui/forms/Switch.web.tsx', symbol: 'THUMB_TRANSITION' },
+          ],
+        }
+      : {}),
     positiveConsumer: {
       kind: 'external-author-reference',
       pathFromRepoRoot: 'packages/plugin-ui/fixtures/external-authoring/src/browser.tsx',
@@ -1142,6 +1170,267 @@ const GRADUATED_FAMILIES: readonly GraduatedFamily[] = [
       },
     },
   },
+  ...([
+    ['SessionProvider', 'SessionProviderProps'],
+    ['SessionTranscript', 'SessionPartProps'],
+    ['SessionComposer', 'SessionPartProps'],
+    ['SessionChat', 'SessionChatProps'],
+  ] as const).map(([publicName, propTypeName]) => ({
+    publicName,
+    propTypeName,
+    family: 'Host-mediated Session',
+    disposition: 'required' as const,
+    // The app's one Session implementation renders every part through the private
+    // `renderSessionPart` bridge; plugin-ui never draws a transcript or composer. It graduates with
+    // the loaded-platform proof, like the other host-mediated families.
+    proofTier: 'behavior-owning' as const,
+    phase: 'in-progress' as const,
+    publiclyExported: true,
+    sharedModule: 'presentationHost/context.ts',
+    sharedSymbol: 'useOptionalPluginUiPresentationHost',
+    pluginOwner: { module: 'components/Session.tsx', symbol: publicName },
+    // The app side is a presentation-host renderer (`PluginSessionPartHost` installed by
+    // `pluginUiPrivatePresentationHost.tsx`), not a consumer of a shared presentation primitive.
+    coreConsumers: [],
+    positiveConsumer: publicName === 'SessionChat'
+      ? { kind: 'plugin-surface' as const, pathFromRepoRoot: 'packages/plugins/triage/src/ui/detail/sessionPanel.tsx' }
+      : {
+        kind: 'external-author-reference' as const,
+        pathFromRepoRoot: 'packages/plugin-ui/fixtures/external-authoring/src/Surface.tsx',
+      },
+    devMountSymbols: [],
+    declarative: {
+      kind: 'not-applicable' as const,
+      reason: 'A live Session is host product composition; hosted and declarative realms use the embed route.',
+    },
+  })),
+  {
+    publicName: 'Step',
+    propTypeName: 'StepProps',
+    family: 'Story step',
+    disposition: 'required',
+    // The Triage detail's story rail and every source's Overview panel draw
+    // their numbered and checks-state steps through this one owner. No core
+    // screen draws a story rail yet, so it stays short of graduation.
+    proofTier: 'simple',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/content/Step.tsx',
+    sharedSymbol: 'HappierStep',
+    pluginOwner: { module: 'components/Step.tsx', symbol: 'Step' },
+    coreConsumers: [],
+    positiveConsumer: {
+      kind: 'plugin-surface',
+      pathFromRepoRoot: 'packages/plugins/triage/src/ui/detail/storyRail.tsx',
+    },
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'V2 has no story-step node; a declarative surface has no story rail consumer.' },
+  },
+  {
+    publicName: 'SelectionTiles',
+    propTypeName: 'SelectionTilesProps',
+    family: 'Selection tiles',
+    disposition: 'required',
+    // Card and visual choice tiles: selection, radio/checkbox semantics, the
+    // roving keyboard and the selection ring live in one presentation owner
+    // that Happier core's settings pickers and this adapter both render. It
+    // stays short of graduation until a maintained plugin page consumes it.
+    proofTier: 'behavior-owning',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/form/SelectionTiles.tsx',
+    sharedSymbol: 'HappierSelectionTiles',
+    pluginOwner: { module: 'components/SelectionTiles.tsx', symbol: 'SelectionTiles' },
+    coreConsumers: ['components/ui/forms/SelectionTiles.tsx'],
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'V2 has no choice-tile node; a visual preview is an executable React element a declarative document cannot carry.' },
+  },
+  {
+    publicName: 'PageHeader',
+    propTypeName: 'PageHeaderProps',
+    family: 'Page header',
+    disposition: 'required',
+    // The title/purpose/meta/mark/actions layout, the gutter-or-title-row back
+    // placement and the page type scale live in one presentation owner that
+    // Happier core's PageHeader and this adapter both render. The Inspector page
+    // is its maintained plugin consumer; packed/loaded platform proof is open.
+    proofTier: 'simple',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/layout/PageHeader.tsx',
+    sharedSymbol: 'HappierPageHeader',
+    pluginOwner: { module: 'components/PageHeader.tsx', symbol: 'PageHeader' },
+    coreConsumers: ['components/ui/layout/PageHeader.tsx'],
+    positiveConsumer: {
+      kind: 'plugin-surface',
+      pathFromRepoRoot: 'packages/plugins/inspector/src/ui/renderSurface.tsx',
+    },
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'V2 has no page-header node; host-rendered settings sit inside the host page chrome.' },
+  },
+  {
+    publicName: 'ListDetailLayout',
+    propTypeName: 'ListDetailLayoutProps',
+    family: 'List detail layout',
+    disposition: 'required',
+    // Measured list + detail geometry with retained pane identity; Happier
+    // core's settings collections render the same owner.
+    proofTier: 'behavior-owning',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/collection/ListDetailLayout.tsx',
+    sharedSymbol: 'HappierListDetailLayout',
+    pluginOwner: { module: 'components/Layout.tsx', symbol: 'ListDetailLayout' },
+    coreConsumers: ['components/settings/shell/SettingsCollectionLayout.tsx'],
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'V2 has no layout node beyond stack/group.' },
+  },
+  {
+    publicName: 'Columns',
+    propTypeName: 'ColumnsProps',
+    family: 'Columns',
+    disposition: 'required',
+    proofTier: 'simple',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/layout/Columns.tsx',
+    sharedSymbol: 'HappierColumns',
+    pluginOwner: { module: 'components/Layout.tsx', symbol: 'Columns' },
+    coreConsumers: [],
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'V2 has no layout node beyond stack/group.' },
+  },
+  {
+    publicName: 'Column',
+    propTypeName: 'ColumnProps',
+    family: 'Columns',
+    disposition: 'required',
+    proofTier: 'simple',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/layout/Columns.tsx',
+    sharedSymbol: 'HappierColumn',
+    pluginOwner: { module: 'components/Layout.tsx', symbol: 'Column' },
+    coreConsumers: [],
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'V2 has no layout node beyond stack/group.' },
+  },
+  {
+    publicName: 'Collection',
+    propTypeName: 'CollectionProps',
+    family: 'Collection',
+    disposition: 'required',
+    // COLLECTION.md r0.41: one item anatomy drawn as table, list, board or grid, with the split, push and drawer
+    // detail containers. PRs & Issues presents through it; Happier core's settings collections adopt it later.
+    proofTier: 'behavior-owning',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/collection/collectionTable.ts',
+    sharedSymbol: 'resolveHappierCollectionComposition',
+    pluginOwner: { module: 'components/Collection.tsx', symbol: 'Collection' },
+    coreConsumers: [],
+    positiveConsumer: {
+      kind: 'plugin-surface',
+      pathFromRepoRoot: 'packages/plugins/triage/src/ui/shell/root.tsx',
+    },
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'V2 has no collection node; a declarative surface uses List.' },
+  },
+  {
+    publicName: 'FreshnessLine',
+    propTypeName: 'FreshnessLineProps',
+    family: 'Freshness line',
+    disposition: 'required',
+    proofTier: 'behavior-owning',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/state/asOfTime.ts',
+    sharedSymbol: 'resolveHappierFreshnessText',
+    pluginOwner: { module: 'components/State.tsx', symbol: 'FreshnessLine' },
+    coreConsumers: ['components/ui/surfaces/SurfaceFreshnessLine.tsx'],
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'V2 has no retained-content freshness node.' },
+  },
+  {
+    publicName: 'NavigationList',
+    propTypeName: 'NavigationListProps',
+    family: 'Navigation list',
+    disposition: 'required',
+    proofTier: 'behavior-owning',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/collection/CollectionList.tsx',
+    sharedSymbol: 'HappierCollectionList',
+    pluginOwner: { module: 'components/NavigationList.tsx', symbol: 'NavigationListRoot' },
+    coreConsumers: ['components/ui/lists/collection/CollectionList.tsx'],
+    positiveConsumer: {
+      kind: 'plugin-surface',
+      pathFromRepoRoot: 'packages/plugins/triage/src/ui/column/viewsColumn.tsx',
+    },
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'Navigation columns are mounted plugin surfaces; V2 has no navigation-list node.' },
+  },
+  {
+    publicName: 'NavigationList.Group',
+    propTypeName: 'NavigationListGroupProps',
+    family: 'Navigation list group',
+    disposition: 'required',
+    proofTier: 'simple',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/collection/CollectionList.tsx',
+    sharedSymbol: 'HappierCollectionListGroupLabel',
+    pluginOwner: { module: 'components/NavigationList.tsx', symbol: 'NavigationListGroup' },
+    coreConsumers: ['components/ui/lists/collection/CollectionList.tsx'],
+    positiveConsumer: {
+      kind: 'plugin-surface',
+      pathFromRepoRoot: 'packages/plugins/triage/src/ui/column/viewsColumn.tsx',
+    },
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'V2 has no navigation-list group node.' },
+  },
+  {
+    publicName: 'NavigationList.Row',
+    propTypeName: 'NavigationListRowProps',
+    family: 'Navigation list row',
+    disposition: 'required',
+    proofTier: 'behavior-owning',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/collection/List.tsx',
+    sharedSymbol: 'HappierListItem',
+    pluginOwner: { module: 'components/NavigationList.tsx', symbol: 'NavigationListRow' },
+    coreConsumers: [],
+    positiveConsumer: {
+      kind: 'plugin-surface',
+      pathFromRepoRoot: 'packages/plugins/triage/src/ui/column/viewsColumn.tsx',
+    },
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'V2 has no navigation-list row node.' },
+  },
+  // Named exports are catalogued too. These record source ownership, not loaded-platform graduation.
+  ...[
+    { publicName: 'DetailsPane', module: 'components/DetailsPane.tsx', sharedModule: 'components/DetailsPane.tsx', sharedSymbol: 'DetailsPane' },
+    { publicName: 'PaneHeaderContent', module: 'components/PaneHeaderContent.tsx', sharedModule: 'components/PaneHeaderContent.tsx', sharedSymbol: 'PaneHeaderContent' },
+    { publicName: 'Avatar', module: 'components/Avatar.tsx', sharedModule: 'components/Avatar.tsx', sharedSymbol: 'Avatar' },
+    { publicName: 'AgentCursor', module: 'components/Copresence.tsx', sharedModule: 'presentation/copresence/AgentCursor.tsx', sharedSymbol: 'HappierAgentCursor' },
+    { publicName: 'PresenceCapsule', module: 'components/Copresence.tsx', sharedModule: 'presentation/copresence/PresenceCapsule.tsx', sharedSymbol: 'HappierPresenceCapsule' },
+    { publicName: 'StatusCapsule', module: 'components/Copresence.tsx', sharedModule: 'presentation/status/StatusCapsule.tsx', sharedSymbol: 'HappierStatusCapsule' },
+  ].map((entry): GraduatedFamily => ({
+    publicName: entry.publicName,
+    propTypeName: `${entry.publicName}Props`,
+    family: entry.publicName,
+    disposition: 'required',
+    proofTier: 'behavior-owning',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: entry.sharedModule,
+    sharedSymbol: entry.sharedSymbol,
+    pluginOwner: { module: entry.module, symbol: entry.publicName },
+    coreConsumers: [],
+    devMountSymbols: [],
+    declarative: { kind: 'not-applicable', reason: 'This mounted presentation uses the host binding; V2 has no corresponding node.' },
+  })),
   {
     publicName: 'PluginNavigation',
     propTypeName: 'never',
@@ -1503,11 +1792,19 @@ function collectPackageSources(directory: string): string[] {
  */
 function publicComponentPaths(): readonly string[] {
   const componentIndex = read(join(packageSourceRoot, 'components/index.public.ts'));
-  const modulePaths = [...componentIndex.matchAll(/^export \* from '\.\/([^']+)\.js';$/gmu)]
-    .map((match) => match[1])
-    .filter((moduleName) => moduleName !== 'PluginUiProvider');
+  const barrel = ts.createSourceFile('index.public.ts', componentIndex, ts.ScriptTarget.Latest, true);
+  const exports = barrel.statements.flatMap((statement) => {
+    if (!ts.isExportDeclaration(statement) || statement.isTypeOnly
+      || !statement.moduleSpecifier || !ts.isStringLiteral(statement.moduleSpecifier)) return [];
+    const moduleName = /^\.\/([^/]+)\.js$/u.exec(statement.moduleSpecifier.text)?.[1];
+    if (!moduleName || moduleName === 'PluginUiProvider') return [];
+    const clause = statement.exportClause;
+    return [{ moduleName, names: clause && ts.isNamedExports(clause)
+      ? new Set(clause.elements.filter((entry) => !entry.isTypeOnly).map((entry) => entry.propertyName?.text ?? entry.name.text))
+      : null }];
+  });
 
-  return modulePaths.flatMap((moduleName) => {
+  return exports.flatMap(({ moduleName, names }) => {
     const moduleBase = join(packageSourceRoot, 'components', moduleName);
     const modulePath = [`${moduleBase}.tsx`, `${moduleBase}.ts`]
       .find((candidate) => existsSync(candidate));
@@ -1529,8 +1826,8 @@ function publicComponentPaths(): readonly string[] {
     ));
 
     return [
-      ...roots.filter((root) => !namespaceRoots.has(root) && !root.startsWith('use')),
-      ...compoundMembers,
+      ...roots.filter((root) => !namespaceRoots.has(root) && !root.startsWith('use') && (names === null || names.has(root))),
+      ...compoundMembers.filter((member) => names === null || names.has(member.split('.')[0]!)),
     ];
   });
 }
@@ -1750,6 +2047,22 @@ describe('graduated shared presentation families (§8.2)', () => {
       'BrandMark',
       'DiffViewer',
       'TargetedSurface',
+      'SessionProvider',
+      'SessionTranscript',
+      'SessionComposer',
+      'SessionChat',
+      'Step',
+      'SelectionTiles',
+      'PageHeader',
+      'ListDetailLayout',
+      'Columns',
+      'Column',
+      'Collection',
+      'FreshnessLine',
+      'NavigationList',
+      'NavigationList.Group',
+      'NavigationList.Row',
+      'DetailsPane', 'PaneHeaderContent', 'Avatar', 'AgentCursor', 'PresenceCapsule', 'StatusCapsule',
     ]);
   });
 
@@ -1923,6 +2236,47 @@ describe('graduated shared presentation families (§8.2)', () => {
         || (entry.sharedSymbol === 'HappierPressable' && /from '\.\/Button\.js'/u.test(pluginSource));
       expect(consumesSharedPresentation, `${entry.publicName} must render its shared presentation owner`).toBe(true);
     }
+  });
+
+  it('keeps the D6 select-trigger and segmented visuals on one presentation owner for core and plugin', () => {
+    // Select's catalog owner stays the inline HappierSelect; its `field` and
+    // `segmented` presentations draw shared visuals that core also consumes.
+    const consumers = [
+      { app: 'components/ui/forms/fieldBox.ts', symbol: 'HAPPIER_FIELD_BOX_METRICS' },
+      { app: 'components/ui/forms/dropdown/renderDropdownItemTriggerRightElement.tsx', symbol: 'HappierFieldBoxTrigger' },
+      { app: 'components/ui/navigation/SegmentedTabBar.tsx', symbol: 'HAPPIER_SEGMENTED_METRICS' },
+      { app: 'components/ui/motion/motionTokens.ts', symbol: 'HAPPIER_MOTION_V1' },
+    ] as const;
+    for (const consumer of consumers) {
+      const source = read(join(appSourceRoot, consumer.app));
+      expect(source, `${consumer.app} must consume ${consumer.symbol}`).toContain(consumer.symbol);
+      expect(source).toContain('@happier-dev/plugin-ui/presentation');
+    }
+    expect(read(join(packageSourceRoot, 'components/Overlay.tsx'))).toContain('HappierFieldBoxTrigger');
+    expect(read(join(packageSourceRoot, 'components/Form.tsx'))).toContain('HappierSegmentedChoice');
+    // The field box's numbers live only in the shared owner.
+    expect(withoutCommentProse(read(join(appSourceRoot, 'components/ui/forms/fieldBox.ts')))).not.toMatch(/minHeightPx:\s*\d/u);
+  });
+
+  it('keeps the page field row (text field box and typed-in-place draft) on one presentation owner for core and plugin', () => {
+    // r0.14: TextField's `field` presentation and Happier core's page text
+    // fields draw the same box, and a value typed in place commits through one
+    // draft owner. Core keeps its own text input host; the box, the input
+    // metrics and the draft rule are shared.
+    const consumers = [
+      { app: 'components/ui/forms/FieldTextInput.tsx', symbol: 'HappierFieldTextBox' },
+      { app: 'components/ui/forms/FieldTextInput.tsx', symbol: 'resolveHappierFieldTextInputMetrics' },
+      { app: 'components/ui/forms/FieldValueItem.tsx', symbol: 'useHappierFieldValueDraft' },
+    ] as const;
+    for (const consumer of consumers) {
+      const source = read(join(appSourceRoot, consumer.app));
+      expect(source, `${consumer.app} must consume ${consumer.symbol}`).toContain(consumer.symbol);
+      expect(source).toContain('@happier-dev/plugin-ui/presentation');
+    }
+    expect(read(join(packageSourceRoot, 'presentation/form/Fields.tsx'))).toContain('HappierFieldTextBox');
+    expect(read(join(packageSourceRoot, 'components/Form.tsx'))).toContain('useHappierFieldValueDraft');
+    // The draft filter lives only in the shared owner.
+    expect(withoutCommentProse(read(join(appSourceRoot, 'components/ui/forms/FieldValueItem.tsx')))).not.toContain('replace(/[^0-9');
   });
 
   it('keeps the real Popover placement algorithm shared instead of retaining a core-local resolver', () => {

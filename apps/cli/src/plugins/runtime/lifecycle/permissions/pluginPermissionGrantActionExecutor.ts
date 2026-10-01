@@ -20,7 +20,10 @@ import type { RevalidatePluginActionCallerMaterialization } from '@/plugins/runt
 import type { StoredCredentials } from '@/persistence';
 import { resolveServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
 
-import { createServerPluginPermissionGrantListReader } from './pluginPermissionGrantListReader';
+import {
+  createServerPluginPermissionGrantListReader,
+  retireAccountLifetimePluginPermissionGrant,
+} from './pluginPermissionGrantListReader';
 import { createServerPluginPermissionGrantRequester } from './pluginPermissionGrantRequester';
 
 type ExecutePluginPermissionGrantAction = NonNullable<ActionExecutorDeps['pluginPermissionGrantAction']>;
@@ -165,11 +168,13 @@ export function createPluginPermissionGrantActionExecutor(params: Readonly<{
       if (args.actionId === 'plugins.permissions.grants.revoke') {
         // Grant ownership is enforced atomically server-side against the
         // proven exact caller; no client-side ownership pre-read is trusted.
-        return await transport.mutate(
+        const result = await transport.mutate(
           args.actionId,
           { ...args.input, caller: callerRef },
           options,
         );
+        retireAccountLifetimePluginPermissionGrant(args.input.grantId);
+        return result;
       }
       return await transport.mutate(args.actionId, args.input, options);
     }
@@ -179,6 +184,10 @@ export function createPluginPermissionGrantActionExecutor(params: Readonly<{
     if (args.actionId === 'plugins.permissions.grants.request') {
       return failure('plugin_permission_grant_publisher_proof_required');
     }
-    return await transport.mutate(args.actionId, args.input, options);
+    const result = await transport.mutate(args.actionId, args.input, options);
+    if (args.actionId === 'plugins.permissions.grants.revoke') {
+      retireAccountLifetimePluginPermissionGrant(args.input.grantId);
+    }
+    return result;
   };
 }

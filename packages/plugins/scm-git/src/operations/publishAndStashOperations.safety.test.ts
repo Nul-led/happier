@@ -4,7 +4,8 @@ import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/plugin-sdk/scm';
 
 const runScmCommand = vi.fn();
 
-vi.mock('../runtime.js', () => ({
+vi.mock('../runtime.js', async (importOriginal) => ({
+    ...await importOriginal<typeof import('../runtime.js')>(),
     runScmCommand,
 }));
 

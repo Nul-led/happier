@@ -19,6 +19,10 @@
       "react-native": "./dist/ui/voice/index.native.js",
       "default": "./dist/ui/voice/index.js"
     },
+    "./happier-plugin-ui/voice-runtime-web": {
+      "react-native": "./dist/ui/voice/index.native.js",
+      "default": "./dist/ui/voice/index.js"
+    },
     "./protocol/runtimeDescriptorV1": {
       "types": "./dist/protocol/runtimeDescriptorV1.d.ts",
       "default": "./dist/protocol/runtimeDescriptorV1.js"

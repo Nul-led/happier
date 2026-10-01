@@ -7,6 +7,17 @@ import {
 } from './controls';
 
 describe('Codex app-server session controls', () => {
+    it.each(['rejected', 'malformed', 'empty'] as const)('distinguishes %s model discovery from an unavailable observation', async (outcome) => {
+        const snapshot = await readCodexAppServerSessionControls({
+            client: { request: async (method) => {
+                if (method !== 'model/list') return [];
+                if (outcome === 'rejected') throw new Error('provider unavailable');
+                return outcome === 'malformed' ? { unexpected: [] } : [];
+            } },
+        });
+        expect(snapshot).toMatchObject({ availableModels: [], modelsObserved: outcome === 'empty' });
+    });
+
     it('normalizes Codex modes and model-scoped options into canonical session-control states', async () => {
         const client = {
             request: vi.fn(async (method: string) => {
@@ -48,6 +59,7 @@ describe('Codex app-server session controls', () => {
         expect(client.request).toHaveBeenCalledWith('collaborationMode/list', {});
         expect(client.request).toHaveBeenCalledWith('model/list', {});
         expect(snapshot).toEqual({
+            modelsObserved: true,
             availableModes: [
                 { id: 'plan', name: 'Plan', description: 'Think first' },
                 { id: 'default', name: 'Default' },

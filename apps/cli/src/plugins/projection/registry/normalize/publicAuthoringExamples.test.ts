@@ -127,14 +127,14 @@ describe('plugin SDK public installable examples', () => {
       expect(externalEntries[`reactNativeBundle:${publicAuthoring.pluginId}:${surfaceId}-renderer`]).toBeUndefined();
     }
 
-    const sessionWidgetEntryId = `surfacePlacement:${publicAuthoring.pluginId}:review-status-widget`;
-    expect(externalEntries[sessionWidgetEntryId]).toEqual(firstPartyEntries[sessionWidgetEntryId]);
-    expect(externalEntries[sessionWidgetEntryId]).toMatchObject({
+    const widgetEntryId = `surfacePlacement:${publicAuthoring.pluginId}:review-status-widget`;
+    expect(externalEntries[widgetEntryId]).toEqual(firstPartyEntries[widgetEntryId]);
+    expect(externalEntries[widgetEntryId]).toMatchObject({
       pluginId: publicAuthoring.pluginId,
       contributionKind: 'surfacePlacement',
       descriptorId: 'review-status-widget',
       binding: {
-        role: 'sessionWidget',
+        role: 'widget',
         rendererChain: [
           { pluginId: publicAuthoring.pluginId, localId: 'review-native' },
           { pluginId: publicAuthoring.pluginId, localId: 'review-web' },
@@ -148,7 +148,7 @@ describe('plugin SDK public installable examples', () => {
     });
   });
 
-  it('projects maintained external and built-in sessionWidget declarations through the same public contract', async () => {
+  it('projects maintained external and built-in widget declarations through the same public contract', async () => {
     const external = await loadCodeDefinedPublicAuthoring();
     const builtIn = await loadCodeDefinedChannels();
     const project = (plugin: LoadedPlugin, provenance: 'first_party' | 'external') => {
@@ -167,14 +167,14 @@ describe('plugin SDK public installable examples', () => {
     expect(externalWidget).toBeDefined();
     expect(builtInWidget).toBeDefined();
     if (!externalWidget || externalWidget.contributionKind !== 'surfacePlacement') {
-      throw new Error('Expected the external sessionWidget surface placement');
+      throw new Error('Expected the external widget surface placement');
     }
     if (!builtInWidget || builtInWidget.contributionKind !== 'surfacePlacement') {
-      throw new Error('Expected the built-in sessionWidget surface placement');
+      throw new Error('Expected the built-in widget surface placement');
     }
     const expectedContract = {
       contributionKind: 'surfacePlacement',
-      binding: { role: 'sessionWidget', targetKind: 'session' },
+      binding: { role: 'widget', targetKind: 'session' },
       renderer: { kind: 'reactNative' },
       availability: { state: 'blocked', reason: 'generated_react_native_artifact_missing' },
     } as const;
@@ -259,7 +259,7 @@ describe('plugin SDK public installable examples', () => {
       provenance: 'external',
     }));
 
-    const model = resolveDeclarativeProjectionModels({ registry, generation: 11 })[
+    const model = resolveDeclarativeProjectionModels({ registry, readPluginOccurrenceId: () => '11' })[
       'examples.projects-tasks\0projects-tasks-declarative'
     ];
     expect(model).toBeDefined();
@@ -374,7 +374,7 @@ describe('plugin SDK public installable examples', () => {
       target: { kind: 'app' },
     }]);
 
-    const models = resolveDeclarativeProjectionModels({ registry, generation: 11 });
+    const models = resolveDeclarativeProjectionModels({ registry, readPluginOccurrenceId: () => '11' });
     const settingsModel = models['examples.descriptor-only\0settings-form'];
     const listModel = models['examples.descriptor-only\0preview-list'];
     expect(settingsModel).toBeDefined();
@@ -403,7 +403,7 @@ describe('plugin SDK public installable examples', () => {
     const rowAction = listNodes.find((node) => node.kind === 'item' && node.action !== undefined);
     expect(rowAction).toMatchObject({
       kind: 'item',
-      action: { qualifiedId: 'examples.descriptor-only/open-preview', generation: '11' },
+      action: { qualifiedId: 'examples.descriptor-only/open-preview', occurrenceId: '11' },
     });
     expect(listNodes.some((node) => node.kind === 'action' && node.variant === 'destructive')).toBe(true);
 

@@ -14,9 +14,9 @@ import { seedCurrentLocalPathPluginFixture } from '@/plugins/store/registry/curr
 import { hasBlockingPluginReloadDiagnostic } from './reload/controller';
 import { executeContributedAction } from './invocation/actions/executeContributedAction';
 import {
-    type PluginRuntimeActivationRegistryLease,
     resolveExecutablePluginRuntimeRegistry,
 } from './resolveExecutablePluginRuntimeRegistry';
+import type { PluginRuntimeActivationRegistryLease } from './composition/activationAssembly';
 
 const PLUGIN_ID = 'acme.readiness-fencing';
 
@@ -85,7 +85,7 @@ async function seedFixture(options?: Readonly<{
 async function resolveFixtureRuntimeInputs(happyHomeDir: string) {
     const generationAuthority = await readCurrentCommittedPluginGenerations(
         resolvePluginStorePaths({ happyHomeDir }),
-        { bundledArtifacts: [], isolateInvalidInstalledGenerations: false },
+        { isolateInvalidInstalledGenerations: false },
     );
     const admitted = generationAuthority?.generations.get(PLUGIN_ID);
     if (!generationAuthority || !admitted) {
@@ -122,7 +122,7 @@ describe('executable plugin readiness fencing', () => {
             });
 
             expect(runtime.activatedPluginIds.has(PLUGIN_ID)).toBe(true);
-            expect(runtime.pluginFinalPolicyCurrentGenerationsById?.get(PLUGIN_ID)?.applied)
+            expect(runtime.pluginFinalPolicyCurrentRuntimesById?.get(PLUGIN_ID)?.applied)
                 .toBe(true);
             expect(hasBlockingPluginReloadDiagnostic(runtime, [PLUGIN_ID])).toBe(false);
             expect(runtime.targetActivationFacts?.filter((fact) => fact.pluginId === PLUGIN_ID))
@@ -137,7 +137,7 @@ describe('executable plugin readiness fencing', () => {
             );
 
             expect(runtime.activatedPluginIds.has(PLUGIN_ID)).toBe(false);
-            expect(runtime.pluginFinalPolicyCurrentGenerationsById?.get(PLUGIN_ID)?.applied)
+            expect(runtime.pluginFinalPolicyCurrentRuntimesById?.get(PLUGIN_ID)?.applied)
                 .toBe(false);
             // Exactly one typed diagnostic, and exactly one activation fact: an
             // inactive target may never keep publishing bound contributions.
@@ -195,9 +195,7 @@ describe('executable plugin readiness fencing', () => {
                 .rejects.toThrow(`Plugin '${PLUGIN_ID}' hook handler is no longer active`);
             expect(await readFile(fixture.cleanupMarkerPath, 'utf8')).toBe('cleaned\n');
             expect(runtimeDisposableCalls).toEqual(['disposed']);
-            expect(
-                runtime.retainActivationRegistryComponentsExcluding?.(new Set()) ?? [],
-            ).toEqual([]);
+            expect(runtime.retainPluginActivationComponent?.(PLUGIN_ID) ?? null).toBeNull();
 
             await runtime.dispose();
             expect(await readFile(fixture.cleanupMarkerPath, 'utf8')).toBe('cleaned\n');
@@ -222,7 +220,7 @@ describe('executable plugin readiness fencing', () => {
             });
 
             expect(runtime.activatedPluginIds.has(PLUGIN_ID)).toBe(true);
-            expect(runtime.pluginFinalPolicyCurrentGenerationsById?.get(PLUGIN_ID)?.applied)
+            expect(runtime.pluginFinalPolicyCurrentRuntimesById?.get(PLUGIN_ID)?.applied)
                 .toBe(true);
             const handler = (runtime.hookHandlersByHookId.get('agent.resolvePrerequisites') ?? [])
                 .find((entry) => entry.pluginId === PLUGIN_ID);
@@ -245,7 +243,7 @@ describe('executable plugin readiness fencing', () => {
                 matched: true, result: { ok: true, result: { completed: true } },
             });
             expect(active.activatedPluginIds.has(PLUGIN_ID)).toBe(true);
-            expect(active.pluginFinalPolicyCurrentGenerationsById?.get(PLUGIN_ID)?.applied).toBe(true);
+            expect(active.pluginFinalPolicyCurrentRuntimesById?.get(PLUGIN_ID)?.applied).toBe(true);
             await expect(handler.handler({}, {}))
                 .resolves.toEqual({ decision: 'abstain' });
         } finally {
@@ -274,10 +272,9 @@ describe('executable plugin readiness fencing', () => {
             expect(runtime.activatedPluginIds.has(PLUGIN_ID)).toBe(true);
             // Falsification half: an unfenced healthy plugin must still be
             // donated, or this assertion would pass by donating nothing at all.
-            expect(
-                (runtime.retainActivationRegistryComponentsExcluding?.(new Set()) ?? [])
-                    .flatMap((lease) => [...lease.pluginIds]),
-            ).toEqual([PLUGIN_ID]);
+            const donated = runtime.retainPluginActivationComponent?.(PLUGIN_ID) ?? null;
+            expect(donated ? [...donated.pluginIds] : []).toEqual([PLUGIN_ID]);
+            await donated?.release();
 
             await runtime.recordPluginActivationFailure?.(
                 PLUGIN_ID,
@@ -285,7 +282,8 @@ describe('executable plugin readiness fencing', () => {
             );
             expect(runtime.activatedPluginIds.has(PLUGIN_ID)).toBe(false);
 
-            retained = runtime.retainActivationRegistryComponentsExcluding?.(new Set()) ?? [];
+            const retainedComponent = runtime.retainPluginActivationComponent?.(PLUGIN_ID) ?? null;
+            retained = retainedComponent ? [retainedComponent] : [];
             successor = await resolveExecutablePluginRuntimeRegistry({
                 happyHomeDir: fixture.happyHomeDir,
                 contributes: inputs.contributes,

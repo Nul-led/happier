@@ -43,10 +43,10 @@ const releaseInput = PluginAvailabilityReleasePublishActionInputV1Schema.parse({
 });
 
 const materializationsInput = PluginAvailabilityMaterializationsReportActionInputV1Schema.parse({
+  expectedRevision: null,
   snapshot: {
     serverIdentityId: 'srv_availabilityPublisherFixture',
     machineId: 'machine-publisher-fixture',
-    revision: 1,
     materializations: [],
   },
 });
@@ -70,7 +70,7 @@ describe('server plugin Availability publisher', () => {
       .mockResolvedValueOnce('materializations-proof');
     vi.mocked(axios.post)
       .mockResolvedValueOnce({ data: { facts: releaseInput.facts, outcome: 'created' } })
-      .mockResolvedValueOnce({ data: { snapshot: materializationsInput.snapshot, outcome: 'replaced' } });
+      .mockResolvedValueOnce({ data: { revision: 1, outcome: 'replaced' } });
     const publisher = createServerPluginAvailabilityPublisher({
       credentials: { token: 'account-token' } as never,
     });
@@ -81,7 +81,7 @@ describe('server plugin Availability publisher', () => {
       facts: { ref: releaseInput.facts.ref },
     });
     await expect(publisher.reportMaterializations(materializationsInput)).resolves.toEqual({
-      snapshot: materializationsInput.snapshot,
+      revision: 1,
       outcome: 'replaced',
     });
 

@@ -89,14 +89,14 @@ export function createPluginSettingsActionInvoker<Context = unknown>(params: Rea
             signal?: AbortSignal;
             context?: Context;
         }>) {
-            const actionKey = `${input.model.identity.pluginId}/${input.seed.generation}/${input.contributionId}/${input.declaration.id}`;
+            const actionKey = `${input.model.identity.pluginId}/${input.seed.occurrenceId}/${input.contributionId}/${input.declaration.id}`;
             const signal = composeSignal(input.seed, input.signal);
             return await invoker.invoke({
                 key: actionKey,
                 declaration: input.declaration,
                 userGesture: input.userGesture,
                 signal,
-                isCurrent: input.seed.isGenerationCurrent,
+                isCurrent: input.seed.isOccurrenceCurrent,
                 context: Object.freeze({
                     contributionId: input.contributionId,
                     model: input.model,

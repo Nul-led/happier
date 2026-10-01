@@ -119,6 +119,22 @@ describe('CLI Vitest workspace package source resolution', () => {
         )));
     });
 
+    it('resolves the SDK private HTTP import in the SDK package scope', () => {
+        const importer = resolve('../../packages/sdk/src/connect.ts');
+        expect(normalize(workspacePackageSourcesPlugin.resolveId('#http', importer) ?? '')).toBe(
+            normalize(resolve('../../packages/sdk/src/http/fetchHttp.ts')),
+        );
+        expect(workspacePackageSourcesPlugin.resolveId('#http', resolve('src/index.ts'))).toBeNull();
+    });
+
+    it('resolves the SDK transitive Session owner from source without built output', () => {
+        const importer = resolve('../../packages/sdk/src/live/sessionController.ts');
+        expect(normalize(workspacePackageSourcesPlugin.resolveId('@happier-dev/session-core', importer) ?? '')).toBe(
+            normalize(resolve('../../packages/session-core/src/index.ts')),
+        );
+        expect(workspacePackageOptimizationExcludes).toContain('@happier-dev/session-core');
+    });
+
     it('resolves declared renamed and authored-file exports without source-path fallback', () => {
         expect(
             normalize(workspacePackageSourcesPlugin.resolveId(

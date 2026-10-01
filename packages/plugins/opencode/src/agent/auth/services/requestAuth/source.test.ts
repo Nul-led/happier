@@ -10,7 +10,10 @@ import {
   CONNECTED_ACCOUNT_REQUEST_AUTH_CAPABILITY_PATH_ENV,
 } from '@happier-dev/plugin-sdk/connected-accounts';
 
-import { buildOpenCodeRequestAuthPluginSource } from './source.js';
+import {
+  buildOpenCodeRequestAuthPluginSource,
+  buildOpenCodeRequestAuthV2PluginSource,
+} from './source.js';
 
 type RequestAuthTestState = {
   lookup: ReturnType<typeof vi.fn>;
@@ -77,6 +80,80 @@ afterEach(() => {
 });
 
 describe('OpenCode request-auth plugin source', () => {
+  it('loads through the released V2 definition ABI and injects the bound bearer at the request hook', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-opencode-request-auth-v2-'));
+    const path = join(root, 'plugin.mjs');
+    await writeFile(path, buildOpenCodeRequestAuthV2PluginSource({
+      provider: 'openai',
+      purpose: {
+        consumer: { pluginId: 'happier.agent.opencode', localId: 'opencode' },
+        purpose: 'openai-codex-model-request',
+      },
+      requestAuthClientSource: CLIENT_SOURCE,
+    }), 'utf8');
+    const lookup = vi.fn()
+      .mockResolvedValueOnce({
+        accessToken: 'bound-v2-token',
+        requiredHeaders: { 'ChatGPT-Account-Id': 'bound-account' },
+        credentialContext: { credentialRevision: 'revision-v2' },
+      })
+      .mockResolvedValueOnce({
+        accessToken: 'refreshed-v2-token',
+        requiredHeaders: { 'ChatGPT-Account-Id': 'bound-account' },
+        credentialContext: { credentialRevision: 'revision-v2-refreshed' },
+      });
+    const reportAuth = vi.fn(async () => ({ status: 'current_changed' }));
+    globalThis.__happierOpenCodeRequestAuthTest = {
+      lookup,
+      reportAuth,
+      reportQuota: vi.fn(),
+    };
+    const hooks = new Map<string, (event: Record<string, unknown>) => Promise<void>>();
+    const plugin = await import(`${pathToFileURL(path).href}?${Math.random()}`);
+
+    expect(plugin.default).toMatchObject({
+      id: 'happier-request-auth-openai',
+      setup: expect.any(Function),
+    });
+    await plugin.default.setup({
+      session: {
+        hook: async (name: string, handler: (event: Record<string, unknown>) => Promise<void>) => {
+          hooks.set(name, handler);
+        },
+      },
+    });
+    const event: Record<string, unknown> = {
+      request: new Request('https://chatgpt.com/backend-api/responses', {
+        method: 'POST',
+        headers: { authorization: 'Bearer native-must-not-leak' },
+        body: JSON.stringify({ model: 'gpt-5', input: [] }),
+      }),
+    };
+    await hooks.get('http.request')?.(event);
+
+    const request = event.request as Request;
+    expect(request.url).toBe('https://chatgpt.com/backend-api/codex/responses');
+    expect(request.headers.get('authorization')).toBe('Bearer bound-v2-token');
+    expect(request.headers.get('chatgpt-account-id')).toBe('bound-account');
+    expect(lookup).toHaveBeenCalledOnce();
+
+    const upstream = vi.fn<typeof fetch>(async () => new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', upstream);
+    const responseEvent: Record<string, unknown> = {
+      request,
+      response: new Response('expired', { status: 401 }),
+    };
+    await hooks.get('http.response')?.(responseEvent);
+
+    expect((responseEvent.response as Response).status).toBe(200);
+    expect(reportAuth).toHaveBeenCalledOnce();
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect((upstream.mock.calls[0]?.[0] as Request).url)
+      .toBe('https://chatgpt.com/backend-api/codex/responses');
+    expect(new Headers((upstream.mock.calls[0]?.[0] as Request).headers).get('authorization'))
+      .toBe('Bearer refreshed-v2-token');
+  });
+
   it('loads the real generated asset through pinned OpenCode 1.14.41 export semantics', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-opencode-request-auth-loader-'));
     const path = join(root, 'plugin.mjs');

@@ -1,4 +1,7 @@
 {
+  "brand": {
+    "iconResourceId": "brand-icon"
+  },
   "contributes": {
     "accountCollections": [],
     "actions": [
@@ -3827,7 +3830,14 @@
     "promptAssets": [],
     "providers": [],
     "requestInterceptors": [],
-    "resources": [],
+    "resources": [
+      {
+        "contentType": "image/png",
+        "id": "brand-icon",
+        "kind": "asset",
+        "path": "assets/brand.png"
+      }
+    ],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],

@@ -1,9 +1,13 @@
 import { defineConfig } from 'vitest/config';
-import { resolve } from 'node:path';
+import { resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
 import baseConfig from './vitest.config';
 import { resolveVitestFeatureTestExcludeGlobs } from '../../scripts/testing/featureTestGating';
+
+const packageRoot = fileURLToPath(new URL('.', import.meta.url));
+const resolve = (...paths: string[]) => resolvePath(packageRoot, ...paths);
 
 const base = baseConfig as any;
 const integrationAliases = Array.isArray(base.resolve?.alias)

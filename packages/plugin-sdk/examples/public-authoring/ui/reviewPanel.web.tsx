@@ -318,7 +318,7 @@ async function mountReviewPanel(): Promise<void> {
     // This is the declared hosted-web fallback for the same `review-status-widget`
     // surface the React Native renderer serves.
     const mount = context.surface.mount;
-    if (mount.kind === 'embedded' && mount.role === 'sessionWidget') {
+    if (mount.kind === 'embedded' && mount.role === 'widget') {
         mountSessionStatus(root, context);
         return;
     }

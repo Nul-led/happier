@@ -8,7 +8,7 @@ import type { ActivationTarget } from '../activation/targets';
 
 type TargetRegistration = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }>;
 
@@ -29,25 +29,21 @@ export type TargetPluginInterceptorResult = Awaited<ReturnType<
 export type TargetRequestInterceptorBinding = Readonly<{
     pluginId: string;
     pluginVersion: string;
-    generation: string;
+    occurrenceId: string;
     contribution: PluginRequestInterceptorContributionV1;
     handler: TargetPluginRequestInterceptor;
 }>;
 
 export function createTargetRequestInterceptorBindings(params: Readonly<{
-    generation: number;
     activationTargets: readonly ActivationTarget[];
     targetRegistrations: readonly TargetRegistration[];
-    isGenerationActive(): boolean;
+    isOccurrenceCurrent(): boolean;
 }>): readonly TargetRequestInterceptorBinding[] {
     const bindings: TargetRequestInterceptorBinding[] = [];
     const identities = new Set<string>();
 
     for (const entry of params.targetRegistrations) {
         if (entry.registration.family !== 'requestInterceptors') continue;
-        if (entry.generation !== String(params.generation)) {
-            throw new Error(`Target request interceptor '${entry.pluginId}/${entry.registration.localId}' was published for the wrong generation`);
-        }
         const target = params.activationTargets.find((candidate) => candidate.pluginId === entry.pluginId);
         const contribution = target?.manifest.contributes.requestInterceptors.find(
             (candidate) => candidate.id === entry.registration.localId,
@@ -62,19 +58,19 @@ export function createTargetRequestInterceptorBindings(params: Readonly<{
         identities.add(identity);
         const handler = entry.registration.value;
         const fencedHandler: TargetPluginRequestInterceptor = function (this: unknown, request, context) {
-            if (!params.isGenerationActive()) {
+            if (!params.isOccurrenceCurrent()) {
                 throw new Error(`Plugin '${entry.pluginId}' request interceptor '${entry.registration.localId}' is no longer active`);
             }
             const result = Reflect.apply(handler, this, [request, context]);
             return Promise.resolve(result).then(
                 (resolved) => {
-                    if (!params.isGenerationActive()) {
+                    if (!params.isOccurrenceCurrent()) {
                         throw new Error(`Plugin '${entry.pluginId}' request interceptor '${entry.registration.localId}' retired during invocation`);
                     }
                     return resolved;
                 },
                 (error: unknown) => {
-                    if (!params.isGenerationActive()) {
+                    if (!params.isOccurrenceCurrent()) {
                         throw new Error(`Plugin '${entry.pluginId}' request interceptor '${entry.registration.localId}' retired during invocation`);
                     }
                     throw error;
@@ -84,7 +80,7 @@ export function createTargetRequestInterceptorBindings(params: Readonly<{
         bindings.push(Object.freeze({
             pluginId: entry.pluginId,
             pluginVersion: target.manifest.version,
-            generation: entry.generation,
+            occurrenceId: entry.occurrenceId,
             contribution,
             handler: fencedHandler,
         }));

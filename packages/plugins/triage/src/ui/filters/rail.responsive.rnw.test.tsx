@@ -23,6 +23,7 @@ import {
 import { renderSurface as renderShellSurface } from '../surface.js';
 import { TRIAGE_SHELL_FILL_TEST_ID_V1 } from '../shell/root.js';
 import { refreshTriageListWindow } from '../window/mountedWindow.js';
+import { toolbarMenuItem } from '../shell/toolbarMenus.test-support.js';
 import { createTriageEphemeralSharedScopeFixture } from '../window/ephemeralSharedScope.test-support.js';
 
 /**
@@ -41,13 +42,12 @@ import { createTriageEphemeralSharedScopeFixture } from '../window/ephemeralShar
  * node under `__reactLayoutHandler`. Everything from there to the rendered
  * composition is the production path.
  *
- * The overlay's CONTENT is deliberately not asserted here. `Popover` renders it
- * only through the private presentation host, which this semantic adapter does
- * not publish; the host owns that behaviour and
- * `plugin-ui/src/components/Overlay.rnw.test.tsx` plus
- * `apps/ui/.../pluginUiPrivatePresentationHost.modal.dom.test.tsx` own its
- * proof. What is asserted here is Triage's whole half: which composition the
- * measurement selects, and that nothing a reader can act on is lost by it.
+ * Every facet, Views and Order is a shared menu picker in the toolbar. The
+ * semantic adapter is mounted with `overlays`, so an open menu's rows are
+ * reachable by role the way a reader reaches them: press the trigger, then the
+ * row. Positioning, dismissal and focus return stay the host's and are proved
+ * in `plugin-ui/src/components/Overlay.rnw.test.tsx` and
+ * `apps/ui/.../pluginUiPrivatePresentationHost.*.test.tsx`.
  */
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -152,7 +152,7 @@ async function mountShell(): Promise<PluginUiTestkit> {
                     container: 'appPage',
                 },
             }),
-            adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope }),
+            adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope, overlays: true }),
             handlers: {
                 publishCurrentUiContext: () => undefined,
                 executeAction: async ({ action }) => await executeAction(action),
@@ -194,10 +194,14 @@ describe('the PRs & Issues lens under the shell’s own measurement', () => {
         const shell = await mountShell();
         await measureFillRegion(WIDE_WIDTH);
 
-        // A closed-vocabulary facet option and a discovered Source option: both
-        // exist only while their own control is on the page.
-        await expect(shell.getByRole('checkbox', { name: 'Open' })).resolves.toBeDefined();
-        await expect(shell.getByRole('checkbox', { name: 'Example account' })).resolves.toBeDefined();
+        // Each facet is its own compact, labelled toolbar trigger, and a
+        // closed-vocabulary option and a discovered Source option are one press
+        // away inside their own facet.
+        await expect(shell.getByRole('button', { name: 'State' })).resolves.toBeDefined();
+        await expect(shell.getByRole('button', { name: 'Source' })).resolves.toBeDefined();
+        await expect(toolbarMenuItem(shell, 'State', 'menuitemcheckbox', { name: 'Open' })).resolves.toBeDefined();
+        await expect(toolbarMenuItem(shell, 'Source', 'menuitemcheckbox', { name: 'Example account' }))
+            .resolves.toBeDefined();
         // ...and nothing is folded away behind a trigger at this width.
         await expect(shell.queryByRole('button', { name: 'Filters' })).resolves.toBeUndefined();
     });
@@ -207,6 +211,7 @@ describe('the PRs & Issues lens under the shell’s own measurement', () => {
         await measureFillRegion(COMPACT_WIDTH);
 
         await expect(shell.getByRole('button', { name: 'Filters' })).resolves.toBeDefined();
+        await expect(shell.queryByRole('button', { name: 'State' })).resolves.toBeUndefined();
         await expect(shell.queryByRole('checkbox', { name: 'Open' })).resolves.toBeUndefined();
         await expect(shell.queryByRole('checkbox', { name: 'Example account' })).resolves.toBeUndefined();
     });
@@ -218,14 +223,14 @@ describe('the PRs & Issues lens under the shell’s own measurement', () => {
         // §6: exactly the five facets go behind the trigger. Views names which
         // saved lens this is and Order names the ladder; a reader who has to
         // open a Filters overlay to reorder the list has lost both.
-        await expect(shell.getByRole('radio', { name: 'Newest' })).resolves.toBeDefined();
-        await expect(shell.getByRole('radio', { name: 'No saved view' })).resolves.toBeDefined();
+        await expect(toolbarMenuItem(shell, 'Order', 'menuitemradio', { name: 'Newest' })).resolves.toBeDefined();
+        await expect(toolbarMenuItem(shell, 'Views', 'menuitemradio', { name: 'No saved view' })).resolves.toBeDefined();
     });
 
     it('keeps every selected constraint visible and removable outside the overlay', async () => {
         const shell = await mountShell();
         await measureFillRegion(WIDE_WIDTH);
-        const openFacet = await shell.getByRole('checkbox', { name: 'Open' });
+        const openFacet = await toolbarMenuItem(shell, 'State', 'menuitemcheckbox', { name: 'Open' });
         await act(async () => { await shell.press(openFacet); });
 
         await measureFillRegion(COMPACT_WIDTH);
@@ -240,7 +245,7 @@ describe('the PRs & Issues lens under the shell’s own measurement', () => {
             .resolves.toBeUndefined();
         // The chip removed the constraint itself rather than only its own label.
         await measureFillRegion(WIDE_WIDTH);
-        await expect(shell.getByRole('checkbox', {
+        await expect(toolbarMenuItem(shell, 'State', 'menuitemcheckbox', {
             name: 'Open',
             state: { checked: false },
         })).resolves.toBeDefined();
@@ -267,7 +272,7 @@ describe('the PRs & Issues lens under the shell’s own measurement', () => {
         // nobody reported.
         const shell = await mountShell();
 
-        await expect(shell.getByRole('checkbox', { name: 'Open' })).resolves.toBeDefined();
+        await expect(shell.getByRole('button', { name: 'State' })).resolves.toBeDefined();
         await expect(shell.queryByRole('button', { name: 'Filters' })).resolves.toBeUndefined();
     });
 });

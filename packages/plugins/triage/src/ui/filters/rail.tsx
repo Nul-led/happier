@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Button, Popover, Row, Select, Stack, usePluginTranslation } from '@happier-dev/plugin-ui';
+import { Button, Popover, Select, Stack, usePluginTranslation } from '@happier-dev/plugin-ui';
 
 import {
   CORPUS_SMART_PRECEDENCE_TUPLES_V1,
@@ -115,9 +115,15 @@ function toggledKeys(
 
 function TriageFilterFacetControl(props: Readonly<{
   facet: TriageFilterFacetPlanV1;
+  /**
+   * `menu` in the toolbar, where each facet is one compact labelled trigger;
+   * `inline` inside the compact Filters overlay, which is already the one
+   * trigger and lays its five labelled groups out as a form.
+   */
+  presentation: 'menu' | 'inline';
   onToggleFilterValue: (selection: TriageFilterFacetValueV1) => void;
 }>): React.ReactElement | null {
-  const { facet, onToggleFilterValue } = props;
+  const { facet, onToggleFilterValue, presentation } = props;
   const selected = React.useMemo(
     () => facet.options.filter((option) => option.selected).map((option) => option.key),
     [facet.options],
@@ -138,6 +144,7 @@ function TriageFilterFacetControl(props: Readonly<{
   return (
     <Select
       label={facet.label}
+      presentation={presentation}
       multiple
       value={selected}
       options={facet.options.map((option) => ({ value: option.key, label: option.label }))}
@@ -203,12 +210,17 @@ function TriageCompactFilters(props: Readonly<{
   const { facets, onToggleFilterValue, text } = props;
   const [open, setOpen] = React.useState(false);
   const label = text('plugins.triage.surface.filters', 'Filters');
+  const activeCount = facets.reduce(
+    (count, facet) => count + facet.options.filter((option) => option.selected).length,
+    0,
+  );
   return (
     <>
       <Popover
         open={open}
         onOpenChange={setOpen}
-        trigger={label}
+        trigger={activeCount === 0 ? label : `${label} · ${activeCount}`}
+        triggerAppearance="control"
         triggerAccessibilityLabel={label}
       >
         {/*
@@ -220,6 +232,7 @@ function TriageCompactFilters(props: Readonly<{
             <TriageFilterFacetControl
               key={facet.facet}
               facet={facet}
+              presentation="inline"
               onToggleFilterValue={onToggleFilterValue}
             />
           ))}
@@ -264,7 +277,7 @@ export function TriageFilterRail(props: TriageFilterRailPropsV1): React.ReactEle
   }, [onChangeSmartPolicy]);
 
   return (
-    <Row gap="small" wrap align="center">
+    <>
       {/*
         Only the facet region has two arms. Order, Smart order and Clear
         filters are written once and wrap in render order beside whichever one
@@ -281,11 +294,13 @@ export function TriageFilterRail(props: TriageFilterRailPropsV1): React.ReactEle
         <TriageFilterFacetControl
           key={facet.facet}
           facet={facet}
+          presentation="menu"
           onToggleFilterValue={onToggleFilterValue}
         />
       ))}
       <Select
         label={text('plugins.triage.surface.order', 'Order')}
+        presentation="menu"
         value={order}
         options={ORDER_COPY.map(([value, key, fallback]) => ({
           value,
@@ -301,6 +316,7 @@ export function TriageFilterRail(props: TriageFilterRailPropsV1): React.ReactEle
       {order === 'smart' ? (
         <Select
           label={text('plugins.triage.surface.smartPolicy', 'Smart order')}
+          presentation="menu"
           value={smartPolicy.precedence[0]}
           options={SMART_PRECEDENCE_COPY.map(([value, key, fallback]) => ({
             value,
@@ -317,6 +333,6 @@ export function TriageFilterRail(props: TriageFilterRailPropsV1): React.ReactEle
           onPress={onClearFilters}
         />
       ) : null}
-    </Row>
+    </>
   );
 }

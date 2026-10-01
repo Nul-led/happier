@@ -3,6 +3,8 @@ import type {
   ScmBranchIntegrationRequest,
   ScmBranchIntegrationResponse,
   ScmBranchOperationControlRequest,
+  ScmConflictAcceptSideRequest,
+  ScmConflictMarkResolvedRequest,
   ScmWorkingSnapshot,
 } from '@happier-dev/plugin-sdk/scm';
 import {
@@ -10,11 +12,11 @@ import {
   normalizeScmBranchSourceRef,
 } from '@happier-dev/plugin-sdk/scm';
 
-import { runScmCommand } from '../runtime.js';
+import { getScmCommandIndeterminateErrorCode, normalizeRepoRootPathspec, runScmCommand, type ScmExecResult } from '../runtime.js';
 import type { ScmBackendContext } from '../types.js';
 import { buildScmNonInteractiveEnv } from '../providers/shared/nonInteractiveEnv.js';
 import { mapGitErrorCode } from '../remote.js';
-import { readGitBranchOperationState } from './branchOperationState.js';
+import { readGitBranchOperationState, readGitConflictEntries, readGitOperationRepositoryState } from './branchOperationState.js';
 import { readGitSnapshotForChecks } from './snapshotChecks.js';
 
 const GIT_BRANCH_INTEGRATION_TIMEOUT_MS = 60_000;
@@ -81,26 +83,31 @@ async function evaluateStartPreconditions(context: ScmBackendContext): Promise<S
     return null;
 }
 
-function mapBranchIntegrationFailure(input: {
-    stderr: string;
+async function settleBranchIntegration(input: {
+    context: ScmBackendContext;
+    result: ScmExecResult;
     fallback: string;
-    operationState: Awaited<ReturnType<typeof readGitBranchOperationState>>;
-}): ScmBranchIntegrationResponse {
-    if (input.operationState || /conflict|fix conflicts|merge failed|could not apply/i.test(input.stderr)) {
-        return {
-            success: false,
-            errorCode: SCM_OPERATION_ERROR_CODES.CONFLICTING_WORKTREE,
-            error: input.stderr || input.fallback,
-            stderr: input.stderr,
-            operationState: input.operationState,
-        };
+    allowRemainingConflicts?: boolean;
+}): Promise<ScmBranchIntegrationResponse> {
+    let repositoryState;
+    try { repositoryState = await readGitOperationRepositoryState(input.context); }
+    catch {
+        return { success: false, errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED, error: 'Could not refresh repository state after the operation', stdout: input.result.stdout, stderr: input.result.stderr, outcome: { v: 1, kind: 'outcome_unknown', errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED, reconciliation: { kind: 'repository_status', cwd: input.context.cwd }, nextActions: [{ kind: 'refresh' }] } };
     }
+    const operationState = repositoryState.operation;
+    const errorCode = repositoryState.hasConflicts ? SCM_OPERATION_ERROR_CODES.CONFLICTING_WORKTREE : mapGitErrorCode(input.result.stderr);
+    if (repositoryState.hasConflicts && !(input.result.success && input.allowRemainingConflicts)) return { success: false, errorCode, error: input.result.stderr || input.fallback, stdout: input.result.stdout, stderr: input.result.stderr, operationState, outcome: { v: 1, kind: 'conflicted', errorCode, repositoryState, nextActions: [{ kind: 'resolve_conflicts' }, ...(operationState?.canSkip ? [{ kind: 'skip' as const }] : []), ...(operationState?.canAbort ? [{ kind: 'abort' as const }] : [])] } };
+    const indeterminateErrorCode = getScmCommandIndeterminateErrorCode(input.result);
+    if (indeterminateErrorCode) return { success: false, errorCode: indeterminateErrorCode, error: input.result.stderr || input.fallback, stdout: input.result.stdout, stderr: input.result.stderr, operationState, outcome: { v: 1, kind: 'outcome_unknown', errorCode: indeterminateErrorCode, repositoryState, reconciliation: { kind: 'repository_status', cwd: input.context.cwd }, nextActions: [{ kind: 'refresh' }] } };
+    if (input.result.success) return { success: true, stdout: input.result.stdout, stderr: input.result.stderr, operationState, outcome: { v: 1, kind: 'succeeded', repositoryState, nextActions: [] } };
     return {
         success: false,
-        errorCode: mapGitErrorCode(input.stderr),
-        error: input.stderr || input.fallback,
-        stderr: input.stderr,
-        operationState: input.operationState,
+        errorCode,
+        error: input.result.stderr || input.fallback,
+        stdout: input.result.stdout,
+        stderr: input.result.stderr,
+        operationState,
+        outcome: { v: 1, kind: 'failed', errorCode, repositoryState, nextActions: [] },
     };
 }
 
@@ -120,19 +127,7 @@ async function runBranchIntegration(input: {
         timeoutMs: GIT_BRANCH_INTEGRATION_TIMEOUT_MS,
         env: buildScmNonInteractiveEnv({ GIT_EDITOR: 'true' }),
     });
-    const operationState = await readGitBranchOperationState(input.context);
-    return result.success
-        ? {
-            success: true,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            operationState,
-        }
-        : mapBranchIntegrationFailure({
-            stderr: result.stderr,
-            fallback: `${input.operation} failed`,
-            operationState,
-        });
+    return settleBranchIntegration({ context: input.context, result, fallback: `${input.operation} failed` });
 }
 
 async function startBranchIntegration(input: {
@@ -164,7 +159,7 @@ async function startBranchIntegration(input: {
 async function controlBranchOperation(input: {
     context: ScmBackendContext;
     request: ScmBranchOperationControlRequest;
-    action: 'continue' | 'abort';
+    action: 'continue' | 'abort' | 'skip';
 }): Promise<ScmBranchIntegrationResponse> {
     const state = await readGitBranchOperationState(input.context);
     if (!state || state.kind !== input.request.operation) {
@@ -176,26 +171,20 @@ async function controlBranchOperation(input: {
         };
     }
 
+    if ((input.action === 'continue' && !state.canContinue) || (input.action === 'skip' && !state.canSkip)) {
+        const repositoryState = await readGitOperationRepositoryState(input.context);
+        const errorCode = repositoryState.hasConflicts ? SCM_OPERATION_ERROR_CODES.CONFLICTING_WORKTREE : SCM_OPERATION_ERROR_CODES.INVALID_REQUEST;
+        return { success: false, errorCode, error: `Operation cannot ${input.action} in its current state`, operationState: state, outcome: repositoryState.hasConflicts ? { v: 1, kind: 'conflicted', errorCode, repositoryState, nextActions: [{ kind: 'resolve_conflicts' }] } : { v: 1, kind: 'failed', errorCode, repositoryState, nextActions: [] } };
+    }
+
     const result = await runScmCommand({
         bin: 'git',
         cwd: input.context.cwd,
-        args: [input.request.operation, `--${input.action}`],
+        args: [input.request.operation === 'cherry_pick' ? 'cherry-pick' : input.request.operation, `--${input.action}`],
         timeoutMs: GIT_BRANCH_INTEGRATION_TIMEOUT_MS,
         env: buildScmNonInteractiveEnv({ GIT_EDITOR: 'true' }),
     });
-    const operationState = await readGitBranchOperationState(input.context);
-    return result.success
-        ? {
-            success: true,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            operationState,
-        }
-        : mapBranchIntegrationFailure({
-            stderr: result.stderr,
-            fallback: `${input.request.operation} ${input.action} failed`,
-            operationState,
-        });
+    return settleBranchIntegration({ context: input.context, result, fallback: `${input.request.operation} ${input.action} failed` });
 }
 
 export async function gitBranchMerge(input: {
@@ -236,4 +225,31 @@ export async function gitBranchOperationAbort(input: {
         ...input,
         action: 'abort',
     });
+}
+
+export async function gitBranchOperationSkip(input: { context: ScmBackendContext; request: ScmBranchOperationControlRequest }): Promise<ScmBranchIntegrationResponse> {
+    return controlBranchOperation({ ...input, action: 'skip' });
+}
+
+export async function gitConflictMarkResolved(input: { context: ScmBackendContext; request: ScmConflictMarkResolvedRequest }): Promise<ScmBranchIntegrationResponse> {
+    const paths = input.request.paths.map(normalizeRepoRootPathspec);
+    const invalid = paths.find((path) => !path.ok);
+    if (invalid && !invalid.ok) return { success: false, errorCode: SCM_OPERATION_ERROR_CODES.INVALID_PATH, error: invalid.error };
+    if (paths.length === 0) return { success: false, errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST, error: 'Select at least one conflict path' };
+    const conflicts = await readGitConflictEntries(input.context);
+    if (input.request.paths.some((path) => !conflicts.some((entry) => entry.path === path))) return { success: false, errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST, error: 'Selected path is no longer unmerged' };
+    const result = await runScmCommand({ bin: 'git', cwd: input.context.cwd, args: ['add', '-A', '--', ...paths.flatMap((path) => path.ok ? [path.pathspec] : [])], timeoutMs: GIT_BRANCH_INTEGRATION_TIMEOUT_MS, env: buildScmNonInteractiveEnv() });
+    return settleBranchIntegration({ context: input.context, result, fallback: 'Failed to stage resolved conflicts', allowRemainingConflicts: true });
+}
+
+export async function gitConflictAcceptSide(input: { context: ScmBackendContext; request: ScmConflictAcceptSideRequest }): Promise<ScmBranchIntegrationResponse> {
+    const path = normalizeRepoRootPathspec(input.request.path);
+    if (!path.ok) return { success: false, errorCode: SCM_OPERATION_ERROR_CODES.INVALID_PATH, error: path.error };
+    if (input.request.side !== 'ours' && input.request.side !== 'theirs') return { success: false, errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST, error: 'Invalid conflict side' };
+    const conflict = (await readGitConflictEntries(input.context)).find((entry) => entry.path === input.request.path);
+    if (!conflict) return { success: false, errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST, error: 'Selected path is no longer unmerged' };
+    const selectedStage = conflict.indexStages?.[input.request.side];
+    const result = await runScmCommand({ bin: 'git', cwd: input.context.cwd, args: selectedStage ? ['checkout', `--${input.request.side}`, '--', path.pathspec] : ['rm', '--', path.pathspec], timeoutMs: GIT_BRANCH_INTEGRATION_TIMEOUT_MS, env: buildScmNonInteractiveEnv() });
+    if (!result.success || !selectedStage) return settleBranchIntegration({ context: input.context, result, fallback: 'Failed to accept conflict side', allowRemainingConflicts: true });
+    return gitConflictMarkResolved({ context: input.context, request: { paths: [input.request.path] } });
 }

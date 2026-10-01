@@ -5,14 +5,13 @@ import type {
 import {
   clearSessionMarkerAgentRuntimeDaemonServicePromotionIfOwned,
   updateSessionMarkerAgentRuntimeDaemonServiceAuthorityPath,
-  updateSessionMarkerRunnerAgentImmutableGenerationId,
+  updateSessionMarkerRunnerAgentSourceCustody,
   updateSessionMarkerRunnerManagedDependencyRetention,
 } from '@/daemon/sessionRegistry';
 import {
   type AgentSessionRunnerBindingV1,
 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import {
   readCurrentPluginHardRevocationRevision,
   readCurrentPluginImmutableGenerationIntegrityCurrentness,
@@ -26,6 +25,7 @@ import {
 } from '@/plugins/runtime/runner/runnerManagedDependencyRetention';
 import { verifyPrivateBearer } from '@/daemon/privateBearerFile';
 import { isDeepStrictEqual } from 'node:util';
+import { processIdentityMatches } from '@happier-dev/cli-common/processInstance';
 import {
   readAgentRuntimeDaemonServiceAuthorityForVerifiedMarker,
   removeAgentRuntimeDaemonServiceAuthorityIfOwned,
@@ -85,8 +85,8 @@ export async function promoteForegroundDaemonServiceAuthority(input: Readonly<{
   capabilityDigest: string;
   invocationContext: RunnerAgentInvocationContext;
   persistAuthorityPath?: typeof updateSessionMarkerAgentRuntimeDaemonServiceAuthorityPath;
-  persistRunnerAgentImmutableGenerationId?:
-    typeof updateSessionMarkerRunnerAgentImmutableGenerationId;
+  persistRunnerAgentSourceCustody?:
+    typeof updateSessionMarkerRunnerAgentSourceCustody;
   persistRunnerManagedDependencyRetention?:
     typeof updateSessionMarkerRunnerManagedDependencyRetention;
   attachRunnerRetainedPluginGenerations?:
@@ -115,14 +115,11 @@ export async function promoteForegroundDaemonServiceAuthority(input: Readonly<{
     || tracked.startedBy === 'daemon'
     || tracked.happySessionId !== input.canonicalSessionId
     || runner.pid !== input.foregroundPid
-    || (
-      tracked.processStartTimeMs !== undefined
-      && tracked.processStartTimeMs !== runner.processStartTimeMs
-    )
-    || (
-      tracked.processCommandHash !== undefined
-      && tracked.processCommandHash !== runner.processCommandHash
-    )
+    || !processIdentityMatches({
+      pid: input.foregroundPid,
+      processStartTimeMs: tracked.processStartTimeMs,
+      processCommandHash: tracked.processCommandHash,
+    }, runner)
   ) {
     return false;
   }
@@ -142,8 +139,6 @@ export async function promoteForegroundDaemonServiceAuthority(input: Readonly<{
         paths,
         pluginId,
         immutableGenerationId,
-        bundledArtifacts:
-          BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
         ...(requiredAgentSessionRunnerFactoryLocalAgentId
           ? { requiredAgentSessionRunnerFactoryLocalAgentId }
           : {}),
@@ -182,12 +177,15 @@ export async function promoteForegroundDaemonServiceAuthority(input: Readonly<{
         expectedDocument
         && JSON.stringify(document) !== JSON.stringify(expectedDocument)
       )
-      || !await readPluginImmutableGenerationIntegrityCurrentness(
-        input.retainedAgent.pluginId,
-        input.retainedAgent.immutableGenerationId,
-        generationCurrentnessProof
-          .requiredAgentSessionRunnerFactoryLocalAgentId,
-        generationCurrentnessProof.retainedManifestAuthority,
+      || (
+        input.retainedAgent.sourceCustody.kind === 'managed'
+        && !await readPluginImmutableGenerationIntegrityCurrentness(
+          input.retainedAgent.pluginId,
+          input.retainedAgent.sourceCustody.immutableGenerationId,
+          generationCurrentnessProof
+            .requiredAgentSessionRunnerFactoryLocalAgentId,
+          generationCurrentnessProof.retainedManifestAuthority,
+        )
       )
       || await readCurrentPluginHardRevocationRevision({
         paths,
@@ -218,7 +216,7 @@ export async function promoteForegroundDaemonServiceAuthority(input: Readonly<{
       authorityFilePath: input.authorityFilePath,
       ...(includeCustody
         ? {
-            immutableGenerationId: input.retainedAgent.immutableGenerationId,
+            sourceCustody: input.retainedAgent.sourceCustody,
             retention: runnerManagedDependencyRetentionV1,
           }
         : {}),
@@ -275,27 +273,32 @@ export async function promoteForegroundDaemonServiceAuthority(input: Readonly<{
   )({
     paths,
       immutableGenerationIds: [
-      input.retainedAgent.immutableGenerationId,
-      ...runnerManagedDependencyRetentionV1.sourceGenerationIds,
+      ...(input.retainedAgent.sourceCustody.kind === 'managed'
+        ? [input.retainedAgent.sourceCustody.immutableGenerationId]
+        : []),
+      ...runnerManagedDependencyRetentionV1.sourceCustodies.flatMap(
+        (custody) => custody.kind === 'managed'
+          ? [custody.immutableGenerationId]
+          : [],
+      ),
       ...(runnerManagedDependencyRetentionV1
-        .adoptedManagedProviderAuthority
+        .adoptedManagedProviderAuthority?.sourceCustody.kind === 'managed'
         ? [runnerManagedDependencyRetentionV1
-          .adoptedManagedProviderAuthority.immutableGenerationId]
+          .adoptedManagedProviderAuthority.sourceCustody.immutableGenerationId]
         : []),
     ],
     attach: async () => {
-      const generationPersisted = await (
-        input.persistRunnerAgentImmutableGenerationId
-        ?? updateSessionMarkerRunnerAgentImmutableGenerationId
+      const sourceCustodyPersisted = await (
+        input.persistRunnerAgentSourceCustody
+        ?? updateSessionMarkerRunnerAgentSourceCustody
       )({
         pid: input.foregroundPid,
         sessionId: input.canonicalSessionId,
         processCommandHash: runner.processCommandHash,
         processStartTimeMs: runner.processStartTimeMs,
-        immutableGenerationId:
-          input.retainedAgent.immutableGenerationId,
+        sourceCustody: input.retainedAgent.sourceCustody,
       });
-      if (!generationPersisted) return false;
+      if (!sourceCustodyPersisted) return false;
       return await (
         input.persistRunnerManagedDependencyRetention
         ?? updateSessionMarkerRunnerManagedDependencyRetention
@@ -326,8 +329,7 @@ export async function promoteForegroundDaemonServiceAuthority(input: Readonly<{
     input.authorityFilePath;
   tracked.agentRuntimeDaemonServiceCapabilityHash =
     input.capabilityDigest;
-  tracked.runnerAgentImmutableGenerationId =
-    input.retainedAgent.immutableGenerationId;
+  tracked.runnerAgentSourceCustodyV1 = input.retainedAgent.sourceCustody;
   tracked.runnerManagedDependencyRetentionV1 =
     runnerManagedDependencyRetentionV1;
   tracked.runnerAgentInvocationContext = Object.freeze({

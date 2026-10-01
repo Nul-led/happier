@@ -79,6 +79,11 @@
         "description": "Review the current change with CodeRabbit.",
         "id": "review",
         "intent": "review",
+        "metadata": {
+          "reviewScopes": [
+            "worktree"
+          ]
+        },
         "promptAsset": "review-prompt",
         "title": "CodeRabbit review"
       }

@@ -7,7 +7,7 @@ start a new plugin with `hdev plugins create` and declare ordinary contributions
 `definePlugin(...)`; the canonical author build projects its cold manifest.
 
 The strict `.happier-plugin/plugin.json` manifest demonstrates a hosted-web renderer with a declarative
-fallback. `pluginUiBuild.ts` is the public build input.
+fallback. Its conventional `.happier-plugin/ui/hosted-web/panel-web` directory is the hosted artifact input.
 
 This repository example is source and compile coverage for the hosted-web
 reference arm, not a template or distribution promise. It is not mounted or

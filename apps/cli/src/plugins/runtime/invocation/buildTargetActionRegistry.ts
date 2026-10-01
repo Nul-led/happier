@@ -6,12 +6,14 @@ import {
     PluginActionDangerLevelV2Schema,
     ActionOperationDeclarationV1Schema,
     type PluginActionPresentUserGatePolicy,
+    type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import { ActionSurfaceSchema } from '@happier-dev/protocol/actions';
 
 import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
 import type { ContributionRuntimeRegistration } from '@/plugins/runtime/api/registrationRightsHost';
 import type { PluginTargetActivationFact } from '@/plugins/runtime/lifecycle/activation/facts';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import {
     createTargetActionInvocationRegistry,
@@ -53,7 +55,7 @@ import {
 
 type TargetRegistration = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }>;
 
@@ -114,12 +116,10 @@ function invokeCapturedDaemonActionHandler(
 
 export function buildTargetActionInvocationRegistry(params: Readonly<{
     contributes: ResolvedContributionRegistry;
-    /** Exact admitted bytes for the target Action caller provenance. */
-    immutableGenerationIdsByPluginId?: ReadonlyMap<string, string>;
+    readCurrentPluginOccurrenceId?(pluginId: string): PluginRuntimeOccurrenceId | null;
+    readCurrentPluginSourceCustody?(pluginId: string): PluginSourceCustodyV1 | null;
     /** Resolved runtime-owned dispatch-time caller provenance lookup. */
     resolveCurrentPluginMaterializationRef?(pluginId: string): import('@happier-dev/protocol').PluginMachineMaterializationRefV1 | null;
-    /** Canonical committed immutable-generation authority for final Action admission. */
-    resolveCurrentPluginImmutableGenerationId?(pluginId: string): Promise<string | null>;
     targetRegistrations: readonly TargetRegistration[];
     /** Static facts for immutable fixture/cold registries. */
     targetActivationFacts?: readonly PluginTargetActivationFact[];
@@ -135,16 +135,12 @@ export function buildTargetActionInvocationRegistry(params: Readonly<{
     resolveHostPolicy: ResolveTargetActionHostPolicy;
     createServices: CreatePluginInvocationServices;
     redactDiagnosticText?: (
-        scope: Readonly<{ pluginId: string; generation: string; correlationId: string }>,
+        scope: Readonly<{ pluginId: string; occurrenceId: string; correlationId: string }>,
         value: string,
     ) => string;
     completeDiagnosticScope?: (
-        scope: Readonly<{ pluginId: string; generation: string; correlationId: string }>,
+        scope: Readonly<{ pluginId: string; occurrenceId: string; correlationId: string }>,
     ) => void;
-    resolveGenerationLifecycle?(pluginId: string): Readonly<{
-        isCurrent(): boolean;
-        retirementSignal: AbortSignal;
-    }>;
     resolveCurrentSessionUi?: (sessionId: string) => HostCurrentSessionUiServices | null;
     /** Exact declaration-routed Account truth for submitted dynamic form refs. */
     actionFormConnectedAccounts?: Pick<
@@ -186,7 +182,6 @@ export function buildTargetActionInvocationRegistry(params: Readonly<{
             ));
             const activationFact = targetActivationFacts.find((fact) => (
                 fact.pluginId === entry.pluginId
-                && fact.generation === entry.generation
                 && fact.status === 'active'
                 && fact.bound.some((bound) => bound.family === 'actions' && bound.localId === entry.registration.localId)
             ));
@@ -195,11 +190,11 @@ export function buildTargetActionInvocationRegistry(params: Readonly<{
                 // retain a captured registration while the plugin is dormant
                 // or unavailable. Such a plugin contributes no callable
                 // Actions and must not poison unrelated catalog/hook reads.
-                // If the plugin claims any active generation, however, a
+                // If the plugin claims any active occurrence, however, a
                 // mismatched registration is still invariant corruption and
                 // remains fail-closed below.
                 if (!hasActivePluginGeneration) return [];
-                throw new Error(`Target action '${entry.pluginId}/actions/${entry.registration.localId}' is not backed by an active generation fact`);
+                throw new Error(`Target action '${entry.pluginId}/actions/${entry.registration.localId}' is not backed by an active occurrence fact`);
             }
             const manifest = params.contributes.activationTargets.find((target) => target.pluginId === entry.pluginId)?.manifest;
             const actionDefinition = manifest?.contributes.actions.find((action) => (
@@ -224,18 +219,18 @@ export function buildTargetActionInvocationRegistry(params: Readonly<{
             const hostAccessIds = readStringArray(actionDefinition.hostAccess);
             const inputParser = readPluginActionInputParser(capturedHandler);
             const resultParser = readPluginActionResultParser(capturedHandler);
+            const occurrenceId = params.readCurrentPluginOccurrenceId?.(entry.pluginId);
+            const sourceCustody = params.readCurrentPluginSourceCustody?.(entry.pluginId);
+            if (occurrenceId == null || occurrenceId !== entry.occurrenceId || sourceCustody == null) {
+                throw new Error(`Target action '${entry.pluginId}/actions/${entry.registration.localId}' lacks host-stamped occurrence or source custody`);
+            }
             expectedActionKeys.delete(`${entry.pluginId}\u0000${entry.registration.localId}`);
             return [{
                 family: 'actions',
                 pluginId: entry.pluginId,
                 pluginVersion: activationFact.pluginVersion,
-                generation: entry.generation,
-                ...(params.immutableGenerationIdsByPluginId?.get(entry.pluginId) === undefined
-                    ? {}
-                    : {
-                        immutableGenerationId:
-                            params.immutableGenerationIdsByPluginId.get(entry.pluginId),
-                    }),
+                occurrenceId,
+                sourceCustody,
                 localId: entry.registration.localId,
                 definition: {
                     ...readTargetDefinition(resolvedAction.definition),
@@ -272,7 +267,7 @@ export function buildTargetActionInvocationRegistry(params: Readonly<{
         const registration = readActions().find((candidate) => (
             candidate.pluginId === pluginId && candidate.localId === localId
         ));
-        if (!registration) return null;
+        if (!registration?.sourceCustody) return null;
         const availability = resolveTargetActionAvailability({
             availability: registration.definition.availability ?? undefined,
             facts: resolveInvocationContributionPolicyFacts(),
@@ -280,7 +275,8 @@ export function buildTargetActionInvocationRegistry(params: Readonly<{
         return resolveCatalogTargetActionPolicy({
             pluginId,
             localId,
-            generation: registration.generation,
+            occurrenceId: registration.occurrenceId,
+            sourceCustody: registration.sourceCustody,
             dangerLevel: registration.definition.dangerLevel,
             scopes: registration.definition.scopes,
             surfaces: registration.definition.surfaces,
@@ -323,20 +319,14 @@ export function buildTargetActionInvocationRegistry(params: Readonly<{
         ...(params.completeDiagnosticScope
             ? { completeDiagnosticScope: params.completeDiagnosticScope }
             : {}),
-        ...(params.resolveGenerationLifecycle
-            ? { resolveGenerationLifecycle: params.resolveGenerationLifecycle }
-            : {}),
         ...(params.resolveCurrentPluginMaterializationRef
             ? {
                 resolveCurrentPluginMaterializationRef:
                     params.resolveCurrentPluginMaterializationRef,
             }
             : {}),
-        ...(params.resolveCurrentPluginImmutableGenerationId
-            ? {
-                resolveCurrentPluginImmutableGenerationId:
-                    params.resolveCurrentPluginImmutableGenerationId,
-            }
+        ...(params.readCurrentPluginOccurrenceId
+            ? { readCurrentPluginOccurrenceId: params.readCurrentPluginOccurrenceId }
             : {}),
         ...(params.resolveCurrentSessionUi
             ? { resolveCurrentSessionUi: params.resolveCurrentSessionUi }

@@ -29,8 +29,8 @@ function stepNamed(job, name) {
   return step;
 }
 
-const GATED_ON_SELECTION = "github.event_name == 'workflow_call' || steps.changes.outputs.workspace_sync_real == 'true' || inputs.run_workspace_sync_performance";
-const GATED_ON_NON_SELECTION = "github.event_name != 'workflow_call' && steps.changes.outputs.workspace_sync_real != 'true' && !inputs.run_workspace_sync_performance";
+const GATED_ON_SELECTION = "inputs.select_jobs_explicitly || steps.changes.outputs.workspace_sync_real == 'true'";
+const GATED_ON_NON_SELECTION = "${{ !inputs.select_jobs_explicitly && steps.changes.outputs.workspace_sync_real != 'true' }}";
 
 test('the real workspace-sync lane invokes the canonical runner exactly once', () => {
   const job = workspaceSyncRealJob();
@@ -123,16 +123,21 @@ test('the required lane also proves the production signed release-acquisition pa
   assert.match(liveLauncher, /process\.kill\(process\.pid, signal\)/u);
 });
 
-test('the real workspace-sync lane checks the generated public Action contract', () => {
-  const job = workspaceSyncRealJob();
+test('one independent drift lane checks the generated public Action contract for all schema inputs', () => {
+  const workflow = loadWorkflow('tests.yml');
+  const job = workflow.jobs['action-map-drift'];
+  assert.ok(job);
   const actionContract = stepNamed(job, 'Check generated public Action contract');
-
-  assert.equal(
-    actionContract.run.trim(),
-    'yarn workspace @happier-dev/plugin-sdk check:action-type-map',
-    'the lane must reuse the public SDK generator/check owner instead of duplicating its projection logic',
-  );
-  assert.equal(actionContract.if, GATED_ON_SELECTION);
+  const invocations = Object.values(workflow.jobs).flatMap(candidate => candidate.steps ?? [])
+    .filter(step => /check:action-type-map|generated:finite/u.test(String(step.run ?? '')));
+  assert.deepEqual(invocations, [actionContract], 'one CI owner checks drift outside prerequisite builds');
+  assert.equal(actionContract.run.trim(), 'yarn turbo run generated:finite --filter=@happier-dev/plugin-sdk');
+  assert.equal(actionContract.if, "inputs.select_jobs_explicitly || steps.changes.outputs.action_dtos == 'true'");
+  const filters = YAML.parse(stepNamed(job, 'Detect Action declaration inputs and outputs').with.filters).action_dtos;
+  for (const path of ['packages/**/src/**', 'packages/plugin-sdk/scripts/**', 'packages/plugin-sdk/package.json',
+    'scripts/workspaces/**', 'apps/stack/scripts/utils/proc/**', 'turbo.json', 'package.json', 'yarn.lock']) {
+    assert.ok(filters.includes(path), `${path} must select Action DTO drift verification`);
+  }
 });
 
 test('the real workspace-sync lane supplies every executable input the canonical runner requires', () => {
@@ -244,7 +249,7 @@ test('the real workspace-sync lane selects itself from Lane 08 change surfaces',
 
   const changes = stepNamed(job, 'Detect workspace sync-relevant changes');
   assert.equal(changes.id, 'changes');
-  assert.equal(changes.if, "github.event_name != 'workflow_call'");
+  assert.equal(changes.if, '${{ !inputs.select_jobs_explicitly }}');
   // Third-party actions in a required lane are pinned to an immutable commit, like every
   // other action this job uses. `0e4a8c6` is the commit the annotated `v3` tag dereferences
   // to (dorny/paths-filter v3.0.4).
@@ -394,11 +399,6 @@ test('the real workspace-sync lane selects itself from Lane 08 change surfaces',
     'apps/ui/sources/components/settings/session/SessionHandoffSettingsView.test.tsx',
     'apps/ui/sources/components/workspaces/sync/WorkspaceSyncConflictDetailsView.tsx',
     'apps/ui/sources/components/workspaces/sync/WorkspaceSyncConflictDetailsView.test.tsx',
-    // The workflow checks this generated public projection. Changes to the
-    // projection or its single generator must therefore select the check too.
-    'packages/plugin-sdk/src/actions/actionTypeMap.generated.ts',
-    'packages/plugin-sdk/scripts/generateActionTypeMap.mjs',
-    'packages/plugin-sdk/package.json',
     '.github/workflows/tests.yml',
     // Owns the manual selection this lane is reachable by.
     '.github/workflows/tests-dispatch.yml',
@@ -449,9 +449,13 @@ test('manual dispatch can select the real workspace-sync lane by name', () => {
   );
   assert.equal(dispatch.jobs.tests.with.run_workspace_sync_performance, '${{ inputs.workspace_sync_performance }}');
 
-  const raw = readWorkflowText('tests-dispatch.yml');
-  assert.match(raw, /if has workspace_sync_real; then run_workspace_sync_real=true; fi/u);
-  assert.doesNotMatch(raw, /wsrepl_lima/u, 'the retired WSREPL selection must not survive as a second owner');
+  const resolveStep = dispatch.jobs.resolve.steps.find((step) => step.id === 'flags');
+  assert.equal(
+    resolveStep?.run,
+    'node scripts/pipeline/checks/resolve-checks-plan.mjs --target hosted',
+    'manual dispatch must use the canonical hosted checks resolver',
+  );
+  assert.doesNotMatch(readWorkflowText('tests-dispatch.yml'), /wsrepl_lima/u, 'the retired WSREPL selection must not survive as a second owner');
 });
 
 test('ci_summary delegates every selector to the generic fail-closed collector', () => {

@@ -37,6 +37,8 @@ export const CAPABILITY_HOST_BINDING_OWNERS_V1 = Object.freeze({
   accountCollectionFamilyProjection: 'apps/cli/src/plugins/projection/registry/accountCollections.ts',
   /** Projects declared Voice model packs into the client projection. */
   voiceDeclarationFamilyProjection: 'apps/cli/src/plugins/projection/registry/voiceDeclarations.ts',
+  /** Projects declared roles into the existing role source catalog. */
+  roleFamilyProjection: 'apps/cli/src/plugins/projection/registry/roles.ts',
   /** Admits contribution points and the contributions targeting them. */
   targetedContributionAdmission: 'apps/cli/src/plugins/projection/registry/targetedContributions.ts',
   /** Binds declared plugin commands onto the CLI command surface. */
@@ -78,7 +80,7 @@ export const CAPABILITY_HOST_BINDING_OWNERS_V1 = Object.freeze({
   /** Mounts author surfaces in the client realm. */
   clientPluginUiSurfaceHost: 'packages/plugin-ui/src/surfaceEntry.tsx',
   /** Builds the author UI artifacts the build realm publishes. */
-  pluginUiBuildToolchain: 'packages/plugin-sdk/src/ui/build/buildUiArtifacts.ts',
+  pluginUiBuildToolchain: 'packages/plugin-sdk/src/ui/build/buildUniversalUiArtifacts.ts',
 });
 const HOST_BINDING_OWNER_MODULES = new Set(Object.values(CAPABILITY_HOST_BINDING_OWNERS_V1));
 
@@ -162,6 +164,7 @@ export const MANIFEST_FAMILY_REALM_OWNERS_V1 = Object.freeze({
   settings: declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.pluginSettingsHost),
   'settings.fields': declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.pluginSettingsHost),
   executionRunProfiles: declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.executionRunProfileHost),
+  roles: declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.roleFamilyProjection),
   notifications: declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.pluginNotificationsHost),
   systemTools: declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.systemToolProjection),
   pluginContributionPoints: declarativeFamilyOwners(

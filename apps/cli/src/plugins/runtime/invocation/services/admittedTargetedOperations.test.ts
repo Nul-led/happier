@@ -11,6 +11,7 @@ import {
     type InvokeContributedAction,
 } from './actions';
 import { createPluginActionCallerMaterializationFixture } from './actionCaller.testkit';
+import { createManagedPluginSourceCustody } from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
 
 function permissiveTargetProtocol(role: string) {
     return Object.freeze({
@@ -45,26 +46,27 @@ describe('admitted targeted-operation execution', () => {
             seed: {
                 plugin: { id: 'acme.target', version: '1.0.0' },
                 contribution: { id: 'request', qualifiedId: 'acme.target/actions/request' },
-                generation: 'generation-a',
-                immutableGenerationId: 'immutable-target-a',
+                occurrenceId: 'target-occurrence-a',
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-target-a', installSource: 'archive' },
                 surface: 'plugin',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
         });
         const admitted = createAdmittedTargetedOperationExecutionHandle({
             action: { pluginId: 'acme.contributor', localId: 'publish' },
-            targetImmutableGenerationId: 'immutable-target-a',
+            targetOccurrenceId: 'target-occurrence-a',
             identity: {
                 target: { pluginId: 'acme.target' },
                 point: { pointId: 'providers', protocol: { id: 'acme.providers/provider', version: 1 } },
                 contributor: {
                     pluginId: 'acme.contributor',
                     contributionId: 'primary',
-                    immutableGenerationId: 'immutable-contributor-a',
+                    occurrenceId: 'contributor-occurrence-a',
+                    sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-contributor-a', installSource: 'archive' },
                 },
                 role: 'publish',
             },
@@ -85,9 +87,9 @@ describe('admitted targeted-operation execution', () => {
                 action: { pluginId: 'acme.contributor', localId: 'publish' },
                 target: {
                     pluginId: 'acme.target',
-                    immutableGenerationId: 'immutable-target-a',
+                    occurrenceId: 'target-occurrence-a',
                 },
-                contributorImmutableGenerationId: 'immutable-contributor-a',
+                contributorOccurrenceId: 'contributor-occurrence-a',
                 targetProtocol: expect.objectContaining({
                     input: { kind: 'protocolDefined', schema: targetInputSchema },
                     resultSchema: targetResultSchema,
@@ -119,7 +121,8 @@ describe('admitted targeted-operation execution', () => {
             contributor: {
                 pluginId: 'acme.provider',
                 contributionId: 'github',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'provider-occurrenceId-a', installSource: 'archive' },
             },
             role: 'setup',
             action: { pluginId: 'acme.provider', localId: 'connection/setup' },
@@ -133,10 +136,14 @@ describe('admitted targeted-operation execution', () => {
                 selection: {
                     target: {
                         pluginId: 'happier.channels',
-                        immutableGenerationId: 'channels-generation-a',
+                        sourceCustody: { kind: 'managed', immutableGenerationId: 'channels-occurrenceId-a', installSource: 'archive' },
                     },
                     point: operation.point,
-                    contributor: operation.contributor,
+                    contributor: {
+                        pluginId: operation.contributor.pluginId,
+                        contributionId: operation.contributor.contributionId,
+                        sourceCustody: { kind: 'managed', immutableGenerationId: 'provider-occurrenceId-a', installSource: 'archive' },
+                    },
                 },
                 connectedAccount: {
                     kind: 'selected' as const,
@@ -148,7 +155,7 @@ describe('admitted targeted-operation execution', () => {
                     machineDisplayName: 'Development Mac',
                 },
             },
-        };
+        } as const;
         const invokeContributedAction = vi.fn<InvokeContributedAction>(async () => ({
             status: 'executed' as const,
             value: { accepted: true },
@@ -158,21 +165,21 @@ describe('admitted targeted-operation execution', () => {
             seed: {
                 plugin: { id: 'happier.channels', version: '1.0.0' },
                 contribution: { id: 'connection-create', qualifiedId: 'happier.channels/actions/connection-create' },
-                generation: 'generation-1',
-                immutableGenerationId: 'channels-generation-a',
+                occurrenceId: 'channels-occurrence-a',
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'channels-occurrenceId-a', installSource: 'archive' },
                 surface: 'plugin',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 selectedActionInputCarrier,
                 isMountedCallerCurrent: async () => true,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
         });
         const admitted = createAdmittedTargetedOperationExecutionHandle({
             action: operation.action,
-            targetImmutableGenerationId: 'channels-generation-a',
+            targetOccurrenceId: 'channels-occurrence-a',
             identity: {
                 target: { pluginId: 'happier.channels' },
                 point: operation.point,
@@ -225,7 +232,7 @@ describe('admitted targeted-operation execution', () => {
         )).rejects.toMatchObject({ code: 'plugin_selected_action_input_invalid' });
         const wrongRole = createAdmittedTargetedOperationExecutionHandle({
             action: operation.action,
-            targetImmutableGenerationId: 'channels-generation-a',
+            targetOccurrenceId: 'channels-occurrence-a',
             identity: {
                 target: { pluginId: 'happier.channels' },
                 point: operation.point,
@@ -256,7 +263,8 @@ describe('admitted targeted-operation execution', () => {
             contributor: {
                 pluginId: 'acme.provider',
                 contributionId: 'github',
-                immutableGenerationId: 'provider-generation-a',
+                occurrenceId: 'provider-occurrence-a',
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'provider-occurrenceId-a', installSource: 'archive' },
             },
             role: 'setup',
             action: { pluginId: 'acme.provider', localId: 'connection/setup' },
@@ -275,10 +283,14 @@ describe('admitted targeted-operation execution', () => {
                 selection: {
                     target: {
                         pluginId: 'happier.channels',
-                        immutableGenerationId: 'channels-generation-a',
+                        sourceCustody: { kind: 'managed', immutableGenerationId: 'channels-occurrenceId-a', installSource: 'archive' },
                     },
                     point: setupOperation.point,
-                    contributor: setupOperation.contributor,
+                    contributor: {
+                        pluginId: setupOperation.contributor.pluginId,
+                        contributionId: setupOperation.contributor.contributionId,
+                        sourceCustody: { kind: 'managed', immutableGenerationId: 'provider-occurrenceId-a', installSource: 'archive' },
+                    },
                 },
                 connectedAccount: {
                     kind: 'selected' as const,
@@ -290,7 +302,7 @@ describe('admitted targeted-operation execution', () => {
                     machineDisplayName: 'Development Mac',
                 },
             },
-        };
+        } as const;
         let releaseMountedCallerCurrent: ((value: boolean) => void) | undefined;
         const mountedCallerCurrent = new Promise<boolean>((resolve) => {
             releaseMountedCallerCurrent = resolve;
@@ -304,21 +316,21 @@ describe('admitted targeted-operation execution', () => {
             seed: {
                 plugin: { id: 'happier.channels', version: '1.0.0' },
                 contribution: { id: 'connection-create', qualifiedId: 'happier.channels/actions/connection-create' },
-                generation: 'generation-1',
-                immutableGenerationId: 'channels-generation-a',
+                occurrenceId: 'channels-occurrence-a',
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'channels-occurrenceId-a', installSource: 'archive' },
                 surface: 'plugin',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 selectedActionInputCarrier,
                 isMountedCallerCurrent: async () => await mountedCallerCurrent,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
         });
         const setup = createAdmittedTargetedOperationExecutionHandle({
             action: setupOperation.action,
-            targetImmutableGenerationId: 'channels-generation-a',
+            targetOccurrenceId: 'channels-occurrence-a',
             identity: {
                 target: { pluginId: 'happier.channels' },
                 point: setupOperation.point,
@@ -330,7 +342,7 @@ describe('admitted targeted-operation execution', () => {
         });
         const connectionTest = createAdmittedTargetedOperationExecutionHandle({
             action: connectionTestOperation.action,
-            targetImmutableGenerationId: 'channels-generation-a',
+            targetOccurrenceId: 'channels-occurrence-a',
             identity: {
                 target: { pluginId: 'happier.channels' },
                 point: connectionTestOperation.point,
@@ -379,16 +391,16 @@ describe('admitted targeted-operation execution', () => {
     });
 
     it('forwards G only from its original handle and lets the canonical owner reject it after H replaces it', async () => {
-        let currentContributorImmutableGenerationId = 'immutable-contributor-g';
+        let currentContributorOccurrenceId = 'contributor-occurrence-g';
         const invokeContributedAction = vi.fn<InvokeContributedAction>(async (request) => {
             if (
-                request.admittedTargetedOperation?.contributorImmutableGenerationId
-                !== currentContributorImmutableGenerationId
+                request.admittedTargetedOperation?.contributorOccurrenceId
+                !== currentContributorOccurrenceId
             ) {
                 return {
                     status: 'failed' as const,
                     code: 'plugin_action_generation_retired',
-                    message: 'The admitted contributor generation is no longer current',
+                    message: 'The admitted contributor occurrence is no longer current',
                 };
             }
             return {
@@ -399,7 +411,7 @@ describe('admitted targeted-operation execution', () => {
                     materializationRef: {
                         pluginId: 'acme.contributor',
                         machineId: 'machine-target',
-                        materializationId: currentContributorImmutableGenerationId,
+                        materializationId: currentContributorOccurrenceId,
                     },
                 },
             };
@@ -410,12 +422,12 @@ describe('admitted targeted-operation execution', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
-                generation: 'generation-1',
-                immutableGenerationId: 'immutable-caller',
+                occurrenceId: 'caller-occurrence-g',
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-caller', installSource: 'archive' },
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
@@ -429,18 +441,19 @@ describe('admitted targeted-operation execution', () => {
             contributor: Object.freeze({
                 pluginId: 'acme.contributor',
                 contributionId: 'primary',
-                immutableGenerationId: 'immutable-contributor-g',
+                occurrenceId: 'contributor-occurrence-g',
+                sourceCustody: createManagedPluginSourceCustody('immutable-contributor-g'),
             }),
             role: 'publish',
         });
         const admitted = createAdmittedTargetedOperationExecutionHandle({
             action: { pluginId: 'acme.contributor', localId: 'publish' },
-            targetImmutableGenerationId: 'immutable-caller',
+            targetOccurrenceId: 'caller-occurrence-g',
             identity,
             targetProtocol: permissiveTargetProtocol(identity.role),
         });
 
-        expect(admitted).toEqual({ identity });
+        expect(admitted).toEqual({ identity, typeProjection: undefined });
         expect(Object.isFrozen(admitted)).toBe(true);
         expect(Object.isFrozen(admitted.identity)).toBe(true);
 
@@ -455,7 +468,7 @@ describe('admitted targeted-operation execution', () => {
             result: { accepted: true },
             executionOrigin: expect.objectContaining({
                 materializationRef: expect.objectContaining({
-                    materializationId: 'immutable-contributor-g',
+                    materializationId: 'contributor-occurrence-g',
                 }),
             }),
         });
@@ -463,19 +476,19 @@ describe('admitted targeted-operation execution', () => {
         expect(invokeContributedAction).toHaveBeenLastCalledWith(expect.objectContaining({
             action: { pluginId: 'acme.contributor', localId: 'publish' },
             admittedTargetedOperation: expect.objectContaining({
-                contributorImmutableGenerationId: 'immutable-contributor-g',
+                contributorOccurrenceId: 'contributor-occurrence-g',
             }),
         }));
         expect(invokeContributedAction.mock.calls[0]?.[0]).not.toHaveProperty(
-            'expectedContributorImmutableGenerationId',
+            'expectedContributorOccurrenceId',
         );
         expect(invokeContributedAction.mock.calls[0]?.[0]).not.toHaveProperty(
             'expectedContributorMaterializationId',
         );
 
         // H is now current. Neither copied public description can recover G's
-        // host-private binding or invoke either generation.
-        currentContributorImmutableGenerationId = 'immutable-contributor-h';
+        // host-private binding or invoke either occurrence.
+        currentContributorOccurrenceId = 'contributor-occurrence-h';
         invokeContributedAction.mockClear();
         const copiedIdentityHandle = Object.freeze({ identity: admitted.identity });
         const reconstructed = Object.freeze({
@@ -511,12 +524,12 @@ describe('admitted targeted-operation execution', () => {
         expect(invokeContributedAction).toHaveBeenCalledOnce();
         expect(invokeContributedAction).toHaveBeenCalledWith(expect.objectContaining({
             admittedTargetedOperation: expect.objectContaining({
-                contributorImmutableGenerationId: 'immutable-contributor-g',
+                contributorOccurrenceId: 'contributor-occurrence-g',
             }),
         }));
     });
 
-    it('refuses an original handle when its target generation has been replaced before dispatch', async () => {
+    it('refuses an original handle when its target occurrence has been replaced before dispatch', async () => {
         const invokeContributedAction = vi.fn<InvokeContributedAction>(async () => ({
             status: 'executed' as const,
             value: { accepted: true },
@@ -526,12 +539,12 @@ describe('admitted targeted-operation execution', () => {
             seed: {
                 plugin: { id: 'acme.target', version: '1.0.0' },
                 contribution: { id: 'request', qualifiedId: 'acme.target/actions/request' },
-                generation: 'generation-h',
-                immutableGenerationId: 'immutable-target-h',
+                occurrenceId: 'target-occurrence-h',
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-target-h', installSource: 'archive' },
                 surface: 'plugin',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
@@ -544,11 +557,12 @@ describe('admitted targeted-operation execution', () => {
                 contributor: {
                     pluginId: 'acme.contributor',
                     contributionId: 'primary',
-                    immutableGenerationId: 'immutable-contributor-g',
+                    occurrenceId: 'contributor-occurrence-g',
+                    sourceCustody: { kind: 'managed', immutableGenerationId: 'immutable-contributor-g', installSource: 'archive' },
                 },
                 role: 'publish',
             },
-            targetImmutableGenerationId: 'immutable-target-g',
+            targetOccurrenceId: 'target-occurrence-g',
             targetProtocol: permissiveTargetProtocol('publish'),
         });
 

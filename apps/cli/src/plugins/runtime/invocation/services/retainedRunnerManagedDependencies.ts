@@ -4,14 +4,10 @@ import { resolveInstallablesRegistry } from '@happier-dev/protocol/installables'
 import type { PluginHostAccessRequestV2 } from '@happier-dev/protocol';
 import { PluginError } from '@happier-dev/plugin-sdk';
 
-import { readPluginManifest } from '@/plugins/manifest/read';
 import type {
     ResolvedInstallableContribution,
 } from '@/plugins/projection/registry/types';
 import type { PluginStorePaths } from '@/plugins/store/paths';
-import {
-    readPreparedImmutablePluginGeneration,
-} from '@/plugins/store/registry/generationStore';
 import type {
     AgentSessionRunnerBindingV1,
 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
@@ -19,6 +15,12 @@ import type {
     RunnerManagedDependencySourceCandidateV1,
     RunnerManagedDependencyRetentionV1,
 } from '@/plugins/runtime/runner/runnerManagedDependencyRetention';
+import {
+    runnerPluginSourceCustodyIdentity,
+} from '@/plugins/runtime/runner/runnerManagedDependencyRetention';
+import {
+    attestRetainedPluginSource,
+} from '@/plugins/runtime/retainedPluginSourceAttestation';
 
 import {
     resolveExecutableManagedDependenciesRegistry,
@@ -93,7 +95,7 @@ export async function createRetainedRunnerManagedDependenciesHost(
     }
     if (expectedQualifiedIds.length === 0) {
         if (
-            params.retention.sourceGenerationIds.length !== 0
+            params.retention.sourceCustodies.length !== 0
             || (params.retention.sourceCandidates?.length ?? 0) !== 0
         ) {
             return unavailable();
@@ -122,49 +124,62 @@ export async function createRetainedRunnerManagedDependenciesHost(
         )
         || JSON.stringify([
             ...new Set(sourceCandidates.map(
-                ({ immutableGenerationId }) =>
-                    immutableGenerationId,
+                ({ sourceCustody }) =>
+                    runnerPluginSourceCustodyIdentity(sourceCustody),
             )),
         ].sort()) !== JSON.stringify(
-            params.retention.sourceGenerationIds,
+            params.retention.sourceCustodies.map(
+                runnerPluginSourceCustodyIdentity,
+            ),
         )
     ) {
         return unavailable();
     }
-    const sourceCandidatesByGenerationId = new Map<
+    const sourceCandidatesByCustody = new Map<
         string,
         RunnerManagedDependencySourceCandidateV1[]
     >();
     for (const sourceCandidate of sourceCandidates) {
-        const existing = sourceCandidatesByGenerationId.get(
-            sourceCandidate.immutableGenerationId,
+        const custodyIdentity = runnerPluginSourceCustodyIdentity(
+            sourceCandidate.sourceCustody,
+        );
+        const existing = sourceCandidatesByCustody.get(
+            custodyIdentity,
         ) ?? [];
         existing.push(sourceCandidate);
-        sourceCandidatesByGenerationId.set(
-            sourceCandidate.immutableGenerationId,
+        sourceCandidatesByCustody.set(
+            custodyIdentity,
             existing,
         );
     }
 
     const registryCandidates: ResolvedInstallableContribution[] = [];
     const immutableGenerationIdsByPluginId = new Map<string, string>();
+    const sourceCustodiesByPluginId = new Map(
+        params.retention.sourceCandidates?.map((candidate) => [
+            candidate.qualifiedDependencyId.split('/')[0]!,
+            candidate.sourceCustody,
+        ] as const) ?? [],
+    );
     try {
         for (
-            const immutableGenerationId
-            of params.retention.sourceGenerationIds
+            const sourceCustody
+            of params.retention.sourceCustodies
         ) {
-            const generation =
-                await readPreparedImmutablePluginGeneration({
-                    paths: params.paths,
-                    immutableGenerationId,
-                });
-            const pluginId = generation.record.pluginId;
+            if (sourceCustody.kind === 'development') return unavailable();
+            const custodyIdentity = runnerPluginSourceCustodyIdentity(
+                sourceCustody,
+            );
             const candidatesForGeneration =
-                sourceCandidatesByGenerationId.get(
-                    immutableGenerationId,
+                sourceCandidatesByCustody.get(
+                    custodyIdentity,
                 );
+            const firstCandidate = candidatesForGeneration?.[0];
+            const pluginId = firstCandidate?.qualifiedDependencyId
+                .split('/')[0];
             if (
-                !candidatesForGeneration
+                !pluginId
+                || !candidatesForGeneration
                 || candidatesForGeneration.length === 0
                 || immutableGenerationIdsByPluginId.has(pluginId)
             ) {
@@ -198,9 +213,20 @@ export async function createRetainedRunnerManagedDependenciesHost(
                 manifestAuthority = candidate.manifestAuthority;
             }
             if (!manifestAuthority) return unavailable();
+            const attested = await attestRetainedPluginSource({
+                paths: params.paths,
+                pluginId,
+                custody: sourceCustody,
+                manifestAuthority,
+            });
+            if (manifestAuthority !== attested.manifestAuthority) return unavailable();
+            const occurrenceId = attested.managedGeneration;
+            const rootPath = attested.rootPath;
             if (
-                immutableGenerationId
-                    === params.binding.immutableGenerationId
+                runnerPluginSourceCustodyIdentity(sourceCustody)
+                    === runnerPluginSourceCustodyIdentity(
+                        params.binding.sourceCustody,
+                    )
                 && pluginId === params.binding.pluginId
                 && manifestAuthority
                     !== params.agentManifestAuthority
@@ -208,22 +234,13 @@ export async function createRetainedRunnerManagedDependenciesHost(
                 return unavailable();
             }
             const manifestPath = join(
-                generation.rootPath,
-                ...generation.record.manifestRelativePath.split('/'),
+                rootPath,
+                ...(occurrenceId
+                    ? occurrenceId.record.manifestRelativePath.split('/')
+                    : ['.happier-plugin', 'plugin.json']),
             );
-            const manifest = await readPluginManifest({
-                manifestPath,
-                manifestAuthority,
-                sourceProvenance: generation.record.sourceProvenance,
-            });
-            if (
-                !manifest.ok
-                || manifest.manifest.id !== pluginId
-            ) {
-                return unavailable();
-            }
             const dependencyDefinitions =
-                manifest.manifest.contributes.managedDependencies
+                attested.manifest.contributes.managedDependencies
                 ?? [];
             for (const definition of dependencyDefinitions) {
                 const qualifiedId = `${pluginId}/${definition.id}`;
@@ -245,16 +262,18 @@ export async function createRetainedRunnerManagedDependenciesHost(
                     daemonEntryPath: null,
                     sourceSpec: sourceSpec(
                         pluginId,
-                        generation.rootPath,
+                        rootPath,
                         manifestAuthority,
                     ),
                     definition,
                 }));
             }
-            immutableGenerationIdsByPluginId.set(
-                pluginId,
-                immutableGenerationId,
-            );
+            if (sourceCustody.kind === 'managed') {
+                immutableGenerationIdsByPluginId.set(
+                    pluginId,
+                    sourceCustody.immutableGenerationId,
+                );
+            }
         }
     } catch {
         return unavailable();
@@ -267,8 +286,6 @@ export async function createRetainedRunnerManagedDependenciesHost(
     if (
         JSON.stringify(resolvedCandidateQualifiedIds)
             !== JSON.stringify([...sourceCandidateQualifiedIds].sort())
-        || immutableGenerationIdsByPluginId.size
-            !== sourceCandidatesByGenerationId.size
     ) {
         return unavailable();
     }
@@ -302,6 +319,7 @@ export async function createRetainedRunnerManagedDependenciesHost(
                 ),
             sourceModel,
             immutableGenerationIdsByPluginId,
+            sourceCustodiesByPluginId,
             getSettings: () => ({}),
             resolveAdapter: async () => unavailable(),
             resolveSourceAdapter:

@@ -377,7 +377,7 @@ describe('agents package exports', () => {
         experimentalResumePolicy: 'runtime_checked',
       },
       sessionStorage: { direct: true, persisted: true },
-      tools: { delivery: 'shell_bridge', support: 'experimental' },
+      tools: { delivery: 'native_mcp', support: 'experimental' },
     }));
   });
 

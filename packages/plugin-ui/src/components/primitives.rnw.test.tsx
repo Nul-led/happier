@@ -72,6 +72,27 @@ describe('List', () => {
     mount.unmount();
   });
 
+  it('paints a section title from the projected dark theme', () => {
+    const context = createSurfaceContext({ colorScheme: 'dark' });
+    const mount = mountThroughReactNativeWeb(
+      <PluginUiProvider hostApi={createHostApiStub(context)} context={context}>
+        <List accessibilityLabel="Review findings">
+          <List.Section title="Critical">
+            <List.Item>First finding</List.Item>
+          </List.Section>
+        </List>
+      </PluginUiProvider>,
+    );
+
+    const section = mount.container.querySelector('[role="group"][aria-label="Critical"]');
+    const title = Array.from(section?.querySelectorAll<HTMLElement>('[dir="auto"]') ?? [])
+      .find((candidate) => candidate.textContent === 'Critical');
+    expect(title, 'the shared section owner must render its visible title').toBeDefined();
+    expect(title?.style.color.replace(/\s/gu, '')).toBe('rgb(240,240,240)');
+
+    mount.unmount();
+  });
+
   it('renders the standalone ItemGroup through the portable group owner', () => {
     const mount = mountAuthorList(
       <ItemGroup accessibilityRole="radiogroup" accessibilityLabel="Review scope">

@@ -1,9 +1,11 @@
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 import {
     resolveProviderManagedRuntimeDeclarationV1,
+    pluginSourceCustodyV1Equal,
     type ManagedExecutableRef,
+    type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import { PluginError } from '@happier-dev/plugin-sdk';
 import type {
@@ -14,12 +16,10 @@ import type {
     RunnerDaemonManagedProviderBootstrapV1,
 } from '@/agent/runtime/session/process/agentRuntimeDaemonPluginServicesProtocol';
 import { createDaemonSpawnToolResolutionContext } from '@/daemon/spawnHooks';
-import { readPluginManifest } from '@/plugins/manifest/read';
 import { resolveAgentContributionQualifiedId } from '@/plugins/projection/registry/agentRoutingIdentity';
 import type { PluginStorePaths } from '@/plugins/store/paths';
 import {
     readCurrentPluginImmutableGenerationIntegrityCurrentness,
-    readPreparedImmutablePluginGeneration,
 } from '@/plugins/store/registry/generationStore';
 import {
     resolveCurrentInstalledPluginGenerationRuntimeExecutable,
@@ -27,6 +27,7 @@ import {
 import {
     verifyRunnerAgentBindingAgainstGeneration,
 } from '@/plugins/runtime/runner/loadRetainedAgentRuntimeLeaf';
+import { attestRetainedPluginSource } from '@/plugins/runtime/retainedPluginSourceAttestation';
 import type {
     AgentSessionRunnerBindingV1,
 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
@@ -39,7 +40,7 @@ export type RunnerManagedServiceSupervisionAuthorizationRequest = Readonly<{
     contributionId: string;
     operationClaimId?: string;
     serverId: string;
-    immutableGenerationId: string;
+    sourceCustody: PluginSourceCustodyV1;
     executable: ManagedExecutableRef;
     environmentKeys: readonly string[];
 }>;
@@ -136,8 +137,10 @@ export async function authorizeRunnerManagedProviderServerSupervision(
         );
     }
     if (
-        input.request.immutableGenerationId
-            !== scope.immutableGenerationId
+        !pluginSourceCustodyV1Equal(
+            input.request.sourceCustody,
+            scope.sourceCustody,
+        )
         || scope.sessionId !== input.sessionId
     ) {
         return fail(
@@ -175,38 +178,31 @@ export async function authorizeRunnerManagedProviderServerSupervision(
             'Managed Provider bootstrap identity is unavailable',
         );
     }
-    const generation =
-        await readPreparedImmutablePluginGeneration({
-            paths: input.paths,
-            immutableGenerationId:
-                scope.immutableGenerationId,
-        });
-    if (
-        generation.record.pluginId !== scope.pluginId
-    ) {
+    if (scope.sourceCustody.kind === 'development') {
         return fail(
             'plugin_managed_server_generation_stale',
-            'Managed Provider server generation is unavailable',
+            'Managed Provider development source must resolve through the current daemon slot',
         );
     }
-    const manifest = await readPluginManifest({
-        manifestPath: join(
-            generation.rootPath,
-            ...generation.record.manifestRelativePath.split('/'),
-        ),
+    const attested = await attestRetainedPluginSource({
+        paths: input.paths,
+        pluginId: scope.pluginId,
+        custody: scope.sourceCustody,
         manifestAuthority: scope.manifestAuthority,
-        sourceProvenance: generation.record.sourceProvenance,
     });
-    const provider = manifest.ok
-        ? manifest.manifest.contributes.providers.find(
-            (candidate) => candidate.id
-                === scope.providerLocalId,
-        )
-        : undefined;
+    const occurrenceId = attested.managedGeneration;
+    if (attested.manifestAuthority !== scope.manifestAuthority) {
+        return fail(
+            'plugin_managed_server_generation_stale',
+            'Managed Provider server source authority is unavailable',
+        );
+    }
+    const manifest = attested.manifest;
+    const provider = manifest.contributes.providers.find(
+        (candidate) => candidate.id === scope.providerLocalId,
+    );
     if (
-        !manifest.ok
-        || manifest.manifest.id !== scope.pluginId
-        || provider?.managedRuntime?.kind !== 'managed'
+        provider?.managedRuntime?.kind !== 'managed'
     ) {
         return fail(
             'plugin_managed_server_declaration_stale',
@@ -242,8 +238,8 @@ export async function authorizeRunnerManagedProviderServerSupervision(
     }
     if (executable.kind === 'systemTool') {
         const processRequests = [
-            ...manifest.manifest.hostAccess.required,
-            ...manifest.manifest.hostAccess.optional,
+            ...manifest.hostAccess.required,
+            ...manifest.hostAccess.optional,
         ].filter(
             (request): request is Extract<typeof request, {
                 capability: 'process';
@@ -251,7 +247,7 @@ export async function authorizeRunnerManagedProviderServerSupervision(
         );
         const executableDeclared = processRequests.some((request) =>
             request.scope.executables.some((candidate) =>
-                refEquals(candidate, executable)
+                refEquals(candidate, executable, scope.pluginId)
             )
         );
         const declaredEnvironmentKeys = new Set(
@@ -260,7 +256,7 @@ export async function authorizeRunnerManagedProviderServerSupervision(
             ),
         );
         const identity = refIdentity(executable, scope.pluginId);
-        const systemTool = manifest.manifest.contributes.systemTools.find(
+        const systemTool = manifest.contributes.systemTools.find(
             (candidate) => identity.pluginId === scope.pluginId
                 && candidate.id === identity.localId,
         );
@@ -315,18 +311,18 @@ export async function authorizeRunnerManagedProviderServerSupervision(
             'Managed Provider executable is unavailable',
         );
     }
-    if (scope.manifestAuthority === 'external') {
+    if (scope.manifestAuthority === 'external' && occurrenceId) {
         const command =
             await resolveCurrentInstalledPluginGenerationRuntimeExecutable({
                 executable,
-                rootPath: generation.rootPath,
-                files: generation.record.files,
+                rootPath: occurrenceId.rootPath,
+                files: occurrenceId.record.files,
                 isCurrent: async () =>
                     await readCurrentPluginImmutableGenerationIntegrityCurrentness({
                         paths: input.paths,
                         pluginId: scope.pluginId,
-                        immutableGenerationId: scope.immutableGenerationId,
-                        retainedManifestAuthority: scope.manifestAuthority,
+                        immutableGenerationId:
+                            occurrenceId.record.immutableGenerationId,
                     }),
             });
         if (!command) {
@@ -353,12 +349,25 @@ export async function authorizeRunnerManagedProviderServerSupervision(
 function refEquals(
     left: ManagedExecutableRef,
     right: ManagedExecutableRef,
+    requestingPluginId: string,
 ): boolean {
-    return JSON.stringify(left) === JSON.stringify(right);
+    if (left.kind !== right.kind) return false;
+    if (
+        left.kind === 'packaged-runtime-binary'
+        || right.kind === 'packaged-runtime-binary'
+    ) {
+        return JSON.stringify(left) === JSON.stringify(right);
+    }
+    const leftIdentity = refIdentity(left, requestingPluginId);
+    const rightIdentity = refIdentity(right, requestingPluginId);
+    return leftIdentity.pluginId === rightIdentity.pluginId
+        && leftIdentity.localId === rightIdentity.localId;
 }
 
 function refIdentity(
-    ref: Extract<ManagedExecutableRef, Readonly<{ kind: 'systemTool' }>>,
+    ref: Extract<ManagedExecutableRef, Readonly<{
+        kind: 'systemTool' | 'managedDependency';
+    }>>,
     requestingPluginId: string,
 ): Readonly<{ pluginId: string; localId: string }> {
     return typeof ref.id === 'string'
@@ -376,8 +385,10 @@ export async function authorizeRunnerManagedServiceSupervision(
     });
     if (
         input.request.contributionId !== contributionId
-        || input.request.immutableGenerationId
-            !== binding.immutableGenerationId
+        || !pluginSourceCustodyV1Equal(
+            input.request.sourceCustody,
+            binding.sourceCustody,
+        )
     ) {
         return fail(
             'plugin_managed_server_contribution_denied',
@@ -399,7 +410,11 @@ export async function authorizeRunnerManagedServiceSupervision(
     );
     const executableDeclared = processRequests.some((request) =>
         request.scope.executables.some((candidate) =>
-            refEquals(candidate, input.request.executable)
+            refEquals(
+                candidate,
+                input.request.executable,
+                binding.pluginId,
+            )
         )
     );
     const declaredEnvironmentKeys = new Set(

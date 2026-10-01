@@ -8,12 +8,15 @@ import {
   type AgentSessionOpenRequest,
   type AgentSessionRuntime,
   type AgentSessionRuntimeContext,
+  type AgentSessionRuntimeFactory,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import {
   resolveOpenCodeBackendMode,
 } from './mode.js';
-import { OPEN_CODE_SYSTEM_TOOL_ID } from '../systemTool.js';
+import {
+  resolveOpenCodeSystemToolId,
+} from '../systemTool.js';
 import { openOpenCodeServerSession } from './server/nativeSession.js';
 import { openOpenCodeServerExecutionRun } from './server/nativeExecutionRun.js';
 import {
@@ -40,15 +43,24 @@ const OPEN_CODE_ACP_RUNTIME_DEFINITION = {
 } satisfies AgentAcpRuntimeDefinition;
 
 function readOpenCodeNativeMode(
-  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
+  request: Parameters<NonNullable<AgentSessionRuntimeFactory['supportsTerminalPresentation']>>[0],
 ): 'server' | 'acp' {
   const modeOption = request.configuration?.options.opencodeBackendMode?.value;
   return resolveOpenCodeBackendMode({
+    runtimeDescriptorV1: request.runtimeDescriptorV1,
     env: request.launchEnvironment?.values,
     accountSettings: typeof modeOption === 'string'
       ? { opencodeBackendMode: modeOption }
       : null,
   });
+}
+
+function readOpenCodeSystemToolId(
+  request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
+) {
+  return resolveOpenCodeSystemToolId(
+    request.configuration?.options.opencodeCliGeneration?.value,
+  );
 }
 
 async function openOpenCodeAcpExecutionRun(
@@ -59,7 +71,7 @@ async function openOpenCodeAcpExecutionRun(
   return await context.protocols.acp.openExecutionRunV1(launchRequest, {
     transport: {
       kind: 'stdio',
-      executable: { kind: 'systemTool', id: OPEN_CODE_SYSTEM_TOOL_ID },
+      executable: { kind: 'systemTool', id: readOpenCodeSystemToolId(request) },
       args: ['acp'],
       env: { NODE_ENV: 'production', DEBUG: '' },
       timeouts: { initializeMs: 60_000, toolCallMs: 120_000, idleMs: 1_500 },
@@ -101,7 +113,7 @@ async function openOpenCodeAcpSession(
       kind: 'stdio',
       executable: {
         kind: 'systemTool',
-        id: OPEN_CODE_SYSTEM_TOOL_ID,
+        id: readOpenCodeSystemToolId(request),
       },
       args: ['acp'],
       env: {
@@ -158,6 +170,9 @@ async function openOpenCodeSession(
         : {}),
       runtimeCapabilities: {
         ...boundSession.runtimeCapabilities,
+        ...(mode === 'acp'
+          ? { tools: { delivery: 'native_mcp' as const, support: 'supported' as const } }
+          : {}),
         localControl: mode === 'server'
           ? {
             supported: true,
@@ -166,16 +181,6 @@ async function openOpenCodeSession(
             remoteWritable: true,
           }
           : null,
-        sessionCapabilities: {
-          ...boundSession.runtimeCapabilities?.sessionCapabilities,
-          sessionListing: 'supported',
-          sessionFork: {
-            conversation: 'supported',
-            fromMessage: mode === 'server' ? 'supported' : 'unsupported',
-            ...(mode === 'acp' ? { protocol: 'acp' as const } : {}),
-          },
-          sessionRollback: { conversation: 'unsupported' },
-        },
       },
     };
   } catch (error) {
@@ -190,6 +195,7 @@ export const createOpenCodeAgentRuntime: AgentRuntimeFactory = () => {
     toolExecution: { capability: 'observable' },
     sessions: {
       ...controlsOwner.sessions,
+      supportsTerminalPresentation: (selection) => readOpenCodeNativeMode(selection) === 'server',
       open: (request, context) => openOpenCodeSession(
         request,
         context,

@@ -72,7 +72,6 @@ describe('activation target demand', () => {
                 },
                 client: {
                     artifactId: 'voice-runtime-web',
-                    modulePath: './voiceRuntime',
                     exportName: 'activate',
                 },
             }],

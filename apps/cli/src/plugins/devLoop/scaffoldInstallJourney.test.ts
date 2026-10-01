@@ -11,6 +11,7 @@ const daemonBoundary = vi.hoisted(() => ({
   ensureRunning: vi.fn(async () => undefined),
   requestChange: vi.fn(),
   decideChange: vi.fn(),
+  development: vi.fn(),
 }));
 
 vi.mock('@/daemon/ensureDaemon', async (importOriginal) => ({
@@ -22,6 +23,7 @@ vi.mock('@/daemon/controlClient', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/daemon/controlClient')>(),
   requestDaemonPluginChange: daemonBoundary.requestChange,
   decideDaemonPluginChange: daemonBoundary.decideChange,
+  controlDaemonPluginDevelopment: daemonBoundary.development,
 }));
 
 /**
@@ -34,15 +36,14 @@ vi.mock('@/daemon/controlClient', async (importOriginal) => ({
  * The only substituted boundary is the daemon transport itself.
  */
 describe('scaffold → install authoring journey', () => {
-  it('previews and installs a pristine code-defined scaffold through the daemon installPath request', async () => {
+  it('previews and registers a pristine code-defined scaffold through the daemon development-root owner', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-scaffold-install-'));
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-scaffold-home-'));
     const targetDir = join(workspaceRoot, 'fresh-plugin');
     daemonBoundary.requestChange.mockReset();
-    daemonBoundary.requestChange.mockResolvedValue({
-      kind: 'sourceRootReviewRequired',
-      pendingChangeId: 'pending-scaffold-install-1',
-      review: { source: { kind: 'path', locator: targetDir } },
+    daemonBoundary.development.mockReset();
+    daemonBoundary.development.mockResolvedValue({
+      kind: 'status', status: { roots: [], plugins: [] },
     });
 
     try {
@@ -89,36 +90,15 @@ describe('scaffold → install authoring journey', () => {
         workspaceRoot,
         happyHomeDir,
       })).resolves.toMatchObject({
-        ok: false,
-        kind: 'plugins_install',
-        outcome: 'reviewRequired',
-        pendingReview: {
-          kind: 'sourceRootReviewRequired',
-          pendingChangeId: 'pending-scaffold-install-1',
-        },
-      });
-      expect(daemonBoundary.requestChange).toHaveBeenCalledWith({
-        kind: 'installPath',
-        locator: targetDir,
-        development: true,
-      });
-
-      await expect(executePluginDevLoopAction({
-        actionId: 'plugins.change.status',
-        input: { pendingChangeId: 'pending-scaffold-install-1' },
-        workspaceRoot,
-        happyHomeDir,
-      }, {
-        readUserPluginChangeStatus: async ({ pendingChangeId }) => ({
-          kind: 'sourceRootReviewRequired' as const,
-          pendingChangeId,
-          review: { source: { kind: 'path' as const, locator: targetDir } },
-        }),
-      })).resolves.toMatchObject({
         ok: true,
-        kind: 'plugins_change_status',
-        status: { kind: 'sourceRootReviewRequired', pendingChangeId: 'pending-scaffold-install-1' },
+        kind: 'plugins_dev_submit',
+        status: { roots: [], plugins: [] },
       });
+      expect(daemonBoundary.requestChange).not.toHaveBeenCalled();
+      expect(daemonBoundary.development).toHaveBeenCalledWith({
+        kind: 'registerExplicit', rootPath: targetDir,
+      }, {});
+
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
       await rm(happyHomeDir, { recursive: true, force: true });

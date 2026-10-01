@@ -41,6 +41,116 @@ type SessionParamsWithCredentials =
   }>;
 
 describe('bindClaudeAgentSdkFallbackSession', () => {
+  it('maps native startup instructions on SDK resume with prompt snapshots disabled', async () => {
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
+      exec: exec.service, sessionHooks: createSessionHooksFixture().service,
+    });
+    const instructions = 'RESOLVED_ROLE_AND_WORKER_PLAN';
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {}, permissionMode: 'default',
+      startupInstructions: instructions, supportsSystemPromptSnapshotOff: true,
+      initialProviderSessionId: 'claude-native-plan', enableSessionResumability: true,
+    });
+    try {
+      await operations.sendProviderTurnPrompt('continue');
+      await vi.waitFor(() => expect(exec.spawnClient).toHaveBeenCalledOnce());
+      const args = exec.spawnClient.mock.calls[0]?.[0].launch.args ?? [];
+      expect(args).not.toContain(instructions);
+      expect(args).toEqual(expect.arrayContaining(['--resume', 'claude-native-plan', '--system-prompt-snapshot', 'off']));
+      expect(await readFile(args[args.indexOf('--append-system-prompt-file') + 1], 'utf8')).toBe(instructions);
+    } finally { await operations.disposeProviderSession(); }
+  });
+
+  it('delivers browser pixels in the SDK user message rather than only the text', async () => {
+    const exec = createSdkExecFixture();
+    const base = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
+      exec: exec.service, sessionHooks: createSessionHooksFixture().service,
+    });
+    const ctx = { ...base, agentRuntime: { ...base.agentRuntime,
+      // Public host service boundary; real path/hash verification has host-owner coverage.
+      inputFiles: { readVerifiedImage: async () => ({ url: 'data:image/png;base64,verified-pixels', mimeType: 'image/png' }) },
+    } };
+    const operations = createClaudeAgentSdkProviderOperations({ ctx, directory: '/tmp/claude-project', launchEnv: {}, happierSessionId: 'browser-session' });
+    try {
+      const submitted = operations.sendProviderTurnPrompt('Inspect the page', { structuredInput: { v: 1, imageInputs: [{
+        id: 'browser-image', kind: 'localImage', path: '.happier/uploads/artifacts/browser-session/capture/screen.png',
+        mimeType: 'image/png', sha256: 'a'.repeat(64), sizeBytes: 68,
+        provenance: { kind: 'browserSessionMedia', sessionId: 'browser-session', storage: 'daemon' },
+      }] } });
+      await vi.waitFor(() => expect(exec.written.some((row) => (row as { type?: string }).type === 'user')).toBe(true));
+      expect(exec.written).toContainEqual(expect.objectContaining({ type: 'user', message: {
+        role: 'user', content: [{ type: 'text', text: 'Inspect the page' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'verified-pixels' } }],
+      } }));
+      await submitted;
+    } finally { await operations.disposeProviderSession(); }
+  });
+  it('emits canonical compaction from an automatic SDK boundary without manual compact', async () => {
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
+      exec: exec.service, sessionHooks: createSessionHooksFixture().service,
+    });
+    const operations = createClaudeAgentSdkProviderOperations({ ctx, directory: '/tmp/claude-project', launchEnv: {}, happierSessionId: 'sdk-compaction' });
+    const observed: unknown[] = [];
+    operations.subscribeProviderEvents((event) => observed.push(event));
+    try {
+      operations.beginProviderTurn();
+      await operations.sendProviderTurnPrompt('continue work');
+      await vi.waitFor(() => expect(exec.spawnClient).toHaveBeenCalledOnce());
+      await exec.emit({ type: 'system', subtype: 'compact_boundary', uuid: 'sdk-compact-1', compact_metadata: { trigger: 'auto', pre_tokens: 1234 } });
+      await vi.waitFor(() => expect(observed).toContainEqual(expect.objectContaining({ kind: 'context-compaction', compactionId: 'sdk-compact-1', phase: 'completed', trigger: 'automatic' })));
+    } finally { await operations.disposeProviderSession(); }
+  });
+  it('passes the hands-off deny policy to the real SDK launch under bypass', async () => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service, {
+      exec: exec.service, sessionHooks: createSessionHooksFixture().service,
+    });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {}, permissionMode: 'yolo',
+      workspaceWrites: 'deny', happierSessionId: 'happy-sdk-hands-off',
+    });
+    try {
+      operations.beginProviderTurn();
+      await operations.sendProviderTurnPrompt('coordinate the work');
+      await vi.waitFor(() => expect(exec.spawnClient).toHaveBeenCalledOnce());
+      const args = exec.spawnClient.mock.calls[0]?.[0].launch.args ?? [];
+      const settings = JSON.parse(args[args.indexOf('--settings') + 1] ?? '{}');
+      expect(settings.permissions?.deny).toEqual(expect.arrayContaining(['Edit', 'Write', 'Bash']));
+      expect(settings.permissions?.deny).not.toContain('mcp__happier__*');
+      expect(settings.permissions?.allow).toContain('mcp__happier__change_title');
+    } finally { await operations.disposeProviderSession(); }
+  });
+
+  it('allows the Happier title tool in a normal SDK Session launch', async () => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service, {
+      exec: exec.service,
+      sessionHooks: createSessionHooksFixture().service,
+    });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {},
+      permissionMode: 'default', happierSessionId: 'happy-sdk-title',
+    });
+    try {
+      operations.beginProviderTurn();
+      await operations.sendProviderTurnPrompt('set a title');
+      await vi.waitFor(() => expect(exec.spawnClient).toHaveBeenCalledOnce());
+      const args = exec.spawnClient.mock.calls[0]?.[0].launch.args ?? [];
+      const settingsIndex = args.indexOf('--settings');
+      expect(settingsIndex).toBeGreaterThanOrEqual(0);
+      const settings = JSON.parse(args[settingsIndex + 1] ?? '{}');
+      expect(settings.permissions?.allow).toContain('mcp__happier__change_title');
+    } finally {
+      await operations.disposeProviderSession();
+    }
+  });
+
   it('uses the supplied host delivery id for one SDK lifecycle start and successful terminal', async () => {
     const terminalHost = createTerminalHostFixture();
     const events = createEventsFixture();
@@ -1567,6 +1677,66 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
     });
   });
 
+  it.each(['complete', 'exit', 'queued-error'] as const)('keeps the submitted SDK turn open while result queued_turn_count is positive (%s)', async (ending) => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service, { exec: exec.service });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {}, permissionMode: 'default',
+      happierSessionId: 'happy-queued-result', publishTranscriptMessages: true,
+    });
+    const observed: unknown[] = [];
+    operations.subscribeProviderEvents((event) => observed.push(event));
+    try {
+      operations.beginProviderTurn('submitted-turn');
+      await operations.sendProviderTurnPrompt('continue the requested work');
+      const completion = operations.waitForProviderTurnCompletion();
+      // Observe rejection immediately so the process-exit case never creates an unhandled rejection.
+      const settled = completion.then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error }));
+      await exec.emit({
+        type: 'result', subtype: ending === 'queued-error' ? 'error_during_execution' : 'success',
+        is_error: ending === 'queued-error', errors: ending === 'queued-error' ? ['Earlier queued command failed'] : [],
+        session_id: 'claude-queued-result',
+        uuid: 'queued-result', origin: { kind: 'task-notification' }, queued_turn_count: 1,
+        result: 'The resumed background notification was handled.', num_turns: 1,
+        total_cost_usd: 0, duration_ms: 10, duration_api_ms: 8,
+      });
+      await vi.waitFor(() => expect(observed).toEqual(expect.arrayContaining([
+        expect.objectContaining({ localId: 'claude-sdk-result-queued-result' }),
+      ])));
+      expect(observed).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'turn-complete' })]));
+      expect(observed).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'turn-failed' })]));
+      if (ending === 'queued-error') {
+        expect(ctx.logger.warn).toHaveBeenCalledWith(expect.any(String), { error: expect.any(Error) });
+      }
+      if (ending === 'exit') {
+        await exec.exitWith({ exitCode: 0, signal: null, stderr: '' });
+        expect(await settled).toEqual({ ok: false, error: expect.any(Error) });
+        expect(observed).toEqual(expect.arrayContaining([
+          expect.objectContaining({ kind: 'turn-failed', turnId: 'submitted-turn' }),
+        ]));
+      } else {
+        await expect(operations.sendProviderTurnPrompt('another prompt')).resolves.toMatchObject({ kind: 'rejected_before_effect' });
+        await exec.emit({
+          type: 'assistant', session_id: 'claude-queued-result', parent_tool_use_id: null,
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Requested work finished.' }] },
+        });
+        await exec.emit({
+          type: 'result', subtype: 'success', is_error: false, session_id: 'claude-queued-result',
+          uuid: 'final-result', queued_turn_count: 0, result: 'Requested work finished.',
+          num_turns: 1, total_cost_usd: 0, duration_ms: 10, duration_api_ms: 8,
+        });
+        expect(await settled).toEqual({ ok: true });
+        expect(observed.filter((event) => (event as { kind?: string }).kind === 'turn-complete')).toEqual([
+          expect.objectContaining({ turnId: 'submitted-turn' }),
+        ]);
+      }
+    } finally {
+      await operations.disposeProviderSession();
+    }
+  });
+
   it('releases the in-flight SDK turn when Claude emits a result before process exit', async () => {
     const terminalHost = createTerminalHostFixture();
     const events = createEventsFixture();
@@ -2894,6 +3064,31 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
     }
   });
 
+  it.each([
+    { initialProviderSessionId: null, supported: true },
+    { initialProviderSessionId: 'snapshot-resume', supported: true },
+    { initialProviderSessionId: 'snapshot-legacy', supported: false },
+  ])('disables prompt snapshots only on supported SDK launches ($supported, $initialProviderSessionId)', async ({ initialProviderSessionId, supported }) => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service, { exec: exec.service });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {}, permissionMode: 'default',
+      supportsSystemPromptSnapshotOff: supported, initialProviderSessionId,
+    });
+    try {
+      await operations.sendProviderTurnPrompt('first prompt');
+      await vi.waitFor(() => expect(exec.spawnClient).toHaveBeenCalledTimes(1));
+      const args = exec.spawnClient.mock.calls[0]?.[0].launch.args ?? [];
+      expect(args.includes('--system-prompt-snapshot')).toBe(supported);
+      if (supported) expect(args[args.indexOf('--system-prompt-snapshot') + 1]).toBe('off');
+    } finally {
+      await operations.cancelProviderTurn('test_complete').catch(() => undefined);
+      await operations.disposeProviderSession('test_complete').catch(() => undefined);
+    }
+  });
+
   it('applies an ultracode runtime update as a single inline --settings overlay on the next SDK query', async () => {
     const terminalHost = createTerminalHostFixture();
     const events = createEventsFixture();
@@ -2922,7 +3117,10 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       });
 
       const args = exec.spawnClient.mock.calls[0]?.[0].launch.args as string[];
-      expect(args).toEqual(expect.arrayContaining(['--settings', '{"ultracode":true}']));
+      expect(JSON.parse(args[args.indexOf('--settings') + 1] ?? '{}')).toMatchObject({
+        permissions: { allow: expect.arrayContaining(['mcp__happier__change_title']) },
+        ultracode: true,
+      });
       expect(args.filter((arg) => arg === '--settings')).toHaveLength(1);
     } finally {
       await runtime.resetOrDisposeRuntime().catch(() => undefined);
@@ -2958,7 +3156,10 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
 
       const args = exec.spawnClient.mock.calls[0]?.[0].launch.args as string[];
       expect(args).toEqual(expect.arrayContaining(['--model', 'claude-fable-5[1m]']));
-      expect(args).toEqual(expect.arrayContaining(['--settings', '{"ultracode":true}']));
+      expect(JSON.parse(args[args.indexOf('--settings') + 1] ?? '{}')).toMatchObject({
+        permissions: { allow: expect.arrayContaining(['mcp__happier__change_title']) },
+        ultracode: true,
+      });
     } finally {
       await runtime.resetOrDisposeRuntime().catch(() => undefined);
     }
@@ -2992,7 +3193,10 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       });
 
       const args = exec.spawnClient.mock.calls[0]?.[0].launch.args as string[];
-      expect(args).not.toContain('--settings');
+      expect(JSON.parse(args[args.indexOf('--settings') + 1] ?? '{}')).toMatchObject({
+        permissions: { allow: expect.arrayContaining(['mcp__happier__change_title']) },
+      });
+      expect(args.join(' ')).not.toContain('ultracode');
     } finally {
       await runtime.resetOrDisposeRuntime().catch(() => undefined);
     }

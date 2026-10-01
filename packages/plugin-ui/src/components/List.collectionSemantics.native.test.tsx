@@ -18,6 +18,7 @@ const nativePlatform = vi.hoisted(() => ({
  */
 vi.mock('react-native', () => ({
   Platform: nativePlatform,
+  StyleSheet: { hairlineWidth: 0.5 },
   I18nManager: { isRTL: false },
   FlatList: function MountedFlatList(props: Readonly<{
     data: readonly unknown[];

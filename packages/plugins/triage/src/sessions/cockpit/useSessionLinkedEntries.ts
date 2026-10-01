@@ -2,12 +2,15 @@ import * as React from 'react';
 import {
     usePluginCollectionQuery,
     usePluginUiDataClientOrNull,
+    useSurfaceContext,
     type PluginUiCollectionQueryResult,
-} from '@happier-dev/plugin-ui/data';
+} from '@happier-dev/plugin-ui';
 
 import { CORPUS_SESSION_LINKS_COLLECTION } from '../../corpus/collections/definitions.js';
 import { fromCorpusStoredRow } from '../../corpus/collections/rowCodec.js';
 import type { CorpusSessionLinkRowV1 } from '../../corpus/collections/rows.js';
+import { useTriageListWindow } from '../../ui/window/useTriageListWindow.js';
+import { resolveTriageSourceWorkflowSubjectV1 } from '../../ui/detail/sourceSurface.js';
 import {
     TRIAGE_SESSION_LINKED_ENTRIES_COLLECTION_ID_V1,
     TRIAGE_SESSION_LINKED_ENTRIES_UI_QUERY_ID_V1,
@@ -179,6 +182,9 @@ export type TriageSessionLinkedEntriesV1 = Readonly<{
  * a value read out of a Message.
  */
 export function useTriageSessionLinkedEntries(sessionId: string): TriageSessionLinkedEntriesV1 {
+    // Reading the existing retained window does not demand a source pass.
+    const window = useTriageListWindow();
+    const { targetedContributions } = useSurfaceContext();
     const parameters = React.useMemo(
         () => triageSessionLinkedEntriesParameters(sessionId),
         [sessionId],
@@ -207,8 +213,9 @@ export function useTriageSessionLinkedEntries(sessionId: string): TriageSessionL
     }, [query.refresh, retryUnreadable]);
 
     const view = React.useMemo(
-        () => projectTriageSessionLinkedEntries({ query: queryState, hydration }),
-        [hydration, queryState],
+        () => projectTriageSessionLinkedEntries({ query: queryState, hydration, entries: window.snapshot.window?.rows,
+            workflowSubject: (entryRef) => resolveTriageSourceWorkflowSubjectV1(targetedContributions, entryRef) }),
+        [hydration, queryState, targetedContributions, window.snapshot.window?.rows],
     );
 
     return React.useMemo(

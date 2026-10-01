@@ -25,6 +25,9 @@ import type {
 } from './connectionPollFailureBounds.js';
 
 type SelfStampedPluginCaller = Extract<PluginInvocationCaller, Readonly<{ kind: 'plugin' }>>;
+type MaterializedSelfStampedPluginCaller = SelfStampedPluginCaller & Readonly<{
+  materialization: PluginMachineMaterializationRefV1;
+}>;
 
 /**
  * Whether a host-stamped caller's materialization names the caller's own
@@ -37,7 +40,7 @@ type SelfStampedPluginCaller = Extract<PluginInvocationCaller, Readonly<{ kind: 
  */
 export function isSelfStampedPluginCaller(
   caller: PluginInvocationCaller | undefined,
-): caller is SelfStampedPluginCaller {
+): caller is MaterializedSelfStampedPluginCaller {
   if (caller?.kind !== 'plugin') return false;
   const materialization: unknown = caller.materialization;
   return materialization !== null
@@ -332,7 +335,6 @@ function freezeProviderContributionSelection(
 ): PersistedConversationProviderContributionSelection {
   return Object.freeze({
     contributionId: selection.contributionId,
-    immutableGenerationId: selection.immutableGenerationId,
   });
 }
 

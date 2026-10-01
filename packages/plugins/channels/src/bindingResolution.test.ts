@@ -20,7 +20,7 @@ type StateMutation =
   | Readonly<{ kind: 'put'; value: StateValue; expectedRevision: number | 'absent' }>;
 
 const providerPluginId = 'example.channels.provider';
-function admittedProviderOperation(role: string, immutableGenerationId = 'provider-generation-a') {
+function admittedProviderOperation(role: string, occurrenceId = 'provider-occurrence-a') {
   return Object.freeze({
     identity: Object.freeze({
       target: Object.freeze({ pluginId: 'happier.channels' }),
@@ -31,7 +31,7 @@ function admittedProviderOperation(role: string, immutableGenerationId = 'provid
       contributor: Object.freeze({
         pluginId: providerPluginId,
         contributionId: 'example-provider',
-        immutableGenerationId,
+        occurrenceId,
       }),
       role,
     }),
@@ -60,22 +60,24 @@ const principalCandidate = Object.freeze({
   label: 'Current principal label',
 });
 type ProviderContributionSnapshot = Readonly<{
-  targetGeneration: string;
-  contributorGeneration: string;
+  targetOccurrenceId: string;
+  contributorOccurrenceId: string;
+  contributorGenerationId: string;
 }>;
 const providerContributionA: ProviderContributionSnapshot = Object.freeze({
-  targetGeneration: 'channels-generation-a',
-  contributorGeneration: 'provider-generation-a',
+  targetOccurrenceId: 'channels-occurrence-a',
+  contributorOccurrenceId: 'provider-occurrence-a',
+  contributorGenerationId: 'provider-generation-a',
 });
 const providerContributionB: ProviderContributionSnapshot = Object.freeze({
-  targetGeneration: 'channels-generation-b',
-  contributorGeneration: 'provider-generation-b',
+  targetOccurrenceId: 'channels-occurrence-b',
+  contributorOccurrenceId: 'provider-occurrence-b',
+  contributorGenerationId: 'provider-generation-b',
 });
 const connectionAuthority = {
   providerPluginId,
   providerContributionSelection: {
     contributionId: 'example-provider',
-    immutableGenerationId: 'provider-generation-a',
   },
   providerSetupInput: { source: 'binding-resolution-test' },
   credentialRef: null,
@@ -160,17 +162,32 @@ function targetedContributionsFixture(
           onRead?.(readCount);
           if (current === undefined) throw new Error('Expected an admitted provider contribution snapshot.');
           return {
-            generation: current.targetGeneration,
+            occurrenceId: current.targetOccurrenceId,
+            sourceCustody: {
+              kind: 'bundled_first_party',
+              packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-version-a' },
+            },
             contributions: [{
               contributor: {
                 pluginId: providerPluginId,
                 contributionId: 'example-provider',
-                immutableGenerationId: current.contributorGeneration,
+                occurrenceId: current.contributorOccurrenceId,
+                sourceCustody: {
+                  kind: 'managed',
+                  immutableGenerationId: current.contributorGenerationId,
+                  installSource: 'npm',
+                },
               },
               protocol: { id: 'happier.channels/providers', version: 1 },
               operations: {
-                endpointResolve: endpointResolveAction,
-                ...(options.principalResolve === false ? {} : { principalResolve: principalResolveAction }),
+                endpointResolve: current.contributorOccurrenceId === 'provider-occurrence-a'
+                  ? endpointResolveAction
+                  : admittedProviderOperation('endpointResolve', current.contributorOccurrenceId),
+                ...(options.principalResolve === false ? {} : {
+                  principalResolve: current.contributorOccurrenceId === 'provider-occurrence-a'
+                    ? principalResolveAction
+                    : admittedProviderOperation('principalResolve', current.contributorOccurrenceId),
+                }),
               },
             }] as unknown as readonly TContribution[],
           };
@@ -565,7 +582,7 @@ describe('Conversation binding resolution and creation', () => {
     );
   });
 
-  it('does not carry endpoint evidence into a retired persisted provider selection before principal resolution', async () => {
+  it('does not carry endpoint evidence across a replacement provider occurrence before principal resolution', async () => {
     const resolve = Reflect.get(management, 'resolveConversationBindingForInvocation');
     expect(resolve).toEqual(expect.any(Function));
     if (typeof resolve !== 'function') return;
@@ -594,14 +611,14 @@ describe('Conversation binding resolution and creation', () => {
       collection,
       execute: vi.fn(),
       executeAdmittedTargetedOperationWithExecutionOrigin,
-      // Endpoint pre/post reads observe the exact persisted A selection; the
-      // next contributor reread observes B, so the retained selection is gone.
+      // Stable durable identity re-admits B, but the endpoint evidence was
+      // produced by A and therefore cannot cross the occurrence replacement.
       targetedContributions: targetedContributionsFixture([
         providerContributionA,
         providerContributionA,
         providerContributionB,
       ]),
-    }))).resolves.toEqual({ kind: 'unavailable', reason: 'providerUnavailable' });
+    }))).resolves.toEqual({ kind: 'stale' });
 
     expect(executeAdmittedTargetedOperationWithExecutionOrigin).toHaveBeenCalledOnce();
     expect(executeAdmittedTargetedOperationWithExecutionOrigin).toHaveBeenCalledWith(
@@ -612,7 +629,7 @@ describe('Conversation binding resolution and creation', () => {
     expect(collection.batches).toEqual([]);
   });
 
-  it('does not persist a binding when its persisted provider selection retires during target verification', async () => {
+  it('does not persist a binding when the current provider occurrence changes during target verification', async () => {
     const create = Reflect.get(management, 'createConversationBindingForInvocation');
     expect(create).toEqual(expect.any(Function));
     if (typeof create !== 'function') return;
@@ -663,7 +680,7 @@ describe('Conversation binding resolution and creation', () => {
       execute,
       executeAdmittedTargetedOperationWithExecutionOrigin,
       // The first four contributor reads fence endpoint and principal effects;
-      // final persistence must reject B because the durable selection remains A.
+      // final persistence re-admits stable identity B but rejects A's evidence.
       targetedContributions: targetedContributionsFixture([
         providerContributionA,
         providerContributionA,
@@ -671,7 +688,7 @@ describe('Conversation binding resolution and creation', () => {
         providerContributionA,
         providerContributionB,
       ]),
-    }))).resolves.toEqual({ kind: 'unavailable', reason: 'providerUnavailable' });
+    }))).resolves.toEqual({ kind: 'stale' });
 
     expect(execute).toHaveBeenCalledOnce();
     expect(executeAdmittedTargetedOperationWithExecutionOrigin).toHaveBeenCalledTimes(2);

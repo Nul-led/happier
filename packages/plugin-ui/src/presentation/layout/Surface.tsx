@@ -22,6 +22,8 @@ export type HappierSurfaceProps = Readonly<{
   style?: HappierStyleProp;
   /** Hit area/chrome outside the card body for an actionable surface. */
   pressableStyle?: HappierStyleProp;
+  /** The surface's place in its parent (e.g. filling a grid cell), for both the static and the actionable host. */
+  frameStyle?: HappierStyleProp;
   /** Applied only while the shared press lifecycle reports a real press. */
   pressedStyle?: HappierStyleProp;
 }>;
@@ -35,11 +37,12 @@ export function HappierSurface({
   style,
   pressableStyle,
   pressedStyle,
+  frameStyle,
 }: HappierSurfaceProps) {
   const content = <View style={style}>{children}</View>;
 
   if (!onPress) {
-    return <View testID={testID}>{content}</View>;
+    return <View testID={testID} style={frameStyle}>{content}</View>;
   }
 
   return (
@@ -48,7 +51,7 @@ export function HappierSurface({
       accessibilityLabel={accessibilityLabel}
       disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [pressableStyle, pressed ? pressedStyle : undefined]}
+      style={({ pressed }) => [frameStyle, pressableStyle, pressed ? pressedStyle : undefined]}
     >
       {content}
     </HappierPressable>

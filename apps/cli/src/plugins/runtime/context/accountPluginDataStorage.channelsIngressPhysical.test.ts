@@ -16,11 +16,11 @@ import {
     type PluginCollectionRowV1,
 } from '@happier-dev/protocol';
 import {
-    normalizePluginAccountCollectionMigrationRuntimeProjection,
     type JsonValue,
     type PluginInvocationContext,
     type PluginServices,
 } from '@happier-dev/plugin-sdk';
+import { normalizePluginAccountCollectionMigrationRuntimeProjection } from '@happier-dev/plugin-sdk/host/registration';
 import type { PluginAccountCollectionDefinition } from '@happier-dev/plugin-sdk/collections';
 import { parsePluginManifest } from '@happier-dev/plugin-sdk/manifest';
 import type { ConversationProviderObservationIngestInputV1 } from '@happier-dev/channels-protocol/v1';
@@ -398,9 +398,9 @@ describe('Channels C3 physical E2EE ingress batches', () => {
         });
         const account = host.bind({
             pluginId: CHANNELS_PLUGIN_ID,
-            generation: 'channels-c3-physical',
+            occurrenceId: 'channels-c3-physical',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         if (!account) throw new Error('Expected the real Account Collection host binding.');
         const collection = account.collection(channels.channelStateCollection);
@@ -434,7 +434,12 @@ describe('Channels C3 physical E2EE ingress batches', () => {
                     id: 'channel-poller',
                     qualifiedId: 'happier.channel.telegram/background/channel-poller',
                 },
-                immutableGenerationId: 'telegram-generation-1',
+                occurrenceId: 'telegram-occurrence-1',
+                sourceCustody: {
+                    kind: 'managed' as const,
+                    immutableGenerationId: 'telegram-generation-1',
+                    installSource: 'localPath' as const,
+                },
                 materialization: {
                     machineId: 'machine-1',
                     materializationId: 'telegram-install-1',

@@ -140,13 +140,13 @@ function validateLimits(limits: PluginDaemonDatabaseLimits): PluginDaemonDatabas
 
 function assertCurrent(params: Readonly<{
     signal: AbortSignal;
-    isGenerationCurrent: () => boolean;
+    isOccurrenceCurrent: () => boolean;
     operationSignal?: AbortSignal;
 }>): void {
     if (params.signal.aborted || params.operationSignal?.aborted) {
         fail('daemon_database_cancelled', 'Plugin daemon database operation was cancelled', true);
     }
-    if (!params.isGenerationCurrent()) {
+    if (!params.isOccurrenceCurrent()) {
         fail('plugin_generation_stale', 'Plugin daemon database invocation generation is stale');
     }
 }
@@ -1004,7 +1004,7 @@ type HostTransactionContext = Readonly<{
 function createTransactionDeadline(params: Readonly<{
     limits: PluginDaemonDatabaseLimits;
     signal: AbortSignal;
-    isGenerationCurrent: () => boolean;
+    isOccurrenceCurrent: () => boolean;
     operationSignal?: AbortSignal;
 }>): Readonly<{
     context: Pick<HostTransactionContext, 'requestOptionsFor' | 'assertUsable'>;
@@ -1039,7 +1039,7 @@ function createTransactionDeadline(params: Readonly<{
         if (timeoutController.signal.aborted) throw createAbortError();
         assertCurrent({
             signal: params.signal,
-            isGenerationCurrent: params.isGenerationCurrent,
+            isOccurrenceCurrent: params.isOccurrenceCurrent,
             ...(params.operationSignal ? { operationSignal: params.operationSignal } : {}),
         });
         if (operationSignal?.aborted) throw createAbortError();
@@ -1065,7 +1065,7 @@ async function withHostTransaction<T>(params: Readonly<{
     readAggregateBytes: () => Promise<number>;
     assertQuota: (baselineBytes: number) => Promise<void>;
     signal: AbortSignal;
-    isGenerationCurrent: () => boolean;
+    isOccurrenceCurrent: () => boolean;
     operationSignal?: AbortSignal;
     operation: (context: HostTransactionContext) => Promise<T>;
 }>): Promise<T> {
@@ -1120,7 +1120,7 @@ async function withHostTransaction<T>(params: Readonly<{
 function queueEntry<T>(params: Readonly<{
     entry: DatabaseEntry;
     ownerSignal: AbortSignal;
-    isGenerationCurrent: () => boolean;
+    isOccurrenceCurrent: () => boolean;
     assertOwnerUsable?: () => void;
     operationSignal?: AbortSignal;
     operation: () => Promise<T>;
@@ -1128,7 +1128,7 @@ function queueEntry<T>(params: Readonly<{
     params.assertOwnerUsable?.();
     assertCurrent({
         signal: params.ownerSignal,
-        isGenerationCurrent: params.isGenerationCurrent,
+        isOccurrenceCurrent: params.isOccurrenceCurrent,
         ...(params.operationSignal ? { operationSignal: params.operationSignal } : {}),
     });
     if (params.entry.closed) {
@@ -1148,7 +1148,7 @@ function queueEntry<T>(params: Readonly<{
             params.assertOwnerUsable?.();
             assertCurrent({
                 signal: params.ownerSignal,
-                isGenerationCurrent: params.isGenerationCurrent,
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
                 ...(params.operationSignal ? { operationSignal: params.operationSignal } : {}),
             });
             if (params.entry.closed) {
@@ -1257,7 +1257,7 @@ function createPublicDatabaseHandle(params: Readonly<{
     readAggregateBytes: () => Promise<number>;
     assertQuota: (baselineBytes: number) => Promise<void>;
     ownerSignal: AbortSignal;
-    isGenerationCurrent: () => boolean;
+    isOccurrenceCurrent: () => boolean;
     assertOwnerUsable?: () => void;
 }>): DatabaseHandle {
     const assertNoReentrantCall = (): void => {
@@ -1274,7 +1274,7 @@ function createPublicDatabaseHandle(params: Readonly<{
         return await queueEntry({
             entry: params.entry,
             ownerSignal: params.ownerSignal,
-            isGenerationCurrent: params.isGenerationCurrent,
+            isOccurrenceCurrent: params.isOccurrenceCurrent,
             ...(params.assertOwnerUsable ? { assertOwnerUsable: params.assertOwnerUsable } : {}),
             ...(options?.signal ? { operationSignal: options.signal } : {}),
             operation: async () => await withHostTransaction({
@@ -1283,7 +1283,7 @@ function createPublicDatabaseHandle(params: Readonly<{
                 readAggregateBytes: params.readAggregateBytes,
                 assertQuota: params.assertQuota,
                 signal: params.ownerSignal,
-                isGenerationCurrent: params.isGenerationCurrent,
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
                 ...(options?.signal ? { operationSignal: options.signal } : {}),
                 operation: async (context) => {
                     const transaction = createTransactionHandle({
@@ -1341,7 +1341,7 @@ export function createPluginDaemonDatabaseOwner(params: Readonly<{
     pluginId: string;
     paths: PluginStorePaths;
     signal: AbortSignal;
-    isGenerationCurrent: () => boolean;
+    isOccurrenceCurrent: () => boolean;
     limits: PluginDaemonDatabaseLimits;
     declarations: readonly PluginDaemonDatabaseContributionV1[];
     /** Exact adopted prior-generation fixtures, keyed by declared database id. */
@@ -1395,7 +1395,7 @@ export function createPluginDaemonDatabaseOwner(params: Readonly<{
         }
         assertCurrent({
             signal: params.signal,
-            isGenerationCurrent: params.isGenerationCurrent,
+            isOccurrenceCurrent: params.isOccurrenceCurrent,
             ...(operationSignal ? { operationSignal } : {}),
         });
     };
@@ -1481,7 +1481,7 @@ export function createPluginDaemonDatabaseOwner(params: Readonly<{
         await queueEntry({
             entry,
             ownerSignal: params.signal,
-            isGenerationCurrent: params.isGenerationCurrent,
+            isOccurrenceCurrent: params.isOccurrenceCurrent,
             assertOwnerUsable: () => assertOwnerUsable(options.signal),
             ...(options.signal ? { operationSignal: options.signal } : {}),
             operation: async () => await withHostTransaction({
@@ -1490,7 +1490,7 @@ export function createPluginDaemonDatabaseOwner(params: Readonly<{
                 readAggregateBytes,
                 assertQuota,
                 signal: params.signal,
-                isGenerationCurrent: params.isGenerationCurrent,
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
                 ...(options.signal ? { operationSignal: options.signal } : {}),
                 operation: async (context) => {
                     await ensureLedger(context.worker, context.requestOptionsFor());
@@ -1607,7 +1607,7 @@ export function createPluginDaemonDatabaseOwner(params: Readonly<{
                 readAggregateBytes,
                 assertQuota,
                 ownerSignal: params.signal,
-                isGenerationCurrent: params.isGenerationCurrent,
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
                 assertOwnerUsable: () => assertOwnerUsable(),
             });
         },
@@ -1703,9 +1703,9 @@ export type StablePluginDaemonDatabaseHost = Readonly<{
      */
     prepare(input: Readonly<{
         pluginId: string;
-        generation: string;
+        occurrenceId: string;
         signal: AbortSignal;
-        isGenerationCurrent(): boolean;
+        isOccurrenceCurrent(): boolean;
         declarations: readonly PluginDaemonDatabaseContributionV1[];
         runtime: PluginDaemonDatabaseRuntimeProjection;
         incumbentContracts?: readonly PluginDaemonDatabasePreparedContract[];
@@ -1713,9 +1713,9 @@ export type StablePluginDaemonDatabaseHost = Readonly<{
     /** Binds the one prepared owner to an individual invocation lifetime. */
     bind(input: Readonly<{
         pluginId: string;
-        generation: string;
+        occurrenceId: string;
         signal: AbortSignal;
-        isGenerationCurrent(): boolean;
+        isOccurrenceCurrent(): boolean;
     }>): DaemonDatabaseService;
     /** Exact adopted fixture callbacks available to a successor candidate. */
     readPreparedContracts(pluginId: string): readonly PluginDaemonDatabasePreparedContract[];
@@ -1730,7 +1730,7 @@ export type StablePluginDaemonDatabaseHost = Readonly<{
 }>;
 
 type PreparedPluginDaemonDatabaseOwner = Readonly<{
-    generation: string;
+    occurrenceId: string;
     limits: PluginDaemonDatabaseLimits;
     owner: PluginDaemonDatabaseOwner;
 }>;
@@ -1841,19 +1841,19 @@ function composeDatabaseOperationSignal(
 
 function assertBoundDatabaseCurrent(params: Readonly<{
     signal: AbortSignal;
-    isGenerationCurrent(): boolean;
+    isOccurrenceCurrent(): boolean;
 }>): void {
     if (params.signal.aborted) {
         fail('daemon_database_cancelled', 'Plugin daemon database invocation was cancelled');
     }
-    if (!params.isGenerationCurrent()) {
+    if (!params.isOccurrenceCurrent()) {
         fail('plugin_generation_stale', 'Plugin daemon database invocation generation is stale');
     }
 }
 
 function bindDatabaseTransaction(
     transaction: DatabaseTransaction,
-    binding: Readonly<{ signal: AbortSignal; isGenerationCurrent(): boolean }>,
+    binding: Readonly<{ signal: AbortSignal; isOccurrenceCurrent(): boolean }>,
 ): DatabaseTransaction {
     return Object.freeze({
         async query<TRow extends DatabaseRow = DatabaseRow>(
@@ -1883,7 +1883,7 @@ function bindDatabaseTransaction(
 
 function bindDatabaseHandle(
     database: DatabaseHandle,
-    binding: Readonly<{ signal: AbortSignal; isGenerationCurrent(): boolean }>,
+    binding: Readonly<{ signal: AbortSignal; isOccurrenceCurrent(): boolean }>,
 ): DaemonDatabase {
     return Object.freeze({
         async query<TRow extends DatabaseRow = DatabaseRow>(
@@ -1991,7 +1991,7 @@ export function createStablePluginDaemonDatabaseHost(params: Readonly<{
                 pluginId: input.pluginId,
                 paths: params.paths,
                 signal: input.signal,
-                isGenerationCurrent: input.isGenerationCurrent,
+                isOccurrenceCurrent: input.isOccurrenceCurrent,
                 limits,
                 declarations: normalized.map(({ declaration }) => declaration),
                 ...(incumbentContracts.size > 0 ? { incumbentContracts } : {}),
@@ -2009,7 +2009,7 @@ export function createStablePluginDaemonDatabaseHost(params: Readonly<{
                 fail('daemon_database_closed', 'Plugin daemon database host closed during preparation');
             }
             preparedByPluginId.set(input.pluginId, Object.freeze({
-                generation: input.generation,
+                occurrenceId: input.occurrenceId,
                 limits,
                 owner,
             }));
@@ -2019,7 +2019,7 @@ export function createStablePluginDaemonDatabaseHost(params: Readonly<{
             const prepared = preparedByPluginId.get(input.pluginId);
             if (
                 !prepared
-                || prepared.generation !== input.generation
+                || prepared.occurrenceId !== input.occurrenceId
                 || closed
                 || retiredPluginIds.has(input.pluginId)
             ) {
@@ -2032,7 +2032,7 @@ export function createStablePluginDaemonDatabaseHost(params: Readonly<{
             }
             const binding = Object.freeze({
                 signal: input.signal,
-                isGenerationCurrent: input.isGenerationCurrent,
+                isOccurrenceCurrent: input.isOccurrenceCurrent,
             });
             return Object.freeze({
                 async database(name: string, options: DatabaseOpenOptions): Promise<DaemonDatabase> {

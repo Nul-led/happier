@@ -75,17 +75,28 @@ export function projectNativeAgentCliRuntimeDescriptor(params: Readonly<{
             : {}),
         ...(install.guideUrl !== undefined ? { installGuideUrl: install.guideUrl } : {}),
         ...(install.docsUrl !== undefined ? { docsUrl: install.docsUrl } : {}),
+        ...(install.npmPackageName !== undefined ? { npmPackageName: install.npmPackageName } : {}),
+        ...(install.nativeUpdate !== undefined
+            ? {
+                nativeUpdate: install.nativeUpdate === null
+                    ? null
+                    : Object.freeze({
+                        args: Object.freeze([...install.nativeUpdate.args]),
+                        installPaths: Object.freeze([...install.nativeUpdate.installPaths]),
+                    }),
+            }
+            : {}),
     });
 }
 
 export type NativeAgentCliAuthStaticProbe = Readonly<{
-    readPresentCredential(): CliAuthStatusDraft | null;
+    readPresentCredential(processEnv?: NodeJS.ProcessEnv): CliAuthStatusDraft | null;
     missingCredentialStatus(): CliAuthStatusDraft;
 }>;
 
-function hasEnvironmentCredential(environmentVariables: readonly string[]): boolean {
+function hasEnvironmentCredential(environmentVariables: readonly string[], processEnv: NodeJS.ProcessEnv): boolean {
     return environmentVariables.some((name) => {
-        const value = process.env[name];
+        const value = processEnv[name];
         return typeof value === 'string' && value.trim().length > 0;
     });
 }
@@ -107,9 +118,9 @@ function recordHasCredentialToken(record: Record<string, unknown>, depth = 0): b
     return false;
 }
 
-function hasFileCredential(credentialPaths: readonly string[]): boolean {
+function hasFileCredential(credentialPaths: readonly string[], processEnv: NodeJS.ProcessEnv): boolean {
     return credentialPaths.some((path) => {
-        const record = readJsonFileSafe(expandHomeDirPath(path, process.env, process.platform));
+        const record = readJsonFileSafe(expandHomeDirPath(path, processEnv, process.platform));
         return record !== null && typeof record === 'object' && !Array.isArray(record)
             && recordHasCredentialToken(record as Record<string, unknown>);
     });
@@ -130,11 +141,11 @@ export function createNativeAgentCliAuthStaticProbe(
         ? { state: 'unknown', reason: 'unsupported' }
         : { state: 'logged_out', reason: 'missing_credentials' };
     return Object.freeze({
-        readPresentCredential: (): CliAuthStatusDraft | null => {
-            if (hasEnvironmentCredential(environmentVariables)) {
+        readPresentCredential: (processEnv = process.env): CliAuthStatusDraft | null => {
+            if (hasEnvironmentCredential(environmentVariables, processEnv)) {
                 return { state: 'logged_in', method: 'api_key_env', source: 'env' };
             }
-            if (hasFileCredential(credentialPaths)) {
+            if (hasFileCredential(credentialPaths, processEnv)) {
                 return { state: 'logged_in', method: 'credentials_file', source: 'file' };
             }
             return null;
@@ -153,8 +164,8 @@ export function createNativeAgentCliAuthSpec(cli: PluginAgentCliMetadata): CliAu
         isSafeForBackgroundChecks: isPluginAgentCliAuthBackgroundCheckSafe(cli),
         ...(staticProbe
             ? {
-                detectAuthStatus: async () => (
-                    staticProbe.readPresentCredential() ?? staticProbe.missingCredentialStatus()
+                detectAuthStatus: async ({ processEnv }) => (
+                    staticProbe.readPresentCredential(processEnv) ?? staticProbe.missingCredentialStatus()
                 ),
             }
             : {}),

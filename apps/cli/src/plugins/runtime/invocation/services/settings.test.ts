@@ -7,7 +7,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     PLUGIN_ACCOUNT_SETTINGS_LIMITS_V1,
     type PluginSettingsContributionV2,
-    type PluginSettingsRollbackDeclarationV1,
 } from '@happier-dev/protocol';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
 
@@ -23,12 +22,11 @@ import {
     createStablePluginSettingsOwner,
     PLUGIN_SETTINGS_STORAGE_KEY,
     readPluginSettingsValuesWithDefaults,
-    type PluginSettingsRollbackDeclarations,
     validateStablePluginSettingValue,
 } from './settings';
 import type { PluginInvocationServicesSeed } from './types';
 
-describe('supported rollback window retention and pruning', () => {
+describe('retired Settings fields are never pruned', () => {
     const accountDeclaration = (): PluginSettingsContributionV2 => ({
         id: 'general',
         version: 1,
@@ -45,27 +43,21 @@ describe('supported rollback window retention and pruning', () => {
         ],
         presentation: { sections: [], subagentSections: [] },
     });
+    const rollbackDeclaration = (): PluginSettingsContributionV2 => ({
+        ...accountDeclaration(),
+        fields: [
+            ...accountDeclaration().fields,
+            {
+                id: 'legacyMode',
+                title: 'Legacy mode',
+                schema: { type: 'string', enum: ['turbo', 'safe'] },
+                default: 'safe',
+            },
+        ],
+    });
 
-    const supportedRollback = (
-        fieldIds: readonly string[] = ['legacyMode'],
-        generation = 'generation-rollback',
-    ): PluginSettingsRollbackDeclarations => new Map([
-        ['acme.plugin', new Map<'account' | 'daemon', PluginSettingsRollbackDeclarationV1>([
-            ['account', Object.freeze({
-                generation,
-                supported: true as const,
-                // The canonical declaration carries the parsed mutable array;
-                // the fixture owns a frozen copy of the caller's ids.
-                fieldIds: [...fieldIds],
-            })],
-        ])],
-    ]);
-
-    function accountFixture(params: Readonly<{
-        /** Omit only when the candidate support state is genuinely unknown. */
-        candidateRollback?: PluginSettingsRollbackDeclarations;
-        conflictValues?: Readonly<Record<string, JsonValue>>;
-    }>) {
+    /** One in-memory Account record shared by every plugin version bound to it. */
+    function sharedAccountRecord() {
         let record: Readonly<{
             status: 'present';
             revision: number;
@@ -75,15 +67,13 @@ describe('supported rollback window retention and pruning', () => {
             revision: 3,
             values: Object.freeze({
                 theme: 'dark',
-                // Removed from the current declaration; owned only by the
-                // retained rollback generation while its window is open.
+                // Removed from the current declaration; written by an earlier version.
                 legacyMode: 'turbo',
                 futureOpaque: { writtenBy: 'newer-client' },
-                removedSecretOpaque: 'must-not-be-in-a-public-declaration',
             }),
         });
         let writeCount = 0;
-        const adapter = {
+        const recordStore = createAccountSettingsBackedSettingsRecordStore({
             async bindOperation() {
                 return {
                     async readRecord() {
@@ -91,14 +81,6 @@ describe('supported rollback window retention and pruning', () => {
                     },
                     async writeRecord(_model: unknown, request: unknown) {
                         writeCount += 1;
-                        if (params.conflictValues) {
-                            record = Object.freeze({
-                                status: 'present' as const,
-                                revision: 9,
-                                values: Object.freeze({ ...params.conflictValues }),
-                            });
-                            return Object.freeze({ status: 'conflict' as const, revision: 9 });
-                        }
                         const values = (request as { values: Readonly<Record<string, JsonValue>> }).values;
                         record = Object.freeze({
                             status: 'present' as const,
@@ -109,43 +91,57 @@ describe('supported rollback window retention and pruning', () => {
                     },
                 };
             },
-        };
-        const host = createStablePluginSettingsHost({
-            declarations: [{ pluginId: 'acme.plugin', contribution: accountDeclaration() }],
-            recordStore: createAccountSettingsBackedSettingsRecordStore(adapter),
-            broker: createStablePluginEventsBroker(),
-            ...(params.candidateRollback === undefined
-                ? {}
-                : { rollbackDeclarations: params.candidateRollback }),
         });
-        const bound = host.bind(seed(() => true));
-        if (!bound) throw new Error('settings host did not bind the fixture plugin');
-        const service = bound.forScope({ kind: 'account' });
+        const bindVersion = (contribution: PluginSettingsContributionV2) => {
+            const host = createStablePluginSettingsHost({
+                declarations: [{ pluginId: 'acme.plugin', contribution }],
+                recordStore,
+                broker: createStablePluginEventsBroker(),
+            });
+            const bound = host.bind(seed(() => true));
+            if (!bound) throw new Error('settings host did not bind the fixture plugin');
+            return bound.forScope({ kind: 'account' });
+        };
         return {
-            service,
-            host,
+            bindVersion,
             readRawValues: () => record.values,
-            readRevision: () => record.revision,
             writes: () => writeCount,
         };
     }
 
-    it('hides a removed field from projection while the supported rollback artifact preserves its bytes', async () => {
-        const fixture = accountFixture({ candidateRollback: supportedRollback() });
-        await expect(fixture.service.snapshot()).resolves.toEqual({
+    it('hides an undeclared field from reads while its persisted value survives writes', async () => {
+        const record = sharedAccountRecord();
+        const current = record.bindVersion(accountDeclaration());
+        await expect(current.snapshot()).resolves.toEqual({
             scope: { kind: 'account' },
             revision: '3',
             values: { theme: 'dark' },
         });
-        await expect(fixture.service.get('legacyMode')).rejects.toMatchObject({
+        await expect(current.get('legacyMode')).rejects.toMatchObject({
             code: 'plugin_settings_unknown_id',
         });
-        // No maintenance write happens while the window is open.
-        expect(fixture.writes()).toBe(0);
-        expect(fixture.readRawValues()).toMatchObject({ theme: 'dark', legacyMode: 'turbo' });
-        // An unrelated current-field mutation preserves the rollback-owned value.
-        await fixture.service.set('theme', 'light');
-        expect(fixture.readRawValues()).toMatchObject({ theme: 'light', legacyMode: 'turbo' });
+        // Reads never mutate.
+        expect(record.writes()).toBe(0);
+        await current.set('theme', 'light');
+        expect(record.readRawValues()).toEqual({
+            theme: 'light',
+            legacyMode: 'turbo',
+            futureOpaque: { writtenBy: 'newer-client' },
+        });
+    });
+
+    it('keeps a retired value across an update and returns it after rollback', async () => {
+        const record = sharedAccountRecord();
+        // The installed version declares legacyMode.
+        await expect(record.bindVersion(rollbackDeclaration()).get('legacyMode')).resolves.toBe('turbo');
+        // An update retires legacyMode; the user keeps editing current fields.
+        const updated = record.bindVersion(accountDeclaration());
+        await updated.set('theme', 'light');
+        await updated.reset('theme');
+        // Rolling back to the version that declares it reads the same value.
+        const rolledBack = record.bindVersion(rollbackDeclaration());
+        await expect(rolledBack.get('legacyMode')).resolves.toBe('turbo');
+        expect(record.readRawValues()).toMatchObject({ legacyMode: 'turbo' });
     });
 
     it('projects declaration defaults with persisted non-secret fields while excluding secrets', async () => {
@@ -182,126 +178,6 @@ describe('supported rollback window retention and pruning', () => {
         await expect(readPluginSettingsValuesWithDefaults(service)).resolves.toEqual({
             theme: 'dark',
         });
-    });
-
-    it('a rollback-generation declaration reads the preserved field again after rollback', () => {
-        const host = createStablePluginSettingsHost({
-            declarations: [{ pluginId: 'acme.plugin', contribution: {
-                ...accountDeclaration(),
-                fields: [
-                    ...accountDeclaration().fields,
-                    {
-                        id: 'legacyMode',
-                        title: 'Legacy mode',
-                        schema: { type: 'string', enum: ['turbo', 'safe'] },
-                        default: 'safe',
-                    },
-                ],
-            } }],
-            recordStore: createAccountSettingsBackedSettingsRecordStore({
-                async bindOperation() {
-                    return {
-                        async readRecord() {
-                            return Object.freeze({
-                                status: 'present' as const,
-                                revision: 3,
-                                values: Object.freeze({ theme: 'dark', legacyMode: 'turbo' } as Readonly<Record<string, JsonValue>>),
-                            });
-                        },
-                        async writeRecord() {
-                            throw new Error('rollback read must not write');
-                        },
-                    };
-                },
-            }),
-            broker: createStablePluginEventsBroker(),
-        });
-        const bound = host.bind(seed(() => true));
-        if (!bound) throw new Error('settings host did not bind');
-        const service = bound.forScope({ kind: 'account' });
-        return expect(service.get('legacyMode')).resolves.toBe('turbo');
-    });
-
-    it('ordinary reads stay side-effect free after retirement', async () => {
-        const fixture = accountFixture({ candidateRollback: new Map() });
-        await expect(fixture.service.snapshot()).resolves.toEqual({
-            scope: { kind: 'account' },
-            revision: '3',
-            values: { theme: 'dark' },
-        });
-        expect(fixture.writes()).toBe(0);
-        expect(fixture.readRawValues()).toMatchObject({ legacyMode: 'turbo' });
-    });
-
-    it('the artifact-retirement owner prunes only exact retired ids through one ordinary CAS', async () => {
-        const fixture = accountFixture({ candidateRollback: new Map() });
-        await expect(fixture.host.pruneRetiredRollbackDeclarations!(supportedRollback())).resolves.toEqual([
-            { pluginId: 'acme.plugin', scope: 'account', status: 'updated' },
-        ]);
-        expect(fixture.writes()).toBe(1);
-        expect(fixture.readRevision()).toBe(4);
-        expect(fixture.readRawValues()).toEqual({
-            theme: 'dark',
-            futureOpaque: { writtenBy: 'newer-client' },
-            removedSecretOpaque: 'must-not-be-in-a-public-declaration',
-        });
-        // Idempotent: replay observes the postcondition and performs no CAS.
-        await expect(fixture.host.pruneRetiredRollbackDeclarations!(supportedRollback())).resolves.toEqual([
-            { pluginId: 'acme.plugin', scope: 'account', status: 'already-absent' },
-        ]);
-        expect(fixture.writes()).toBe(1);
-    });
-
-    it('settles a losing CAS when the concurrent winner already removed the retired id without retrying', async () => {
-        const fixture = accountFixture({
-            candidateRollback: new Map(),
-            conflictValues: {
-                theme: 'light',
-                futureOpaque: { concurrent: true },
-                removedSecretOpaque: 'still-opaque',
-            },
-        });
-        await expect(fixture.host.pruneRetiredRollbackDeclarations!(supportedRollback())).resolves.toEqual([
-            { pluginId: 'acme.plugin', scope: 'account', status: 'already-absent' },
-        ]);
-        expect(fixture.writes()).toBe(1);
-        expect(fixture.readRawValues()).toEqual({
-            theme: 'light',
-            futureOpaque: { concurrent: true },
-            removedSecretOpaque: 'still-opaque',
-        });
-    });
-
-    it('reports an unsettled losing CAS without retrying or clobbering the concurrent winner', async () => {
-        const fixture = accountFixture({
-            candidateRollback: new Map(),
-            conflictValues: { theme: 'light', legacyMode: 'safe', futureOpaque: 42 },
-        });
-        await expect(fixture.host.pruneRetiredRollbackDeclarations!(supportedRollback())).resolves.toEqual([
-            { pluginId: 'acme.plugin', scope: 'account', status: 'unsettled' },
-        ]);
-        expect(fixture.writes()).toBe(1);
-        expect(fixture.readRawValues()).toEqual({ theme: 'light', legacyMode: 'safe', futureOpaque: 42 });
-    });
-
-    it('preserves every removed value when either generation support state is unknown', async () => {
-        const fixture = accountFixture({});
-        await expect(fixture.host.pruneRetiredRollbackDeclarations!(supportedRollback())).resolves.toEqual([]);
-        const knownCandidate = accountFixture({ candidateRollback: new Map() });
-        await expect(knownCandidate.host.pruneRetiredRollbackDeclarations!(undefined)).resolves.toEqual([]);
-        expect(fixture.writes()).toBe(0);
-        expect(fixture.readRawValues()).toMatchObject({ legacyMode: 'turbo', futureOpaque: { writtenBy: 'newer-client' } });
-        expect(knownCandidate.writes()).toBe(0);
-    });
-
-    it('does not prune ids still owned by the replacement rollback artifact', async () => {
-        const fixture = accountFixture({ candidateRollback: supportedRollback(['legacyMode'], 'generation-new-rollback') });
-        const previous = supportedRollback(['legacyMode', 'olderOnly']);
-        await expect(fixture.host.pruneRetiredRollbackDeclarations!(previous)).resolves.toEqual([
-            { pluginId: 'acme.plugin', scope: 'account', status: 'already-absent' },
-        ]);
-        expect(fixture.writes()).toBe(0);
-        expect(fixture.readRawValues()).toMatchObject({ legacyMode: 'turbo' });
     });
 });
 
@@ -377,16 +253,16 @@ function seed(current: () => boolean, controller = new AbortController()): Plugi
             id: 'configure',
             qualifiedId: 'acme.plugin/actions/configure',
         }),
-        generation: 'generation-7',
+        occurrenceId: 'occurrenceId-7',
         correlationId: 'correlation-1',
         surface: 'cli',
         signal: controller.signal,
-        isGenerationCurrent: current,
+        isOccurrenceCurrent: current,
     });
 }
 
 describe('stable typed settings foundation', () => {
-    it('preserves an issued Settings Action commit when its generation retires before settlement', async () => {
+    it('preserves an issued Settings Action commit when its occurrenceId retires before settlement', async () => {
         let current = true;
         let values: Readonly<Record<string, JsonValue>> = {};
         const model = createStablePluginSettingsModel({
@@ -1377,7 +1253,7 @@ describe('stable typed settings foundation', () => {
                 pluginVersion: '1.0.0',
                 contributionId: 'configure',
                 contributionQualifiedId: 'acme.plugin/actions/configure',
-                generation: 'generation-8',
+                occurrenceId: 'occurrenceId-8',
                 correlationId: 'cleanup-check',
                 surface: 'cli',
             },

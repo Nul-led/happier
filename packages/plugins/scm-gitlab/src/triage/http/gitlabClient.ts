@@ -45,7 +45,7 @@ export type GitlabHttpFetcher = (
     method: GitlabRequestMethod;
     headers: Readonly<Record<string, string>>;
     /** Already-encoded request bytes. Absent on every read. */
-    body?: Uint8Array;
+    body?: Uint8Array<ArrayBuffer>;
     redirect: 'error';
     signal: AbortSignal;
   }>,

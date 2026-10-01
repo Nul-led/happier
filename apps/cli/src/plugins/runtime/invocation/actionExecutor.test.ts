@@ -2,17 +2,26 @@ import { describe, expect, it, vi } from 'vitest';
 import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
 import type { PluginActionDangerLevelV2 } from '@happier-dev/protocol';
 
-import { createTargetActionExecutor } from './actionExecutor';
+import { createTargetActionExecutor, fingerprintTargetActionPolicy } from './actionExecutor';
 import { createUnavailablePluginInvocationServiceBinding } from './services/factory';
 import { projectPluginFailureText } from '../lifecycle/utils';
 
 function resolved(dangerLevel: PluginActionDangerLevelV2 = 'safe') {
   return {
-    qualifiedId: 'acme.alpha/actions/run', pluginId: 'acme.alpha', localId: 'run', generation: '7',
+    qualifiedId: 'acme.alpha/actions/run', pluginId: 'acme.alpha', localId: 'run', occurrenceId: '7',
+    sourceCustody: { kind: 'development', registeredRootId: 'acme-alpha-root' },
     dangerLevel, scopes: ['global'], surfaces: ['cli'], hostAccess: [], input: { value: 'x' },
     policyFingerprint: 'b'.repeat(64),
   } as const;
 }
+
+it('keeps durable policy identity independent of the process-local occurrence', () => {
+  const action = resolved('destructive');
+  expect(fingerprintTargetActionPolicy(action)).toBe(fingerprintTargetActionPolicy({
+    ...action,
+    occurrenceId: '8',
+  }));
+});
 
 function authorizationFacts(overrides: Readonly<{
   desiredGeneration?: string | null;
@@ -38,7 +47,7 @@ function createExecutor(
     resolveAuthorizationFacts: () => authorizationFacts(),
     resolveHostBinding: async (action) => ({
       action,
-      serviceBinding: createUnavailablePluginInvocationServiceBinding(action.generation, 'test-binding'),
+      serviceBinding: createUnavailablePluginInvocationServiceBinding(action.occurrenceId, 'test-binding'),
     }),
     ...deps,
   });
@@ -148,7 +157,7 @@ describe('target action executor', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects prompt reuse and stale generation without invocation', async () => {
+  it('rejects prompt reuse and stale occurrence without invocation', async () => {
     let generation = '7';
     const invoke = vi.fn();
     const executor = createExecutor({
@@ -169,7 +178,7 @@ describe('target action executor', () => {
       resolve: () => resolved('writesRemote'),
       resolveHostBinding: async (action) => ({
         action: { ...action, accountId: selection },
-        serviceBinding: createUnavailablePluginInvocationServiceBinding(action.generation, `binding-${selection}`),
+        serviceBinding: createUnavailablePluginInvocationServiceBinding(action.occurrenceId, `binding-${selection}`),
       }),
       requestCurrentIntent: async ({ fingerprint }) => { selection = 'account-2'; return { status: 'approved', fingerprint }; },
       invoke,
@@ -194,7 +203,7 @@ describe('target action executor', () => {
             requestFingerprint,
           }],
         },
-        serviceBinding: createUnavailablePluginInvocationServiceBinding(action.generation, 'binding'),
+        serviceBinding: createUnavailablePluginInvocationServiceBinding(action.occurrenceId, 'binding'),
       }),
       requestCurrentIntent: async ({ fingerprint }) => {
         requestFingerprint = 'scope-two';
@@ -219,7 +228,7 @@ describe('target action executor', () => {
       resolve: () => resolved('writesRemote'),
       resolveHostBinding: async (action) => ({
         action,
-        serviceBinding: createUnavailablePluginInvocationServiceBinding(action.generation, binding),
+        serviceBinding: createUnavailablePluginInvocationServiceBinding(action.occurrenceId, binding),
       }),
       requestCurrentIntent: async ({ fingerprint }) => {
         binding = 'second';
@@ -315,7 +324,7 @@ describe('target action executor', () => {
             requestFingerprint: 'selected-mcp-scope',
           }],
         },
-        serviceBinding: createUnavailablePluginInvocationServiceBinding(action.generation, 'unselected-binding'),
+        serviceBinding: createUnavailablePluginInvocationServiceBinding(action.occurrenceId, 'unselected-binding'),
       }),
       invoke,
     });

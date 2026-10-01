@@ -1,3 +1,6 @@
+import { isOpenCodeModelSelectable } from '../../models/eligibility.js';
+import { buildOpenCodePreflightModels } from '../../preflight/models.js';
+import type { OpenCodeModelCatalogSnapshot, OpenCodeModeCatalogSnapshot } from './operations.js';
 import { publishOpenCodeNativeTodosWorkState } from '../workState.js';
 import type { ManagedServiceSnapshot } from '@happier-dev/plugin-sdk/managed-services';
 import type { OpenCodeRuntimeTurnOperations } from './operations.js';
@@ -11,7 +14,7 @@ import {
 } from './openCodeRuntimeEvents.js';
 import type { OpenCodeServerClient } from './openCodeServerClient.js';
 import { isOpenCodeServerAuthFailure } from './openCodeServerClient.js';
-import type { OpenCodeMcpRegistrationResult } from './mcpRegistration.js';
+import type { OpenCodeMcpRegistrationResult, OpenCodeSessionMcpProjection } from './mcpRegistration.js';
 import { asRecord, normalizeString, readNonBlankOpaqueIdentifier } from './openCodeParsing.js';
 import { formatOpenCodeServerPromptErrorMessage } from './formatOpenCodeServerPromptErrorMessage.js';
 import type { OpenCodeToolPart } from './foregroundToolTracker.js';
@@ -54,7 +57,9 @@ import {
 import { completeOpenCodeTurnIfReady } from './turnCompletion.js';
 import { createOpenCodeHappierAuthoredProviderUserMessageIds } from './happierAuthoredProviderUserMessages.js';
 import type { OpenCodeRuntimeContext } from './runtimeContext.js';
+import { buildOpenCodeSessionScopedPermissionRuleset } from '../../permissions/policy.js';
 import type { OpenCodeRuntimeEvent, OpenCodeRuntimeScope } from './runtimeEvents.js';
+import type { OpenCodeServerDialect } from './dialect.js';
 
 function readOpenCodeProviderErrorMessage(error: unknown): string {
   const record = asRecord(error);
@@ -62,6 +67,21 @@ function readOpenCodeProviderErrorMessage(error: unknown): string {
   return normalizeString(data?.message)
     || normalizeString(record?.message)
     || normalizeString(record?.name);
+}
+
+function projectOpenCodeNativeChildStatus(
+  part: OpenCodeToolPart,
+): 'running' | 'completed' | 'failed' | 'aborted' {
+  if (part.state.status === 'completed') {
+    return asRecord(part.state.metadata)?.background === true ? 'running' : 'completed';
+  }
+  if (part.state.status === 'error' || part.state.status === 'failed') return 'failed';
+  if (
+    part.state.status === 'cancelled'
+    || part.state.status === 'canceled'
+    || part.state.status === 'aborted'
+  ) return 'aborted';
+  return 'running';
 }
 
 class OpenCodePromptIdentityUnresolvedError extends Error {
@@ -164,10 +184,14 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
   scope: OpenCodeRuntimeScope;
   client: OpenCodeServerClient;
   env?: Readonly<Record<string, string>>;
+  permissionMode?: string | null;
+  dialect?: OpenCodeServerDialect;
   readManagedServiceSnapshot?: () => ManagedServiceSnapshot | null | undefined;
   mcpRegistration: Promise<OpenCodeMcpRegistrationResult>;
+  mcpProjection: OpenCodeSessionMcpProjection;
 }>): OpenCodeRuntimeTurnOperations {
   const client = params.client;
+  const sessionPermissions = buildOpenCodeSessionScopedPermissionRuleset(params.permissionMode, params.mcpProjection);
   const state = createOpenCodeServerRuntimeState();
   const foregroundToolTracker = createOpenCodeForegroundToolTracker();
   const messageHandlers = new Set<(message: OpenCodeRuntimeEvent) => void>();
@@ -177,6 +201,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
   const pendingPermissionRequestKeys = new Set<string>();
   const pendingPermissionDecisionAbortControllers = new Set<AbortController>();
   const observedAutomaticCompactionMessageIds = new Set<string>();
+  let activeManualCompactionId: string | null = null;
   let currentTurnPermissionRejectionMessage: string | null = null;
   // Lane H/S2: in-memory dedupe gate for externally-authored (e.g. OpenCode TUI) user messages
   // mirrored into the Happier transcript while no Happier turn is active. Assistant dedupe reuses the
@@ -190,6 +215,9 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
   let passiveTranscriptProjectionInFlight = false;
   let passiveTranscriptProjectionRerunRequested = false;
   let promptModel: OpenCodePromptModel | null = null;
+  let promptAgent: string | null = null;
+  let modelCatalog: OpenCodeModelCatalogSnapshot = { observedAt: 0, models: null };
+  let modeCatalog: OpenCodeModeCatalogSnapshot = { observedAt: 0, modes: null, currentModeId: null };
   let nextAssistantHistoryRefreshAtMs = 0;
   let serverConnectedDeferred = createDeferred<void>();
   let serverConnected = false;
@@ -241,24 +269,6 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
     for (const handler of messageHandlers) handler(message);
   };
 
-  const modelIsSelectable = (input: Readonly<{
-    providerID: string;
-    modelID: string;
-    modelRecord?: unknown;
-  }>): boolean => {
-    const providerID = normalizeString(input.providerID);
-    const modelID = normalizeString(input.modelID);
-    if (!providerID || !modelID) return false;
-    const modelRecord = asRecord(input.modelRecord);
-    if (!modelRecord) return true;
-    const status = normalizeString(modelRecord.status);
-    if (status && status !== 'active') return false;
-    const capabilities = asRecord(modelRecord.capabilities);
-    const inputCapabilities = asRecord(capabilities?.input);
-    if (inputCapabilities?.text === false) return false;
-    return true;
-  };
-
   const findModelForProvider = (
     providers: Awaited<ReturnType<OpenCodeServerClient['providersList']>>,
     providerID: string,
@@ -275,7 +285,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       ?? Object.values(models).find((candidate) => normalizeString(asRecord(candidate)?.id) === normalizedModelId);
     if (!modelRecord) return null;
     const resolvedModelId = normalizeString(asRecord(modelRecord)?.id) || normalizedModelId;
-    return modelIsSelectable({ providerID: normalizedProviderId, modelID: resolvedModelId, modelRecord })
+    return isOpenCodeModelSelectable({ providerID: normalizedProviderId, modelID: resolvedModelId, modelRecord })
       ? { providerID: normalizedProviderId, modelID: resolvedModelId }
       : null;
   };
@@ -296,6 +306,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
     try {
       providers = await client.providersList();
     } catch (error) {
+      params.ctx.logger.warn('[OpenCodeServer] Failed to observe model inventory', { error });
       if (parsed.model) return parsed.model;
       throw error;
     }
@@ -336,6 +347,49 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
 
   const publishRuntimeEvent = (event: OpenCodeRuntimeEvent): void => {
     publishMessage(event);
+  };
+  const refreshModelCatalog = async (): Promise<void> => {
+    try {
+      const providers = await client.providersList();
+      const observedAt = Date.now();
+      const blocks = providers.flatMap((provider) => Object.entries(provider.models ?? {}).flatMap(([id, raw]) => {
+        const record = asRecord(raw);
+        return record ? [{ fullId: `${provider.id}/${normalizeString(record.id) || id}`, record }] : [];
+      }));
+      modelCatalog = { observedAt, models: buildOpenCodePreflightModels(blocks, observedAt) };
+      publishRuntimeEvent({ kind: 'model-catalog-observed', ...projectOpenCodeRuntimeScope(params.scope), emittedAtMs: observedAt });
+    } catch {
+      // A failed observation is not an authoritative withdrawal of the last usable inventory.
+      params.ctx.logger.warn('[OpenCodeServer] model inventory observation failed', { operation: 'model_inventory' });
+    }
+  };
+  const refreshModeCatalog = async (seedInitialNativeDefault = false): Promise<void> => {
+    try {
+      const agents = await client.agentsList();
+      const modes = agents.map(({ id, name, description }) => ({ id, name, ...(description ? { description } : {}) }));
+      const observedAt = Date.now();
+      // Released V1 Agent.list orders the configured default first; its TUI initializes
+      // the first visible non-subagent. This is only a fresh-session startup fact,
+      // never a substitute for a resumed session or later local TUI selection.
+      const initialDefault = seedInitialNativeDefault && (params.dialect ?? 'v1') === 'v1'
+        ? agents.find((agent) => agent.mode !== 'subagent' && agent.hidden !== true)?.id
+        : null;
+      modeCatalog = { ...modeCatalog, modes, observedAt, currentModeId: modeCatalog.currentModeId ?? initialDefault ?? null };
+      publishRuntimeEvent({ kind: 'mode-catalog-observed', ...projectOpenCodeRuntimeScope(params.scope), emittedAtMs: observedAt });
+    } catch {
+      params.ctx.logger.warn('[OpenCodeServer] mode inventory observation failed', { operation: 'mode_inventory' });
+    }
+  };
+  const refreshAcceptedMode = async (): Promise<void> => {
+    if (!state.providerSessionId) return;
+    try {
+      const currentModeId = await client.sessionReadAgent({ sessionId: state.providerSessionId });
+      if (!currentModeId || currentModeId === modeCatalog.currentModeId) return;
+      modeCatalog = { ...modeCatalog, currentModeId, observedAt: Date.now() };
+      publishRuntimeEvent({ kind: 'mode-catalog-observed', ...projectOpenCodeRuntimeScope(params.scope), emittedAtMs: Date.now() });
+    } catch {
+      params.ctx.logger.warn('[OpenCodeServer] current mode observation failed', { operation: 'current_mode' });
+    }
   };
 
   const abortPendingPermissionDecisions = (reason: string): void => {
@@ -581,6 +635,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
           state,
           scope: params.scope,
           publishRuntimeEvent,
+          mcpProjection: params.mcpProjection,
         });
       }
       if (providerSessionError === null) {
@@ -1352,11 +1407,118 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
     }
   };
 
+  const observeProviderNativeChildSession = async (
+    rawInfo: unknown,
+    status: 'running' | 'completed' | 'failed' | 'aborted',
+  ): Promise<void> => {
+    const info = asRecord(rawInfo);
+    const childSessionId = readNonBlankOpaqueIdentifier(info?.id);
+    const parentSessionId = readNonBlankOpaqueIdentifier(info?.parentID);
+    const subagents = params.ctx.sessions.current.subagents;
+    if (
+      !subagents
+      || !childSessionId
+      || !parentSessionId
+      || parentSessionId !== state.providerSessionId
+    ) return;
+    const title = typeof info?.title === 'string' ? info.title : undefined;
+    const agentKind = readNonBlankOpaqueIdentifier(info?.agent);
+    await subagents.observe({
+      observationId: childSessionId,
+      status,
+      detail: {
+        origin: 'agent',
+        kind: 'native',
+        agentRef: {
+          agentId: 'opencode',
+          ...(agentKind ? { agentKind } : {}),
+        },
+        vendorRef: {
+          agentSessionId: childSessionId,
+          vendorSource: 'opencode',
+        },
+        ...(title === undefined ? {} : { label: title }),
+        agentMetadata: { parentProviderSessionId: parentSessionId },
+      },
+    }, { signal: params.ctx.abort.signal });
+  };
+
+  const refreshProviderNativeChildSessions = async (
+    expectedChildSessionId?: string,
+    expectedStatus?: 'running' | 'completed' | 'failed' | 'aborted',
+  ): Promise<void> => {
+    if (!state.providerSessionId || !params.ctx.sessions.current.subagents) return;
+    const inventory = await client.sessionChildInventory({
+      parentSessionId: state.providerSessionId,
+    });
+    if (!inventory) return;
+    for (const child of inventory) {
+      if (
+        expectedChildSessionId
+        && readNonBlankOpaqueIdentifier(asRecord(child.info)?.id) !== expectedChildSessionId
+      ) continue;
+      await observeProviderNativeChildSession(child.info, expectedStatus ?? child.status);
+    }
+  };
+
   const handleProviderEvent = async (event: unknown): Promise<void> => {
     const { type, properties } = readProviderEvent(event);
     if (!type) return;
+    const eventDirectory = normalizeString(asRecord(event)?.directory);
+    if (eventDirectory && eventDirectory !== params.directory) return;
     const eventSessionId = readEventSessionId(properties);
+
+    if (type === 'session.created') {
+      await observeProviderNativeChildSession(properties.info, 'running');
+      return;
+    }
     if (eventSessionId && state.providerSessionId && eventSessionId !== state.providerSessionId) return;
+
+    if (type.startsWith('session.next.')) {
+      const messageId = readNonBlankOpaqueIdentifier(properties.messageID)
+        ?? readNonBlankOpaqueIdentifier(properties.assistantMessageID)
+        ?? '';
+      observeCurrentTurnMessageId(messageId);
+      if (
+        type === 'session.next.compaction.started'
+        || type === 'session.next.compaction.ended'
+      ) {
+        if (activeManualCompactionId) {
+          if (type.endsWith('.ended')) {
+            const compactionId = activeManualCompactionId;
+            activeManualCompactionId = null;
+            const error = asRecord(properties.error);
+            publishRuntimeEvent({
+              kind: 'context-compaction',
+              ...projectOpenCodeRuntimeScope(params.scope),
+              emittedAtMs: Date.now(),
+              compactionId,
+              phase: error ? 'failed' : 'completed',
+              trigger: 'manual',
+              ...(error ? { diagnostic: {
+                code: 'opencode_compaction_failed',
+                severity: 'error',
+                message: readOpenCodeProviderErrorMessage(error) || 'OpenCode compaction failed',
+              } } : {}),
+            });
+          }
+          return;
+        }
+        if (!messageId) return;
+        const reason = normalizeString(properties.reason).toLowerCase();
+        publishRuntimeEvent({
+          kind: 'context-compaction',
+          ...projectOpenCodeRuntimeScope(params.scope),
+          emittedAtMs: Date.now(),
+          compactionId: messageId,
+          phase: type.endsWith('.started') ? 'started' : 'completed',
+          trigger: reason === 'auto' || reason === 'threshold' || reason === 'overflow'
+            ? 'automatic'
+            : 'manual',
+        });
+      }
+      return;
+    }
 
     if (type === 'todo.updated') {
       await publishNativeTodosWorkState().catch((error: unknown) => {
@@ -1367,10 +1529,29 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
 
     if (type === 'server.connected') {
       markServerConnected();
+      await refreshModelCatalog();
+      await refreshModeCatalog();
+      await refreshAcceptedMode();
+      await refreshProviderNativeChildSessions().catch((error: unknown) => {
+        params.ctx.logger.debug('[OpenCodeServer] failed to refresh provider-native child sessions (non-fatal)', {
+          error,
+        });
+      });
       // Lane H/S2: catch up on externally-authored (e.g. TUI) turns when no Happier turn is active.
       // Self-gates on `turnInFlight`, so it is a no-op during an active turn (live path owns it).
       await projectExternalSessionMessagesBestEffort();
       return;
+    }
+    if (type === 'provider.updated' || type === 'model.updated') {
+      await refreshModelCatalog();
+      return;
+    }
+    if (type === 'agent.updated') {
+      await refreshModeCatalog();
+      return;
+    }
+    if (type === 'session.updated') {
+      await refreshAcceptedMode();
     }
 
     if (type === 'session.error') {
@@ -1407,6 +1588,19 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       observeCurrentTurnMessageId(readNonBlankOpaqueIdentifier(rawPart?.messageID) ?? '');
       const part = readOpenCodeToolPart(rawPart);
       if (!part) return;
+      const childMetadata = asRecord(part.state.metadata);
+      const providerNativeChildSessionId = readNonBlankOpaqueIdentifier(childMetadata?.sessionId);
+      if (providerNativeChildSessionId) {
+        await refreshProviderNativeChildSessions(
+          providerNativeChildSessionId,
+          projectOpenCodeNativeChildStatus(part),
+        ).catch((error: unknown) => {
+          params.ctx.logger.debug(
+            '[OpenCodeServer] failed to refresh provider-native child session after tool update (non-fatal)',
+            { error },
+          );
+        });
+      }
       if (!state.turnInFlight) return;
       foregroundToolTracker.observeToolPart({
         part,
@@ -1417,6 +1611,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
         state,
         scope: params.scope,
         publishRuntimeEvent,
+        mcpProjection: params.mcpProjection,
       });
       return;
     }
@@ -1565,7 +1760,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       return;
     }
 
-    if (type === 'permission.asked' || type === 'question.asked') {
+    if (type === 'server.connected' || type === 'permission.asked' || type === 'question.asked') {
       await refreshAuthoritativeRequestInventories();
     }
   };
@@ -1641,6 +1836,12 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       if (request.kind === 'resume') {
         // OpenCode minted this id: resume the exact session, never a re-minted one.
         state.providerSessionId = readNonBlankOpaqueIdentifier(request.providerSessionId);
+        if (state.providerSessionId) {
+          await client.sessionUpdatePermissions({
+            sessionId: state.providerSessionId,
+            permissions: sessionPermissions,
+          });
+        }
       } else if (request.kind === 'fork') {
         const parentProviderSessionId = readNonBlankOpaqueIdentifier(request.source.providerSessionId);
         if (!parentProviderSessionId) {
@@ -1652,8 +1853,15 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
           ...(messageId ? { messageId } : {}),
         });
         state.providerSessionId = forked.id;
+        await client.sessionUpdatePermissions({
+          sessionId: state.providerSessionId,
+          permissions: sessionPermissions,
+        });
       } else {
-        const created = await client.sessionCreate({ directory: params.directory });
+        const created = await client.sessionCreate({
+          directory: params.directory,
+          permissions: sessionPermissions,
+        });
         state.providerSessionId = created.id;
       }
       if (!state.providerSessionId) {
@@ -1673,6 +1881,9 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       pendingPermissionRequestKeys.clear();
       handledQuestionRequestKeys.clear();
       retirePendingQuestions();
+      await refreshModelCatalog();
+      await refreshModeCatalog(request.kind === 'create');
+      await refreshAcceptedMode();
       attachOpenCodeProviderEventSubscriptionIfNeeded({
         client,
         ctx: params.ctx,
@@ -1794,29 +2005,44 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
           text: prompt,
           ...(meta?.promptParts ? { parts: meta.promptParts } : {}),
           ...(modelForPrompt ? { model: modelForPrompt } : {}),
+          ...(promptAgent ? { agent: promptAgent } : {}),
           ...(state.promptVariant ? { variant: state.promptVariant } : {}),
           ...(state.promptConfig ? { config: state.promptConfig } : {}),
         });
-        let authoritativeMessages: readonly unknown[];
-        try {
-          authoritativeMessages = await client.sessionMessages({ sessionId: providerSessionId });
-        } catch (error) {
-          throw await failPromptIdentityResolution(
-            'OpenCode accepted the prompt, but its authoritative message inventory could not be read to establish input custody.',
-            error,
-          );
+        const admittedMessageId = readNonBlankOpaqueIdentifier(asRecord(promptSubmission)?.id);
+        let providerUserMessageId: string;
+        if (admittedMessageId) {
+          providerUserMessageId = admittedMessageId;
+          state.currentTurnProviderUserMessageId = admittedMessageId;
+          state.currentTurnProviderUserMessageIds.add(admittedMessageId);
+          await markProviderUserMessageAsHappierAuthored(admittedMessageId);
+          observeCurrentTurnMessageId(admittedMessageId);
+        } else {
+          let authoritativeMessages: readonly unknown[];
+          try {
+            authoritativeMessages = await client.sessionMessages({ sessionId: providerSessionId });
+          } catch (error) {
+            throw await failPromptIdentityResolution(
+              'OpenCode accepted the prompt, but its authoritative message inventory could not be read to establish input custody.',
+              error,
+            );
+          }
+          const providerUserMessageResolution =
+            await adoptCurrentProviderUserMessageFromAuthoritativeInventory(authoritativeMessages);
+          if (providerUserMessageResolution.status !== 'resolved') {
+            throw await failPromptIdentityResolution(
+              providerUserMessageResolution.status === 'ambiguous'
+                ? 'OpenCode accepted the prompt, but its authoritative message inventory contained multiple matching native user messages.'
+                : 'OpenCode accepted the prompt, but its authoritative message inventory did not contain a matching native user message.',
+            );
+          }
+          providerUserMessageId = providerUserMessageResolution.providerUserMessageId;
         }
-        const providerUserMessageResolution =
-          await adoptCurrentProviderUserMessageFromAuthoritativeInventory(authoritativeMessages);
-        if (providerUserMessageResolution.status !== 'resolved') {
-          throw await failPromptIdentityResolution(
-            providerUserMessageResolution.status === 'ambiguous'
-              ? 'OpenCode accepted the prompt, but its authoritative message inventory contained multiple matching native user messages.'
-              : 'OpenCode accepted the prompt, but its authoritative message inventory did not contain a matching native user message.',
-          );
-        }
-        const providerUserMessageId = providerUserMessageResolution.providerUserMessageId;
         state.currentTurnPromptAcceptedAtMs = Date.now();
+        if (promptAgent && (params.dialect ?? 'v1') === 'v1') {
+          modeCatalog = { ...modeCatalog, currentModeId: promptAgent, observedAt: state.currentTurnPromptAcceptedAtMs };
+          publishRuntimeEvent({ kind: 'mode-catalog-observed', ...projectOpenCodeRuntimeScope(params.scope), emittedAtMs: state.currentTurnPromptAcceptedAtMs });
+        }
         queueMicrotask(() => {
           void inspectPromptSubmissionResponseForFinality(
             promptSubmission,
@@ -1903,20 +2129,40 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
     readSessionIdentity() {
       return { sessionId: state.providerSessionId };
     },
+    readModelCatalog() {
+      return modelCatalog;
+    },
+    readModeCatalog() {
+      return modeCatalog;
+    },
     isHappierAuthoredProviderUserMessageId(messageId) {
       return happierAuthoredProviderUserMessageIds.has(messageId);
     },
     async updateSessionRuntimeConfig(update) {
       const promptConfigUpdate = normalizeOpenCodePromptConfigUpdate(update);
+      const providerSessionId = state.providerSessionId;
+      if (!providerSessionId) throw new Error('OpenCode session configuration requires an open provider session');
+      const modeId = normalizeString(update.modeId);
+      if (modeId) {
+        await client.sessionSetAgent({ sessionId: providerSessionId, agent: modeId });
+        promptAgent = modeId;
+        if (params.dialect === 'v2') {
+          modeCatalog = { ...modeCatalog, currentModeId: modeId, observedAt: Date.now() };
+          publishRuntimeEvent({ kind: 'mode-catalog-observed', ...projectOpenCodeRuntimeScope(params.scope), emittedAtMs: Date.now() });
+        }
+      }
       if (promptConfigUpdate.hasModel) {
         const requestedModelId = normalizeString(update.modelId);
         if (!requestedModelId || requestedModelId === 'default') {
           promptModel = null;
         } else {
-          promptModel = await resolveRequiredPromptModel(requestedModelId);
+          const selectedModel = await resolveRequiredPromptModel(requestedModelId);
+          await client.sessionSetModel({ sessionId: providerSessionId, model: selectedModel, variant: state.promptVariant });
+          promptModel = selectedModel;
         }
       }
       if (promptConfigUpdate.variant) {
+        await client.sessionSetModel({ sessionId: providerSessionId, model: promptModel, variant: promptConfigUpdate.variant });
         state.promptVariant = promptConfigUpdate.variant;
       }
       if (promptConfigUpdate.hasConfig) {
@@ -1926,6 +2172,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
         kind: 'opencode.runtime_config_update',
         update,
       });
+      return params.dialect === 'v2' ? 'applied' : 'deferred';
     },
     async compactContext(request) {
       const providerSessionId = state.providerSessionId;
@@ -1945,20 +2192,25 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
         trigger: 'manual',
       });
       try {
+        activeManualCompactionId = request.compactionId;
         await client.sessionSummarize({
           sessionId: providerSessionId,
           model,
           auto: false,
         });
-      publishRuntimeEvent({
-        kind: 'context-compaction',
-        ...projectOpenCodeRuntimeScope(params.scope),
-          emittedAtMs: Date.now(),
-          compactionId: request.compactionId,
-          phase: 'completed',
-          trigger: 'manual',
-        });
+        if ((params.dialect ?? 'v1') === 'v1') {
+          activeManualCompactionId = null;
+          publishRuntimeEvent({
+            kind: 'context-compaction',
+            ...projectOpenCodeRuntimeScope(params.scope),
+            emittedAtMs: Date.now(),
+            compactionId: request.compactionId,
+            phase: 'completed',
+            trigger: 'manual',
+          });
+        }
       } catch (error) {
+        activeManualCompactionId = null;
         publishRuntimeEvent({
           kind: 'context-compaction',
           ...projectOpenCodeRuntimeScope(params.scope),
@@ -1988,6 +2240,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       state.activeTurnId = null;
       state.turnInFlight = false;
       promptModel = null;
+      promptAgent = null;
       handledPermissionRequestKeys.clear();
       abortPendingPermissionDecisions('OpenCode runtime disposed');
       pendingPermissionRequestKeys.clear();

@@ -11,6 +11,7 @@ import type {
 import { OPENCODE_CONNECTED_SERVICE_SELECTION_IDENTITY_ENV } from '../../../runtime/server/managedServerState.js';
 import {
   ensureOpenCodeRequestAuthPluginAssets,
+  buildOpenCodeV2ConnectedAuthConfigContent,
   OPEN_CODE_REQUEST_AUTH_CAPABILITY_PATH_ENV,
   readOpenCodeRequestAuthMaterialization,
   retireCompetingOpenCodeAuthAssets,
@@ -41,6 +42,20 @@ type MaterializedAuth = Readonly<{
   auth: Readonly<Record<string, unknown>>;
   requestAuthProviders: readonly OpenCodeRequestAuthProvider[];
 }>;
+
+function readDirectApiKeys(materialized: MaterializedAuth): Readonly<
+  Partial<Record<OpenCodeRequestAuthProvider, string>>
+> {
+  const keys: Partial<Record<OpenCodeRequestAuthProvider, string>> = {};
+  for (const provider of ['openai', 'anthropic'] as const) {
+    if (materialized.requestAuthProviders.includes(provider)) continue;
+    const entry = materialized.auth[provider];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const key = (entry as Readonly<Record<string, unknown>>).key;
+    if (typeof key === 'string' && key.trim().length > 0) keys[provider] = key;
+  }
+  return Object.freeze(keys);
+}
 
 function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
@@ -228,7 +243,11 @@ export async function materializeOpenCodeAuthEnvironment(
   const configHome = resolveOpenCodeConnectedConfigHomeDir(rootDir);
   await retireCompetingOpenCodeAuthAssets(rootDir, configHome);
   env.XDG_CONFIG_HOME = configHome;
-  env.OPENCODE_CONFIG_CONTENT = '{}';
+  env.OPENCODE_CONFIG_CONTENT = buildOpenCodeV2ConnectedAuthConfigContent({
+    configHome,
+    requestAuthProviders: materialized.requestAuthProviders,
+    directApiKeys: readDirectApiKeys(materialized),
+  });
   env[OPENCODE_CONNECTED_SERVICE_SELECTION_IDENTITY_ENV] = materializationIdentity;
   // The materialized OpenCode auth file is the only native-key authority for a connected launch.
   env.OPENAI_API_KEY = '';

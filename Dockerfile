@@ -193,10 +193,15 @@ USER root
 RUN apk add --no-cache curl
 COPY --from=webapp-builder /repo/apps/ui/dist /usr/share/nginx/html
 RUN rm /etc/nginx/conf.d/default.conf
-RUN echo 'server { \
+RUN echo 'map $request_uri $happier_frame_ancestors { \
+    ~^/embed/ ""; \
+    default "frame-ancestors '\''none'\''"; \
+} \
+server { \
     listen 8080; \
     gzip_static on; \
     gzip_vary on; \
+    add_header Content-Security-Policy $happier_frame_ancestors always; \
     \
     location = /health { \
         return 200 "ok\n"; \
@@ -205,12 +210,14 @@ RUN echo 'server { \
     location /_expo/ { \
         root   /usr/share/nginx/html; \
         add_header Cache-Control "public, max-age=31536000, immutable"; \
+        add_header Content-Security-Policy $happier_frame_ancestors always; \
         try_files $uri =404; \
     } \
     \
     location /assets/ { \
         root   /usr/share/nginx/html; \
         add_header Cache-Control "public, max-age=31536000, immutable"; \
+        add_header Content-Security-Policy $happier_frame_ancestors always; \
         try_files $uri =404; \
     } \
     \
@@ -223,6 +230,7 @@ RUN echo 'server { \
         root   /usr/share/nginx/html; \
         index  index.html index.htm; \
         add_header Cache-Control "no-store"; \
+        add_header Content-Security-Policy $happier_frame_ancestors always; \
         try_files $uri $uri.html $uri/index.html $uri/index.htm $uri/ /index.html /index.htm =404; \
     } \
     \

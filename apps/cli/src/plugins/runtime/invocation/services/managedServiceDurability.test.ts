@@ -26,14 +26,14 @@ type ManagedServiceProjectionFacts = Readonly<{
     createdAtMs: number;
 }>;
 
-function processIdentity(pid: number, generation = 1): string {
-    return `${pid}:${generation * 1_000}`;
+function processIdentity(pid: number, occurrenceId = 1): string {
+    return `${pid}:${occurrenceId * 1_000}`;
 }
 
 function record(instanceId: string, pid = 41): ManagedServiceProjectionFacts {
     return {
         instanceId,
-        immutableGenerationId: 'immutable-generation-a',
+        immutableGenerationId: 'immutable-occurrenceId-a',
         pid,
         processStartIdentity: processIdentity(pid),
         endpoint: { host: '127.0.0.1', port: 4312 },
@@ -50,7 +50,11 @@ function endpointProjection(
         contributionId: 'opencode/agent',
         serverId: 'opencode-server',
         instanceId: facts.instanceId,
-        immutableGenerationId: facts.immutableGenerationId,
+        sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: facts.immutableGenerationId,
+            installSource: 'npm',
+        },
         custodyOwner: 'sessionRunner' as const,
         mode: 'managedSpawn' as const,
         endpoint: {
@@ -491,7 +495,11 @@ describe('managed server durability owner', () => {
         await expect(owner.resolveEndpointProjection({
             pluginId: 'opencode',
             contributionId: 'opencode/agent',
-            immutableGenerationId: 'immutable-generation-a',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'immutable-occurrenceId-a',
+                installSource: 'npm',
+            },
             selector: { kind: 'currentContribution' },
         })).resolves.toBeNull();
         expect(observeProcessStartIdentity).not.toHaveBeenCalled();
@@ -552,24 +560,24 @@ describe('managed server durability owner', () => {
         })).resolves.toMatchObject({ instanceId: 'session-one-runner' });
     });
 
-    it('binds same-plugin same-base G/H reads to the exact immutable generation', async () => {
-        const root = await mkdtemp(join(tmpdir(), 'happier-managed-generation-binding-'));
+    it('binds same-plugin same-base G/H reads to the exact immutable occurrenceId', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-managed-occurrenceId-binding-'));
         const owner = createManagedServiceDurabilityOwner({
             rootDir: root,
             observeProcessStartIdentity: async (pid) => processIdentity(pid),
         });
-        const immutableGenerationG = 'immutable-generation-g';
-        const immutableGenerationH = 'immutable-generation-h';
+        const immutableGenerationG = 'immutable-occurrenceId-g';
+        const immutableGenerationH = 'immutable-occurrenceId-h';
         const tokenG = await owner.publishEndpointProjection({
             ...endpointProjection({
-                ...record('generation-g', 41),
+                ...record('occurrenceId-g', 41),
                 immutableGenerationId: immutableGenerationG,
             }),
             contributionId: 'opencode/agents/opencode',
         });
         await owner.publishEndpointProjection({
             ...endpointProjection({
-                ...record('generation-h', 42),
+                ...record('occurrenceId-h', 42),
                 immutableGenerationId: immutableGenerationH,
             }),
             contributionId: 'opencode/agents/opencode',
@@ -578,14 +586,18 @@ describe('managed server durability owner', () => {
         await expect(owner.resolveEndpointProjection({
             pluginId: 'opencode',
             contributionId: 'opencode/agents/opencode',
-            immutableGenerationId: immutableGenerationG,
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: immutableGenerationG,
+                installSource: 'npm',
+            },
             selector: { kind: 'baseUrl', baseUrl: 'http://127.0.0.1:4312/' },
         })).resolves.toMatchObject({
-            instanceId: 'generation-g',
+            instanceId: 'occurrenceId-g',
             projectionToken: tokenG,
         });
         await owner.releaseEndpointProjection({
-            instanceId: 'generation-g',
+            instanceId: 'occurrenceId-g',
             projectionToken: tokenG,
             sessionId: 'session-one',
             pluginId: 'opencode',
@@ -593,7 +605,11 @@ describe('managed server durability owner', () => {
         await expect(owner.resolveEndpointProjection({
             pluginId: 'opencode',
             contributionId: 'opencode/agents/opencode',
-            immutableGenerationId: immutableGenerationG,
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: immutableGenerationG,
+                installSource: 'npm',
+            },
             selector: { kind: 'baseUrl', baseUrl: 'http://127.0.0.1:4312/' },
         })).resolves.toBeNull();
     });
@@ -604,7 +620,7 @@ describe('managed server durability owner', () => {
             rootDir: root,
             observeProcessStartIdentity: async (pid) => processIdentity(pid),
         });
-        const immutableGeneration = 'immutable-generation-current';
+        const immutableGeneration = 'immutable-occurrenceId-current';
         const currentToken = await owner.publishEndpointProjection({
             ...endpointProjection({
                 ...record('current-runner', 41),
@@ -615,9 +631,13 @@ describe('managed server durability owner', () => {
         const exactQuery = {
             pluginId: 'opencode',
             contributionId: 'opencode/agents/opencode',
-            immutableGenerationId: immutableGeneration,
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: immutableGeneration,
+                installSource: 'npm',
+            },
             selector: { kind: 'currentContribution' as const },
-        };
+        } as const;
 
         await expect(owner.resolveEndpointProjection(exactQuery))
             .resolves.toMatchObject({
@@ -651,7 +671,11 @@ describe('managed server durability owner', () => {
         })).resolves.toBeNull();
         await expect(owner.resolveEndpointProjection({
             ...exactQuery,
-            immutableGenerationId: 'immutable-generation-other',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'immutable-occurrenceId-other',
+                installSource: 'npm',
+            },
         })).resolves.toBeNull();
     });
 
@@ -693,7 +717,11 @@ describe('managed server durability owner', () => {
         })).resolves.toBeNull();
         await expect(owner.resolveEndpointProjection({
             ...exactQuery,
-            immutableGenerationId: 'unexpected-generation',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'unexpected-occurrenceId',
+                installSource: 'npm',
+            },
         })).resolves.toBeNull();
     });
 

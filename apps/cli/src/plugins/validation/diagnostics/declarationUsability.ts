@@ -35,9 +35,16 @@ const PLUGIN_DIAGNOSTIC_USABILITY_CLASS: Readonly<Record<
     plugin_manifest_duplicate_id: 'declaration',
     plugin_manifest_semantic_invalid: 'declaration',
     plugin_manifest_engine_range_invalid: 'declaration',
+    // Bundled publication excluded the plugin: its package or UI artifact never
+    // reached the host, so nothing it declares is available.
+    plugin_package_build_failed: 'declaration',
+    plugin_ui_artifact_invalid: 'declaration',
     // Pre-acquisition metadata could not establish a valid static declaration.
     plugin_compatibility_projection_invalid: 'declaration',
     plugin_compatibility_projection_missing: 'declaration',
+    // The packed package's SDK runtime dependency declaration is invalid, so
+    // the distributable artifact cannot be trusted or resolved by consumers.
+    plugin_pack_sdk_dependency_invalid: 'declaration',
     // Not admitted by the trust owner: the host must not offer to send
     // credentials to it.
     plugin_trust_approval_required: 'declaration',

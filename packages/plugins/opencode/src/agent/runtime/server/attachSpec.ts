@@ -1,6 +1,10 @@
 import type { ManagedServiceSpec } from '@happier-dev/plugin-sdk/managed-services';
 import { OPEN_CODE_MANAGED_SERVER_STARTUP_TIMEOUT_MS } from './timeoutPolicy.js';
-import { openCodeServerHealthPath } from './dialect.js';
+import {
+  OPEN_CODE_V2_INFO_PATH,
+  openCodeServerHealthPath,
+  type OpenCodeRequestedServerDialect,
+} from './dialect.js';
 
 /**
  * The settings field holding the `OPENCODE_SERVER_PASSWORD` of a server the
@@ -42,6 +46,8 @@ export const OPENCODE_SERVER_BASIC_USERNAME = 'opencode';
 export function buildOpenCodeManagedServerAttachSpec(params: Readonly<{
   id: string;
   baseUrl: string;
+  requestedDialect: OpenCodeRequestedServerDialect;
+  autoReadiness?: 'firstRequest' | 'managedService';
 }>): ManagedServiceSpec {
   return {
     id: params.id,
@@ -49,26 +55,61 @@ export function buildOpenCodeManagedServerAttachSpec(params: Readonly<{
       kind: 'attach',
       baseUrl: params.baseUrl,
     },
-    healthCheck: {
-      kind: 'http',
-      target: { kind: 'servicePath', path: openCodeServerHealthPath('v1') },
-      timeoutMs: 5_000,
-    },
+    // Session Auto keeps reachability on its first authenticated provider
+    // request. External browse has no request until this service is ready, so
+    // its managed-service owner tries released V2 then retained V1 within one
+    // authenticated health attempt and one existing timeout budget.
+    healthCheck: params.requestedDialect === 'v1'
+      ? {
+          kind: 'http',
+          target: {
+            kind: 'servicePath',
+            path: openCodeServerHealthPath('v1'),
+          },
+          timeoutMs: 5_000,
+        }
+      : params.requestedDialect === 'auto'
+        && params.autoReadiness === 'managedService'
+        ? {
+            kind: 'http',
+            alternatives: [{
+              target: {
+                kind: 'servicePath',
+                path: OPEN_CODE_V2_INFO_PATH,
+              },
+              response: {
+                kind: 'jsonObject',
+                required: {
+                  version: 'nonEmptyString',
+                  pid: 'nonNegativeInteger',
+                  urls: 'array',
+                  paths: 'object',
+                },
+              },
+            }, {
+              target: {
+                kind: 'servicePath',
+                path: openCodeServerHealthPath('v1'),
+              },
+              response: {
+                kind: 'jsonObject',
+                required: { healthy: 'true' },
+              },
+            }],
+            timeoutMs: 5_000,
+          }
+      : { kind: 'none' },
     healthPolicy: {
       intervalMs: 10_000,
       consecutiveFailures: 3,
     },
     // An attached server is one Happier never launched, so there is no resolved
-    // executable to read the generation from — the only signal is the user's own
-    // `HAPPIER_OPENCODE_SERVER_DIALECT` request, and a request is not evidence
-    // about the listening process. Moving readiness onto `/api/health` on that
-    // basis would break an opted-in user whose own server predates the `/api`
-    // surface, so the legacy route stays. A user-run standalone V2 server, which
-    // mounts no `/global` group at all, therefore cannot be attached yet.
+    // executable to read the generation from. Explicit Stable keeps legacy
+    // readiness; Auto probes the reachable server before choosing routes.
     //
-    // A password-protected OpenCode server answers `/global/health` with 401
-    // exactly like `/session`, so the probe has to carry the credential too or
-    // the service can never become healthy.
+    // A password-protected OpenCode server answers its health route with 401
+    // exactly like its session routes, so the probe has to carry the credential
+    // too or the service can never become healthy.
     clientAccess: {
       kind: 'declaredSecretBasic',
       username: OPENCODE_SERVER_BASIC_USERNAME,

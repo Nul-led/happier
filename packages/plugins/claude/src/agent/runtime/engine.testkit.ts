@@ -56,6 +56,7 @@ type ClaudeTestTranscriptFileFollowHandle = Readonly<{
   close(options?: Readonly<{ finalDrain?: boolean }>): Promise<void>;
 }>;
 type ClaudeTestTranscriptsService = Readonly<{
+  followSource: NonNullable<AgentSessionHostServices['transcripts']['followSource']>;
   append(...args: readonly unknown[]): Promise<void>;
   defineSource(definition: Readonly<{ id: string }>): Promise<Readonly<{ id: string; dispose(): Promise<void> }>>;
   fileFollow: Readonly<{
@@ -430,6 +431,7 @@ function createTestTranscriptFileFollowHandle(
 function createTranscriptsFixture(options: TestTranscriptsFixtureOptions = {}): ClaudeTestTranscriptsService {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_TEST_FILE_FOLLOW_POLL_INTERVAL_MS;
   return {
+    followSource: vi.fn(async () => ({ dispose: vi.fn(async () => undefined) })),
     append: vi.fn(async () => undefined),
     defineSource: vi.fn(async (definition: Readonly<{ id: string }>) => ({
       id: definition.id,

@@ -99,6 +99,9 @@ export function parseMutagenSyncList(raw, sessionName) {
     entry?.name === expectedName || entry?.identifier === expectedName
   ));
   if (!session) return { state: 'missing', sessionName: expectedName };
+  if (typeof session.paused !== 'boolean') {
+    return { state: 'unhealthy', sessionName: expectedName, lastError: 'malformed paused evidence', session };
+  }
   const lastError = String(session.lastError ?? '').trim();
   if (session.paused === true) {
     return { state: 'paused', sessionName: expectedName, session };
@@ -106,20 +109,32 @@ export function parseMutagenSyncList(raw, sessionName) {
   if (lastError) {
     return { state: 'unhealthy', sessionName: expectedName, lastError, session };
   }
-  const conflicts = Array.isArray(session.conflicts) ? session.conflicts : [];
-  if (conflicts.length > 0) {
+  const conflicts = session.conflicts == null ? [] : session.conflicts;
+  const excludedConflicts = session.excludedConflicts == null ? 0 : session.excludedConflicts;
+  if (
+    !Array.isArray(conflicts)
+    || !Number.isSafeInteger(excludedConflicts)
+    || excludedConflicts < 0
+  ) {
+    return { state: 'unhealthy', sessionName: expectedName, lastError: 'malformed conflict evidence', session };
+  }
+  if (conflicts.length > 0 || excludedConflicts > 0) {
     const roots = conflicts
       .map((conflict) => String(conflict?.root ?? '').trim())
       .filter(Boolean);
+    const totalConflicts = conflicts.length + excludedConflicts;
     const conflictDetail = roots.length > 0 ? `: ${roots.join(', ')}` : '';
     return {
       state: 'unhealthy',
       sessionName: expectedName,
-      lastError: `${conflicts.length} unresolved synchronization ${conflicts.length === 1 ? 'conflict' : 'conflicts'}${conflictDetail}`,
+      lastError: `${totalConflicts} unresolved synchronization ${totalConflicts === 1 ? 'conflict' : 'conflicts'}${conflictDetail}`,
       session,
     };
   }
-  const status = String(session.status ?? '').trim().toLowerCase();
+  if (typeof session.status !== 'string') {
+    return { state: 'unhealthy', sessionName: expectedName, lastError: 'malformed status evidence', session };
+  }
+  const status = session.status.trim().toLowerCase();
   if (MUTAGEN_UNHEALTHY_STATUSES.has(status) || !status) {
     return { state: 'unhealthy', sessionName: expectedName, session };
   }
@@ -129,8 +144,52 @@ export function parseMutagenSyncList(raw, sessionName) {
   if (status !== 'watching' && !MUTAGEN_SYNCHRONIZING_STATUSES.has(status)) {
     return { state: 'unhealthy', sessionName: expectedName, session };
   }
-  const successfulCycles = Number(session.successfulCycles);
-  if (!Number.isFinite(successfulCycles) || successfulCycles <= 0) {
+  const alpha = session.alpha ?? null;
+  const beta = session.beta ?? null;
+  if (!alpha || !beta || alpha.connected !== true || beta.connected !== true) {
+    return { state: 'unhealthy', sessionName: expectedName, lastError: 'missing connected endpoint evidence', session };
+  }
+  for (const [endpointName, endpoint] of [['alpha', alpha], ['beta', beta]]) {
+    const scanProblems = endpoint.scanProblems == null ? [] : endpoint.scanProblems;
+    const excludedScan = endpoint.excludedScanProblems == null ? 0 : endpoint.excludedScanProblems;
+    const transitionProblems = endpoint.transitionProblems == null ? [] : endpoint.transitionProblems;
+    const excludedTransition = endpoint.excludedTransitionProblems == null
+      ? 0
+      : endpoint.excludedTransitionProblems;
+    if (
+      !Array.isArray(scanProblems)
+      || !Number.isSafeInteger(excludedScan)
+      || excludedScan < 0
+      || !Array.isArray(transitionProblems)
+      || !Number.isSafeInteger(excludedTransition)
+      || excludedTransition < 0
+    ) {
+      return {
+        state: 'unhealthy',
+        sessionName: expectedName,
+        lastError: `malformed ${endpointName} problem evidence`,
+        session,
+      };
+    }
+    const hasExcludedScan = excludedScan > 0;
+    const hasExcludedTransition = excludedTransition > 0;
+    if (scanProblems.length > 0 || hasExcludedScan || transitionProblems.length > 0 || hasExcludedTransition) {
+      const parts = [];
+      if (scanProblems.length > 0 || hasExcludedScan) parts.push(`${scanProblems.length + (hasExcludedScan ? excludedScan : 0)} scan problems`);
+      if (transitionProblems.length > 0 || hasExcludedTransition) parts.push(`${transitionProblems.length + (hasExcludedTransition ? excludedTransition : 0)} transition problems`);
+      return {
+        state: 'unhealthy',
+        sessionName: expectedName,
+        lastError: `${endpointName} has ${parts.join(' and ')}`,
+        session,
+      };
+    }
+  }
+  if (alpha.scanned !== true || beta.scanned !== true) {
+    return { state: 'synchronizing', sessionName: expectedName, session };
+  }
+  const successfulCycles = session.successfulCycles;
+  if (!Number.isSafeInteger(successfulCycles) || successfulCycles <= 0) {
     return { state: 'synchronizing', sessionName: expectedName, session };
   }
   return { state: 'ready', sessionName: expectedName, session };

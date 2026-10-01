@@ -8,7 +8,10 @@ import type { StoredCredentials } from '@/persistence';
 import type { PluginRegistryAvailabilityInventory } from '@/plugins/store/registry/currentState';
 import { logger } from '@/ui/logger';
 
-import { createServerPluginAvailabilityPublisher } from './serverPublisher';
+import {
+  createServerPluginAvailabilityPublisher,
+  type PluginAvailabilityPublisher,
+} from './serverPublisher';
 import { createDaemonPluginAvailabilityReporter } from './daemonReporter';
 
 const { publisher, PluginAvailabilityReleaseContentConflictError } = vi.hoisted(() => {
@@ -17,8 +20,14 @@ const { publisher, PluginAvailabilityReleaseContentConflictError } = vi.hoisted(
   }
   return {
     publisher: {
-      publishRelease: vi.fn(async () => undefined),
-      reportMaterializations: vi.fn(async () => undefined),
+      publishRelease: vi.fn<PluginAvailabilityPublisher['publishRelease']>(async (input) => ({
+        facts: input.facts,
+        outcome: 'created',
+      })),
+      reportMaterializations: vi.fn<PluginAvailabilityPublisher['reportMaterializations']>(async () => ({
+        revision: 0,
+        outcome: 'replaced',
+      })),
     },
     PluginAvailabilityReleaseContentConflictError,
   };
@@ -142,6 +151,7 @@ describe('daemon plugin Availability reporter', () => {
   beforeEach(() => {
     publisher.publishRelease.mockReset();
     publisher.reportMaterializations.mockReset();
+    publisher.reportMaterializations.mockResolvedValue({ revision: 1, outcome: 'replaced' });
     vi.mocked(createServerPluginAvailabilityPublisher).mockClear();
     vi.mocked(logger.warn).mockReset();
   });
@@ -149,14 +159,14 @@ describe('daemon plugin Availability reporter', () => {
   it('publishes verified releases before reporting the exact persisted machine snapshot with live identity facts', async () => {
     const releaseCompletion = createDeferred();
     const callOrder: string[] = [];
-    publisher.publishRelease.mockImplementationOnce(async () => {
+    publisher.publishRelease.mockImplementationOnce(async (input) => {
       callOrder.push('release');
       await releaseCompletion.promise;
-      return undefined;
+      return { facts: input.facts, outcome: 'created' };
     });
     publisher.reportMaterializations.mockImplementationOnce(async () => {
       callOrder.push('materializations');
-      return undefined;
+      return { revision: 1, outcome: 'replaced' };
     });
     const reporter = createDaemonPluginAvailabilityReporter({
       credentials,
@@ -177,10 +187,10 @@ describe('daemon plugin Availability reporter', () => {
     expect(createServerPluginAvailabilityPublisher).toHaveBeenCalledWith({ credentials });
     expect(publisher.publishRelease).toHaveBeenCalledWith(release);
     expect(publisher.reportMaterializations).toHaveBeenCalledWith({
+      expectedRevision: null,
       snapshot: {
         serverIdentityId: 'srv_availability_daemon',
         machineId: 'machine-current',
-        revision: 12,
         materializations: [{
           ...materialization,
           serverIdentityId: 'srv_availability_daemon',
@@ -227,10 +237,10 @@ describe('daemon plugin Availability reporter', () => {
     expect(publisher.publishRelease).toHaveBeenNthCalledWith(1, release);
     expect(publisher.publishRelease).toHaveBeenNthCalledWith(2, unrelatedRelease);
     expect(publisher.reportMaterializations).toHaveBeenCalledWith({
+      expectedRevision: null,
       snapshot: {
         serverIdentityId: 'srv_availability_daemon',
         machineId: 'machine-current',
-        revision: 13,
         materializations: [
           {
             ...materialization,
@@ -263,5 +273,113 @@ describe('daemon plugin Availability reporter', () => {
 
     await expect(reporter.report(inventory)).rejects.toThrow('transport unavailable');
     expect(publisher.reportMaterializations).not.toHaveBeenCalled();
+  });
+
+  it('serializes reports and coalesces in-flight changes to the latest full body', async () => {
+    const firstReport = createDeferred();
+    publisher.reportMaterializations
+      .mockImplementationOnce(async () => {
+        await firstReport.promise;
+        return { revision: 4, outcome: 'replaced' };
+      })
+      .mockResolvedValueOnce({ revision: 5, outcome: 'replaced' });
+    const reporter = createDaemonPluginAvailabilityReporter({
+      credentials,
+      serverFeaturesSnapshotStore: { getSnapshot: readyServerFeatures },
+      getMachineId: () => 'machine-current',
+    });
+
+    const first = reporter.report(inventory);
+    await Promise.resolve();
+    const superseded = reporter.report({ ...inventory, revision: 13, materializations: [] });
+    const latest = reporter.report({
+      ...inventory,
+      revision: 14,
+      materializations: [unrelatedMaterialization],
+    });
+
+    expect(publisher.reportMaterializations).toHaveBeenCalledTimes(1);
+    firstReport.resolve();
+    await Promise.all([first, superseded, latest]);
+
+    expect(publisher.reportMaterializations).toHaveBeenCalledTimes(2);
+    expect(publisher.reportMaterializations).toHaveBeenNthCalledWith(2, {
+      expectedRevision: 4,
+      snapshot: {
+        serverIdentityId: 'srv_availability_daemon',
+        machineId: 'machine-current',
+        materializations: [{
+          ...unrelatedMaterialization,
+          serverIdentityId: 'srv_availability_daemon',
+          machineId: 'machine-current',
+        }],
+      },
+    });
+  });
+
+  it('restarts a drain when a report arrives at the previous drain completion boundary', async () => {
+    const firstReportCompletion = createDeferred();
+    publisher.reportMaterializations
+      .mockImplementationOnce(async () => {
+        await firstReportCompletion.promise;
+        return { revision: 4, outcome: 'replaced' };
+      })
+      .mockResolvedValueOnce({ revision: 5, outcome: 'replaced' });
+    const reporter = createDaemonPluginAvailabilityReporter({
+      credentials,
+      serverFeaturesSnapshotStore: { getSnapshot: readyServerFeatures },
+      getMachineId: () => 'machine-current',
+    });
+
+    const first = reporter.report(inventory);
+    await Promise.resolve();
+
+    let boundaryReport!: Promise<void>;
+    const boundaryReportStarted = createDeferred();
+    void firstReportCompletion.promise.then(() => Promise.resolve().then(() => Promise.resolve().then(() => {
+      boundaryReport = reporter.report({
+        ...inventory,
+        revision: 13,
+        materializations: [unrelatedMaterialization],
+      });
+      boundaryReportStarted.resolve();
+    })));
+
+    firstReportCompletion.resolve();
+    await boundaryReportStarted.promise;
+    await Promise.all([first, boundaryReport]);
+
+    expect(publisher.reportMaterializations).toHaveBeenCalledTimes(2);
+    expect(publisher.reportMaterializations).toHaveBeenNthCalledWith(2, {
+      expectedRevision: 4,
+      snapshot: {
+        serverIdentityId: 'srv_availability_daemon',
+        machineId: 'machine-current',
+        materializations: [{
+          ...unrelatedMaterialization,
+          serverIdentityId: 'srv_availability_daemon',
+          machineId: 'machine-current',
+        }],
+      },
+    });
+  });
+
+  it('refreshes the server CAS token on conflict and resends the current full body', async () => {
+    publisher.reportMaterializations
+      .mockResolvedValueOnce({ revision: 8, outcome: 'conflict' })
+      .mockResolvedValueOnce({ revision: 9, outcome: 'replaced' });
+    const reporter = createDaemonPluginAvailabilityReporter({
+      credentials,
+      serverFeaturesSnapshotStore: { getSnapshot: readyServerFeatures },
+      getMachineId: () => 'machine-current',
+    });
+
+    await reporter.report(inventory);
+
+    expect(publisher.reportMaterializations).toHaveBeenCalledTimes(2);
+    expect(publisher.reportMaterializations.mock.calls[0]?.[0]).toMatchObject({ expectedRevision: null });
+    expect(publisher.reportMaterializations.mock.calls[1]?.[0]).toMatchObject({ expectedRevision: 8 });
+    expect(publisher.reportMaterializations.mock.calls[1]?.[0].snapshot.materializations)
+      .toEqual(publisher.reportMaterializations.mock.calls[0]?.[0].snapshot.materializations);
   });
 });

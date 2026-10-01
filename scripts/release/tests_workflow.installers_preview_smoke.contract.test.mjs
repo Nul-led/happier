@@ -21,7 +21,7 @@ test('tests workflow can smoke-test preview installers when requested', async ()
   assert.match(raw, /--release-channel "\$\{INSTALLERS_RELEASE_CHANNEL\}"|--release-channel "\$env:INSTALLERS_RELEASE_CHANNEL"/, 'tests.yml should pass the resolved installer release channel into release-validate');
   assert.match(
     raw,
-    /INSTALLERS_CHANNEL:\s*\$\{\{\s*\(github\.event_name == 'workflow_dispatch' \|\| github\.event_name == 'workflow_call'\)\s*&&\s*inputs\.installers_channel\s*\|\|\s*\(\(github\.event_name == 'push' && github\.ref_name == 'main'\) \|\| \(github\.event_name == 'pull_request' && github\.base_ref == 'main'\)\)\s*&&\s*'stable'\s*\|\|\s*'preview'\s*\}\}/,
+    /INSTALLERS_CHANNEL:\s*\$\{\{\s*inputs\.select_jobs_explicitly\s*&&\s*inputs\.installers_channel\s*\|\|\s*\(\(github\.event_name == 'push' && github\.ref_name == 'main'\) \|\| \(github\.event_name == 'pull_request' && github\.base_ref == 'main'\)\)\s*&&\s*'stable'\s*\|\|\s*'preview'\s*\}\}/,
     'tests.yml should default installer smoke to preview outside the main production lane',
   );
   assert.match(raw, /installers_source:[\s\S]*?default:\s*published-channel/u);

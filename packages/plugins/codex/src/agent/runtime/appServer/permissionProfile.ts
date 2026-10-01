@@ -45,12 +45,14 @@ export function buildCodexAppServerLegacyPermissionParams(params: Readonly<{
   policy: CodexAppServerPolicy;
   target: CodexAppServerPermissionTarget;
 }>): Record<string, unknown> {
+  const sandboxPolicy = params.policy.sandboxPolicy
+    ?? (params.policy.sandbox === 'read-only' ? { type: 'readOnly' } : undefined);
   return {
     ...(params.policy.approvalPolicy !== undefined ? { approvalPolicy: params.policy.approvalPolicy } : {}),
     ...(params.policy.approvalsReviewer ? { approvalsReviewer: params.policy.approvalsReviewer } : {}),
     ...(params.target === 'thread'
       ? (params.policy.sandbox !== undefined ? { sandbox: params.policy.sandbox } : {})
-      : (params.policy.sandboxPolicy !== undefined ? { sandboxPolicy: params.policy.sandboxPolicy } : {})),
+      : (sandboxPolicy !== undefined ? { sandboxPolicy } : {})),
   };
 }
 

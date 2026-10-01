@@ -5,28 +5,25 @@ import {
 import {
   projectLoadedPluginContributes,
 } from '@/plugins/projection/registry/resolvePluginContributions';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import { loadPluginsFromState } from '@/plugins/discovery/load/installed';
 import {
-  readCurrentCommittedPluginGenerations,
   readPreparedImmutablePluginGeneration,
   type CurrentCommittedPluginGeneration,
 } from '@/plugins/store/registry/generationStore';
 import type {
+  PluginDevelopmentRuntimeCandidate,
+  PluginDevelopmentRuntimeRemoval,
   PluginRegistryRuntimeCandidate,
   PluginRegistryRuntimeLifecycle,
 } from '@/plugins/store/registry/currentState';
+import type { PluginRegistryCommitRecord } from '@/plugins/store/registry/commitRecord';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import {
   resolveExecutablePluginRuntimeRegistry,
-  type PluginRuntimeActivationRegistryLease,
   type PluginRuntimeGenerationAuthority,
   type PluginRuntimeMachineAdmissionTransport,
 } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
-import {
-  prepareBundledExecutableGenerationAdmission,
-  selectBundledExecutableImmutableArtifacts,
-} from '@/plugins/runtime/bundledActivationSource';
+import type { PluginRuntimeActivationRegistryLease } from '@/plugins/runtime/composition/activationAssembly';
 import type { StablePluginConnectedAccountsOwner } from '@/plugins/runtime/invocation/services/connectedAccounts';
 import type { ConnectedAccountPurposeBindingOwner } from '@/daemon/connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
 import type { PluginProviderOperationsSource } from '@/plugins/runtime/invocation/services/types';
@@ -57,6 +54,11 @@ import type { CliServerFeaturesSnapshot } from '@/features/featureDecisionServic
 import type { CurrentMachineExecutionOriginContext } from '@/api/machine/resolveCurrentMachineExecutionOriginContext';
 import type { RpcHandlerInvoker } from '@/api/rpc/types';
 import type { ResolveSessionResourceAccess } from '@/plugins/runtime/invocation/services/resources';
+import type { ResolvedContributionInputs, ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
+import type {
+  DevelopmentPluginSourceCustody,
+  PluginRuntimeSourceAuthority,
+} from '@/plugins/runtime/sourceAuthority';
 
 import {
   type PluginRuntimeRegistryBeforePublish,
@@ -68,34 +70,78 @@ import {
   bootstrapPrimaryAgentRuntimesForReadiness,
 } from './readiness';
 
+function omitPluginFromContributionInputs(
+  registry: ResolvedContributionRegistry,
+  pluginId: string,
+): ResolvedContributionInputs {
+  const filtered = Object.fromEntries(Object.entries(registry).map(([key, value]) => {
+    if (Array.isArray(value)) {
+      return [key, Object.freeze(value.filter((entry: unknown) => (
+        !entry || typeof entry !== 'object' || !('pluginId' in entry) || entry.pluginId !== pluginId
+      )))];
+    }
+    if (
+      value
+      && typeof value === 'object'
+      && (key === 'pluginDiagnosticsByPluginId'
+        || key === 'materializationIdsByPluginId'
+        || key === 'immutableGenerationIdsByPluginId'
+        || key === 'occurrenceIdsByPluginId')
+    ) {
+      return [key, Object.freeze(Object.fromEntries(
+        Object.entries(value).filter(([entryPluginId]) => entryPluginId !== pluginId),
+      ))];
+    }
+    return [key, value];
+  }));
+  // createResolvedContributionRegistry consumes only ResolvedContributionInputs
+  // fields; this boundary mechanically removes one plugin from that exact shape.
+  return filtered as ResolvedContributionInputs;
+}
+
+function projectDevelopmentContributes(
+  candidate: PluginDevelopmentRuntimeCandidate,
+  active: ResolvedContributionRegistry,
+): ResolvedContributionRegistry {
+  const replacement = projectLoadedPluginContributes({
+    loadResult: {
+      loadedPlugins: [Object.freeze({
+        pluginId: candidate.pluginId,
+        pluginRootPath: candidate.preparedActivationGraph.rootPath,
+        manifestPath: candidate.preparedActivationGraph.entryPath,
+        daemonEntryPath: null,
+        devDaemonEntryPath: candidate.preparedActivationGraph.entryPath,
+        manifest: candidate.manifest,
+        sourceSpec: Object.freeze({
+          kind: 'path' as const,
+          locator: candidate.preparedActivationGraph.rootPath,
+          trustPolicy: 'local_trusted' as const,
+          installPolicy: 'link' as const,
+          resolvedVersion: candidate.manifest.version,
+          devWatch: true,
+        }),
+      })],
+      diagnosticsByPluginId: Object.freeze({}),
+    },
+    provenance: 'external',
+    existingAgentIds: new Set(active.agents
+      .filter((agent) => agent.pluginId !== candidate.pluginId)
+      .map((agent) => agent.id)),
+  });
+  return createMergedContributionRegistry(
+    replacement,
+    omitPluginFromContributionInputs(active, candidate.pluginId),
+  );
+}
+
 async function createCandidateGenerationAuthority(params: Readonly<{
   happyHomeDir: string;
   candidate: PluginRegistryRuntimeCandidate;
-  activationTargets: readonly Readonly<{
-    pluginId: string;
-    daemonEntryPath: string | null;
-    sourceSpec: Readonly<{ kind: string }>;
-  }>[];
   isValid: () => boolean;
 }>): Promise<PluginRuntimeGenerationAuthority> {
   const paths = resolvePluginStorePaths({ happyHomeDir: params.happyHomeDir });
-  const bundledExecutableImmutableArtifacts = selectBundledExecutableImmutableArtifacts({
-    artifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-    activationTargets: params.activationTargets,
-  });
-  await prepareBundledExecutableGenerationAdmission({
-    artifacts: bundledExecutableImmutableArtifacts,
-  });
-  const bundled = await readCurrentCommittedPluginGenerations(paths, {
-    bundledArtifacts: bundledExecutableImmutableArtifacts,
-    isolateInvalidInstalledGenerations: true,
-  });
   const generations = new Map<string, CurrentCommittedPluginGeneration>();
-  const unavailableBundledPackageNames = new Set(bundled?.unavailableBundledPackageNames ?? []);
-  for (const [pluginId, generation] of bundled?.generations ?? []) {
-    if (!generation.installation) generations.set(pluginId, generation);
-  }
-  for (const [pluginId, reference] of Object.entries(params.candidate.pluginGenerations)) {
+  for (const [pluginId, reference] of Object.entries(params.candidate.pluginOccurrenceIds)) {
     const installation = params.candidate.installationState.plugins[pluginId];
     if (!installation) {
       throw new Error(`Prepared plugin generation is missing installation authority for '${pluginId}'`);
@@ -128,7 +174,6 @@ async function createCandidateGenerationAuthority(params: Readonly<{
     commit: null,
     generations,
     rejectedGenerations: new Map(),
-    unavailableBundledPackageNames,
     isCurrent: async () => params.isValid(),
   });
 }
@@ -200,6 +245,11 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
   /** Explicit operator mode: retain daemon administration while external plugin code is skipped. */
   startupMode?: 'normal' | 'pluginRecovery';
   beforePublish?: PluginRuntimeRegistryBeforePublish;
+  resolveDevelopmentSourceAuthority?: (input: Readonly<{
+    pluginId: string;
+    rootPath: string;
+  }>) => Extract<PluginRuntimeSourceAuthority, DevelopmentPluginSourceCustody> | null;
+  isDevelopmentSourceRegistered?: (registeredRootId: string) => boolean;
 }>): PluginRegistryRuntimeLifecycle {
   type PreparedActivationCustody = Readonly<{
     pluginId: string;
@@ -214,37 +264,68 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
     new Map<string, PreparedActivationCustody>();
 
   async function prepareCandidate(
-    candidate: PluginRegistryRuntimeCandidate,
+    candidate: PluginRegistryRuntimeCandidate | null,
     preparedActivationRegistryLeases: readonly PluginRuntimeActivationRegistryLease[] = Object.freeze([]),
-  ): Promise<Awaited<ReturnType<PluginRegistryRuntimeLifecycle['prepare']>>> {
+    developmentCandidate?: PluginDevelopmentRuntimeCandidate,
+    developmentRemoval?: PluginDevelopmentRuntimeRemoval,
+  ): Promise<Omit<Awaited<ReturnType<PluginRegistryRuntimeLifecycle['prepare']>>, 'adopt'> & Readonly<{
+    adopt: (
+      record?: Parameters<Awaited<ReturnType<PluginRegistryRuntimeLifecycle['prepare']>>['adopt']>[0],
+    ) => Promise<Readonly<Record<string, string | null>> | void>;
+  }>> {
+      if (!candidate && !developmentCandidate && !developmentRemoval) {
+        throw new Error('Plugin runtime candidate is required');
+      }
       let valid = true;
       let disposed = false;
       let adopted = false;
       let appliedGenerationsByPluginId:
         Readonly<Record<string, string | null>> | undefined;
-      const contributes = await resolveCandidateContributes(
-        candidate,
-        params.startupMode ?? 'normal',
-      );
-      const generationAuthority = await createCandidateGenerationAuthority({
-        happyHomeDir: params.happyHomeDir,
-        candidate,
-        activationTargets: contributes.activationTargets,
-        isValid: () => valid,
-      });
       const activeRegistry = params.reloadController.getState().activeRegistry;
-      const activePluginIds = activeRegistry?.activatedPluginIds ?? new Set<string>();
-      const changedPluginIds = new Set(candidate.changedPluginIds);
+      const contributes = developmentCandidate
+        ? projectDevelopmentContributes(
+            developmentCandidate,
+            activeRegistry?.contributes ?? getResolvedContributionRegistry(),
+          )
+        : developmentRemoval
+          ? createMergedContributionRegistry(
+              Object.freeze({}),
+              omitPluginFromContributionInputs(
+                activeRegistry?.contributes ?? getResolvedContributionRegistry(),
+                developmentRemoval.pluginId,
+              ),
+            )
+          : await resolveCandidateContributes(candidate!, params.startupMode ?? 'normal');
+      const generationAuthority = developmentCandidate || developmentRemoval
+        ? Object.freeze({
+            commit: null,
+            generations: new Map(),
+            rejectedGenerations: new Map(),
+            isCurrent: async () => valid,
+          })
+        : await createCandidateGenerationAuthority({
+            happyHomeDir: params.happyHomeDir,
+            candidate: candidate!,
+            isValid: () => valid,
+          });
+      const changedPluginIdList = developmentCandidate
+        ? Object.freeze([developmentCandidate.pluginId])
+        : developmentRemoval
+          ? Object.freeze([developmentRemoval.pluginId])
+        : candidate!.changedPluginIds;
+      const changedPluginIds = new Set(changedPluginIdList);
+      const candidatePluginGenerations: PluginRegistryRuntimeCandidate['pluginOccurrenceIds'] =
+        candidate?.pluginOccurrenceIds ?? Object.freeze({});
       const retainedPreparedPeerActivationLeases: PluginRuntimeActivationRegistryLease[] = [];
       const retainedPreparedPeerPluginIds = new Set<string>();
-      for (const [pluginId, reference] of Object.entries(candidate.pluginGenerations)) {
+      for (const [pluginId, reference] of Object.entries(candidatePluginGenerations)) {
         if (changedPluginIds.has(pluginId)) continue;
         const custody = committedPreparedActivationCustodyByPluginId.get(pluginId);
         if (
           !custody
           || custody.immutableGenerationId !== reference.immutableGenerationId
-          || candidate.installationState.plugins[pluginId]?.enabled !== true
-          || candidate.runtimeCatalog.plugins[pluginId]?.state.enabled !== true
+          || candidate?.installationState.plugins[pluginId]?.enabled !== true
+          || candidate?.runtimeCatalog.plugins[pluginId]?.state.enabled !== true
         ) {
           continue;
         }
@@ -255,39 +336,29 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
         ...changedPluginIds,
         ...retainedPreparedPeerPluginIds,
       ]);
-      const unchangedActivePluginIds = new Set(
-        [...activePluginIds].filter((pluginId) => !replacedPluginIds.has(pluginId)),
-      );
-      const activeActivationRegistryLeases = [
-        ...(activeRegistry?.retainActivationRegistryComponentsExcluding?.(replacedPluginIds) ?? []),
-      ];
-      const retainedActivePluginIds = new Set(
-        activeActivationRegistryLeases.flatMap((lease) => [...lease.pluginIds]),
-      );
-      const canReuseActiveRegistry = Boolean(
-        activeRegistry
-        && [...unchangedActivePluginIds].every((pluginId) => retainedActivePluginIds.has(pluginId)),
-      );
-      if (!canReuseActiveRegistry) {
-        await Promise.all(
-          activeActivationRegistryLeases.map((lease) => lease.release()),
-        );
-        activeActivationRegistryLeases.length = 0;
-      }
+      // Unchanged serving slots keep their activation components. An active
+      // plugin whose component cannot serve a successor (fenced by a durable
+      // commit whose publication failed) is prepared again on its own; its
+      // peers are never re-activated for it.
+      const servingSlots = (activeRegistry
+        ? params.reloadController.retainServingSlots?.(replacedPluginIds)
+        : undefined)
+        ?? Object.freeze({
+          occurrencesByPluginId: new Map(),
+          leases: Object.freeze([]),
+          unretainedActivePluginIds: Object.freeze([]),
+        });
       const canPrepareOnlyChangedPlugins = Boolean(
         preparedActivationRegistryLeases.length > 0
         || retainedPreparedPeerActivationLeases.length > 0
-        || canReuseActiveRegistry
-        || (
-          !activeRegistry
-          && Object.keys(candidate.pluginGenerations).every((pluginId) => candidate.changedPluginIds.includes(pluginId))
-        )
+        || activeRegistry
+        || Object.keys(candidatePluginGenerations).every((pluginId) => changedPluginIdList.includes(pluginId))
       );
-      const activationGeneration = canReuseActiveRegistry && typeof activeRegistry?.generation === 'number'
+      const activationOccurrenceId = typeof activeRegistry?.generation === 'number'
         ? activeRegistry.generation
         : params.reloadController.getState().generation + 1;
       const retainedActivationRegistryLeases = [
-        ...activeActivationRegistryLeases,
+        ...servingSlots.leases,
         ...retainedPreparedPeerActivationLeases,
         ...preparedActivationRegistryLeases,
       ];
@@ -300,7 +371,7 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
         registry = await resolveExecutablePluginRuntimeRegistry({
             happyHomeDir: params.happyHomeDir,
             contributes,
-            generation: activationGeneration,
+            generation: activationOccurrenceId,
           ...(params.resolveCurrentMachineId
             ? { resolveCurrentMachineId: params.resolveCurrentMachineId }
             : {}),
@@ -329,6 +400,9 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
             ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot }
             : {}),
           generationAuthority,
+          ...(params.resolveDevelopmentSourceAuthority
+            ? { resolveDevelopmentSourceAuthority: params.resolveDevelopmentSourceAuthority }
+            : {}),
           ...(stableEventsBroker
             ? { stableEventsBroker }
             : {}),
@@ -382,10 +456,17 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
           ...(params.onTerminalActivationFailure
             ? { onTerminalActivationFailure: params.onTerminalActivationFailure }
             : {}),
-          ...(candidate.preparedActivationGraphsByPluginId
+          ...(candidate?.preparedActivationGraphsByPluginId
             ? {
                 preparedActivationGraphsByPluginId:
                   candidate.preparedActivationGraphsByPluginId,
+              }
+            : {}),
+          ...(developmentCandidate
+            ? {
+                preparedDevelopmentActivationGraphsByPluginId: new Map([
+                  [developmentCandidate.pluginId, developmentCandidate.preparedActivationGraph],
+                ]),
               }
             : {}),
           ...(params.daemonDatabaseLimits
@@ -394,13 +475,16 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
           ...(canPrepareOnlyChangedPlugins ? {
             pluginIds: preparedActivationRegistryLeases.length > 0
               ? Object.freeze([])
-              : candidate.changedPluginIds,
+              : Object.freeze([...new Set([...changedPluginIdList, ...servingSlots.unretainedActivePluginIds])]),
           } : {}),
           ...(retainedActivationRegistryLeases.length > 0
             ? {
                 retainedActivationRegistryLeases:
                   Object.freeze(retainedActivationRegistryLeases),
               }
+            : {}),
+          ...(servingSlots.occurrencesByPluginId.size > 0
+            ? { servingPluginOccurrences: servingSlots.occurrencesByPluginId }
             : {}),
           ...(preparedActivationRegistryLeases.length > 0
             ? { preparedActivationRegistryLeases }
@@ -457,9 +541,9 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
       try {
         await activatePluginRuntimeForReadiness({
           registry,
-          pluginIds: candidate.changedPluginIds,
+          pluginIds: changedPluginIdList,
         });
-        const candidateDaemonDatabasePluginIds = candidate.changedPluginIds.filter((pluginId) => (
+        const candidateDaemonDatabasePluginIds = changedPluginIdList.filter((pluginId) => (
           registry.contributes.activationTargets.some((target) => (
             target.pluginId === pluginId
             && target.manifest.contributes.daemonDatabases.length > 0
@@ -469,7 +553,7 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
         // declaration to select, but its incumbent can still own native SQLite
         // handles. Read the active host's prepared contracts as the one
         // authoritative proof that it must be quiesced before adoption.
-        const incumbentDaemonDatabasePluginIds = candidate.changedPluginIds.filter((pluginId) => (
+        const incumbentDaemonDatabasePluginIds = changedPluginIdList.filter((pluginId) => (
           (activeRegistry?.readPreparedDaemonDatabaseContracts?.(pluginId)?.length ?? 0) > 0
         ));
         const daemonDatabasePluginIds = [...new Set([
@@ -501,39 +585,86 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
             });
           }
         }
-        const executableChangedPluginIds = candidate.changedPluginIds.filter((pluginId) => (
-          candidate.runtimeCatalog.plugins[pluginId]?.state.enabled === true
-        ));
+        const executableChangedPluginIds = developmentCandidate
+          ? changedPluginIdList
+          : developmentRemoval
+            ? Object.freeze([])
+          : changedPluginIdList.filter((pluginId) => (
+              candidate!.runtimeCatalog.plugins[pluginId]?.state.enabled === true
+            ));
         assertPluginRuntimeReadiness({
           registry,
           executablePluginIds: executableChangedPluginIds,
         });
         await bootstrapPrimaryAgentRuntimesForReadiness({
           registry,
-          pluginIds: candidate.changedPluginIds,
+          pluginIds: changedPluginIdList,
         });
       } catch (error) {
         await disposeOnce();
         throw error;
       }
 
+      if (developmentCandidate || developmentRemoval) {
+        const candidateToAdopt = developmentCandidate;
+        return Object.freeze({
+          abort: disposeOnce,
+          async adopt() {
+            if (adopted) return;
+            const adoption = await params.reloadController.adoptPreparedRuntimeRegistry({
+              registry,
+              changedPluginIds: changedPluginIdList,
+              runningSessionDisposition: 'retainRunningSessions',
+              isDevelopmentCandidateCurrent: () => {
+                if (!valid) return false;
+                if (developmentRemoval) {
+                  return params.isDevelopmentSourceRegistered?.(
+                    developmentRemoval.registeredRootId,
+                  ) === false;
+                }
+                const current = params.resolveDevelopmentSourceAuthority?.({
+                  pluginId: candidateToAdopt!.pluginId,
+                  rootPath: candidateToAdopt!.sourceAuthority.registeredRootId,
+                });
+                return current?.registeredRootId === candidateToAdopt!.sourceAuthority.registeredRootId
+                  && current.canonicalRoot === candidateToAdopt!.sourceAuthority.canonicalRoot
+                  && current.observedRevision === candidateToAdopt!.sourceAuthority.observedRevision;
+              },
+              ...(params.beforePublish ? { beforePublish: params.beforePublish } : {}),
+            });
+            if (!adoption.ok || !adoption.registry) {
+              throw new Error('Prepared plugin development runtime adoption did not publish');
+            }
+            adopted = true;
+          },
+        });
+      }
+
+      const durableCandidate = candidate!;
+
       return Object.freeze({
         abort: disposeOnce,
-        notifyDurableRunningSessionDisposition(record) {
+        notifyDurableRunningSessionDisposition(record: PluginRegistryCommitRecord) {
+          // The durable commit is the point after which the predecessor can
+          // never become current again, even when publication reconciliation
+          // later fails. Fence only the changed plugin occurrences here;
+          // lease-safe resource retirement remains owned by adoption.
+          params.reloadController.getState().activeRegistry
+            ?.fencePluginConsumers?.(durableCandidate.changedPluginIds);
           params.reloadController.publishDurableRunningSessionDisposition({
             durableRevision: record.revision,
-            changedPluginIds: candidate.changedPluginIds,
+            changedPluginIds: durableCandidate.changedPluginIds,
             runningSessionDisposition:
-              candidate.runningSessionDisposition,
-            ...(candidate.runningSessionRevocationScope
+              durableCandidate.runningSessionDisposition,
+            ...(durableCandidate.runningSessionRevocationScope
               ? {
                   runningSessionRevocationScope:
-                    candidate.runningSessionRevocationScope,
+                    durableCandidate.runningSessionRevocationScope,
                 }
               : {}),
           });
         },
-        async rebase(nextCandidate) {
+        async rebase(nextCandidate: PluginRegistryRuntimeCandidate) {
           const retainedPreparedActivations = registry.retainPreparedActivationRegistryComponents?.() ?? [];
           if (retainedPreparedActivations.length === 0) {
             throw new Error('Prepared plugin activation cannot be retained across a registry base retry');
@@ -549,9 +680,10 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
             throw error;
           }
         },
-        async adopt(record) {
+        async adopt(record?: PluginRegistryCommitRecord) {
           if (adopted) return appliedGenerationsByPluginId;
-          if (JSON.stringify(record.pluginGenerations) !== JSON.stringify(candidate.pluginGenerations)) {
+          if (!record) throw new Error('Durable plugin runtime adoption requires a commit record');
+          if (JSON.stringify(record.pluginOccurrenceIds) !== JSON.stringify(durableCandidate.pluginOccurrenceIds)) {
             await disposeOnce();
             throw new Error('Committed plugin generations differ from the prepared runtime candidate');
           }
@@ -569,7 +701,7 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
               const pluginIds = [...lease.pluginIds];
               const pluginId = pluginIds.length === 1 ? pluginIds[0] : undefined;
               const immutableGenerationId = pluginId
-                ? candidate.pluginGenerations[pluginId]?.immutableGenerationId
+                ? durableCandidate.pluginOccurrenceIds[pluginId]?.immutableGenerationId
                 : undefined;
               if (
                 !pluginId
@@ -595,9 +727,9 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
             }
             const adoption = await params.reloadController.adoptPreparedRuntimeRegistry({
               registry,
-              changedPluginIds: candidate.changedPluginIds,
+              changedPluginIds: durableCandidate.changedPluginIds,
               durableRevision: record.revision,
-              runningSessionDisposition: candidate.runningSessionDisposition,
+              runningSessionDisposition: durableCandidate.runningSessionDisposition,
               ...(params.beforePublish ? { beforePublish: params.beforePublish } : {}),
             });
             if (!adoption.ok || !adoption.registry) {
@@ -610,13 +742,16 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
               });
             });
             appliedGenerationsByPluginId = Object.freeze(
-              Object.fromEntries(candidate.changedPluginIds.map((pluginId) => {
+              Object.fromEntries(durableCandidate.changedPluginIds.map((pluginId) => {
                 const current = adoption.registry
-                  .pluginFinalPolicyCurrentGenerationsById
+                  .pluginFinalPolicyCurrentRuntimesById
                   ?.get(pluginId);
                 return [
                   pluginId,
-                  current?.applied === true ? current.immutableGenerationId : null,
+                  current?.applied === true
+                    && current.sourceCustody.kind === 'managed'
+                    ? current.sourceCustody.immutableGenerationId
+                    : null,
                 ];
               })),
             );
@@ -630,5 +765,31 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
       });
   }
 
-  return Object.freeze({ prepare: prepareCandidate });
+  return Object.freeze({
+    prepare: async (candidate) => await prepareCandidate(candidate),
+    async prepareDevelopment(candidate) {
+      const prepared = await prepareCandidate(null, Object.freeze([]), candidate);
+      return Object.freeze({
+        abort: prepared.abort,
+        adopt: async () => { await prepared.adopt(); },
+      });
+    },
+    async prepareDevelopmentRemoval(removal) {
+      const custody = params.reloadController.readCurrentPluginSourceCustody?.(removal.pluginId);
+      if (
+        custody?.kind !== 'development'
+        || custody.registeredRootId !== removal.registeredRootId
+      ) return null;
+      const prepared = await prepareCandidate(
+        null,
+        Object.freeze([]),
+        undefined,
+        removal,
+      );
+      return Object.freeze({
+        abort: prepared.abort,
+        adopt: async () => { await prepared.adopt(); },
+      });
+    },
+  });
 }

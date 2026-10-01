@@ -89,6 +89,8 @@ export type HappierPortableStyle = Readonly<{
   borderTopWidth?: number;
   borderWidth?: number;
   bottom?: HappierDimension;
+  /** A CSS box shadow (RN 0.76+ and RNW): the work-status halo (`resolveHappierWorkStatusSurfaceStyle`). */
+  boxShadow?: string;
   color?: string;
   columnGap?: number | string;
   cursor?: 'auto' | 'pointer';

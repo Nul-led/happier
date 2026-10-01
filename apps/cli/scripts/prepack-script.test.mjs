@@ -39,13 +39,13 @@ test('apps/cli npm files list ships archives (not unpacked tools)', () => {
   assert.ok(!files.includes('tools/unpacked'), 'expected tools/unpacked to be excluded');
 });
 
-test('apps/cli npm files list ships deferred voice runtime bootstrap scripts', () => {
+test('apps/cli npm files list ships runtime sidecar scripts', () => {
   const pkgPath = new URL('../package.json', import.meta.url);
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
   const files = Array.isArray(pkg?.files) ? pkg.files.map((v) => String(v)) : [];
 
   assert.ok(
-    files.includes('scripts/runtime/**') || files.includes('scripts/runtime/loadVoiceInferenceRuntime.mjs'),
-    'expected npm files whitelist to ship scripts/runtime/loadVoiceInferenceRuntime.mjs',
+    files.includes('scripts/runtime/**'),
+    'expected npm files whitelist to ship scripts/runtime sidecars',
   );
 });

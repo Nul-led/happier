@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   PluginInstallReviewPrincipalDigestSchema,
   PluginInstallReviewPrincipalPresentationV1Schema,
+  PluginManifestV2Schema,
   normalizePluginReleaseFactsV1,
 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
@@ -33,7 +34,6 @@ import {
 import {
   prepareOwnedImmutablePluginGeneration,
   readInstallationStateRevision,
-  type BundledImmutablePluginArtifact,
 } from './generationStore';
 import { derivePluginInstallReviewPrincipalDigest } from '../../daemon/installReviewPrincipal';
 
@@ -44,191 +44,6 @@ const TEST_RUNTIME_LIFECYCLE: PluginRegistryRuntimeLifecycle = Object.freeze({
   }),
 });
 
-it('projects an admitted bundled generation through the canonical machine Availability inventory', async () => {
-  const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-bundled-availability-home-'));
-  const packageRoot = await mkdtemp(join(tmpdir(), 'happier-bundled-availability-package-'));
-  await mkdir(join(packageRoot, '.happier-plugin'), { recursive: true });
-  await mkdir(join(packageRoot, 'dist', 'happier-plugin-ui'), { recursive: true });
-  const manifestBytes = '{}';
-  const entryBytes = 'export {};';
-  const packageMetadataBytes = JSON.stringify({
-    name: '@happier-dev/plugins-availability-fixture',
-    version: '0.0.0',
-  });
-  await writeFile(join(packageRoot, '.happier-plugin', 'plugin.json'), manifestBytes);
-  await writeFile(join(packageRoot, 'dist', 'index.js'), entryBytes);
-  await writeFile(join(packageRoot, 'package.json'), packageMetadataBytes);
-  const artifactDigest = `sha256:${'a'.repeat(64)}`;
-  const uiManifestBytes = JSON.stringify({
-    version: 1,
-    entries: [{
-      contributionId: 'fixture-native',
-      tier: 'reactNative',
-      platform: 'web',
-      entry: 'hosted-entry.js',
-      files: [{
-        relativePath: 'hosted-entry.js',
-        digest: `sha256:${'b'.repeat(64)}`,
-        byteSize: 1,
-      }],
-      digest: artifactDigest,
-      builtWith: { bundler: 'vite', version: '1.0.0' },
-      hostUiApiVersion: '1.0.0',
-      compat: { react: '19.2.0', reactNative: '0.83.5' },
-    }, {
-      contributionId: 'fixture-hosted',
-      tier: 'hostedWeb',
-      entry: 'entry.mjs.bundle',
-      files: [{
-        relativePath: 'entry.mjs.bundle',
-        digest: `sha256:${'c'.repeat(64)}`,
-        byteSize: 1,
-      }],
-      digest: `sha256:${'d'.repeat(64)}`,
-      builtWith: { bundler: 'vite', version: '1.0.0' },
-      hostUiApiVersion: '1.0.0',
-      compat: {},
-    }],
-  });
-  await writeFile(join(packageRoot, 'dist', 'happier-plugin-ui', 'ui-artifacts.json'), uiManifestBytes);
-  const bundledArtifact: BundledImmutablePluginArtifact = Object.freeze({
-    packageName: '@happier-dev/plugins-availability-fixture',
-    packageEntryRelativePath: 'dist/index.js',
-    record: Object.freeze({
-      t: 'happier_plugin_generation_v1',
-      schemaVersion: 1,
-      pluginId: 'happier.fixture.availability',
-      immutableGenerationId: 'bundled-generation-fixture',
-      createdAtMs: 0,
-      manifestRelativePath: '.happier-plugin/plugin.json',
-      files: [
-        { relativePath: '.happier-plugin/plugin.json', byteLength: Buffer.byteLength(manifestBytes) },
-        { relativePath: 'dist/happier-plugin-ui/ui-artifacts.json', byteLength: Buffer.byteLength(uiManifestBytes) },
-        { relativePath: 'dist/index.js', byteLength: Buffer.byteLength(entryBytes) },
-        { relativePath: 'package.json', byteLength: Buffer.byteLength(packageMetadataBytes) },
-      ],
-    }),
-  });
-  const store = createPluginRegistryStateStore({
-    happyHomeDir,
-    bundledArtifacts: [bundledArtifact],
-    resolveBundledPackageEntry: async () => join(packageRoot, 'dist', 'index.js'),
-    nowMs: () => 123,
-  });
-
-  await store.initialize();
-  await expect(store.readAvailabilityInventory()).resolves.toEqual({
-    revision: 1,
-    releasePublications: [],
-    materializations: [{
-      materializationId: expect.stringMatching(/^materialization-/u),
-      pluginId: 'happier.fixture.availability',
-      version: '0.0.0',
-      sourceClass: 'bundledFirstParty',
-      portableRelease: false,
-      uiArtifacts: [{
-        contributionId: 'fixture-native',
-        tier: 'reactNative',
-        platform: 'web',
-        artifactDigest,
-      }, {
-        contributionId: 'fixture-hosted',
-        tier: 'hostedWeb',
-        platform: 'web',
-        artifactDigest: `sha256:${'d'.repeat(64)}`,
-      }],
-      enabled: true,
-      trustState: 'trusted',
-      observedAt: 123,
-    }],
-  });
-  await Promise.all([
-    rm(happyHomeDir, { recursive: true, force: true }),
-    rm(packageRoot, { recursive: true, force: true }),
-  ]);
-});
-
-it('keeps bundled materialization epochs stable across host generations and advances revision only for semantic availability changes', async () => {
-  const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-bundled-availability-epoch-home-'));
-  const packageRoot = await mkdtemp(join(tmpdir(), 'happier-bundled-availability-epoch-package-'));
-  await mkdir(join(packageRoot, '.happier-plugin'), { recursive: true });
-  await mkdir(join(packageRoot, 'dist'), { recursive: true });
-  await writeFile(join(packageRoot, '.happier-plugin', 'plugin.json'), '{}');
-  await writeFile(join(packageRoot, 'dist', 'index.js'), 'export {};');
-  await writeFile(join(packageRoot, 'package.json'), JSON.stringify({
-    name: '@happier-dev/plugins-availability-epoch-fixture',
-    version: '1.0.0',
-  }));
-  const artifact = (generation: string): BundledImmutablePluginArtifact => Object.freeze({
-    packageName: '@happier-dev/plugins-availability-epoch-fixture',
-    packageEntryRelativePath: 'dist/index.js',
-    record: Object.freeze({
-      t: 'happier_plugin_generation_v1',
-      schemaVersion: 1,
-      pluginId: 'happier.fixture.availability.epoch',
-      immutableGenerationId: generation,
-      createdAtMs: 0,
-      manifestRelativePath: '.happier-plugin/plugin.json',
-      files: [
-        { relativePath: '.happier-plugin/plugin.json', byteLength: 2 },
-        { relativePath: 'dist/index.js', byteLength: 'export {};'.length },
-        { relativePath: 'package.json', byteLength: JSON.stringify({ name: '@happier-dev/plugins-availability-epoch-fixture', version: '1.0.0' }).length },
-      ],
-    }),
-  });
-  const createStore = (generation: string, nowMs: () => number) => createPluginRegistryStateStore({
-    happyHomeDir,
-    bundledArtifacts: [artifact(generation)],
-    resolveBundledPackageEntry: async () => join(packageRoot, 'dist', 'index.js'),
-    nowMs,
-  });
-
-  const first = createStore('bundled-generation-a', () => 100);
-  await first.initialize();
-  const firstInventory = await first.readAvailabilityInventory();
-  const firstMaterialization = firstInventory.materializations[0];
-  if (!firstMaterialization) throw new Error('Expected bundled materialization');
-
-  const second = createStore('bundled-generation-b', () => 200);
-  await second.initialize();
-  const secondInventory = await second.readAvailabilityInventory();
-  expect(secondInventory.revision).toBe(firstInventory.revision);
-  expect(secondInventory.materializations[0]).toMatchObject({
-    materializationId: firstMaterialization.materializationId,
-    observedAt: firstMaterialization.observedAt,
-    version: '1.0.0',
-  });
-
-  await writeFile(join(packageRoot, 'package.json'), JSON.stringify({
-    name: '@happier-dev/plugins-availability-epoch-fixture',
-    version: '1.0.1',
-  }));
-  const semanticUpdate = createStore('bundled-generation-c', () => 300);
-  await semanticUpdate.initialize();
-  const semanticUpdateInventory = await semanticUpdate.readAvailabilityInventory();
-  expect(semanticUpdateInventory.revision).toBeGreaterThan(secondInventory.revision);
-  expect(semanticUpdateInventory.materializations[0]).toMatchObject({
-    materializationId: firstMaterialization.materializationId,
-    observedAt: 300,
-    version: '1.0.1',
-  });
-
-  await createPluginRegistryStateStore({ happyHomeDir, bundledArtifacts: [], nowMs: () => 400 }).initialize();
-  await writeFile(join(packageRoot, 'package.json'), JSON.stringify({
-    name: '@happier-dev/plugins-availability-epoch-fixture',
-    version: '1.0.1',
-  }));
-  const reintroduced = createStore('bundled-generation-d', () => 500);
-  await reintroduced.initialize();
-  const reintroducedInventory = await reintroduced.readAvailabilityInventory();
-  expect(reintroducedInventory.materializations[0]?.materializationId).toEqual(expect.stringMatching(/^materialization-/u));
-  expect(reintroducedInventory.materializations[0]?.materializationId).not.toBe(firstMaterialization.materializationId);
-
-  await Promise.all([
-    rm(happyHomeDir, { recursive: true, force: true }),
-    rm(packageRoot, { recursive: true, force: true }),
-  ]);
-});
 
 const INSTALL_REVIEW_PRESENTATION_A = PluginInstallReviewPrincipalPresentationV1Schema.parse({
   v: 1,
@@ -248,7 +63,7 @@ const INSTALL_REVIEW_PRINCIPAL_B = derivePluginInstallReviewPrincipalDigest(
 
 type TestPluginRegistryInstallationInput = Omit<
   CommitPluginRegistryInstallationInput,
-  'preparedGeneration'
+  'preparedGeneration' | 'approvedAuthorityManifest'
 > & Readonly<{
   sourceRootPath: string;
   manifestRelativePath: string;
@@ -270,7 +85,14 @@ async function installPreparedCandidate(
     createdAtMs: createdAtMs ?? Date.now(),
   });
   try {
-    return await store.install({ ...installation, preparedGeneration });
+    return await store.install({
+      ...installation,
+      approvedAuthorityManifest: PluginManifestV2Schema.parse(createPluginManifestV2Fixture({
+        id: input.pluginId,
+        version: input.catalogRecord.install.manifestVersion,
+      })),
+      preparedGeneration,
+    });
   } finally {
     await preparedGeneration.cleanup();
   }
@@ -345,7 +167,7 @@ describe('PluginRegistryStateStore', () => {
       transactionId: 'predecessor-bootstrap',
       baseRevision: null,
       installationState: { revisionId: predecessorRevisionId },
-      pluginGenerations: {},
+      pluginOccurrenceIds: {},
       createdAtMs: 1,
       creator: { pid: 7, instanceId: 'daemon-predecessor' },
     }), 'utf8');
@@ -356,7 +178,7 @@ describe('PluginRegistryStateStore', () => {
     expect(current).toMatchObject({
       revision: 0,
       baseRevision: null,
-      pluginGenerations: {},
+      pluginOccurrenceIds: {},
     });
     expect(current?.installationState.revisionId).toBe(predecessorRevisionId);
     await expect(readFile(predecessorRevisionPath, 'utf8')).resolves.toBe(
@@ -388,7 +210,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
           state: { enabled: true },
         },
       },
@@ -403,7 +225,7 @@ describe('PluginRegistryStateStore', () => {
       sourceRootPath: pluginRoot,
       manifestRelativePath: '.happier-plugin/plugin.json',
       distribution,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       createdAtMs: 1,
     });
     await writeFile(join(pluginRoot, 'daemon.mjs'), 'export const candidate = "later";\n', 'utf8');
@@ -412,8 +234,9 @@ describe('PluginRegistryStateStore', () => {
       pluginId,
       catalogRecord,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
+      approvedAuthorityManifest: PluginManifestV2Schema.parse(createPluginManifestV2Fixture({ id: pluginId })),
       admittedIntegrity: `sha256-${Buffer.alloc(32, 1).toString('base64')}`,
       preparedGeneration,
     })).rejects.toThrow(/local path.*acquisition integrity/i);
@@ -422,13 +245,14 @@ describe('PluginRegistryStateStore', () => {
       pluginId,
       catalogRecord,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
+      approvedAuthorityManifest: PluginManifestV2Schema.parse(createPluginManifestV2Fixture({ id: pluginId })),
       preparedGeneration,
     })).resolves.toMatchObject({
       status: 'committed',
       record: {
-        pluginGenerations: {
+        pluginOccurrenceIds: {
           [pluginId]: preparedGeneration.reference,
         },
       },
@@ -480,7 +304,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'managed_install', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+          install: { mode: 'managed_install', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
           state: { enabled: true },
         },
       },
@@ -498,7 +322,14 @@ describe('PluginRegistryStateStore', () => {
         archiveDigestSha256,
         normalizedManifest,
         collectionContracts: [],
-        uiSlots: [],
+        uiSlots: [{
+          contributionId: 'panel',
+          artifactId: 'panel-bundle',
+          tier: 'reactNative',
+          platform: 'ios',
+          artifactDigest: `sha256:${'b'.repeat(64)}`,
+          hostUiApiRange: '^1.0.0',
+        }],
         packageAssetArchive: {
           archiveDigestSha256: `sha256:${'d'.repeat(64)}`,
           resources: [],
@@ -512,7 +343,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
       admittedIntegrity,
       availability,
@@ -521,7 +352,7 @@ describe('PluginRegistryStateStore', () => {
     await expect(store.readSnapshot()).resolves.toMatchObject({
       revision: 1,
       state: { plugins: { [pluginId]: expect.anything() } },
-      pluginGenerations: {
+      pluginOccurrenceIds: {
         [pluginId]: { immutableGenerationId: expect.any(String) },
       },
       admittedIntegrityByPluginId: {
@@ -552,7 +383,13 @@ describe('PluginRegistryStateStore', () => {
         sourceClass: 'registryPackage',
         portableRelease: true,
         archiveDigestSha256,
-        uiArtifacts: [],
+        uiArtifacts: [{
+          contributionId: 'panel',
+          artifactId: 'panel-bundle',
+          tier: 'reactNative',
+          platform: 'ios',
+          artifactDigest: `sha256:${'b'.repeat(64)}`,
+        }],
         enabled: true,
         trustState: 'trusted',
         observedAt: expect.any(Number),
@@ -582,11 +419,11 @@ describe('PluginRegistryStateStore', () => {
     });
   });
 
-  it('commits a review-sensitive npm installation from the trusted npm channel alone', async () => {
+  it('commits an allowed npm installation from the trusted npm channel alone', async () => {
     // Curation is discovery and recommendation. There is no curated source
     // binding to require, and withdrawing one could never have disabled this
     // installed code.
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-registry-review-sensitive-'));
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-registry-update-allowed-'));
     const pluginId = 'acme.curated-auto';
     const pluginRoot = join(happyHomeDir, 'npm-plugin');
     const manifestPath = join(pluginRoot, '.happier-plugin', 'plugin.json');
@@ -618,7 +455,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'managed_install', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewSensitiveChanges' },
+          install: { mode: 'managed_install', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
           state: { enabled: true },
         },
       },
@@ -633,14 +470,14 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord,
       trust,
-      updatePolicy: 'reviewSensitiveChanges' as const,
+      updatePolicy: 'allowed' as const,
       optionalAccess: [],
     };
 
     await expect(installPreparedCandidate(store, input)).resolves.toMatchObject({ status: 'committed' });
     await expect(store.read()).resolves.toMatchObject({
       plugins: {
-        [pluginId]: { install: { updatePolicy: 'reviewSensitiveChanges', trust } },
+        [pluginId]: { install: { updatePolicy: 'allowed', trust } },
       },
     });
   });
@@ -672,7 +509,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
           state: { enabled: true },
         },
       },
@@ -709,7 +546,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
     });
     events.length = 0;
@@ -756,7 +593,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
           state: { enabled: true },
         },
       },
@@ -775,12 +612,12 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
     });
     const firstInstallCommit = await readPluginRegistryCommitRecord(store.paths);
     if (!firstInstallCommit) throw new Error('Expected first plugin installation commit');
-    const generationG = firstInstallCommit.pluginGenerations[pluginId]?.immutableGenerationId;
+    const generationG = firstInstallCommit.pluginOccurrenceIds[pluginId]?.immutableGenerationId;
     if (!generationG) throw new Error('Expected first immutable generation');
 
     await store.hardRevokeRunningSessionsForGenerationIntegrityFailure({
@@ -820,7 +657,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
     });
     const replacementCommit = await readPluginRegistryCommitRecord(store.paths);
@@ -832,7 +669,7 @@ describe('PluginRegistryStateStore', () => {
     });
     expect(replacementState.hardRevocationRevisions?.[pluginId])
       .toBe(repeatedHardRevocationCommit.revision);
-    const generationH = replacementCommit.pluginGenerations[pluginId]?.immutableGenerationId;
+    const generationH = replacementCommit.pluginOccurrenceIds[pluginId]?.immutableGenerationId;
     if (!generationH) throw new Error('Expected replacement immutable generation');
     expect(generationH).not.toBe(generationG);
 
@@ -911,7 +748,7 @@ describe('PluginRegistryStateStore', () => {
               manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
             },
             compatibility: { status: 'compatible', diagnostics: [] },
-            install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+            install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
             state: { enabled: true },
           },
         },
@@ -922,7 +759,7 @@ describe('PluginRegistryStateStore', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         catalogRecord,
         trust,
-        updatePolicy: 'reviewEveryUpdate' as const,
+        updatePolicy: 'allowed' as const,
         optionalAccess: Object.freeze([]),
       };
     };
@@ -996,7 +833,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
           state: { enabled: true },
         },
       },
@@ -1019,14 +856,14 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: record,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
     })).rejects.toThrow('registration graph rejected');
 
     expect(preparedCandidates).toBe(1);
     await expect(readPluginRegistryCommitRecord(store.paths)).resolves.toMatchObject({
       revision: 0,
-      pluginGenerations: {},
+      pluginOccurrenceIds: {},
     });
   });
 
@@ -1068,7 +905,7 @@ describe('PluginRegistryStateStore', () => {
               manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
             },
             compatibility: { status: 'compatible', diagnostics: [] },
-            install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+            install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
             state: { enabled: true },
           },
         },
@@ -1079,7 +916,7 @@ describe('PluginRegistryStateStore', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         catalogRecord,
         trust,
-        updatePolicy: 'reviewEveryUpdate' as const,
+        updatePolicy: 'allowed' as const,
         optionalAccess: Object.freeze([]),
       };
     };
@@ -1165,7 +1002,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
           state: { enabled: true },
         },
       },
@@ -1190,11 +1027,107 @@ describe('PluginRegistryStateStore', () => {
     const importCommit = await readPluginRegistryCommitRecord(paths);
     expect(importCommit).toMatchObject({
       revision: 0,
-      pluginGenerations: {},
+      pluginOccurrenceIds: {},
     });
 
     await expect(readFile(paths.stateFilePath, 'utf8')).resolves.toBe(JSON.stringify(predecessor));
     await expect(store.read()).resolves.toEqual(imported);
+  });
+
+  it('persists the first source-in-place development authority without creating a generation', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-registry-development-authority-'));
+    const pluginRoot = join(happyHomeDir, 'author-plugin');
+    const manifestPath = join(pluginRoot, '.happier-plugin', 'plugin.json');
+    await mkdir(join(pluginRoot, '.happier-plugin'), { recursive: true });
+    const pluginId = 'acme.development-authority';
+    const manifest = PluginManifestV2Schema.parse(createPluginManifestV2Fixture({
+      id: pluginId,
+      version: '1.0.0',
+    }));
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const distribution = await createLocalPathPluginDistributionIdentity(pluginRoot);
+    const trust = createPluginTrustRecord({ pluginId, distribution, approvedAtMs: 10 });
+    const presentation = PluginInstallReviewPrincipalPresentationV1Schema.parse({
+      v: 1,
+      packageIdentity: { pluginId, packageName: null },
+      distributionIdentity: { kind: 'path', development: true },
+    });
+    const principal = derivePluginInstallReviewPrincipalDigest(presentation);
+    const catalogRecord = PluginStateFileV1Schema.parse({
+      t: 'happier_plugin_state_v1',
+      schemaVersion: 1,
+      plugins: {
+        [pluginId]: {
+          source: {
+            kind: 'path',
+            locator: pluginRoot,
+            trustPolicy: 'local_trusted',
+            installPolicy: 'link',
+            resolvedPath: pluginRoot,
+            manifestPath,
+            resolvedVersion: manifest.version,
+            installedAt: 10,
+            devWatch: true,
+          },
+          compatibility: { status: 'compatible', diagnostics: [] },
+          install: { mode: 'link', manifestVersion: manifest.version, installedPath: null },
+          state: { enabled: true, lastLoadedAtMs: 10, lastError: null },
+        },
+      },
+    }).plugins[pluginId]!;
+    const initialApproval = {
+      pluginId,
+      expectedRevision: 0,
+      approvedAuthorityManifest: manifest,
+      optionalAccess: [],
+      installReviewPrincipalDigest: principal,
+      installReviewPrincipalPresentation: presentation,
+      catalogRecord,
+      trust,
+      updatePolicy: 'allowed' as const,
+    };
+    const store = createPluginRegistryStateStore({
+      happyHomeDir,
+      nowMs: () => 10,
+      runtimeLifecycle: TEST_RUNTIME_LIFECYCLE,
+    });
+
+    await expect(store.approveDevelopmentAuthorityWithResult(initialApproval))
+      .resolves.toMatchObject({ transaction: { status: 'committed' } });
+
+    const restarted = createPluginRegistryStateStore({
+      happyHomeDir,
+      runtimeLifecycle: TEST_RUNTIME_LIFECYCLE,
+    });
+    await expect(restarted.readSnapshot()).resolves.toMatchObject({
+      revision: 1,
+      pluginOccurrenceIds: {},
+      state: {
+        plugins: {
+          [pluginId]: expect.objectContaining({
+            source: expect.objectContaining({ devWatch: true }),
+            install: expect.objectContaining({
+              trust,
+              updatePolicy: 'allowed',
+              optionalAccess: [],
+            }),
+          }),
+        },
+      },
+      approvedAuthorityManifestsByPluginId: { [pluginId]: manifest },
+      installReviewPrincipalDigestsByPluginId: { [pluginId]: principal },
+    });
+    await expect(restarted.setEnabledWithResult(pluginId, false))
+      .resolves.toMatchObject({ transaction: { status: 'committed' } });
+    await expect(restarted.setEnabledWithResult(pluginId, true))
+      .resolves.toMatchObject({ transaction: { status: 'committed' } });
+    await expect(restarted.uninstallWithResult(pluginId))
+      .resolves.toMatchObject({ transaction: { status: 'committed' } });
+    await expect(restarted.readSnapshot()).resolves.toMatchObject({
+      pluginOccurrenceIds: {},
+      state: { plugins: {} },
+      approvedAuthorityManifestsByPluginId: {},
+    });
   });
 
   it('publishes install, update, rollback, and uninstall through one committed generation map while preserving plugin data', async () => {
@@ -1215,6 +1148,7 @@ describe('PluginRegistryStateStore', () => {
       token: string;
       pluginId: string;
       immutableGenerationId: string;
+      sourceCustody: import('@happier-dev/protocol').ManagedPluginSourceCustodyV1;
     }>) => undefined);
     const store = createPluginRegistryStateStore({
       happyHomeDir,
@@ -1236,7 +1170,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath: join(manifestDir, 'plugin.json'),
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
           state: { enabled: true },
         },
       },
@@ -1248,7 +1182,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: record,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
       installReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema.parse('a'.repeat(64)),
       installReviewPrincipalPresentation: INSTALL_REVIEW_PRESENTATION_A,
@@ -1260,25 +1194,56 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: record,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
       installReviewPrincipalDigest: INSTALL_REVIEW_PRINCIPAL_A,
       installReviewPrincipalPresentation: INSTALL_REVIEW_PRESENTATION_A,
     });
     const firstCommit = (await readPluginRegistryCommitRecord(store.paths))!;
-    const firstGenerationId = firstCommit.pluginGenerations['acme.registry.plugin']!.immutableGenerationId;
+    const firstGenerationId = firstCommit.pluginOccurrenceIds['acme.registry.plugin']!.immutableGenerationId;
     const firstState = await readInstallationStateRevision({
       paths: store.paths,
       reference: firstCommit.installationState,
     });
     const firstMaterializationId = firstState.plugins['acme.registry.plugin']?.materializationId;
     expect(firstCommit.revision).toBe(1);
-    expect(firstCommit.pluginGenerations['acme.registry.plugin']).toBeDefined();
+    expect(firstCommit.pluginOccurrenceIds['acme.registry.plugin']).toBeDefined();
     expect(firstMaterializationId).toEqual(expect.stringMatching(/^materialization-/u));
     expect(firstState.plugins['acme.registry.plugin']).toMatchObject({
       availability: { sourceClass: 'localPath', portableRelease: false },
     });
     expect((await store.read()).plugins['acme.registry.plugin']?.install.installedPath).toContain('/generations/');
+
+    const developmentBaseline = PluginManifestV2Schema.parse(createPluginManifestV2Fixture({
+      id: 'acme.registry.plugin',
+      version: '1.0.0',
+      hostAccess: {
+        required: [{
+          id: 'api',
+          capability: 'network',
+          reason: 'Call the approved API',
+          scope: { targets: [{ kind: 'fixedOrigin', origin: 'https://api.example.test' }] },
+        }],
+        optional: [],
+      },
+    }));
+    await expect(store.approveDevelopmentAuthorityWithResult({
+      pluginId: 'acme.registry.plugin',
+      expectedRevision: firstCommit.revision,
+      approvedAuthorityManifest: developmentBaseline,
+      catalogRecord: record,
+      trust,
+      updatePolicy: 'allowed',
+      optionalAccess: [],
+      installReviewPrincipalDigest: INSTALL_REVIEW_PRINCIPAL_A,
+      installReviewPrincipalPresentation: INSTALL_REVIEW_PRESENTATION_A,
+    })).resolves.toMatchObject({ transaction: { status: 'committed' } });
+    await expect(createPluginRegistryStateStore({ happyHomeDir }).readSnapshot())
+      .resolves.toMatchObject({
+        approvedAuthorityManifestsByPluginId: {
+          'acme.registry.plugin': developmentBaseline,
+        },
+      });
 
     await store.update((current) => ({
       ...current,
@@ -1305,20 +1270,22 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: secondRecord,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
       installReviewPrincipalDigest: INSTALL_REVIEW_PRINCIPAL_B,
       installReviewPrincipalPresentation: INSTALL_REVIEW_PRESENTATION_B,
     });
     const secondCommit = (await readPluginRegistryCommitRecord(store.paths))!;
-    const secondGenerationId = secondCommit.pluginGenerations['acme.registry.plugin']!.immutableGenerationId;
+    const secondGenerationId = secondCommit.pluginOccurrenceIds['acme.registry.plugin']!.immutableGenerationId;
     const secondState = await readInstallationStateRevision({ paths: store.paths, reference: secondCommit.installationState });
-    expect(secondCommit.revision).toBe(3);
+    expect(secondCommit.revision).toBe(4);
     expect(secondState.rollbackRetention).toHaveLength(1);
     expect(secondState.rollbackRetention[0]?.installReviewPrincipalDigest)
       .toBe(INSTALL_REVIEW_PRINCIPAL_A);
     expect(secondState.rollbackRetention[0]?.installReviewPrincipalPresentation)
       .toEqual(INSTALL_REVIEW_PRESENTATION_A);
+    expect(secondState.rollbackRetention[0]?.approvedAuthorityManifest?.version).toBe('1.0.0');
+    expect(secondState.plugins['acme.registry.plugin']?.approvedAuthorityManifest?.version).toBe('2.0.0');
     expect(secondState.plugins['acme.registry.plugin']?.materializationId)
       .toBe(firstMaterializationId);
     expect((await store.read()).plugins['acme.registry.plugin']?.state.enabled).toBe(false);
@@ -1332,6 +1299,9 @@ describe('PluginRegistryStateStore', () => {
       },
       installReviewPrincipalPresentationsByPluginId: {
         'acme.registry.plugin': INSTALL_REVIEW_PRESENTATION_A,
+      },
+      approvedAuthorityManifestsByPluginId: {
+        'acme.registry.plugin': expect.objectContaining({ version: '1.0.0' }),
       },
     });
 
@@ -1349,6 +1319,11 @@ describe('PluginRegistryStateStore', () => {
           token: 'account-token',
           pluginId: 'acme.registry.plugin',
           immutableGenerationId,
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId,
+            installSource: 'localPath',
+          },
         })),
     );
     await expect(readFile(storagePath, 'utf8')).resolves.toBe('{"preserved":true}');
@@ -1360,7 +1335,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: secondRecord,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
       installReviewPrincipalDigest: INSTALL_REVIEW_PRINCIPAL_B,
       installReviewPrincipalPresentation: INSTALL_REVIEW_PRESENTATION_B,
@@ -1416,7 +1391,7 @@ describe('PluginRegistryStateStore', () => {
               manifestPath: join(root, '.happier-plugin', 'plugin.json'),
             },
             compatibility: { status: 'compatible', diagnostics: [] },
-            install: { mode: 'link', manifestVersion: version, trust, updatePolicy: 'reviewEveryUpdate' },
+            install: { mode: 'link', manifestVersion: version, trust, updatePolicy: 'allowed' },
             state: { enabled: true },
           },
         },
@@ -1427,7 +1402,7 @@ describe('PluginRegistryStateStore', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         catalogRecord: record,
         trust,
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         optionalAccess: [],
       });
     };
@@ -1481,7 +1456,7 @@ describe('PluginRegistryStateStore', () => {
               manifestPath,
             },
             compatibility: { status: 'compatible', diagnostics: [] },
-            install: { mode: 'managed_install', manifestVersion: version, trust, updatePolicy: 'reviewEveryUpdate' },
+            install: { mode: 'managed_install', manifestVersion: version, trust, updatePolicy: 'allowed' },
             state: { enabled: true },
           },
         },
@@ -1492,7 +1467,7 @@ describe('PluginRegistryStateStore', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         catalogRecord: record,
         trust,
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         optionalAccess: [],
         admittedIntegrity,
       });
@@ -1501,7 +1476,7 @@ describe('PluginRegistryStateStore', () => {
 
     const first = await install('1.0.0', 1);
     const firstGenerationId = (await readPluginRegistryCommitRecord(store.paths))!
-      .pluginGenerations['acme.archive.rollback']!.immutableGenerationId;
+      .pluginOccurrenceIds['acme.archive.rollback']!.immutableGenerationId;
     const second = await install('2.0.0', 2);
     const afterUpdateCommit = (await readPluginRegistryCommitRecord(store.paths))!;
     const afterUpdateState = await readInstallationStateRevision({
@@ -1525,7 +1500,7 @@ describe('PluginRegistryStateStore', () => {
       paths: store.paths,
       reference: rolledBackCommit.installationState,
     });
-    expect(rolledBackCommit.pluginGenerations['acme.archive.rollback']?.immutableGenerationId).toBe(firstGenerationId);
+    expect(rolledBackCommit.pluginOccurrenceIds['acme.archive.rollback']?.immutableGenerationId).toBe(firstGenerationId);
     expect(rolledBackState.plugins['acme.archive.rollback']).toMatchObject({
       trust: { distribution: first.distribution },
       source: {
@@ -1570,7 +1545,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'allowed' },
           state: { enabled: true },
         },
       },
@@ -1602,7 +1577,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: record,
       trust,
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       optionalAccess: [],
     });
 
@@ -1617,7 +1592,7 @@ describe('PluginRegistryStateStore', () => {
     expect(result.message).not.toContain('/Users/alice/private/plugin-runtime.json');
     await expect(readPluginRegistryCommitRecord(store.paths)).resolves.toMatchObject({
       revision: 1,
-      pluginGenerations: { 'acme.reconcile-pending': expect.any(Object) },
+      pluginOccurrenceIds: { 'acme.reconcile-pending': expect.any(Object) },
     });
 
     onReconciliationPending.mockClear();
@@ -1682,7 +1657,7 @@ describe('PluginRegistryStateStore', () => {
       .resolves.toBe(PREDECESSOR_PLUGIN_REGISTRY_COMMIT_RECORD_BYTES);
     await expect(readPluginRegistryCommitRecord(paths)).resolves.toMatchObject({
       revision: 0,
-      pluginGenerations: {},
+      pluginOccurrenceIds: {},
     });
   });
 });

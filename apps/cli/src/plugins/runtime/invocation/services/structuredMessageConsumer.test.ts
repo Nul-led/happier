@@ -60,6 +60,7 @@ function createRegistry(): ResolvedContributionRegistry {
         commands: [],
         promptAssets: [],
         activationTargets: [],
+        occurrenceIdsByPluginId: { 'acme.preview': 'occurrenceId-7' },
         actionsById: new Map(),
         toolsById: new Map(),
         commandsById: new Map(),
@@ -71,22 +72,20 @@ function createRegistry(): ResolvedContributionRegistry {
 }
 
 describe('production structured-message consumer', () => {
-    it('requires the runtime owner to supply the current activation generation', () => {
+    it('requires the runtime owner to supply the current activation occurrenceId', () => {
         expect(() => resolveStablePluginStructuredMessage({
             registry: createRegistry(),
-            expectedGeneration: 'generation-7',
-            currentGeneration: '',
+            expectedContributorOccurrenceId: 'occurrenceId-6',
             kind: 'acme.preview/preview-card.v1',
             payload: { previewId: 'preview-1' },
             facts: { 'plugin.enabled': true, 'session.exists': true },
-        })).toThrowError(expect.objectContaining({ code: 'plugin_structured_message_generation_retired' }));
+        })).toThrowError(expect.objectContaining({ code: 'plugin_structured_message_occurrence_retired' }));
     });
 
     it('normalizes a valid payload and every renderer/action/resource identity before rendering', () => {
         const resolution = resolveStablePluginStructuredMessageConsumer({
             registry: createRegistry(),
-            currentGeneration: 'generation-7',
-            expectedGeneration: 'generation-7',
+            expectedContributorOccurrenceId: 'occurrenceId-7',
             kind: 'acme.preview/preview-card.v1',
             payload: { previewId: 'preview-1' },
             resourceRefs: ['preview-icon'],
@@ -98,29 +97,29 @@ describe('production structured-message consumer', () => {
                 pluginId: 'acme.preview',
                 localId: 'preview-card',
                 qualifiedId: 'acme.preview/preview-card',
-                generation: 'generation-7',
+                occurrenceId: 'occurrenceId-7',
             },
             renderer: {
                 identity: { pluginId: 'acme.preview', localId: 'summary-card' },
                 qualifiedId: 'acme.preview/summary-card',
-                generation: 'generation-7',
+                occurrenceId: 'occurrenceId-7',
             },
             actions: [{
                 identity: { pluginId: 'acme.preview', localId: 'open-preview' },
                 qualifiedId: 'acme.preview/open-preview',
-                generation: 'generation-7',
+                occurrenceId: 'occurrenceId-7',
                 enabled: true,
             }],
             resources: [{
                 identity: { pluginId: 'acme.preview', localId: 'preview-icon' },
                 qualifiedId: 'acme.preview/preview-icon',
-                generation: 'generation-7',
+                occurrenceId: 'occurrenceId-7',
             }],
             visible: true,
             fallback: { kind: 'summary', template: 'Preview unavailable' },
         });
         expect(resolution.renderer).toMatchObject({
-            identity: { qualifiedId: 'acme.preview/summary-card', generation: 'generation-7' },
+            identity: { qualifiedId: 'acme.preview/summary-card', occurrenceId: 'occurrenceId-7' },
             visible: true,
             root: { kind: 'status', label: 'Preview', value: 'Ready' },
         });
@@ -129,8 +128,7 @@ describe('production structured-message consumer', () => {
     it('rejects a payload through the canonical JSON Schema validator before producing a render model', () => {
         expect(() => resolveStablePluginStructuredMessage({
             registry: createRegistry(),
-            currentGeneration: 'generation-7',
-            expectedGeneration: 'generation-7',
+            expectedContributorOccurrenceId: 'occurrenceId-7',
             kind: 'acme.preview/preview-card.v1',
             payload: { previewId: 42 },
             facts: { 'plugin.enabled': true, 'session.exists': true },
@@ -159,8 +157,7 @@ describe('production structured-message consumer', () => {
                     },
                 }],
             } as ResolvedContributionRegistry,
-            currentGeneration: 'generation-7',
-            expectedGeneration: 'generation-7',
+            expectedContributorOccurrenceId: 'occurrenceId-7',
             kind: 'acme.preview/preview-card.v1',
             payload: { previewId: 'preview-1' },
             facts: { 'plugin.enabled': true, 'session.exists': true },
@@ -187,8 +184,7 @@ describe('production structured-message consumer', () => {
 
         expect(() => resolveStablePluginStructuredMessage({
             registry: contested,
-            currentGeneration: 'generation-7',
-            expectedGeneration: 'generation-7',
+            expectedContributorOccurrenceId: 'occurrenceId-7',
             kind: 'acme.preview/preview-card.v1',
             payload: { previewId: 'preview-1' },
             facts: { 'plugin.enabled': true, 'session.exists': true },
@@ -213,28 +209,25 @@ describe('production structured-message consumer', () => {
 
         expect(resolveStablePluginStructuredMessage({
             registry: distinct,
-            currentGeneration: 'generation-7',
-            expectedGeneration: 'generation-7',
+            expectedContributorOccurrenceId: 'occurrenceId-7',
             kind: 'acme.preview/preview-card.v1',
             payload: { previewId: 'preview-1' },
             facts: { 'plugin.enabled': true, 'session.exists': true },
         }).identity.pluginId).toBe('acme.preview');
     });
 
-    it('fails closed for stale generations and unavailable policy facts', () => {
+    it('fails closed for a stale contributor occurrence and unavailable policy facts', () => {
         expect(() => resolveStablePluginStructuredMessage({
             registry: createRegistry(),
-            currentGeneration: 'generation-7',
-            expectedGeneration: 'generation-6',
+            expectedContributorOccurrenceId: 'occurrenceId-6',
             kind: 'acme.preview/preview-card.v1',
             payload: { previewId: 'preview-1' },
             facts: { 'plugin.enabled': true, 'session.exists': true },
-        })).toThrowError(expect.objectContaining({ code: 'plugin_structured_message_generation_retired' }));
+        })).toThrowError(expect.objectContaining({ code: 'plugin_structured_message_occurrence_retired' }));
 
         expect(resolveStablePluginStructuredMessage({
             registry: createRegistry(),
-            currentGeneration: 'generation-7',
-            expectedGeneration: 'generation-7',
+            expectedContributorOccurrenceId: 'occurrenceId-7',
             kind: 'acme.preview/preview-card.v1',
             payload: { previewId: 'preview-1' },
             facts: { 'plugin.enabled': true },

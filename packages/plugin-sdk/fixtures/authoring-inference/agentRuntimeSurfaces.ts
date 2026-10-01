@@ -1,7 +1,14 @@
 import type {
   AttachSurface,
   CheckpointSurface,
+  AgentSessionRuntimeContext,
+  AgentSessionModesSource,
 } from '@happier-dev/plugin-sdk/agents/runtime';
+
+// Authors supply native facts through the session-owned service, not owner metadata writes.
+export function bindNativeModes(context: AgentSessionRuntimeContext, source: AgentSessionModesSource) {
+  return context.session.services.modes.bind(source);
+}
 
 type AttachResult = Awaited<ReturnType<AttachSurface['attach']>>;
 type CheckpointRestore = NonNullable<CheckpointSurface['restore']>;

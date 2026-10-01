@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, readFile, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
@@ -15,7 +15,7 @@ import type { UserPluginChangeResult } from '@/plugins/daemon/changeClient';
 import { createDaemonPluginChangeService } from '@/plugins/daemon/changeService';
 import { createDaemonPathPluginChangePreparer } from '@/plugins/daemon/pathChangePreparer';
 
-import { installPluginFromLocator, readInstalledPluginCatalog, uninstallPluginFromCatalog } from './installed';
+import { installPluginFromLocator, projectBundledPluginCatalogEntries, readInstalledPluginCatalog, uninstallPluginFromCatalog } from './installed';
 
 const changeClient = vi.hoisted(() => ({
   requestUserPluginChange: vi.fn(async (): Promise<UserPluginChangeResult> => ({
@@ -25,6 +25,10 @@ const changeClient = vi.hoisted(() => ({
 }));
 
 vi.mock('@/plugins/daemon/changeClient', () => changeClient);
+
+beforeEach(() => {
+  changeClient.requestUserPluginChange.mockClear();
+});
 
 async function materializeCatalogPluginFixture(rootDir: string, pluginId: string): Promise<void> {
   await mkdir(join(rootDir, '.happier-plugin'), { recursive: true });
@@ -46,7 +50,6 @@ async function materializeCatalogPluginFixture(rootDir: string, pluginId: string
 async function seedInstalledPlugin(params: Readonly<{
   locator: string;
   happyHomeDir: string;
-  dev?: boolean;
   workspaceRoot?: string;
 }>) {
   void params.workspaceRoot;
@@ -65,7 +68,6 @@ async function seedInstalledPlugin(params: Readonly<{
   const begun = await service.requestPluginChange({
     kind: 'installPath',
     locator: params.locator,
-    development: params.dev === true,
   });
   const result = begun.kind === 'reviewRequired'
     ? await service.decidePluginChange({
@@ -77,6 +79,17 @@ async function seedInstalledPlugin(params: Readonly<{
 }
 
 describe('pluginCatalog', () => {
+  it('reports a failed bundled package at its expected physical install root', () => {
+    const [entry] = projectBundledPluginCatalogEntries({
+      loadedPlugins: [],
+      pluginFailures: [{
+        packageName: '@happier-dev/plugins-inspector',
+        pluginId: 'happier.inspector',
+        diagnostic: { code: 'plugin_package_build_failed', message: 'missing output' },
+      }],
+    });
+    expect(entry?.source.resolvedPath.replaceAll('\\', '/')).toMatch(/\/node_modules\/@happier-dev\/plugins-inspector$/);
+  });
   it('routes uninstall through the daemon without deleting linked source files or registry state locally', async () => {
     const home = await createTempDir('happier-plugin-catalog-uninstall-');
     const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
@@ -131,7 +144,7 @@ describe('pluginCatalog', () => {
     }
   });
 
-  it('projects durable desired and process-local applied generation through the ordinary catalog read', async () => {
+  it('projects durable desired generation without inventing process-local applied currentness', async () => {
     const home = await createTempDir('happier-plugin-catalog-currentness-');
     const sourceRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-catalog-currentness-source-'));
     await materializeCatalogPluginFixture(sourceRoot, 'acme.currentness');
@@ -143,7 +156,7 @@ describe('pluginCatalog', () => {
       expect(installed.result).toMatchObject({
         kind: 'committed',
         desiredGeneration: expect.any(String),
-        appliedGeneration: expect.any(String),
+        appliedGeneration: null,
       });
       if (
         installed.result.kind !== 'committed'
@@ -253,7 +266,7 @@ describe('pluginCatalog', () => {
 
     try {
       changeClient.requestUserPluginChange.mockResolvedValueOnce({
-        kind: 'reviewRequired',
+        kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
         pendingChangeId: 'pending-dev-install',
         review: createPluginInstallationReviewFixture({
           pluginId: 'acme.dev-install',
@@ -272,17 +285,9 @@ describe('pluginCatalog', () => {
 
       expect(installResult).toMatchObject({
         ok: false,
-        change: { kind: 'reviewRequired' },
-        diagnostics: [{ code: 'plugin_trust_approval_required' }],
+        diagnostics: [{ code: 'plugin_source_kind_unsupported' }],
       });
-      expect(changeClient.requestUserPluginChange).toHaveBeenLastCalledWith({
-        request: {
-          kind: 'installPath',
-          locator: sourceRoot,
-          development: true,
-        },
-        approval: 'none',
-      });
+      expect(changeClient.requestUserPluginChange).not.toHaveBeenCalled();
 
       const store = createPluginStateStore({ happyHomeDir: home });
       const state = await store.read();
@@ -319,7 +324,7 @@ describe('pluginCatalog', () => {
 
     try {
       changeClient.requestUserPluginChange.mockResolvedValueOnce({
-        kind: 'reviewRequired',
+        kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
         pendingChangeId: 'pending-dev-outside',
         review: createPluginInstallationReviewFixture({
           pluginId: 'acme.dev-outside-workspace',
@@ -340,7 +345,7 @@ describe('pluginCatalog', () => {
         ok: false,
         diagnostics: [
           expect.objectContaining({
-            code: 'plugin_trust_approval_required',
+            code: 'plugin_source_kind_unsupported',
           }),
         ],
       });
@@ -407,7 +412,7 @@ describe('pluginCatalog', () => {
     }
   });
 
-  it('projects a development plugin from its source entry before the production bundle exists', async () => {
+  it('does not substitute a development source entry for a missing installed daemon bundle', async () => {
     const home = await createTempDir('happier-plugin-catalog-development-entry-');
     const sourceRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-catalog-development-source-'));
     await mkdir(join(sourceRoot, '.happier-plugin'), { recursive: true });
@@ -430,14 +435,14 @@ describe('pluginCatalog', () => {
       const seeded = await seedInstalledPlugin({
         locator: sourceRoot,
         happyHomeDir: home,
-        dev: true,
       });
       expect(seeded.ok).toBe(true);
 
       const entry = (await readInstalledPluginCatalog({ happyHomeDir: home }))[0]!;
       expect(entry.pluginId).toBe('acme.development-catalog');
-      expect(entry.source).toMatchObject({ kind: 'path', devWatch: true });
-      expect(entry.diagnostics).not.toContainEqual(expect.objectContaining({
+      expect(entry.source).toMatchObject({ kind: 'path' });
+      expect(entry.source).not.toHaveProperty('devWatch');
+      expect(entry.diagnostics).toContainEqual(expect.objectContaining({
         code: 'plugin_source_missing',
       }));
     } finally {

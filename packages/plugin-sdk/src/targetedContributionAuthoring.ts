@@ -27,6 +27,24 @@ import type {
 } from './protocol/protocolFacade.js';
 import type { TargetedContributionPointRef } from './services/targetedContributions.js';
 
+export type PluginTargetedContributionSourceCustodyV1 =
+    | Readonly<{
+        kind: 'managed';
+        immutableGenerationId: string;
+        installSource: 'npm' | 'archive' | 'localPath';
+    }>
+    | Readonly<{
+        kind: 'bundled_first_party';
+        packagedRuntime: Readonly<
+            | { kind: 'cli_version_root'; versionRootId: string }
+            | { kind: 'pinned_runner_snapshot'; snapshotId: string }
+        >;
+    }>
+    | Readonly<{
+        kind: 'development';
+        registeredRootId: string;
+    }>;
+
 /**
  * Portable selection fact shared with the Protocol UI contract. The SDK owns
  * this public structural spelling so installed author declarations never need
@@ -35,7 +53,7 @@ import type { TargetedContributionPointRef } from './services/targetedContributi
 export type PluginTargetedContributionSelectionV1 = Readonly<{
     target: Readonly<{
         pluginId: string;
-        immutableGenerationId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     point: Readonly<{
         pointId: string;
@@ -47,7 +65,7 @@ export type PluginTargetedContributionSelectionV1 = Readonly<{
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
 }>;
 
@@ -219,7 +237,12 @@ export type ContributionSurfaceIcon =
     | 'more'
     | 'search'
     | 'change-open'
-    | 'change-complete';
+    | 'change-complete'
+    | 'issue'
+    | 'bug'
+    | 'pin'
+    | 'conversations'
+    | 'pause';
 
 /**
  * The one state-node form a symbolic contribution surface can carry as a
@@ -551,7 +574,8 @@ export declare abstract class ContributionSurfaceHandle<
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     role: string;
     presentation: TPresentation;
@@ -590,7 +614,8 @@ export type ContributionAdmittedEntry<
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     protocol: Readonly<{
         id: string;

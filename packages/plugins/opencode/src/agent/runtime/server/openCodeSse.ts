@@ -39,9 +39,9 @@ function concatDataLines(lines: readonly string[]): string {
 
 /**
  * Only `data:` lines carry payload. Comment lines (`: heartbeat`) and every
- * other field — `id:`, `event:`, `retry:` — are skipped rather than surfaced:
- * neither OpenCode event route supports resuming from an id, so a reader that
- * handed one to a caller would only invite a replay claim it cannot support.
+ * other field — `id:`, `event:`, `retry:` — are skipped rather than surfaced.
+ * OpenCode does not use the SSE id for resumption; the V2 session route resumes
+ * from the durable aggregate sequence in its JSON payload and `after` query.
  */
 function parseSseFrame(frame: string): Readonly<{ data: string }> | null {
   const dataLines: string[] = [];
@@ -64,7 +64,7 @@ function parseSseFrame(frame: string): Readonly<{ data: string }> | null {
  *
  * Both OpenCode event routes do write keepalives, on different cadences and in
  * different shapes (`comparators/opencode` at
- * `10765ff2a9da8c3b88e4de873aa383a49c318912`): the V1 instance route merges a
+ * `70a24697ea0028e19f22712fd63059538cb4bee7`): the V1 instance route merges a
  * `server.heartbeat` *event* every 10 seconds after dropping its first tick
  * (`packages/opencode/src/server/routes/instance/httpapi/handlers/event.ts`),
  * while the V2 route merges a `": heartbeat"` *comment* frame every 15 seconds
@@ -87,7 +87,8 @@ export async function subscribeSseJson<T>(params: Readonly<{
   fetch: OpenCodeNativeFetch;
   signal: AbortSignal;
   readIdleTimeoutMs?: number | null;
-  onMessage: (msg: T) => void;
+  onOpen?: () => void;
+  onMessage: (msg: T) => void | Promise<void>;
 }>): Promise<SseJsonSubscription<T>> {
   const controller = new AbortController();
   const onAbort = () => controller.abort(params.signal.reason ?? 'abort');
@@ -109,6 +110,7 @@ export async function subscribeSseJson<T>(params: Readonly<{
       if (!response.body) {
         throw new Error('OpenCode SSE response missing body');
       }
+      params.onOpen?.();
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -139,12 +141,14 @@ export async function subscribeSseJson<T>(params: Readonly<{
           buffer = buffer.slice(idx + 2);
           const parsed = parseSseFrame(frame);
           if (!parsed) continue;
+          let msg: T;
           try {
-            const msg = JSON.parse(parsed.data) as T;
-            params.onMessage(msg);
+            msg = JSON.parse(parsed.data) as T;
           } catch {
             // Ignore malformed provider frames; the next valid frame can still recover the stream.
+            continue;
           }
+          await params.onMessage(msg);
         }
       }
     } finally {

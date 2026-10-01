@@ -2,154 +2,126 @@ import { describe, expect, it } from 'vitest';
 
 import {
   PluginUiArtifactDigestV1Schema,
-  type PluginUiArtifactsManifestEntryV1,
+  type PluginUiArtifactsManifestEntryV2,
 } from '@happier-dev/protocol/plugins/ui';
 
 import {
-  findGeneratedReactNativeCollectionMigrationsModule,
+  collectResolvedGeneratedReactNativeCollectionMigrationArtifactOwners,
   findGeneratedReactNativeArtifactEntry,
+  findGeneratedReactNativeCollectionMigrationsModule,
+  type ResolvedGeneratedReactNativeCollectionMigrationArtifactOwner,
   type ResolvedGeneratedReactNativeArtifactOwner,
 } from './generatedUiArtifactOwners';
+import type { ResolvedContributionRegistry } from '../types';
 
 const digest = PluginUiArtifactDigestV1Schema.parse(`sha256:${'a'.repeat(64)}`);
-const file = (relativePath: string) => ({ relativePath, digest, byteSize: 1 });
+
+function createEntry(exports: readonly string[] = ['renderSurface']): PluginUiArtifactsManifestEntryV2 {
+  const entry = 'react-native/panel-artifact/entry.cjs.bundle';
+  return {
+    artifactId: 'panel-artifact',
+    tier: 'reactNative',
+    entry,
+    files: [{ relativePath: entry, digest, byteSize: 1 }],
+    digest,
+    builtWith: { bundler: 'esbuild', version: '0.25.0' },
+    executable: { exports: [...exports] },
+    hostUiApiRange: '^1.0.0',
+  };
+}
 
 function createOwner(
-  entry: PluginUiArtifactsManifestEntryV1,
+  entry: PluginUiArtifactsManifestEntryV2,
+  expectedExport = 'renderSurface',
 ): ResolvedGeneratedReactNativeArtifactOwner {
   return {
     kind: 'renderer',
     pluginId: 'acme.native',
+    pluginSource: { kind: 'path' },
     contributionId: 'panel',
     artifactId: 'panel-artifact',
     pluginRootPath: '/plugins/acme.native',
     manifestPath: '/plugins/acme.native/.happier-plugin/plugin.json',
-    generatedUiArtifactsManifest: { version: 1, entries: [entry] },
+    generatedUiArtifactsManifest: { version: 2, entries: [entry] },
     requiredHostMethods: [],
+    expectedExecutable: { exportName: expectedExport },
   };
 }
 
 describe('findGeneratedReactNativeArtifactEntry', () => {
-  it('admits host-private Collection migration code only from an explicit signed module declaration', () => {
-    const base: PluginUiArtifactsManifestEntryV1 = {
-      contributionId: 'panel-artifact',
-      tier: 'reactNative',
-      platform: 'ios',
-      entry: 'react-native/panel/ios.bundle',
-      files: [file('react-native/panel/ios.bundle')],
-      digest,
-      builtWith: { bundler: 'repack', version: '5.2.5' },
-      repack: {
-        containerName: 'acme_panel',
-        modulePath: './renderSurface',
-        exportName: 'renderSurface',
-      },
-      hostUiApiVersion: '1.0.0',
-      compat: { react: '19.2.0', reactNative: '0.83.4' },
-    };
+  it('resolves one universal executable artifact for every host platform', () => {
+    const entry = createEntry();
+    const owner = createOwner(entry);
 
-    expect(findGeneratedReactNativeCollectionMigrationsModule({
-      owner: createOwner(base),
-      platform: 'ios',
-    })).toEqual({
+    for (const platform of ['web', 'ios', 'android'] as const) {
+      expect(findGeneratedReactNativeArtifactEntry({ owner, platform })).toEqual({
+        entry,
+        failure: null,
+      });
+    }
+  });
+
+  it('fails closed when the universal artifact omits the declared export', () => {
+    const owner = createOwner(createEntry(['otherExport']));
+
+    expect(findGeneratedReactNativeArtifactEntry({ owner, platform: 'ios' })).toEqual({
       entry: null,
-      moduleReference: null,
-      failure: 'generated_react_native_collection_migrations_module_missing',
+      failure: 'generated_react_native_export_missing',
     });
+  });
 
-    const declared: PluginUiArtifactsManifestEntryV1 = {
-      ...base,
-      collectionMigrations: {
-        containerName: 'acme_panel',
-        modulePath: './renderSurface',
-        exportName: 'collectionMigrations',
-      },
+  it('does not infer host-private Collection migrations from a render artifact', () => {
+    expect(collectResolvedGeneratedReactNativeCollectionMigrationArtifactOwners({
+      agents: [],
+      actions: [],
+      resources: [],
+      accountCollections: [],
+      uiRenderersV2: [],
+    } as unknown as ResolvedContributionRegistry)).toEqual([]);
+  });
+
+  it('resolves Collection migration authority only from its Account Collection declaration', () => {
+    const entry = createEntry(['collectionMigrations']);
+    const owner: ResolvedGeneratedReactNativeCollectionMigrationArtifactOwner = {
+      kind: 'collectionMigrations',
+      pluginId: 'acme.native',
+      pluginSource: { kind: 'path' },
+      pluginVersion: '2.0.0',
+      contributionId: 'tasks',
+      artifactId: 'panel-artifact',
+      pluginRootPath: '/plugins/acme.native',
+      manifestPath: '/plugins/acme.native/.happier-plugin/plugin.json',
+      generatedUiArtifactsManifest: { version: 2, entries: [entry] },
+      requiredHostMethods: [],
+      declaredPlatforms: ['web', 'ios', 'android'],
+      expectedExecutable: { exportName: 'collectionMigrations' },
     };
-    expect(findGeneratedReactNativeCollectionMigrationsModule({
-      owner: createOwner(declared),
-      platform: 'ios',
-    })).toEqual({
-      entry: declared,
-      moduleReference: declared.collectionMigrations,
+
+    expect(findGeneratedReactNativeCollectionMigrationsModule({ owner, platform: 'ios' })).toEqual({
+      entry,
+      moduleReference: { exportName: 'collectionMigrations' },
       failure: null,
     });
-  });
-
-  it('fails closed before projection when a Voice declaration targets a different Re.Pack module', () => {
-    const entry: PluginUiArtifactsManifestEntryV1 = {
-      contributionId: 'voice-artifact',
-      tier: 'reactNative',
-      platform: 'ios',
-      entry: 'react-native/voice/ios.bundle',
-      files: [file('react-native/voice/ios.bundle')],
-      digest,
-      builtWith: { bundler: 'repack', version: '5.2.5' },
-      repack: {
-        containerName: 'acme_voice',
-        modulePath: './otherRuntime',
-        exportName: 'activate',
-      },
-      hostUiApiVersion: '1.0.0',
-      compat: { react: '19.2.0', reactNative: '0.83.4' },
-    };
-    const owner: ResolvedGeneratedReactNativeArtifactOwner = {
-      ...createOwner(entry),
-      kind: 'voiceProvider',
-      contributionId: 'conversation',
-      artifactId: 'voice-artifact',
-      declaredPlatforms: ['ios'],
-      expectedRepackModule: {
-        modulePath: './voiceRuntime',
-        exportName: 'activate',
-      },
-    };
-
-    expect(findGeneratedReactNativeArtifactEntry({ owner, platform: 'ios' })).toEqual({
-      entry: null,
-      failure: 'generated_react_native_repack_identity_mismatch',
-    });
-  });
-
-  it('fails closed when a native generated graph bypasses parsing without exact Re.Pack identity', () => {
-    const owner = createOwner({
-      contributionId: 'panel-artifact',
-      tier: 'reactNative',
-      platform: 'ios',
-      entry: 'react-native/panel/ios.bundle',
-      files: [file('react-native/panel/ios.bundle')],
-      digest,
-      builtWith: { bundler: 'repack', version: '5.2.5' },
-      hostUiApiVersion: '1.0.0',
-      compat: { react: '19.2.0', reactNative: '0.83.4' },
-    });
-
-    expect(findGeneratedReactNativeArtifactEntry({ owner, platform: 'ios' })).toEqual({
-      entry: null,
-      failure: 'generated_react_native_repack_identity_missing',
-    });
-  });
-
-  it('fails closed when a web generated graph bypasses parsing with native Re.Pack identity', () => {
-    const owner = createOwner({
-      contributionId: 'panel-artifact',
-      tier: 'reactNative',
-      platform: 'web',
-      entry: 'react-native/panel/web.js',
-      files: [file('react-native/panel/web.js')],
-      digest,
-      builtWith: { bundler: 'vite', version: '7.0.0' },
-      repack: {
-        containerName: 'acme_native',
-        modulePath: './panel',
-        exportName: 'renderSurface',
-      },
-      hostUiApiVersion: '1.0.0',
-      compat: { react: '19.2.0', reactNative: '0.83.4' },
-    });
-
-    expect(findGeneratedReactNativeArtifactEntry({ owner, platform: 'web' })).toEqual({
-      entry: null,
-      failure: 'generated_react_native_repack_identity_unexpected',
-    });
+    expect(collectResolvedGeneratedReactNativeCollectionMigrationArtifactOwners({
+      agents: [],
+      actions: [],
+      resources: [],
+      accountCollections: [{
+        provenance: 'external',
+        source: { kind: 'path' },
+        pluginId: owner.pluginId,
+        pluginVersion: owner.pluginVersion,
+        identity: { pluginId: owner.pluginId, localId: owner.contributionId },
+        manifestPath: owner.manifestPath,
+        pluginRootPath: owner.pluginRootPath,
+        generatedUiArtifactsManifest: owner.generatedUiArtifactsManifest,
+        migrationArtifact: { artifactId: owner.artifactId, exportName: 'collectionMigrations' },
+        definition: {
+          pluginId: owner.pluginId,
+          collectionId: owner.contributionId,
+          migrations: [{ id: 'v1-v2', fromSchemaVersion: 1, toSchemaVersion: 2 }],
+        } as never,
+      }],
+    } as unknown as ResolvedContributionRegistry)).toEqual([owner]);
   });
 });

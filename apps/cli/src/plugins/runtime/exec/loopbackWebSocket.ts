@@ -1,4 +1,5 @@
 import { isPluginError } from '@happier-dev/plugin-sdk';
+import { isLiteralLoopbackHostname } from '@happier-dev/protocol';
 import type {
     PluginWebSocketClose,
     PluginWebSocketConnection,
@@ -153,18 +154,10 @@ function normalizePositiveInteger(value: number | undefined, fallback: number): 
 
 function normalizeLimits(limits: ExecLoopbackWebSocketLimitsV1 | undefined): NormalizedLoopbackLimits {
     return Object.freeze({
-        maxMessageBytes: normalizePositiveInteger(limits?.maxMessageBytes, DEFAULT_MAX_MESSAGE_BYTES),
+        maxMessageBytes: limits?.messageByteLimits === null ? Infinity : normalizePositiveInteger(limits?.maxMessageBytes, DEFAULT_MAX_MESSAGE_BYTES),
         maxPendingMessages: normalizePositiveInteger(limits?.maxPendingMessages, DEFAULT_MAX_PENDING_MESSAGES),
-        maxBufferedBytes: normalizePositiveInteger(limits?.maxBufferedBytes, DEFAULT_MAX_BUFFERED_BYTES),
+        maxBufferedBytes: limits?.messageByteLimits === null ? Infinity : normalizePositiveInteger(limits?.maxBufferedBytes, DEFAULT_MAX_BUFFERED_BYTES),
     });
-}
-
-function isLoopbackHost(host: string): boolean {
-    const normalized = host.toLowerCase();
-    return normalized === '127.0.0.1'
-        || normalized === 'localhost'
-        || normalized === '::1'
-        || normalized === '[::1]';
 }
 
 function readPath(parsed: URL): string {
@@ -209,7 +202,7 @@ function validateEndpoint(
     if (protocol !== 'ws') {
         throw createPluginExecClientProtocolError('Loopback WebSocket endpoint must use ws protocol');
     }
-    if (!isLoopbackHost(host)) {
+    if (!isLiteralLoopbackHostname(host)) {
         throw createPluginExecClientProtocolError('Loopback WebSocket endpoint host must be loopback-only');
     }
     if (typeof port !== 'number' || !Number.isInteger(port) || port < 1024 || port > 65535) {
@@ -410,15 +403,18 @@ async function openSharedLoopbackWebSocket(
                 ...(header.sensitive === true ? { sensitive: true } : {}),
             })),
             connectTimeoutMs: Math.min(60_000, Math.max(100, timeoutMs)),
-            maxMessageBytes: limits.maxMessageBytes,
+            ...(Number.isFinite(limits.maxMessageBytes) ? { maxMessageBytes: limits.maxMessageBytes } : {}),
             maxPendingMessages: limits.maxPendingMessages,
-            maxPendingBytes: limits.maxBufferedBytes,
-            maxBufferedSendBytes: limits.maxBufferedBytes,
+            ...(Number.isFinite(limits.maxBufferedBytes) ? {
+                maxPendingBytes: limits.maxBufferedBytes,
+                maxBufferedSendBytes: limits.maxBufferedBytes,
+            } : {}),
         }, {
             // The adapter's public signal only governs opening. The spawned
             // client signal remains authoritative after a successful upgrade;
             // use the private lifecycle slot for that longer-lived ownership.
             signal: deadline.signal,
+            ...(!Number.isFinite(limits.maxMessageBytes) ? { messageByteLimits: null } : {}),
             ...(signal ? { lifecycleSignal: signal } : {}),
         });
     } catch (error) {

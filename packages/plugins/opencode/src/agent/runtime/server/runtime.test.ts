@@ -4,6 +4,7 @@ import {
   createAgentSessionRuntimeHarness,
   type AgentSessionRuntimeHarness,
 } from '@happier-dev/plugin-sdk/testing';
+import type { AgentSessionModelsSource } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { ManagedServiceSnapshot } from '@happier-dev/plugin-sdk/managed-services';
 
 import type { OpenCodeRuntimeTurnOperations } from './operations.js';
@@ -16,7 +17,13 @@ import type { OpenCodeRuntimeContext } from './runtimeContext.js';
 
 const readyMcpRegistration = Promise.resolve({
   requiredHappier: { status: 'ready' as const },
+  registeredServers: [] as const,
 });
+const emptyMcpProjection = {
+  registrations: [] as const,
+  requiredHappierServerName: null,
+  requiredHappierConfigurationPresent: false,
+} as const;
 
 function managedServiceSnapshot(
   overrides: Partial<ManagedServiceSnapshot> = {},
@@ -40,6 +47,7 @@ type RuntimeWithProviderEvents = OpenCodeRuntimeTurnOperations & Readonly<{
 
 type TestOpenCodeClient = OpenCodeServerClient & Readonly<{
   sessionPromptImplementation: Mock<OpenCodeServerClient['sessionPromptAsync']>;
+  sessionChildInventory: Mock<OpenCodeServerClient['sessionChildInventory']>;
   suppressNextNativePromptPersistence(): void;
   emitProviderEvent(event: unknown, delivery?: Readonly<{ provenance: string; connectionGeneration: number }>): void;
   setMessages(messages: readonly unknown[]): void;
@@ -71,6 +79,7 @@ function createContextFixture(options?: Readonly<{
     request: unknown,
   ) => Promise<Readonly<{ decision: string; rationale?: string }>>;
   onSessionStateFieldWrite?: (request: unknown) => Promise<void>;
+  onSubagentObservation?: (request: unknown) => Promise<unknown>;
 }>) {
   const harness = createAgentSessionRuntimeHarness();
   activeHarnesses.push(harness);
@@ -126,6 +135,11 @@ function createContextFixture(options?: Readonly<{
     },
     sessions: {
       current: {
+        subagents: {
+          observe: vi.fn(async (request) => (
+            await options?.onSubagentObservation?.(request) ?? request
+          )),
+        },
         permissions: {
           requestDecision: async (request) => {
             const result = await options?.onPermissionDecision?.(request)
@@ -190,6 +204,11 @@ function createClientFixture(): TestOpenCodeClient {
       messages = nextMessages;
     },
     sessionCreate: vi.fn(async () => ({ id: 'ses-1' })),
+    sessionUpdatePermissions: vi.fn(async () => undefined),
+    sessionSetAgent: vi.fn(async () => undefined),
+    sessionReadAgent: vi.fn(async () => null),
+    agentsList: vi.fn(async () => []),
+    sessionSetModel: vi.fn(async () => undefined),
     sessionFork: vi.fn(async () => ({ id: 'ses-forked' })),
     sessionPromptAsync: vi.fn(async (input) => {
       nativePromptSequence += 1;
@@ -236,6 +255,7 @@ function createClientFixture(): TestOpenCodeClient {
     sessionAbort: vi.fn(async () => undefined),
     sessionSummarize: vi.fn(async () => undefined),
     sessionStatus: vi.fn(async () => ({ type: 'idle' })),
+    sessionChildInventory: vi.fn(async () => null),
     sessionMessages: vi.fn(async () => messages),
     sessionTodo: vi.fn(async () => [
       { id: 'todo-1', content: 'Ship OpenCode runtime', status: 'in_progress', priority: 'high' },
@@ -266,6 +286,7 @@ async function createStartedRuntime(params?: Readonly<{
       | { status: 'failed'; error: unknown }
       | { status: 'unsupported'; reason: string }
     >;
+    registeredServers: readonly Readonly<{ directory: string; name: string }>[];
   }>>;
 }>): Promise<RuntimeWithProviderEvents> {
   const runtimeParams = {
@@ -277,6 +298,7 @@ async function createStartedRuntime(params?: Readonly<{
     env: params?.env,
     readManagedServiceSnapshot: params?.readManagedServiceSnapshot,
     mcpRegistration: params?.mcpRegistration ?? readyMcpRegistration,
+    mcpProjection: emptyMcpProjection,
   };
   const runtime = createOpenCodeServerRuntime(runtimeParams) as RuntimeWithProviderEvents;
   const runtimeEvents = params?.harness
@@ -332,6 +354,40 @@ function observePromisePending(promise: Promise<unknown>): Readonly<{ isPending(
   };
 }
 
+describe('OpenCode catalog observation', () => {
+  it.each([
+    { providerId: 'example', modelId: 'image', model: { id: 'image', status: 'active', capabilities: { input: ['image'] } } },
+    { providerId: 'anthropic', modelId: 'claude-2.0', model: { id: 'claude-2.0', status: 'active', capabilities: { input: ['text'] } } },
+  ])('uses the same catalog eligibility when selecting $modelId at runtime', async ({ providerId, modelId, model }) => {
+    const client = createClientFixture();
+    client.providersList = async () => [{ id: providerId, models: { [modelId]: model } }];
+    const operations = await createStartedRuntime({ client });
+    try {
+      await expect(operations.updateSessionRuntimeConfig({ modelId: `${providerId}/${modelId}` })).rejects.toThrow(/not selectable/i);
+    } finally { await operations.resetOrDisposeRuntime(); }
+  });
+
+  it('publishes observed inventory separately from the effective model accepted for a prompt', async () => {
+    const client = createClientFixture();
+    client.providersList = async () => [{ id: 'example', models: { text: { id: 'text', name: 'Text', capabilities: { input: ['text'], tools: false } } } }];
+    const operations = await createStartedRuntime({ client });
+    await operations.updateSessionRuntimeConfig({ modelId: 'example/text' });
+    let source: AgentSessionModelsSource | null = null;
+    const runtime = createOpenCodeSessionRuntime({
+      operations,
+      request: { kind: 'create', sessionId: 'model-facts', cwd: '/repo' },
+      models: { bind(value) { source = value; return { dispose() {} }; } },
+      disposeOperations: async () => { await operations.resetOrDisposeRuntime(); },
+    });
+    try {
+      expect(source?.read()).toMatchObject({ models: [{ id: 'example/text', name: 'Text' }], currentModelId: null });
+      expect(source?.read().observedAt).toBeGreaterThan(0);
+      await runtime.send({ inputIds: ['facts'], input: { text: 'hello' }, delivery: { kind: 'newTurn', turnId: 'facts-turn' } });
+      expect(source?.read()).toMatchObject({ currentModelId: 'example/text', models: [{ id: 'example/text', name: 'Text' }] });
+    } finally { await runtime.dispose(); }
+  });
+});
+
 describe('createOpenCodeServerRuntime', () => {
   it('exposes the final runtime event subscription operation name', async () => {
     const runtime = await createStartedRuntime();
@@ -349,6 +405,7 @@ describe('createOpenCodeServerRuntime', () => {
       baseUrl: 'http://127.0.0.1:49196',
       client,
       mcpRegistration: readyMcpRegistration,
+      mcpProjection: emptyMcpProjection,
     });
 
     await expect(runtime.sendTurnPrompt('must not reach OpenCode')).rejects.toThrow(
@@ -368,6 +425,7 @@ describe('createOpenCodeServerRuntime', () => {
       baseUrl: 'http://127.0.0.1:49196',
       client,
       mcpRegistration: readyMcpRegistration,
+      mcpProjection: emptyMcpProjection,
     });
 
     await expect(runtime.openSession({
@@ -397,7 +455,9 @@ describe('createOpenCodeServerRuntime', () => {
       happierSessionId: 'happy-resume',
       baseUrl: 'http://127.0.0.1:49196',
       client,
+      permissionMode: 'plan',
       mcpRegistration: readyMcpRegistration,
+      mcpProjection: emptyMcpProjection,
     });
 
     await expect(runtime.openSession({
@@ -408,6 +468,194 @@ describe('createOpenCodeServerRuntime', () => {
     expect(runtime.readSessionIdentity()).toEqual({ sessionId: 'ses-existing' });
     expect(client.sessionCreate).not.toHaveBeenCalled();
     expect(client.sessionFork).not.toHaveBeenCalled();
+    expect(client.sessionUpdatePermissions).toHaveBeenCalledWith({
+      sessionId: 'ses-existing',
+      permissions: expect.any(Array),
+    });
+  });
+
+  it('observes only provider-native child sessions of the current OpenCode session', async () => {
+    const observations: unknown[] = [];
+    const { ctx } = createContextFixture({
+      onSubagentObservation: async (observation) => {
+        observations.push(observation);
+        return observation;
+      },
+    });
+    const runtime = await createStartedRuntime({ ctx });
+
+    await runtime.handleProviderEvent({
+      payload: {
+        type: 'session.created',
+        properties: {
+          sessionID: 'child / Session-01',
+          info: {
+            id: 'child / Session-01',
+            parentID: 'ses-1',
+            title: 'Inspect the runtime',
+            agent: 'explore',
+          },
+        },
+      },
+    });
+    await runtime.handleProviderEvent({
+      payload: {
+        type: 'session.created',
+        properties: {
+          sessionID: 'top-level-session',
+          info: { id: 'top-level-session', title: 'Top level' },
+        },
+      },
+    });
+    await runtime.handleProviderEvent({
+      payload: {
+        type: 'session.created',
+        properties: {
+          sessionID: 'other-child',
+          info: { id: 'other-child', parentID: 'some-other-parent', title: 'Unrelated' },
+        },
+      },
+    });
+
+    expect(observations).toEqual([{
+      observationId: 'child / Session-01',
+      status: 'running',
+      detail: {
+        origin: 'agent',
+        kind: 'native',
+        agentRef: { agentId: 'opencode', agentKind: 'explore' },
+        vendorRef: {
+          agentSessionId: 'child / Session-01',
+          vendorSource: 'opencode',
+        },
+        label: 'Inspect the runtime',
+        agentMetadata: { parentProviderSessionId: 'ses-1' },
+      },
+    }]);
+  });
+
+  it('reconciles current OpenCode V2 child sessions when the provider connection is established', async () => {
+    const observations: unknown[] = [];
+    const { ctx } = createContextFixture({
+      onSubagentObservation: async (observation) => {
+        observations.push(observation);
+        return observation;
+      },
+    });
+    const client = createClientFixture();
+    client.sessionChildInventory.mockResolvedValue([
+      {
+        info: { id: 'child-running', parentID: 'ses-1', title: 'Running child' },
+        status: 'running',
+      },
+      {
+        info: { id: 'child-completed', parentID: 'ses-1', title: 'Completed child' },
+        status: 'completed',
+      },
+      {
+        info: { id: 'top-level', title: 'Top level' },
+        status: 'completed',
+      },
+      {
+        info: { id: 'unrelated-child', parentID: 'other-parent', title: 'Unrelated' },
+        status: 'running',
+      },
+    ]);
+    const runtime = await createStartedRuntime({ ctx, client });
+
+    await runtime.handleProviderEvent({ payload: { type: 'server.connected', properties: {} } });
+
+    expect(client.sessionChildInventory).toHaveBeenCalledWith({ parentSessionId: 'ses-1' });
+    expect(observations).toEqual([
+      expect.objectContaining({ observationId: 'child-running', status: 'running' }),
+      expect.objectContaining({ observationId: 'child-completed', status: 'completed' }),
+    ]);
+  });
+
+  it('reconciles a provider-native child from task metadata without parsing task prose', async () => {
+    const observations: unknown[] = [];
+    const { ctx } = createContextFixture({
+      onSubagentObservation: async (observation) => {
+        observations.push(observation);
+        return observation;
+      },
+    });
+    const client = createClientFixture();
+    client.sessionChildInventory.mockResolvedValue([
+      {
+        info: { id: 'child-exact', parentID: 'ses-1', title: 'Exact child' },
+        status: 'completed',
+      },
+      {
+        info: { id: 'child-sibling', parentID: 'ses-1', title: 'Sibling' },
+        status: 'running',
+      },
+    ]);
+    const runtime = await createStartedRuntime({ ctx, client });
+
+    await runtime.handleProviderEvent({
+      payload: {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            type: 'tool',
+            sessionID: 'ses-1',
+            messageID: 'msg-parent',
+            callID: 'call-task',
+            tool: 'task',
+            state: {
+              status: 'completed',
+              output: 'arbitrary prose that carries no lifecycle authority',
+              metadata: { sessionId: 'child-exact' },
+            },
+          },
+        },
+      },
+    });
+
+    expect(observations).toEqual([
+      expect.objectContaining({ observationId: 'child-exact', status: 'completed' }),
+    ]);
+  });
+
+  it('keeps an asynchronously launched background child running when its parent tool call completes', async () => {
+    const observations: unknown[] = [];
+    const { ctx } = createContextFixture({
+      onSubagentObservation: async (observation) => {
+        observations.push(observation);
+        return observation;
+      },
+    });
+    const client = createClientFixture();
+    client.sessionChildInventory.mockResolvedValue([{
+      info: { id: 'background-child', parentID: 'ses-1', title: 'Background child' },
+      status: 'completed',
+    }]);
+    const runtime = await createStartedRuntime({ ctx, client });
+
+    await runtime.handleProviderEvent({
+      payload: {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            type: 'tool',
+            sessionID: 'ses-1',
+            messageID: 'msg-parent',
+            callID: 'call-background-task',
+            tool: 'task',
+            state: {
+              status: 'completed',
+              output: 'launch acknowledged',
+              metadata: { sessionId: 'background-child', background: true },
+            },
+          },
+        },
+      },
+    });
+
+    expect(observations).toEqual([
+      expect.objectContaining({ observationId: 'background-child', status: 'running' }),
+    ]);
   });
 
   it('publishes native todo updates through the registered runtime work-state field', async () => {
@@ -846,6 +1094,7 @@ describe('createOpenCodeServerRuntime', () => {
           status: 'failed',
           error: new Error('required bridge add failed'),
         },
+        registeredServers: [],
       }),
     });
 
@@ -873,6 +1122,7 @@ describe('createOpenCodeServerRuntime', () => {
           status: 'unsupported',
           reason: 'OpenCode V2 servers expose no dynamic MCP registration route',
         },
+        registeredServers: [],
       }),
     });
 
@@ -973,7 +1223,7 @@ describe('createOpenCodeServerRuntime', () => {
   it('resolves bare runtime model ids through a unique connected OpenCode provider before prompting', async () => {
     const { ctx, harness } = createContextFixture();
     const client = createClientFixture();
-    vi.mocked(client.providersList).mockResolvedValueOnce([
+    vi.mocked(client.providersList).mockResolvedValue([
       {
         id: 'openai',
         models: {
@@ -1032,7 +1282,7 @@ describe('createOpenCodeServerRuntime', () => {
   });
 
   it('fails open for a qualified runtime model when provider inventory is unavailable', async () => {
-    const { ctx, harness } = createContextFixture();
+    const { ctx, harness, logs } = createContextFixture();
     const client = createClientFixture();
     vi.mocked(client.providersList).mockRejectedValue(new Error('provider inventory unavailable'));
     const runtime = await createStartedRuntime({ ctx, client, harness });
@@ -1041,6 +1291,7 @@ describe('createOpenCodeServerRuntime', () => {
       modelId: 'custom-provider/custom-model',
       configOption: { id: 'variant', value: ' low ' },
     });
+    expect(logs).toContainEqual(expect.objectContaining({ level: 'warn' }));
     beginTestHostTurn(runtime);
     await runtime.sendTurnPrompt('Use the selected custom model.');
 
@@ -1101,7 +1352,7 @@ describe('createOpenCodeServerRuntime', () => {
     const { ctx, harness } = createContextFixture();
     const client = createClientFixture();
     vi.mocked(client.globalConfigGet).mockResolvedValueOnce({ model: 'active-provider/default-large' });
-    vi.mocked(client.providersList).mockResolvedValueOnce([
+    vi.mocked(client.providersList).mockResolvedValue([
       {
         id: 'fallback-provider',
         models: {
@@ -1731,6 +1982,9 @@ describe('createOpenCodeServerRuntime', () => {
     await createStartedRuntime({ ctx, client });
 
     expect(client.subscribeGlobalEvents).toHaveBeenCalledTimes(1);
+    expect(client.subscribeGlobalEvents).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'ses-1',
+    }));
     rejectFirstSubscription(new Error('stream dropped'));
     await expect.poll(() => vi.mocked(client.subscribeGlobalEvents).mock.calls.length).toBe(2);
 
@@ -3222,6 +3476,25 @@ describe('createOpenCodeServerRuntime', () => {
     }
   });
 
+  it('uses the V2 admitted prompt id without requiring immediate message projection', async () => {
+    const client = createClientFixture();
+    client.suppressNextNativePromptPersistence();
+    vi.mocked(client.sessionPromptImplementation).mockResolvedValueOnce({
+      id: 'msg_v2_admitted',
+      sessionID: 'ses-1',
+      admittedSeq: 12,
+      delivery: 'steer',
+    });
+    const runtime = await createStartedRuntime({ client });
+
+    beginTestHostTurn(runtime);
+    await expect(runtime.sendTurnPrompt('accepted before projection')).resolves.toEqual({
+      providerUserMessageId: 'msg_v2_admitted',
+    });
+
+    expect(client.sessionMessages).not.toHaveBeenCalled();
+  });
+
   it('reports user-denied OpenCode permissions as permission failures instead of empty provider responses', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
@@ -4157,7 +4430,7 @@ describe('createOpenCodeServerRuntime', () => {
     }, { provenance: 'untrusted-observation', connectionGeneration: 1 });
 
     await flushMicrotasks();
-    expect(runtimeEvents).toEqual([]);
+    expect(runtimeEvents.filter((event) => event.kind !== 'model-catalog-observed' && event.kind !== 'mode-catalog-observed')).toEqual([]);
 
     await runtime.resetOrDisposeRuntime();
   });
@@ -4336,6 +4609,45 @@ describe('createOpenCodeServerRuntime', () => {
       answers: [['OK']],
     });
     expect(JSON.stringify(permissionRequests)).not.toContain('rm -rf /');
+
+    await runtime.resetOrDisposeRuntime();
+  });
+
+  it('refreshes authoritative request inventories when the V2 global stream reconnects after a missed ask', async () => {
+    const permissionRequests: unknown[] = [];
+    const { ctx, harness } = createContextFixture({
+      onPermissionDecision: async (request) => {
+        permissionRequests.push(request);
+        return { decision: 'approved' };
+      },
+    });
+    const client = createClientFixture();
+    const runtime = await createStartedRuntime({ ctx, client, harness });
+    vi.mocked(client.permissionList).mockResolvedValueOnce([{
+      id: 'per-created-during-global-gap',
+      sessionID: 'ses-1',
+      permission: 'bash',
+      patterns: ['pwd'],
+    }]);
+
+    client.emitProviderEvent(
+      { payload: { type: 'server.connected', properties: {} } },
+      { provenance: 'untrusted-observation', connectionGeneration: 2 },
+    );
+
+    await expect.poll(() => vi.mocked(client.permissionReply).mock.calls.length).toBe(1);
+    expect(client.permissionList).toHaveBeenCalledTimes(1);
+    expect(client.questionList).toHaveBeenCalledTimes(1);
+    expect(permissionRequests).toEqual([
+      expect.objectContaining({
+        subject: expect.objectContaining({ kind: 'tool', name: 'bash' }),
+      }),
+    ]);
+    expect(client.permissionReply).toHaveBeenCalledWith({
+      sessionId: 'ses-1',
+      requestId: 'per-created-during-global-gap',
+      reply: 'once',
+    });
 
     await runtime.resetOrDisposeRuntime();
   });
@@ -5582,6 +5894,7 @@ describe('OpenCode provider-minted session identity', () => {
       baseUrl: 'http://127.0.0.1:49196',
       client,
       mcpRegistration: readyMcpRegistration,
+      mcpProjection: emptyMcpProjection,
     });
 
     await expect(runtime.openSession({
@@ -5622,6 +5935,7 @@ describe('OpenCode provider-minted session identity', () => {
       baseUrl: 'http://127.0.0.1:49196',
       client,
       mcpRegistration: readyMcpRegistration,
+      mcpProjection: emptyMcpProjection,
     });
 
     await expect(runtime.openSession({
@@ -5645,6 +5959,7 @@ describe('OpenCode provider-minted session identity', () => {
       baseUrl: 'http://127.0.0.1:49196',
       client,
       mcpRegistration: readyMcpRegistration,
+      mcpProjection: emptyMcpProjection,
     });
 
     await expect(runtime.openSession({
@@ -5675,6 +5990,7 @@ describe('OpenCode provider-minted session identity', () => {
       baseUrl: 'http://127.0.0.1:49196',
       client,
       mcpRegistration: readyMcpRegistration,
+      mcpProjection: emptyMcpProjection,
     });
 
     await expect(runtime.openSession({

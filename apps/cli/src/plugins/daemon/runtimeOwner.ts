@@ -15,15 +15,9 @@ import {
   bootstrapPrimaryAgentRuntimesForReadiness,
 } from '@/plugins/runtime/reload/readiness';
 import {
-  resolveBundledImmutableGenerationRetentionIds,
-} from '@/plugins/runtime/bundledActivationSource';
-import {
   resolveExecutablePluginRuntimeRegistry,
   type PluginRuntimeMachineAdmissionTransport,
 } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
-import {
-  BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-} from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import { getResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import {
   createPluginRegistryStateStore,
@@ -34,6 +28,7 @@ import { logger } from '@/ui/logger';
 import type { StablePluginConnectedAccountsOwner } from '@/plugins/runtime/invocation/services/connectedAccounts';
 import type {
   ManagedServiceSessionBaseUrlResolver,
+  ManagedServiceSessionClientAccessResolver,
 } from '@/plugins/runtime/invocation/services/managedServiceEndpointProjection';
 import type { ConnectedAccountPurposeBindingOwner } from '@/daemon/connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
 import type { PluginProviderOperationsSource } from '@/plugins/runtime/invocation/services/types';
@@ -45,6 +40,7 @@ import type {
 } from '@/daemon/connectedServices/qualifiedConnectedAccountEstablishedRuntimeOwner';
 import { cleanupStaleDaemonPluginCandidateRoots } from '@/plugins/daemon/candidateStorage';
 import { resolveInstalledPluginUpdate } from '@/plugins/daemon/resolveInstalledUpdate';
+import { updateSelectedPluginOptionalAccess } from '@/plugins/daemon/optionalAccessSelections';
 import type { StablePluginEventsBroker } from '@/plugins/runtime/invocation/services/events';
 import type { RuntimeActionExecute } from '@happier-dev/protocol';
 import type {
@@ -61,6 +57,10 @@ import type { CurrentMachineExecutionOriginContext } from '@/api/machine/resolve
 import type { RpcHandlerInvoker } from '@/api/rpc/types';
 import type { ResolveSessionResourceAccess } from '@/plugins/runtime/invocation/services/resources';
 import type { PluginGenerationCustodyRetirementRemoteDependencies } from '@/plugins/store/registry/generationCustodyRetirement';
+import {
+  createDaemonPluginDevelopmentRootsOwner,
+  type DaemonPluginDevelopmentRootsOwner,
+} from '@/plugins/daemon/developmentRoots';
 
 /** One author-readable reason per cold-start readiness step a plugin can fail. */
 const COLD_START_READINESS_STAGE_REASONS = Object.freeze({
@@ -99,6 +99,7 @@ export type DaemonPluginAvailabilityReporter = Readonly<{
  */
 export function createDaemonPluginRuntimeOwner(params: Readonly<{
   happyHomeDir: string;
+  startupDeadlineAtMs?: number;
   /** Daemon-owned live machine identity for host-stamped nested Action callers. */
   resolveCurrentMachineId?: () => string | null;
   /** Existing authenticated Machine admission authority for protected Session input. */
@@ -146,6 +147,7 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
   runtimeActionExecute?: RuntimeActionExecute;
   managedEndpointRead?: AgentExternalSessionsManagedEndpointReadHost;
   resolveManagedServiceSessionBaseUrl?: ManagedServiceSessionBaseUrlResolver;
+  resolveManagedServiceSessionClientAccess?: ManagedServiceSessionClientAccessResolver;
   externalSessionPluginAdmissionOwner?: ExternalSessionPluginAdmissionOwner;
   resolveExternalSessionCurrentMachineId?: () => string | null;
   externalSessionHostOperationOwner?: ExternalSessionHostOperationOwner;
@@ -200,6 +202,10 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
       }
     : beforePublish;
   let stableEventsBroker: StablePluginEventsBroker | null = null;
+  let developmentRoots: DaemonPluginDevelopmentRootsOwner | null = null;
+  const resolveDevelopmentSourceAuthority: DaemonPluginDevelopmentRootsOwner['resolveDevelopmentSourceAuthority'] = (
+    input,
+  ) => developmentRoots?.resolveDevelopmentSourceAuthority(input) ?? null;
   const runtimeLifecycle = createDaemonPluginRegistryRuntimeLifecycle({
     happyHomeDir: params.happyHomeDir,
     ...(params.resolveCurrentMachineId
@@ -227,6 +233,10 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
       ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot }
       : {}),
     reloadController: params.reloadController,
+    resolveDevelopmentSourceAuthority,
+    isDevelopmentSourceRegistered: (registeredRootId) => (
+      developmentRoots?.isDevelopmentSourceRegistered(registeredRootId) === true
+    ),
     onTerminalActivationFailure,
     connectedAccounts: params.connectedAccounts,
     ...(params.actionFormConnectedAccounts
@@ -255,6 +265,9 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
       : {}),
     ...(params.resolveManagedServiceSessionBaseUrl
       ? { resolveManagedServiceSessionBaseUrl: params.resolveManagedServiceSessionBaseUrl }
+      : {}),
+    ...(params.resolveManagedServiceSessionClientAccess
+      ? { resolveManagedServiceSessionClientAccess: params.resolveManagedServiceSessionClientAccess }
       : {}),
     ...(params.externalSessionPluginAdmissionOwner
       ? {
@@ -293,6 +306,9 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
   const preparePath = createDaemonPathPluginChangePreparer({
     happyHomeDir: params.happyHomeDir,
     runtimeLifecycle,
+    isRegisteredDevelopmentRoot: (canonicalRootPath) => (
+      developmentRoots?.isDevelopmentSourceRegistered(canonicalRootPath) === true
+    ),
     onRegistryApplied,
     ...(params.generationCustodyRetirement
       ? { generationCustodyRetirement: params.generationCustodyRetirement }
@@ -314,7 +330,7 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
       ? { generationCustodyRetirement: params.generationCustodyRetirement }
       : {}),
   });
-  const changeService = createDaemonPluginChangeService({
+  const baseChangeService = createDaemonPluginChangeService({
     prepare: async (request) => {
       if (request.kind === 'update') {
         const installed = (
@@ -329,8 +345,14 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
             },
           });
         }
-        if (update.kind === 'archive') return await prepareArchive(update.request);
-        return await preparePath(update.request);
+        if (update.kind === 'archive') {
+          return await prepareArchive(update.request, {
+            installedUpdate: { pluginId: request.pluginId },
+          });
+        }
+        return await preparePath(update.request, {
+          installedUpdate: { pluginId: request.pluginId },
+        });
       }
       if (request.kind === 'installNpm') return await prepareNpm(request);
       if (request.kind === 'installArchive') return await prepareArchive(request);
@@ -342,17 +364,172 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
         error: projectPluginFailureText(error),
       });
     },
+    applyDevelopment: async (candidate, decision) => {
+      if (!runtimeLifecycle.prepareDevelopment) {
+        throw new Error('Plugin development runtime lifecycle is unavailable');
+      }
+      const prepared = await runtimeLifecycle.prepareDevelopment(candidate);
+      try {
+        {
+          if (
+            candidate.registryRevision === undefined
+            || !candidate.priorOptionalAccess
+            || !candidate.installReviewPrincipal
+          ) {
+            throw new Error('Plugin development authority candidate is incomplete');
+          }
+          const optionalAccess = decision
+            ? updateSelectedPluginOptionalAccess({
+                pluginId: candidate.pluginId,
+                manifest: candidate.manifest,
+                existing: candidate.priorOptionalAccess,
+                decisions: decision.optionalSelections,
+                selectedAtMs: Date.now(),
+              })
+            : candidate.preservedOptionalAccess ?? null;
+          if (!optionalAccess) throw new Error('Plugin development authority requires a fresh review');
+          const principal = decision
+            ? candidate.installReviewPrincipal
+            : candidate.priorInstallReviewPrincipal;
+          const authorityCommit = await createPluginRegistryStateStore({
+            happyHomeDir: params.happyHomeDir,
+            runtimeLifecycle,
+          }).approveDevelopmentAuthorityWithResult({
+            pluginId: candidate.pluginId,
+            expectedRevision: candidate.registryRevision,
+            approvedAuthorityManifest: candidate.manifest,
+            catalogRecord: candidate.catalogRecord,
+            trust: candidate.trust,
+            updatePolicy: candidate.updatePolicy,
+            optionalAccess,
+            ...(principal
+              ? {
+                  installReviewPrincipalDigest: principal.digest,
+                  installReviewPrincipalPresentation: principal.presentation,
+                }
+              : {}),
+          });
+          if (!authorityCommit) {
+            await prepared.abort().catch(() => undefined);
+            return Object.freeze({ kind: 'conflict' as const, pluginId: candidate.pluginId });
+          }
+        }
+        await prepared.adopt();
+        return Object.freeze({
+          kind: 'committed' as const,
+          pluginId: candidate.pluginId,
+          desiredGeneration: null,
+          appliedGeneration: null,
+          pendingSurfaces: Object.freeze([]),
+        });
+      } catch (error) {
+        await prepared.abort().catch(() => undefined);
+        throw error;
+      }
+    },
   });
-  const retainedCurrentHostGenerationIds =
-    resolveBundledImmutableGenerationRetentionIds({
-      artifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-    });
+  developmentRoots = createDaemonPluginDevelopmentRootsOwner({
+    happyHomeDir: params.happyHomeDir,
+    prepareSourceRemoval: async (input) => {
+      const prepared = runtimeLifecycle.prepareDevelopmentRemoval
+        ? await runtimeLifecycle.prepareDevelopmentRemoval(input)
+        : null;
+      return Object.freeze({
+        abort: prepared?.abort ?? (async () => undefined),
+        adopt: async () => {
+          await prepared?.adopt();
+          // The durable registry owner already owns source-code trust. Revoke
+          // that exact development authority after its process-local
+          // occurrence is gone so a deliberate unregister/re-admit may adopt
+          // a changed manifest id without leaving the old path identity live.
+          await createPluginRegistryStateStore({
+            happyHomeDir: params.happyHomeDir,
+            runtimeLifecycle,
+          }).forgetTrustWithResult(input.pluginId);
+        },
+      });
+    },
+    submitObservation: async (observation) => {
+      const request = {
+        kind: 'development' as const,
+        ...(observation.request.pluginId ? { pluginId: observation.request.pluginId } : {}),
+        sourceRootPath: observation.request.projectRoot,
+        observedRevision: observation.request.observedRevision,
+        ...(observation.request.changedPaths
+          ? { changedPaths: observation.request.changedPaths }
+          : {}),
+        ...(observation.request.sdkRegistryOrigin
+          ? { sdkRegistryOrigin: observation.request.sdkRegistryOrigin }
+          : {}),
+      };
+      const result = await baseChangeService.requestPluginChange(request);
+      const pluginId = observation.request.pluginId ?? ('pluginId' in result ? result.pluginId : undefined);
+      const occurrenceId = result.kind === 'committed' && pluginId
+        ? params.reloadController.readCurrentPluginOccurrenceId?.(pluginId) ?? null
+        : null;
+      return {
+        ...result,
+        ...(pluginId ? { pluginId } : {}),
+        ...(occurrenceId ? { occurrenceId } : {}),
+      };
+    },
+  });
+  const projectPendingWorkspaceTrust = (
+    pending: ReturnType<DaemonPluginDevelopmentRootsOwner['readPendingProjectTrusts']>[number],
+  ) => Object.freeze({
+    kind: 'reviewRequired' as const,
+    reviewKind: 'projectTrust' as const,
+    pendingChangeId: pending.pendingChangeId,
+    review: Object.freeze({
+      source: Object.freeze({ kind: 'path' as const, locator: pending.projectRoot }),
+    }),
+  });
+  const readPendingWorkspaceTrust = (pendingChangeId: string) => (
+    developmentRoots?.readPendingProjectTrusts()
+      .find((pending) => pending.pendingChangeId === pendingChangeId) ?? null
+  );
+  const changeService: DaemonPluginChangeOwner = Object.freeze({
+    ...baseChangeService,
+    controlPluginDevelopment: developmentRoots.control,
+    async listPendingPluginChanges() {
+      const base = await baseChangeService.listPendingPluginChanges();
+      return Object.freeze({
+        changes: Object.freeze([
+          ...base.changes,
+          ...developmentRoots!.readPendingProjectTrusts().map(projectPendingWorkspaceTrust),
+        ]),
+      });
+    },
+    async statusPluginChange(request) {
+      const pending = readPendingWorkspaceTrust(request.pendingChangeId);
+      return pending
+        ? projectPendingWorkspaceTrust(pending)
+        : await baseChangeService.statusPluginChange(request);
+    },
+    async decidePluginChange(decision) {
+      const pending = readPendingWorkspaceTrust(decision.pendingChangeId);
+      if (!pending) return await baseChangeService.decidePluginChange(decision);
+      const result = await developmentRoots!.control({
+        kind: 'registerWorkspace',
+        projectRoot: pending.projectRoot,
+        trust: decision.decision === 'cancel' ? 'deny' : 'accept',
+      });
+      if (result.kind === 'failed') {
+        return Object.freeze({ kind: 'failed' as const, code: result.code, message: result.message });
+      }
+      return decision.decision === 'cancel'
+        ? Object.freeze({ kind: 'cancelled' as const })
+        : Object.freeze({ kind: 'projectTrustAccepted' as const, projectRoot: pending.projectRoot });
+    },
+    async shutdown() {
+      await developmentRoots.stop();
+      await baseChangeService.shutdown();
+    },
+  });
   const stateStore = createPluginRegistryStateStore({
     happyHomeDir: params.happyHomeDir,
-    retainedCurrentHostGenerationIds,
-    bundledArtifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
     runtimeLifecycle,
-    runHardRevocationCurrentnessChange: changeService.runHardRevocationCurrentnessChange,
+    runHardRevocationCurrentnessChange: baseChangeService.runHardRevocationCurrentnessChange,
     ...(params.startupMode === 'pluginRecovery' ? { pluginRecovery: true } : {}),
     onCommitRecordQuarantined: (info) => {
       logger.warn(
@@ -372,20 +549,46 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
       error: projectPluginFailureText(error),
     });
   };
+  /**
+   * The install registry reports what it records. Daemon-selected plugins with
+   * a release-less declaration and no registry record (bundled first-party,
+   * checkout development roots) are machine materializations only the live
+   * runtime knows, so the one report adds them from the serving registry.
+   */
+  const withReleaseLessMaterializations = (
+    inventory: PluginRegistryAvailabilityInventory,
+  ): PluginRegistryAvailabilityInventory => {
+    const lease = params.reloadController.tryAcquireRuntimeRegistry();
+    if (!lease) return inventory;
+    try {
+      const recorded = new Set(inventory.materializations.map((materialization) => materialization.pluginId));
+      const runtime = (lease.registry.readReleaseLessMaterializations?.() ?? [])
+        .filter((materialization) => !recorded.has(materialization.pluginId));
+      if (runtime.length === 0) return inventory;
+      return Object.freeze({
+        ...inventory,
+        materializations: Object.freeze([...inventory.materializations, ...runtime].sort((left, right) => (
+          left.materializationId.localeCompare(right.materializationId)
+        ))),
+      });
+    } finally {
+      void lease.release().catch(() => undefined);
+    }
+  };
   reportAvailabilityAfterApplied = (record) => {
     const reporter = params.availabilityReporter;
     if (!reporter) return;
     // Runtime application is already durable. Availability is a best-effort
     // consumer: transport failure never changes the local transaction.
     void stateStore.readAvailabilityInventoryForCommit(record)
-      .then(async (inventory) => await reporter.report(inventory))
+      .then(async (inventory) => await reporter.report(withReleaseLessMaterializations(inventory)))
       .catch((error: unknown) => reportAvailabilityFailure(error, record.revision));
   };
   const reportCurrentAvailability = (): void => {
     const reporter = params.availabilityReporter;
     if (!reporter) return;
     void stateStore.readAvailabilityInventory()
-      .then(async (inventory) => await reporter.report(inventory))
+      .then(async (inventory) => await reporter.report(withReleaseLessMaterializations(inventory)))
       .catch((error: unknown) => reportAvailabilityFailure(error, -1));
   };
 
@@ -400,6 +603,8 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
         resolveRuntimeRegistry: async () => {
           const registry = await resolveExecutablePluginRuntimeRegistry({
             happyHomeDir: params.happyHomeDir,
+            ...(params.startupDeadlineAtMs === undefined
+              ? {} : { startupDeadlineAtMs: params.startupDeadlineAtMs }),
             generation: params.reloadController.getState().generation + 1,
             ...(params.resolveCurrentMachineId
               ? { resolveCurrentMachineId: params.resolveCurrentMachineId }
@@ -428,6 +633,7 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
             ...(params.resolveServerFeaturesSnapshot
               ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot }
               : {}),
+            resolveDevelopmentSourceAuthority,
             connectedAccounts: params.connectedAccounts,
             ...(params.providers ? { providers: params.providers } : {}),
             ...(params.managedProviderOperationAuthority
@@ -450,6 +656,9 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
               : {}),
             ...(params.resolveManagedServiceSessionBaseUrl
               ? { resolveManagedServiceSessionBaseUrl: params.resolveManagedServiceSessionBaseUrl }
+              : {}),
+            ...(params.resolveManagedServiceSessionClientAccess
+              ? { resolveManagedServiceSessionClientAccess: params.resolveManagedServiceSessionClientAccess }
               : {}),
             ...(params.externalSessionPluginAdmissionOwner
               ? {
@@ -579,6 +788,8 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
                 await bootstrapPrimaryAgentRuntimesForReadiness({
                   registry,
                   pluginIds: [pluginId],
+                  ...(params.startupDeadlineAtMs === undefined
+                    ? {} : { startupDeadlineAtMs: params.startupDeadlineAtMs }),
                 });
               });
             }));
@@ -604,7 +815,12 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
         await initialLease.release();
       }
       params.onDurableRegistryApplied?.();
+      // A process-local development reload replaces the serving registry
+      // without a registry commit; its runtime-only materializations follow
+      // it. Identical bodies are deduplicated by the reporter.
+      params.reloadController.subscribe(() => reportCurrentAvailability());
       reportCurrentAvailability();
+      await developmentRoots.initialize();
     },
     reportCurrentAvailability,
     readCatalog: async () => await readCurrentDaemonPluginCatalog({

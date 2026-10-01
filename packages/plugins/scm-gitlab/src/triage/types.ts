@@ -37,7 +37,7 @@ export type GitlabFailure = Readonly<{
 }>;
 
 /** Presentation projection of a native GitLab state. */
-export type GitlabStatePresentation = 'active' | 'closed' | 'unknown';
+export type GitlabStatePresentation = 'active' | 'resolved' | 'closed' | 'unknown';
 
 export type GitlabStateProjection = Readonly<{
   presentation: GitlabStatePresentation;

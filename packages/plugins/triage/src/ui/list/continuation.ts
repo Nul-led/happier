@@ -1,3 +1,4 @@
+import type { TriageListWindowV1 } from '../../projection/listWindow.js';
 import type { TriageListLoadMoreV1 } from '../../projection/listWindowStore.js';
 import type { TriageTextResolverV1 } from '../shell/windowState.js';
 
@@ -113,4 +114,44 @@ export function planTriageListContinuationV1(input: Readonly<{
   // was anything to press — kept honest rather than offering a press the owner
   // has already said it would refuse.
   return { title, description, tone: 'neutral', busy: false };
+}
+
+/**
+ * The window-honesty line under the list (COLLECTION.md §2, DESIGN-SPEC §2.4): how many rows are loaded, and
+ * whether that is everything — "12 loaded · complete", or which connections may have more — then anything the
+ * reader's pins have to say. The line reads the window's own coverage claim and its lanes; it never computes
+ * "N of M". A failed or unresumable read says so in the words its continuation copy already owns. Nothing is said
+ * about entries before a window exists: the page's own state (sources unreachable, first read) speaks then.
+ */
+export function readTriageWindowStatementV1(input: Readonly<{
+  loadedCount: number;
+  window: Pick<TriageListWindowV1, 'coverage' | 'lanes'> | null;
+  configuredSources: readonly Readonly<{ sourceInstanceId: string; displayLabel?: string }>[];
+  entries: TriageListContinuationCopyV1;
+  /** The pins' own continuation copy, while there are more pins or reading them failed; otherwise `null`. */
+  pins?: TriageListContinuationCopyV1 | null;
+  text: (key: string, fallback?: string, values?: Readonly<Record<string, string | number>>) => string;
+}>): readonly string[] | undefined {
+  const { window, text } = input;
+  const parts: string[] = [];
+  if (window !== null) {
+    parts.push(text('plugins.triage.surface.window.loaded', '{count} loaded', { count: input.loadedCount }));
+    if (input.entries.tone === 'warning') {
+      parts.push(input.entries.title);
+    } else if (window.coverage === 'complete') {
+      parts.push(text('plugins.triage.surface.window.complete', 'complete'));
+    } else {
+      const names: string[] = [];
+      for (const lane of window.lanes) {
+        if (lane.exhausted) continue;
+        const name = input.configuredSources.find((source) => source.sourceInstanceId === lane.sourceInstanceId)?.displayLabel;
+        if (name !== undefined && !names.includes(name)) names.push(name);
+      }
+      parts.push(names.length === 0
+        ? input.entries.title
+        : text('plugins.triage.surface.window.more', '{names} may have more', { names: names.join(', ') }));
+    }
+  }
+  if (input.pins != null) parts.push(input.pins.title);
+  return parts.length === 0 ? undefined : parts;
 }

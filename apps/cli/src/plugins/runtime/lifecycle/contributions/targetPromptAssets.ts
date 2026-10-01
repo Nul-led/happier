@@ -13,7 +13,7 @@ import type { ContributionRuntimeRegistration } from '@/plugins/runtime/api/regi
 
 type TargetRegistration = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }>;
 
@@ -25,7 +25,7 @@ type PromptAssetAdapterDeclaration = Readonly<{
     adapterDescriptor?: PromptAssetTypeDescriptor;
 }>;
 
-type GenerationLifecycle = Readonly<{
+type OccurrenceLifecycle = Readonly<{
     isCurrent(): boolean;
     retirementSignal: AbortSignal;
 }>;
@@ -40,13 +40,13 @@ function staleGenerationError(pluginId: string): PluginError {
 function wrapPromptAssetAdapter(params: Readonly<{
     pluginId: string;
     adapter: PromptAssetAdapter;
-    resolveGenerationLifecycle(): GenerationLifecycle;
+    resolveOccurrenceLifecycle(): OccurrenceLifecycle;
 }>): PromptAssetAdapter {
     async function invoke<TResult>(
         operation: (options: PluginCancellationOptions) => Promise<TResult>,
         options?: PluginCancellationOptions,
     ): Promise<TResult> {
-        const lifecycle = params.resolveGenerationLifecycle();
+        const lifecycle = params.resolveOccurrenceLifecycle();
         if (!lifecycle.isCurrent()) throw staleGenerationError(params.pluginId);
         const signal = options?.signal
             ? AbortSignal.any([options.signal, lifecycle.retirementSignal])
@@ -109,10 +109,9 @@ export type TargetPromptAssetAdapterRegistry = Readonly<{
  * must never take every other plugin's Prompt Asset adapter down with it.
  */
 export function createTargetPromptAssetAdapterRegistry(params: Readonly<{
-    generation: number;
     promptAssets: readonly PromptAssetAdapterDeclaration[];
     targetRegistrations: readonly TargetRegistration[];
-    resolveGenerationLifecycle(pluginId: string): GenerationLifecycle;
+    resolveOccurrenceLifecycle(pluginId: string): OccurrenceLifecycle;
 }>): TargetPromptAssetAdapterRegistry {
     const adapters = new Map<string, PromptAssetAdapter>();
     const claimantPluginIdsByAssetTypeId = new Map<string, string>();
@@ -135,14 +134,6 @@ export function createTargetPromptAssetAdapterRegistry(params: Readonly<{
     for (const entry of params.targetRegistrations) {
         if (entry.registration.family !== 'promptAssets') continue;
         const localId = entry.registration.localId;
-        if (entry.generation !== String(params.generation)) {
-            refuse(
-                entry.pluginId,
-                localId,
-                `Target Prompt Asset adapter '${entry.pluginId}/${localId}' was published for the wrong generation`,
-            );
-            continue;
-        }
         const declarations = params.promptAssets.filter((candidate) => (
             candidate.pluginId === entry.pluginId
             && candidate.localId === localId
@@ -184,7 +175,7 @@ export function createTargetPromptAssetAdapterRegistry(params: Readonly<{
         adapters.set(assetTypeId, wrapPromptAssetAdapter({
             pluginId: entry.pluginId,
             adapter,
-            resolveGenerationLifecycle: () => params.resolveGenerationLifecycle(entry.pluginId),
+            resolveOccurrenceLifecycle: () => params.resolveOccurrenceLifecycle(entry.pluginId),
         }));
     }
 

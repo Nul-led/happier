@@ -37,10 +37,13 @@ function bindFixtureExternalSessions(
         identity: {
             pluginId: 'happier.agent.fixture',
             agentId: 'fixture-agent',
-            generation: 'plugin-generation-1',
+            occurrenceId: 'plugin-occurrence-1',
             contributionQualifiedId:
                 'happier.agent.fixture/agents/fixture-agent',
-            immutableGenerationId: null,
+            sourceCustody: {
+                kind: 'development',
+                registeredRootId: 'fixture-source-root',
+            },
         },
         isCurrent: () => true,
         retirementSignal: new AbortController().signal,
@@ -153,7 +156,7 @@ function createRuntimeLease(
                 pageTranscript: vi.fn(),
                 readAfterTranscript: vi.fn(),
             } satisfies BoundedAgentExternalSessionsContribution,
-            generation: 'plugin-generation-1',
+            occurrenceId: 'plugin-generation-1',
             retirementSignal: retirement.signal,
             isCurrent: () => !retirement.signal.aborted,
             release: vi.fn(async () => {}),
@@ -224,7 +227,7 @@ function createHarness(input?: Readonly<{
         },
         variantId: 'session-lifecycle-v1',
         eventId: 'session-stop-audit',
-        pluginGeneration: 'plugin-generation-1',
+        pluginOccurrenceId: 'plugin-generation-1',
         retirementSignal: runtime.retirement.signal,
     });
     expect(ingress.enable(principal.principalRef)).toEqual({ state: 'enabled' });
@@ -326,7 +329,7 @@ describe('qualified External Session hook ingress', () => {
             externalSessions: bindFixtureExternalSessions(
                 registered.externalSessions,
             ),
-            generation: 'claude-generation-1',
+            occurrenceId: 'claude-generation-1',
             retirementSignal: retirement.signal,
             isCurrent: () => !retirement.signal.aborted,
             async release() {},
@@ -363,7 +366,7 @@ describe('qualified External Session hook ingress', () => {
             },
             variantId: variant.variantId,
             eventId: stopEvent.eventId,
-            pluginGeneration: runtime.generation,
+            pluginOccurrenceId: runtime.occurrenceId,
             retirementSignal: retirement.signal,
         });
         expect(ingress.enable(principal.principalRef))
@@ -500,7 +503,7 @@ describe('qualified External Session hook ingress', () => {
                 localId: 'fixture-agent',
             },
             agentId: 'fixture-agent',
-            pluginGeneration: 'plugin-generation-1',
+            pluginOccurrenceId: 'plugin-generation-1',
             variantId: 'session-lifecycle-v1',
         });
         expect(harness.runtime.mapHookEvent).toHaveBeenCalledOnce();
@@ -603,7 +606,7 @@ describe('qualified External Session hook ingress', () => {
             },
             variantId: 'session-lifecycle-v2',
             eventId: 'session-stop',
-            pluginGeneration: 'plugin-generation-2',
+            pluginOccurrenceId: 'plugin-generation-2',
             retirementSignal: new AbortController().signal,
         });
 
@@ -622,7 +625,7 @@ describe('qualified External Session hook ingress', () => {
             },
             variantId: 'session-lifecycle-v1',
             eventId: 'session-stop-audit',
-            pluginGeneration: 'plugin-generation-2',
+            pluginOccurrenceId: 'plugin-generation-2',
             retirementSignal: new AbortController().signal,
         });
 
@@ -649,7 +652,7 @@ describe('qualified External Session hook ingress', () => {
             },
             variantId: 'session-lifecycle-v1',
             eventId: 'session-stop',
-            pluginGeneration: 'plugin-generation-1',
+            pluginOccurrenceId: 'plugin-generation-1',
             retirementSignal: new AbortController().signal,
         });
         expect(harness.ingress.readPrincipal(installed.principalRef))
@@ -666,7 +669,7 @@ describe('qualified External Session hook ingress', () => {
             },
             variantId: 'session-lifecycle-v1',
             eventId: 'session-stop',
-            pluginGeneration: 'plugin-generation-1',
+            pluginOccurrenceId: 'plugin-generation-1',
             retirementSignal: new AbortController().signal,
         })).toThrow(/Invalid qualified External Session hook principal/u);
     });
@@ -705,7 +708,7 @@ describe('qualified External Session hook ingress', () => {
             },
             variantId: 'session-lifecycle-v1',
             eventId: 'session-stop-audit',
-            pluginGeneration: 'plugin-generation-1',
+            pluginOccurrenceId: 'plugin-generation-1',
             retirementSignal: runtime.retirement.signal,
             principalRef: persisted.principalRef,
             token: persisted.token,
@@ -1142,7 +1145,7 @@ describe('qualified External Session hook ingress', () => {
             },
             variantId: 'session-lifecycle-v1',
             eventId: 'session-stop-audit',
-            pluginGeneration: 'plugin-generation-1',
+            pluginOccurrenceId: 'plugin-generation-1',
             retirementSignal: runtime.retirement.signal,
         });
         ingress.enable(principal.principalRef);
@@ -1557,7 +1560,7 @@ describe('qualified External Session hook ingress', () => {
             },
             variantId: 'session-lifecycle-v1',
             eventId: 'session-stop-audit',
-            pluginGeneration: 'plugin-generation-1',
+            pluginOccurrenceId: 'plugin-generation-1',
             retirementSignal: harness.runtime.retirement.signal,
         });
         harness.ingress.enable(secondInstallation.principalRef);
@@ -1635,7 +1638,7 @@ describe('qualified External Session hook ingress', () => {
             },
             variantId: 'session-lifecycle-v1',
             eventId: 'session-stop-audit',
-            pluginGeneration: 'plugin-generation-1',
+            pluginOccurrenceId: 'plugin-generation-1',
             retirementSignal: harness.runtime.retirement.signal,
         });
         harness.ingress.enable(secondInstallation.principalRef);
@@ -1697,7 +1700,7 @@ describe('qualified External Session hook ingress', () => {
     it('does not share an in-flight link ensure across principal generations and source policies', async () => {
         const firstRuntime = createRuntimeLease();
         const secondRuntime = createRuntimeLease({
-            generation: 'plugin-generation-2',
+            occurrenceId: 'plugin-generation-2',
         });
         let settleFirstEnsure!: (value: Readonly<{
             sessionId: string;
@@ -1737,7 +1740,7 @@ describe('qualified External Session hook ingress', () => {
             });
         const ingress = createQualifiedExternalSessionHookIngress({
             acquireRuntime: async (request) => (
-                request.pluginGeneration === 'plugin-generation-1'
+                request.pluginOccurrenceId === 'plugin-generation-1'
                     ? firstRuntime.lease
                     : secondRuntime.lease
             ),
@@ -1749,7 +1752,7 @@ describe('qualified External Session hook ingress', () => {
             now: () => 1_100,
         });
         const createPrincipal = (
-            pluginGeneration: string,
+            pluginOccurrenceId: string,
             retirementSignal: AbortSignal,
         ) => ingress.createPrincipal({
             installationIdentity: 'installation-1',
@@ -1761,7 +1764,7 @@ describe('qualified External Session hook ingress', () => {
             },
             variantId: 'session-lifecycle-v1',
             eventId: 'session-stop-audit',
-            pluginGeneration,
+            pluginOccurrenceId,
             retirementSignal,
         });
         const firstPrincipal = createPrincipal(

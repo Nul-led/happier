@@ -71,7 +71,6 @@ function createManifest(options: Readonly<{
         },
         client: {
           artifactId: 'raw-voice-client',
-          modulePath: './voiceRuntime',
           exportName: 'activate',
         },
         }],
@@ -103,7 +102,7 @@ describe('projectPluginInstallationReview', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
       },
       uiArtifacts: { verification: 'verified', contributionIds: [] },
     });
@@ -123,7 +122,7 @@ describe('projectPluginInstallationReview', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
       },
       uiArtifacts: { verification: 'verified', contributionIds: [] },
     });
@@ -144,7 +143,7 @@ describe('projectPluginInstallationReview', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
       },
       uiArtifacts: { verification: 'verified', contributionIds: [] },
     });
@@ -176,7 +175,7 @@ describe('projectPluginInstallationReview', () => {
           message: `Evaluator reason ${index + 1}`,
         }],
       })),
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
     };
 
     const review = projectPluginInstallationReview({
@@ -200,7 +199,7 @@ describe('projectPluginInstallationReview', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
       },
       uiArtifacts: { verification: 'verified', contributionIds: ['raw-voice-client'] },
     });
@@ -273,7 +272,7 @@ describe('projectPluginInstallationReview', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
       },
       uiArtifacts: { verification: 'verified', contributionIds: ['panel-web'] },
     });
@@ -294,7 +293,7 @@ describe('projectPluginInstallationReview', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
       },
       uiArtifacts: { verification: 'verified', contributionIds: [] },
     });

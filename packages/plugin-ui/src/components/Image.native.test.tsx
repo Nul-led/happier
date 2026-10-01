@@ -167,8 +167,8 @@ describe('native BrandMark presentation', () => {
         <HappierBrandMark
           displayName="GitHub"
           bytes={TRANSPARENT_BRAND_BYTES}
+          monochrome
           theme={context.theme}
-          colorScheme={context.colorScheme}
           externallyLabelled
         />,
       );
@@ -176,13 +176,11 @@ describe('native BrandMark presentation', () => {
 
     const image = renderer.root.findByType('Image');
     expect(image.props.accessibilityLabel).toBeUndefined();
-    expect(image.props.style).toMatchObject({
-      backgroundColor: context.theme.colors.text,
-      borderRadius: context.theme.radii.control,
-    });
+    expect(image.props.style.tintColor).toBe(context.theme.colors.text);
+    expect(image.props.style.backgroundColor).toBeUndefined();
   });
 
-  it('passes an opaque, high-contrast semantic backing to the native image host', async () => {
+  it.each([false, true])('renders a packaged mark with manifest-owned monochrome=%s and no backing', async (monochrome) => {
     const context = createSurfaceContext({ colorScheme: 'dark', contrast: 'high' });
 
     await act(async () => {
@@ -201,6 +199,7 @@ describe('native BrandMark presentation', () => {
             brand: {
               displayName: 'GitHub',
               resource: { pluginId: 'happier.scm.forge.github', localId: 'brand-icon' },
+              monochrome,
             },
             renderMarkdown: () => null,
             renderCodeBlock: () => null,
@@ -219,10 +218,8 @@ describe('native BrandMark presentation', () => {
     expect(image.props.source.uri).toBe(
       `data:image/png;base64,${Buffer.from(TRANSPARENT_BRAND_BYTES).toString('base64')}`,
     );
-    expect(image.props.style).toMatchObject({
-      backgroundColor: context.theme.colors.text,
-      borderRadius: context.theme.radii.control,
-    });
+    expect(image.props.style.backgroundColor).toBeUndefined();
+    expect(image.props.style.tintColor).toBe(monochrome ? context.theme.colors.text : undefined);
   });
 
   it('does not re-encode a digest-equal reread that arrives as fresh bytes', async () => {

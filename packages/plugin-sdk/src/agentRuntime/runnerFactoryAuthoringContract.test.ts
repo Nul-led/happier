@@ -12,6 +12,7 @@ import {
   type ApiSurfaceInventoryContract,
   projectAuthorSurfaceContract,
 } from '../normalSurfaceContract.js';
+import type { JsonValue } from '../identity.js';
 
 import type {
   AgentCliAuthContributionV1,
@@ -33,6 +34,7 @@ import type {
   AgentPreflightJsonRpcRequestClientV1,
   AgentPreflightSessionControlsCommandV1,
   AgentPreflightSessionControlsContributionV1,
+  AgentPreflightSessionControlsModelsV1,
   AgentPreflightSessionControlsProbeContextV1,
   AgentPreflightSessionControlsProbeInputV1,
   AgentProviderCliAttachDeclarationV1,
@@ -115,7 +117,13 @@ const emptyRuntime = undefined as never; /* @sdk-negative-type-case-end */
     expectTypeOf<NonNullable<AgentRuntimeRegistrationOptions['providerCliAttach']>>()
       .toEqualTypeOf<AgentProviderCliAttachDeclarationV1>();
     expectTypeOf<keyof AgentProviderCliAttachDeclarationV1>().toEqualTypeOf<
-      'resolveTarget' | 'createArgs' | 'resolveReachability'
+      | 'resolveTarget'
+      | 'cliVersionArgs'
+      | 'managedServiceAccess'
+      | 'commandToolIds'
+      | 'resolveCommandToolId'
+      | 'createArgs'
+      | 'resolveReachability'
     >();
     expectTypeOf<ReturnType<AgentProviderCliAttachDeclarationV1['resolveTarget']>>()
       .toEqualTypeOf<AgentProviderCliAttachTargetResolutionV1>();
@@ -149,7 +157,7 @@ const emptyRuntime = undefined as never; /* @sdk-negative-type-case-end */
     expectTypeOf<AgentCliSessionCommandBuildInputV1['pluginSettings']>()
       .toEqualTypeOf<Readonly<Partial<Record<
         'account' | 'daemon',
-        Readonly<Record<string, unknown>>
+        Readonly<Record<string, JsonValue>>
       >>>>();
     expectTypeOf<AgentCliSessionCommandBuildInputV1>().toHaveProperty('environment');
     expectTypeOf<AgentCliSessionCommandBuildInputV1>().toHaveProperty('startOrigin');
@@ -176,13 +184,16 @@ const emptyRuntime = undefined as never; /* @sdk-negative-type-case-end */
       .not.toHaveProperty('failureCacheStrategy');
     expectTypeOf<AgentPreflightSessionControlsContributionV1>()
       .not.toHaveProperty('connectedServiceAuth');
+    expectTypeOf<keyof AgentPreflightSessionControlsModelsV1>().toEqualTypeOf<
+      'command' | 'parseOutput' | 'fallback' | 'commandToolIds' | 'resolveCommandToolId'
+    >();
     expectTypeOf<keyof AgentPreflightSessionControlsCommandV1>().toEqualTypeOf<
-      'toolId' | 'args' | 'environmentKeys' | 'environmentExcludeKeys' | 'ci'
+      'toolId' | 'args' | 'prepareCommand' | 'environmentKeys' | 'environmentExcludeKeys' | 'ci'
     >();
     expectTypeOf<AgentPreflightSessionControlsCommandV1>()
       .not.toHaveProperty('timeoutMs');
     expectTypeOf<keyof AgentPreflightSessionControlsProbeInputV1>().toEqualTypeOf<
-      'accountSettings' | 'environment'
+      'accountSettings' | 'environment' | 'runtimeDescriptorV1' | 'runtimeKindOverride'
     >();
     expectTypeOf<AgentPreflightSessionControlsProbeContextV1>()
       .not.toHaveProperty('exec');

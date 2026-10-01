@@ -1,12 +1,16 @@
-import { useId, type ReactNode } from 'react';
+import { useCallback, useId, useState, type ReactNode } from 'react';
 import { Platform, View, type TextStyle, type ViewStyle } from 'react-native';
 
-import { useOptionalHappierUiTheme } from '../../environment/context.js';
+import {
+  useOptionalHappierUiPalette,
+  useOptionalHappierUiTheme,
+  useOptionalHappierUiTypography,
+} from '../../environment/context.js';
 import {
   HAPPIER_DEFAULT_MINIMUM_INTERACTIVE_TARGET_SIZE,
   useHappierNativeMinimumInteractiveTargetSize,
 } from '../../environment/interactiveTarget.js';
-import type { HappierUiTheme } from '../../environment/types.js';
+import type { HappierTypeRole, HappierUiTheme, HappierUiTypography } from '../../environment/types.js';
 import type {
   HappierGestureResponderEvent,
   HappierPortableStyle,
@@ -14,15 +18,27 @@ import type {
 } from '../portableTypes.js';
 import { HappierSpinner } from '../feedback/Spinner.js';
 import { HappierPressable } from '../interaction/Pressable.js';
+import { HAPPIER_PRESS_FEEDBACK_V1, happierPressTransitionStyle } from '../interaction/pressFeedback.js';
 import { HappierDivider } from '../content/Foundation.js';
+import { HAPPIER_PAGE_METRICS, isHappierPageRowNarrow } from '../layout/pageMetrics.js';
+import { happierPageRowDividerWidth, useHappierPageSection } from '../layout/PageSection.js';
+import { resolveHappierPageTextStyle } from '../layout/pageText.js';
 import { HAPPIER_TONE_COLOR_TOKEN, type HappierTone } from '../semantics.js';
 import { HappierText } from '../text/Text.js';
+import { resolveHappierTypeRoleStyle } from '../text/typeRole.js';
 import {
   resolveHappierItemBehavior,
   type HappierItemDensity,
   type HappierRovingCollectionItem,
 } from './semantics.js';
 import { useHappierItemGroupItemBehavior } from './ItemGroup.js';
+import {
+  HAPPIER_COLLECTION_LIST_METRICS,
+  HAPPIER_COLLECTION_LIST_TEXT,
+  resolveHappierCollectionListRowPadding,
+  useHappierCollectionListRow,
+} from './CollectionList.js';
+import { resolveHappierTextStepStyle } from '../layout/pageText.js';
 
 /**
  * The portable list semantics shared by Happier core, executable Plugin UI and
@@ -47,6 +63,14 @@ export type HappierListSectionProps = Readonly<{
   children?: ReactNode;
   /** Visible and semantic group name. */
   title: string;
+  /** A quiet, tabular count beside the title. */
+  count?: number;
+  /** What the group's rows share, quiet at the header's end. */
+  description?: string;
+  /** The type role of the heading's words; a dense table's groups take `caption`. */
+  titleRole?: 'label' | 'caption';
+  /** One control at the header's end ("See all"), beside — never inside — the heading's name. */
+  action?: ReactNode;
   /**
    * @internal The role of the collection whose scroller hosts this section's
    * rows as the header's SIBLINGS rather than its descendants.
@@ -129,6 +153,11 @@ export type HappierListItemProps = Readonly<{
   accessoryOutsidePressable?: boolean;
   tone?: HappierTone;
   /**
+   * Colour for the trailing detail when it is the row's one loud fact (an
+   * attention reason, a presence problem). Omitted, the detail stays quiet.
+   */
+  detailTone?: HappierTone;
+  /**
    * The caller owns the action; this component owns only its press presentation.
    * The activation event travels with it so a collection owner can read the
    * modifier keys one press was made with.
@@ -179,6 +208,16 @@ export type HappierListItemProps = Readonly<{
   accessibilityRowCount?: number;
 }>;
 
+const NAVIGATION_ROW_FOCUS_RING_WIDTH = 1;
+/** The least air above and below a navigation row's text when it wraps past the row's height. */
+const NAVIGATION_ROW_TEXT_FLOOR_PX = 4;
+
+const DETAIL_TEXT_STYLE: HappierPortableStyle = {
+  flexShrink: 1,
+  maxWidth: '40%',
+  textAlign: 'right',
+};
+
 const listStyle: ViewStyle = {
   width: '100%',
   minWidth: 0,
@@ -189,6 +228,11 @@ const sectionStyle: ViewStyle = {
   minWidth: 0,
 };
 
+const sectionHeadingStyle: ViewStyle = { flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 };
+const sectionHeadingTitleStyle: HappierPortableStyle = { flexShrink: 1 };
+const sectionHeadingDescriptionStyle: HappierPortableStyle = { marginLeft: 'auto', flexShrink: 1, textAlign: 'right' };
+const sectionHeadingActionStyle: HappierPortableStyle = { marginLeft: 'auto' };
+
 const itemStyle: ViewStyle = {
   width: '100%',
   minWidth: 0,
@@ -196,19 +240,11 @@ const itemStyle: ViewStyle = {
 
 function textStyle(
   theme: HappierUiTheme,
-  variant: keyof HappierUiTheme['typography'],
+  typography: HappierUiTypography | null,
+  role: Exclude<HappierTypeRole, 'heading'>,
   color: string,
 ): HappierPortableStyle {
-  const typography = theme.typography[variant];
-  return {
-    fontSize: typography.fontSize,
-    lineHeight: typography.lineHeight,
-    ...('fontWeight' in typography ? { fontWeight: typography.fontWeight as TextStyle['fontWeight'] } : {}),
-    ...('fontFamily' in typography && typography.fontFamily
-      ? { fontFamily: typography.fontFamily }
-      : {}),
-    color,
-  };
+  return { ...resolveHappierTypeRoleStyle(role, theme, typography), color };
 }
 
 /** A real React Native/RNW list container, never a custom marker host. */
@@ -236,12 +272,40 @@ export function HappierList({
 export function HappierListSection({
   children,
   title,
+  count,
+  description,
+  titleRole = 'label',
+  action,
   virtualizedCollectionRole,
   accessibilityRowIndex,
   accessibilityRowCount,
   testID,
   style,
 }: HappierListSectionProps) {
+  const theme = useOptionalHappierUiTheme();
+  const hostTypography = useOptionalHappierUiTypography();
+  const titleStyle = theme
+    ? titleRole === 'caption'
+      ? { ...textStyle(theme, hostTypography, 'caption', theme.colors.secondaryText), fontWeight: '600' as const }
+      : textStyle(theme, hostTypography, 'label', theme.colors.text)
+    : undefined;
+  const quietStyle = theme ? textStyle(theme, hostTypography, titleRole, theme.colors.mutedText) : undefined;
+  // The visible heading: the title, its count and what its rows share. Only the title is the group's name.
+  const hasAction = action !== undefined && action !== null && action !== false;
+  const heading = count === undefined && description === undefined && !hasAction
+    ? <HappierText accessible={false} style={titleStyle}>{title}</HappierText>
+    : (
+      <View style={sectionHeadingStyle}>
+        <HappierText accessible={false} numberOfLines={1} style={[titleStyle, sectionHeadingTitleStyle]}>{title}</HappierText>
+        {count === undefined ? null : (
+          <HappierText accessible={false} tabularNumbers style={quietStyle}>{String(count)}</HappierText>
+        )}
+        {description === undefined ? null : (
+          <HappierText accessible={false} numberOfLines={1} style={[quietStyle, sectionHeadingDescriptionStyle]}>{description}</HappierText>
+        )}
+        {hasAction ? <View style={description === undefined ? sectionHeadingActionStyle : null}>{action}</View> : null}
+      </View>
+    );
   if (virtualizedCollectionRole !== undefined) {
     // `role` is the web projection and wins over `accessibilityRole` in React
     // Native Web, so native assistive technology still hears a section header.
@@ -269,7 +333,7 @@ export function HappierListSection({
           >
             <View role="columnheader">
               {/** The permitted grid cell owns the visible heading. */}
-              <HappierText accessible={false}>{title}</HappierText>
+              {heading}
             </View>
           </View>
           {children}
@@ -286,7 +350,7 @@ export function HappierListSection({
         style={[sectionStyle, style]}
       >
         {/** The permitted child owns the accessible name; its visible heading stays out of that name. */}
-        <HappierText accessible={false}>{title}</HappierText>
+        {heading}
         {children}
       </View>
     );
@@ -300,7 +364,7 @@ export function HappierListSection({
       style={[sectionStyle, style]}
     >
       {/** The group owns the accessible name; its visible heading stays out of that name. */}
-      <HappierText accessible={false}>{title}</HappierText>
+      {heading}
       {children}
     </View>
   );
@@ -326,6 +390,7 @@ export function HappierListItem({
   accessoryWraps,
   accessoryOutsidePressable,
   tone = 'neutral',
+  detailTone,
   onPress,
   onContextMenu,
   disabled,
@@ -351,6 +416,7 @@ export function HappierListItem({
   accessibilityRowCount,
 }: HappierListItemProps) {
   const environmentTheme = useOptionalHappierUiTheme();
+  const hostTypography = useOptionalHappierUiTypography();
   const nativeMinimumTouchTarget = useHappierNativeMinimumInteractiveTargetSize();
   // React Native Web 0.21 drops `accessibilityHint` entirely and emits a
   // description only from `aria-describedby`, so a web row needs a referenced
@@ -360,6 +426,25 @@ export function HappierListItem({
     ? `happier-list-item-description-${generatedRowDescriptionId}`
     : undefined;
   const resolvedTheme = theme ?? environmentTheme;
+  // Inside a page section's sheet a row takes the page row anatomy: the page
+  // row insets and height, the page title/description steps, and a full-width
+  // hairline to the next row.
+  const pageSection = useHappierPageSection();
+  // Inside a navigation column (a `HappierCollectionList`) a row takes the navigation anatomy: flat
+  // on the plane, inset by the shared gutter, the plane's selected chip and a heavier open title.
+  const navigationRow = useHappierCollectionListRow() && pageSection === null;
+  const navigationPalette = useOptionalHappierUiPalette(theme ?? environmentTheme);
+  // A page row whose control is wide (`accessoryWraps`) measures itself, like
+  // Happier core's adaptive page rows: too narrow for a label column and a
+  // control column side by side, the control moves beneath the label.
+  const measuresPageRow = pageSection !== null && accessoryWraps === true
+    && accessory !== undefined && accessory !== null;
+  const [pageRowNarrow, setPageRowNarrow] = useState(false);
+  const handlePageRowLayout = useCallback((event: Readonly<{ nativeEvent: Readonly<{ layout: Readonly<{ width: number }> }> }>) => {
+    const next = isHappierPageRowNarrow(event.nativeEvent.layout.width);
+    setPageRowNarrow((current) => (current === next ? current : next));
+  }, []);
+  const stackPageAccessory = measuresPageRow && pageRowNarrow;
   const hasSemanticContent = title !== undefined
     || subtitle !== undefined
     || detail !== undefined
@@ -416,17 +501,43 @@ export function HappierListItem({
     compact: 38,
     tight: 36,
   } satisfies Record<HappierItemDensity, number>)[behavior.density];
+  // A navigation row keeps its compact height under a pointer; the platform's touch floor still wins.
+  const baseTargetSize = navigationRow ? HAPPIER_COLLECTION_LIST_METRICS.rowMinHeight : requestedTargetSize;
   const targetSize = isInteractive
-    ? Math.max(requestedTargetSize, nativeMinimumTouchTarget ?? 0)
-    : requestedTargetSize;
+    ? Math.max(baseTargetSize, nativeMinimumTouchTarget ?? 0)
+    : baseTargetSize;
 
   const renderSemanticContent = (isBusy: boolean, includeAccessory: boolean) => {
     if (!hasSemanticContent || !resolvedTheme) return customContent;
 
     const titleColor = resolvedTheme.colors[HAPPIER_TONE_COLOR_TOKEN[tone]];
+    const pageCompact = behavior.density === 'compact' || behavior.density === 'tight';
     return (
       <View
-        style={{
+        style={navigationRow ? {
+          flexDirection: 'row',
+          alignItems: 'center',
+          columnGap: HAPPIER_COLLECTION_LIST_METRICS.rowGlyphGap,
+          // The row's height is the target; a wrapped title grows it, never the glyph.
+          minHeight: targetSize - 2 * NAVIGATION_ROW_FOCUS_RING_WIDTH,
+          paddingLeft: resolveHappierCollectionListRowPadding(0).paddingLeft - NAVIGATION_ROW_FOCUS_RING_WIDTH,
+          paddingRight: resolveHappierCollectionListRowPadding(0).paddingRight - NAVIGATION_ROW_FOCUS_RING_WIDTH,
+          paddingVertical: NAVIGATION_ROW_TEXT_FLOOR_PX,
+        } : pageSection ? {
+          flexDirection: stackPageAccessory && includeAccessory ? 'column' : 'row',
+          alignItems: stackPageAccessory && includeAccessory ? 'stretch' : 'center',
+          flexWrap: 'nowrap',
+          columnGap: HAPPIER_PAGE_METRICS.rowLeadingGapPx,
+          rowGap: 10,
+          minHeight: Math.max(
+            targetSize,
+            pageCompact ? HAPPIER_PAGE_METRICS.compactRowMinHeightPx : HAPPIER_PAGE_METRICS.rowMinHeightPx,
+          ),
+          paddingHorizontal: pageSection.rowInsetPx,
+          paddingVertical: pageCompact
+            ? HAPPIER_PAGE_METRICS.compactRowPaddingVerticalPx
+            : HAPPIER_PAGE_METRICS.rowPaddingVerticalPx,
+        } : {
           flexDirection: 'row',
           alignItems: 'center',
           flexWrap: accessoryWraps ? 'wrap' : 'nowrap',
@@ -441,13 +552,20 @@ export function HappierListItem({
             accessible={false}
             accessibilityElementsHidden
             importantForAccessibility="no-hide-descendants"
-            style={{ alignItems: 'center', justifyContent: 'center' }}
+            style={navigationRow
+              ? { width: HAPPIER_COLLECTION_LIST_METRICS.rowGlyphBox, alignItems: 'center', justifyContent: 'center' }
+              : { alignItems: 'center', justifyContent: 'center' }}
           >
             {icon}
           </View>
         ) : null}
         <View
-          style={{
+          style={pageSection ? {
+            // A page row decides placement by measurement, not by wrapping.
+            ...(stackPageAccessory && includeAccessory ? { flexGrow: 0, flexShrink: 0 } : { flex: 1 }),
+            minWidth: 0,
+            gap: 0,
+          } : {
             flex: 1,
             // Half the row when the accessory may wrap, because that is what
             // makes it wrap at all: a column free to shrink to nothing lets an
@@ -457,12 +575,62 @@ export function HappierListItem({
             gap: resolvedTheme.spacing.xsmall,
           }}
         >
-          {title ? <HappierText numberOfLines={titleNumberOfLines} style={textStyle(resolvedTheme, 'label', titleColor)}>{title}</HappierText> : null}
-          {subtitle ? <HappierText numberOfLines={subtitleNumberOfLines} style={textStyle(resolvedTheme, 'body', resolvedTheme.colors.secondaryText)}>{subtitle}</HappierText> : null}
+          {title ? (
+            <HappierText
+              numberOfLines={titleNumberOfLines}
+              style={navigationRow
+                ? {
+                    ...resolveHappierTextStepStyle(
+                      HAPPIER_COLLECTION_LIST_TEXT[selected === true ? 'rowTitleSelected' : 'rowTitle'],
+                      hostTypography,
+                    ),
+                    color: titleColor,
+                  }
+                : pageSection
+                ? { ...resolveHappierPageTextStyle('rowTitle', hostTypography), color: titleColor }
+                : textStyle(resolvedTheme, hostTypography, 'label', titleColor)}
+            >
+              {title}
+            </HappierText>
+          ) : null}
+          {subtitle ? (
+            <HappierText
+              numberOfLines={subtitleNumberOfLines}
+              style={pageSection
+                ? { ...resolveHappierPageTextStyle('rowDescription', hostTypography), color: resolvedTheme.colors.secondaryText, marginTop: 2 }
+                : textStyle(resolvedTheme, hostTypography, 'body', resolvedTheme.colors.secondaryText)}
+            >
+              {subtitle}
+            </HappierText>
+          ) : null}
           {customContent}
         </View>
-        {detail ? <HappierText numberOfLines={detailNumberOfLines} style={textStyle(resolvedTheme, 'caption', resolvedTheme.colors.secondaryText)}>{detail}</HappierText> : null}
-        {includeAccessory ? accessory : null}
+        {detail ? (
+          <HappierText
+            numberOfLines={detailNumberOfLines}
+            tabularNumbers
+            style={[
+              textStyle(
+                resolvedTheme,
+                hostTypography,
+                'caption',
+                detailTone === undefined
+                  ? resolvedTheme.colors.secondaryText
+                  : resolvedTheme.colors[HAPPIER_TONE_COLOR_TOKEN[detailTone]],
+              ),
+              // The trailing column is quiet metadata: it may never take the
+              // title's width, and changing counts or ages must not jitter.
+              DETAIL_TEXT_STYLE,
+            ]}
+          >
+            {detail}
+          </HappierText>
+        ) : null}
+        {includeAccessory
+          ? (pageSection && accessory !== undefined && accessory !== null
+            ? <View style={stackPageAccessory ? { alignSelf: 'stretch', alignItems: 'stretch' } : null}>{accessory}</View>
+            : accessory)
+          : null}
         {isBusy ? (
           <HappierSpinner
             aria-hidden
@@ -487,6 +655,7 @@ export function HappierListItem({
       describedById={rowDescriptionId}
       checked={accessibilityRole === 'radio' ? selected === true : undefined}
       selected={accessibilityRole === 'option' ? selected : undefined}
+      current={navigationRow && selected === true ? 'page' : undefined}
       expanded={accessibilityExpanded}
       accessibilityPositionInSet={accessibilityPositionInSet}
       accessibilitySetSize={accessibilitySetSize}
@@ -497,14 +666,39 @@ export function HappierListItem({
       onKeyDown={roving?.onKeyDown}
       onContextMenu={onContextMenu}
       onPress={(event) => onPress?.(event)}
-      style={(state) => ({
+      style={(state) => navigationRow ? ({
+        minWidth: 0,
+        minHeight: targetSize,
+        marginHorizontal: HAPPIER_COLLECTION_LIST_METRICS.rowInset,
+        borderRadius: HAPPIER_COLLECTION_LIST_METRICS.rowRadius,
+        // The focus ring is a border (it keeps the box on every platform); the content padding
+        // subtracts its width, so the glyph still lands on the shared text edge.
+        borderWidth: NAVIGATION_ROW_FOCUS_RING_WIDTH,
+        borderColor: state.focused ? resolvedTheme.colors.focus : 'transparent',
+        backgroundColor: selected === true
+          ? navigationPalette?.navigationSelected ?? resolvedTheme.colors.elevatedSurface
+          : state.hovered && !state.disabled ? navigationPalette?.navigationHover ?? 'transparent' : 'transparent',
+        opacity: state.disabled && !state.busy
+          ? 0.5
+          : state.pressed ? HAPPIER_PRESS_FEEDBACK_V1.opacitySubtle : 1,
+        ...happierPressTransitionStyle(state.pressed, ['opacity']),
+      }) : ({
         width: '100%',
         minWidth: 0,
         minHeight: targetSize,
         borderWidth: 1,
         borderColor: state.focused ? resolvedTheme.colors.focus : 'transparent',
         borderRadius: resolvedTheme.radii.control,
-        opacity: state.disabled && !state.busy ? 0.5 : state.pressed ? 0.8 : 1,
+        // Selection paints a soft control fill (never an accent bar); focus
+        // paints only the ring above. They are separate axes, so a focused row
+        // is never mistaken for the open one and the open one stays visible on
+        // touch.
+        backgroundColor: selected === true ? resolvedTheme.colors.control : 'transparent',
+        // Rows are high-frequency and text-led: the gentle dip, never a scale.
+        opacity: state.disabled && !state.busy
+          ? 0.5
+          : state.pressed ? HAPPIER_PRESS_FEEDBACK_V1.opacitySubtle : 1,
+        ...happierPressTransitionStyle(state.pressed, ['opacity']),
       })}
     >
       {(state) => renderSemanticContent(state.busy, includeAccessory)}
@@ -523,6 +717,32 @@ export function HappierListItem({
       // @ts-expect-error React Native's role union omits RNW's standard gridcell role.
       <View role="gridcell">{row}</View>
     )
+  ) : behavior.accessoryPlacement === 'outside' && pageSection ? (
+    // A page row keeps its control on the row's inset: beside the label with
+    // the trailing inset, or — on a narrow row with a wide control — beneath
+    // the label on the label's edge.
+    <View style={{
+      flexDirection: stackPageAccessory ? 'column' : 'row',
+      alignItems: stackPageAccessory ? 'stretch' : 'center',
+      minWidth: 0,
+    }}>
+      <View style={stackPageAccessory ? null : { flex: 1, minWidth: 0 }}>{row}</View>
+      <View
+        style={stackPageAccessory
+          ? {
+              alignSelf: 'stretch',
+              // Like core's stacked page controls: a field spans the row; a bounded control keeps its own width.
+              alignItems: 'stretch',
+              paddingLeft: pageSection.rowInsetPx,
+              paddingRight: pageSection.rowInsetPx,
+              paddingBottom: HAPPIER_PAGE_METRICS.rowPaddingVerticalPx,
+              marginTop: -4,
+            }
+          : { paddingRight: pageSection.rowInsetPx }}
+      >
+        {accessory}
+      </View>
+    </View>
   ) : behavior.accessoryPlacement === 'outside' ? (
     <View style={{
       flexDirection: 'row',
@@ -566,6 +786,7 @@ export function HappierListItem({
           }
         : {})}
       testID={isInteractive ? undefined : testID}
+      onLayout={measuresPageRow ? handlePageRowLayout : undefined}
       style={[itemStyle, isGridRow ? {
         flexDirection: 'row',
         alignItems: 'center',
@@ -582,7 +803,9 @@ export function HappierListItem({
           {accessibilityHint}
         </HappierText>
       ) : null}
-      {behavior.dividerVisible && resolvedTheme ? (
+      {behavior.dividerVisible && pageSection ? (
+        <HappierDivider color={pageSection.rowDividerColor} style={{ height: happierPageRowDividerWidth() }} />
+      ) : behavior.dividerVisible && resolvedTheme ? (
         <HappierDivider color={resolvedTheme.colors.border} />
       ) : null}
     </View>

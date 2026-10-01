@@ -146,6 +146,16 @@ const POSTHOG_SOURCE_DESCRIPTOR = {
         workflowSubject: 'errorIssue' as const,
         displayName: 'Error issue',
         pluralDisplayName: 'Error issues',
+        // r0.42: the Triage detail frame draws these tabs and asks this source
+        // for each as a panel. Files and Checks come from the linked fix PR;
+        // this source's own views follow the shared tabs.
+        detailTabs: [
+            { kind: 'shared' as const, id: 'overview' as const },
+            { kind: 'shared' as const, id: 'activity' as const },
+            { kind: 'source' as const, id: 'stack-trace', title: 'Stack trace' },
+            { kind: 'source' as const, id: 'occurrences', title: 'Occurrences' },
+            { kind: 'source' as const, id: 'affected-sessions', title: 'Affected sessions' },
+        ],
     }],
 };
 
@@ -304,14 +314,11 @@ export const POSTHOG_PLUGIN = definePlugin({
     actions: {
         [POSTHOG_ACTION_IDS.configuration]: {
             title: 'Configure PostHog error issues',
-            execution: { target: 'daemon' },
             description: 'Reads one user-requested page of PostHog organizations or environments.',
-            scopes: ['global'],
             // The explicit empty list is the canonical mounted-only placement:
             // only the settings page this plugin itself mounts invokes it.
             surfaces: ['ui'],
             placementBindings: [],
-            dangerLevel: 'safe',
             inputSchema: PosthogConfigurationDirectoryInputV1Schema.jsonSchema,
             resultSchema: PosthogConfigurationDirectoryResultV1Schema.jsonSchema,
             hostAccess: READ_HOST_ACCESS,
@@ -323,9 +330,7 @@ export const POSTHOG_PLUGIN = definePlugin({
         },
         [POSTHOG_ACTION_IDS.listInstances]: {
             title: 'Discover PostHog organizations',
-            execution: { target: 'daemon' },
             description: 'Lists the PostHog organizations each connected PostHog account can reach.',
-            scopes: ['global'],
             surfaces: sources.operations.listInstances.declaration.surfaces,
             // Mounted-only placement. `plugin` stays because the Triage daemon
             // consumes it and `ui` remains admitted by the shared get contract;
@@ -342,9 +347,7 @@ export const POSTHOG_PLUGIN = definePlugin({
         },
         [POSTHOG_ACTION_IDS.scan]: {
             title: 'Scan PostHog error issues',
-            execution: { target: 'daemon' },
             description: 'Reads one page of the configured PostHog error-issue walk.',
-            scopes: ['global'],
             surfaces: sources.operations.scan.declaration.surfaces,
             dangerLevel: sources.operations.scan.declaration.dangerLevel,
             inputSchema: sources.operations.scan.declaration.input.schema.jsonSchema,
@@ -355,16 +358,13 @@ export const POSTHOG_PLUGIN = definePlugin({
         },
         [POSTHOG_ACTION_IDS.issueEvents]: {
             title: 'Read sampled PostHog occurrences',
-            execution: { target: 'daemon' },
             description: 'Reads one bounded page of sampled exception events for one PostHog issue.',
-            scopes: ['global'],
             // Only the source's own mounted detail body invokes this native read,
             // through the mounted Plugin UI host — present-user authority. The
             // explicit empty list keeps global placement discovery from offering
             // it a destination while the mounted invocation stays untouched.
             surfaces: ['ui'],
             placementBindings: [],
-            dangerLevel: 'safe',
             inputSchema: PosthogSampledEventsInputV1Schema.jsonSchema,
             resultSchema: PosthogSampledEventsResultV1Schema.jsonSchema,
             hostAccess: READ_HOST_ACCESS,
@@ -373,12 +373,9 @@ export const POSTHOG_PLUGIN = definePlugin({
         },
         [POSTHOG_ACTION_IDS.issueActivity]: {
             title: 'Read PostHog issue activity',
-            execution: { target: 'daemon' },
             description: 'Reads one page of the recorded activity for one PostHog issue.',
-            scopes: ['global'],
             surfaces: ['ui'],
             placementBindings: [],
-            dangerLevel: 'safe',
             inputSchema: PosthogIssueActivityInputV1Schema.jsonSchema,
             resultSchema: PosthogIssueActivityResultV1Schema.jsonSchema,
             hostAccess: READ_HOST_ACCESS,
@@ -387,12 +384,9 @@ export const POSTHOG_PLUGIN = definePlugin({
         },
         [POSTHOG_ACTION_IDS.codeVariables]: {
             title: 'Reveal captured PostHog code variables',
-            execution: { target: 'daemon' },
             description: 'Rereads one selected occurrence and returns its captured variables after confirmation.',
-            scopes: ['global'],
             surfaces: ['ui'],
             placementBindings: [],
-            dangerLevel: 'safe',
             inputSchema: PosthogCodeVariablesInputV1Schema.jsonSchema,
             resultSchema: PosthogCodeVariablesResultV1Schema.jsonSchema,
             hostAccess: READ_HOST_ACCESS,
@@ -401,12 +395,9 @@ export const POSTHOG_PLUGIN = definePlugin({
         },
         [POSTHOG_ACTION_IDS.nativeOverview]: {
             title: 'Read a PostHog issue overview',
-            execution: { target: 'daemon' },
             description: 'Reads native overview facts and query-enrichment status through the canonical issue read.',
-            scopes: ['global'],
             surfaces: ['ui'],
             placementBindings: [],
-            dangerLevel: 'safe',
             inputSchema: sources.operations.get.declaration.input.schema.jsonSchema,
             resultSchema: PosthogNativeOverviewResultV1Schema.jsonSchema,
             hostAccess: READ_HOST_ACCESS,
@@ -415,9 +406,7 @@ export const POSTHOG_PLUGIN = definePlugin({
         },
         [POSTHOG_ACTION_IDS.get]: {
             title: 'Read a PostHog error issue',
-            execution: { target: 'daemon' },
             description: 'Reads one PostHog error issue authoritatively through its configured environment.',
-            scopes: ['global'],
             surfaces: sources.operations.get.declaration.surfaces,
             // Mounted-only placement. `plugin` stays because the Triage daemon
             // consumes it and `ui` because this source's own mounted surfaces

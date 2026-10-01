@@ -229,7 +229,7 @@ test('dev-targets status, sync, and exec share the moving mirror with a pre-laun
         'printf "mutagen|%s|%s\\n" "$MUTAGEN_DATA_DIRECTORY" "$*" >> "$DEV_TARGET_COMMAND_LOG"',
         'if [ "$1 $2" = "sync flush" ] && [ -n "${DEV_TARGET_FLUSH_WAIT-}" ]; then : > "$DEV_TARGET_FLUSH_WAIT"; trap \'exit 0\' TERM; while [ ! -f "$DEV_TARGET_FLUSH_WAIT.release" ]; do sleep 0.02; done; fi',
         'if [ "$1 $2" = "sync list" ]; then',
-        '  case "$*" in *json*) printf \'[{"name":"happier-linux","paused":false,"status":"watching","successfulCycles":4}]\\n\' ;; *) printf "happier-linux|Watching|4||false|0\\n" ;; esac',
+        '  case "$*" in *json*) printf \'[{"name":"happier-linux","paused":false,"status":"watching","successfulCycles":4,"alpha":{"connected":true,"scanned":true},"beta":{"connected":true,"scanned":true}}]\\n\' ;; *) printf "happier-linux|Watching|false|true|1|0/0|0/0|true|1|0/0|0/0|active|4|ok|0|0\\n" ;; esac',
         'fi',
         'exit 0',
         '',
@@ -409,7 +409,7 @@ test('dev-targets status reports managed Lima lifecycle health alongside mirror 
       [
         '#!/bin/sh',
         'if [ "$1 $2" = "sync list" ]; then',
-        '  printf \'[{"name":"happier-linux","paused":false,"status":"watching","successfulCycles":4}]\\n\'',
+        '  printf \'[{"name":"happier-linux","paused":false,"status":"watching","successfulCycles":4,"alpha":{"connected":true,"scanned":true},"beta":{"connected":true,"scanned":true}}]\\n\'',
         'fi',
         'exit 0',
         '',
@@ -524,7 +524,7 @@ test('dev-targets sync-service detached owns continuous synchronization independ
     await writeFile(mutagen, [
       '#!/bin/sh',
       'if [ "$1 $2" = "sync list" ]; then',
-      '  printf \'[{"name":"happier-linux","paused":false,"status":"watching","successfulCycles":2}]\\n\'',
+      '  printf \'[{"name":"happier-linux","paused":false,"status":"watching","successfulCycles":2,"alpha":{"connected":true,"scanned":true},"beta":{"connected":true,"scanned":true}}]\\n\'',
       'fi',
       'exit 0',
       '',

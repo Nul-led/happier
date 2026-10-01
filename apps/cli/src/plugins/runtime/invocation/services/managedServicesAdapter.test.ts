@@ -14,11 +14,11 @@ import { withPluginInvocationServiceBindingAvailability } from './unavailable';
 const seed = Object.freeze({
     plugin: Object.freeze({ id: 'acme.providers', version: '1.0.0' }),
     contribution: Object.freeze({ id: 'gateway', qualifiedId: 'acme.providers:providers:gateway' }),
-    generation: 'generation-1',
+    occurrenceId: 'occurrenceId-1',
     correlationId: 'correlation-1',
     surface: 'background' as const,
     signal: new AbortController().signal,
-    isGenerationCurrent: () => true,
+    isOccurrenceCurrent: () => true,
 });
 
 describe('managed-services invocation adapter', () => {
@@ -39,7 +39,7 @@ describe('managed-services invocation adapter', () => {
         expect(adapter.bind(seed)).toBe(service);
         expect(bind).toHaveBeenCalledWith(seed);
         expect(adapter.isAvailable({
-            generation: seed.generation,
+            occurrenceId: seed.occurrenceId,
             contributionQualifiedId: seed.contribution.qualifiedId,
         })).toBe(true);
     });
@@ -47,7 +47,7 @@ describe('managed-services invocation adapter', () => {
     it('fails closed with the stable unavailable code when no owner is bound', async () => {
         const service = createManagedServicesInvocationAdapter().bind(seed);
         expect(createManagedServicesInvocationAdapter().isAvailable({
-            generation: seed.generation,
+            occurrenceId: seed.occurrenceId,
             contributionQualifiedId: seed.contribution.qualifiedId,
         })).toBe(false);
 
@@ -105,7 +105,7 @@ describe('managed-services invocation adapter', () => {
         const binding = withPluginInvocationServiceBindingAvailability(
             Object.freeze({
                 ...createLoggerAndEventsAvailablePluginInvocationServiceBinding(
-                    seed.generation,
+                    seed.occurrenceId,
                     'binding-1',
                 ),
                 connectedAccountScopes: Object.freeze([]),

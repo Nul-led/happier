@@ -28,7 +28,8 @@ test('tests workflow keeps slow CI jobs above the observed timeout floor', async
   assert.match(uiE2eJob, /shard:\s*\$\{\{ fromJSON\(inputs\.ui_e2e_specs != ''/);
   assert.match(uiE2eJob, /name:\s*UI E2E \(Playwright\) \/ shard \$\{\{ matrix\.shard \}\}\/18/);
   assert.match(uiE2eJob, /\[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18\]/);
-  assert.match(uiE2eJob, /--shard=\$\{\{ matrix\.shard \}\}\/18/);
+  assert.match(uiE2eJob, /select-ui-e2e-shard\.mjs --shard "\$\{\{ matrix\.shard \}\}\/18"/);
+  assert.match(uiE2eJob, /yarn -s test:e2e:ui -- "\$\{specs\[@\]\}"/);
   assert.match(uiE2eJob, /ui-e2e-playwright-artifacts-shard-\$\{\{ matrix\.shard \}\}-of-18/);
 
   assert.match(

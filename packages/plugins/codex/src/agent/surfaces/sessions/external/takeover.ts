@@ -16,7 +16,7 @@ type CodexExternalSessionTakeoverIdentity =
   Pick<
     AgentExternalSessionTakeoverResolveLaunchRequest,
     'source' | 'remoteSessionId' | 'linkData' | 'linkedDirectory'
-  >;
+  > & Readonly<{ transcriptStorage?: 'direct' | 'persisted' }>;
 
 type CodexTakeoverSource = Readonly<{
   home: 'user' | 'connectedService';
@@ -109,6 +109,14 @@ export function resolveCodexExternalSessionTakeoverPlan(
     return null;
   }
   const backendMode = runtimeDescriptor?.backendMode ?? linkMode;
+  const appServerTransport = runtimeDescriptor?.appServerTransport;
+  if (identity.transcriptStorage === 'direct' && appServerTransport !== 'daemonProxy') {
+    return null;
+  }
+
+  const applyConnectedAccountDefaults = identity.transcriptStorage === 'persisted'
+    && source.home === 'user'
+    && appServerTransport !== 'daemonProxy';
 
   return Object.freeze({
     ...(backendMode
@@ -116,6 +124,7 @@ export function resolveCodexExternalSessionTakeoverPlan(
           runtimeDescriptorV1: buildCodexAgentRuntimeDescriptorV1({
             backendMode,
             providerSessionId: remoteSessionId,
+            appServerTransport,
             home: source.home,
             homePath: source.homePath,
             connectedServiceId: source.connectedServiceId,
@@ -127,6 +136,7 @@ export function resolveCodexExternalSessionTakeoverPlan(
     environmentVariables: Object.freeze({
       CODEX_HOME: source.homePath,
     }),
+    ...(applyConnectedAccountDefaults ? { applyConnectedAccountDefaults: true as const } : {}),
   });
 }
 
@@ -143,6 +153,13 @@ export const codexExternalSessionTakeoverContribution:
         return { ok: false, code: 'unavailable' };
       }
       const plan = resolveCodexExternalSessionTakeoverPlan(request);
+      if (!plan && request.transcriptStorage === 'direct') {
+        const persistedPlan = resolveCodexExternalSessionTakeoverPlan({
+          ...request,
+          transcriptStorage: 'persisted',
+        });
+        if (persistedPlan) return { ok: false, code: 'unsupported' };
+      }
       return plan
         ? { ok: true, value: plan }
         : { ok: false, code: 'source_invalid' };

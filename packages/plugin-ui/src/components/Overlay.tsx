@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, type MutableRefObject, type ReactElement, type ReactNode, type RefObject } from 'react';
+import { useCallback, useContext, useMemo, useRef, type MutableRefObject, type ReactElement, type ReactNode, type RefObject } from 'react';
 import { View } from 'react-native';
 
 import {
@@ -10,7 +10,7 @@ import {
   type PluginUiPopoverContentControls,
   type PluginUiPopoverPresentation,
 } from '../presentationHost/context.js';
-import { HappierPressable } from '../presentation/interaction/Pressable.js';
+import { HappierPressable, type HappierPressableStyleState } from '../presentation/interaction/Pressable.js';
 import { HappierScrollArea, HappierStack } from '../presentation/layout/Layout.js';
 import { HappierText } from '../presentation/text/Text.js';
 import {
@@ -20,6 +20,17 @@ import {
   type HappierMenuEntry,
 } from '../presentation/interaction/Menu.js';
 import type { HappierTextVariant, HappierTone } from '../presentation/semantics.js';
+import { HAPPIER_PRESS_FEEDBACK_V1, happierPressTransitionStyle } from '../presentation/interaction/pressFeedback.js';
+import { resolveHappierButtonChrome } from '../presentation/interaction/buttonChrome.js';
+import { HAPPIER_ICON_BUTTON_SIZE, resolveHappierIconButtonChrome } from '../presentation/interaction/iconButtonChrome.js';
+import {
+  HappierFieldBoxChevron,
+  HappierFieldBoxTrigger,
+  resolveHappierFieldBoxLabel,
+} from '../presentation/form/FieldBox.js';
+import { resolveHappierUiPalette, useOptionalHappierUiPalette } from '../environment/context.js';
+import { Icon, type IconName } from './Icon.js';
+import { OverlayFieldTriggerContext } from './overlayFieldTrigger.js';
 import { Surface } from './Surface.js';
 import { usePluginTheme } from './PluginUiProvider.js';
 
@@ -38,6 +49,19 @@ export type PopoverProps = Readonly<{
   triggerTextVariant?: HappierTextVariant;
   /** Bounded semantic colour for the text inside Popover's owned trigger. */
   triggerTextTone?: HappierTone;
+  /**
+   * `text` (the default) draws the trigger as plain text. `control` draws it as
+   * a compact control on the theme's control surface — the look of a toolbar
+   * picker such as a view, sort or filter menu. `primary` draws it as the
+   * view's one primary button, for a primary action that is a choice ("Add a
+   * source" opening the sources that can be added).
+   */
+  triggerAppearance?: 'text' | 'control' | 'primary';
+  /**
+   * Draw the trigger as this glyph alone, an icon button, instead of its text: a pane header's "+" or
+   * a row's ⋯. `trigger` stays the words the control stands for; `triggerAccessibilityLabel` names it.
+   */
+  triggerIcon?: IconName;
   triggerAccessibilityLabel: string;
   /** Accessible name for the non-menu dialog surface; defaults to the trigger label. */
   contentAccessibilityLabel?: string;
@@ -82,6 +106,8 @@ function PopoverPresentation({
   trigger,
   triggerTextVariant = 'body',
   triggerTextTone = 'neutral',
+  triggerAppearance = 'text',
+  triggerIcon,
   triggerAccessibilityLabel,
   contentAccessibilityLabel: requestedContentAccessibilityLabel,
   children,
@@ -103,8 +129,11 @@ function PopoverPresentation({
     throw new TypeError('Popover requires a plain text trigger because it owns the trigger interaction.');
   }
   const nativeMinimumTouchTarget = useHappierNativeMinimumInteractiveTargetSize();
+  const theme = usePluginTheme();
   const host = useOptionalPluginUiPresentationHost();
   const followScrollRef = useOptionalPluginUiPopoverScrollSource();
+  const fieldTrigger = useContext(OverlayFieldTriggerContext);
+  const palette = useOptionalHappierUiPalette(theme) ?? resolveHappierUiPalette(theme);
   const anchorRef = useRef<View | null>(null);
   const ownedFocusReturnRef = useRef<View | null>(null);
   const focusReturnRef = requestedFocusReturnRef ?? ownedFocusReturnRef;
@@ -113,6 +142,13 @@ function PopoverPresentation({
     requestContextOpen(event, onOpenChange);
   }, [onOpenChange]);
   const contentAccessibilityLabel = requestedContentAccessibilityLabel ?? triggerAccessibilityLabel;
+  const iconChrome = (state: HappierPressableStyleState) => resolveHappierIconButtonChrome({
+    size: HAPPIER_ICON_BUTTON_SIZE, variant: 'plain', selected: state.selected,
+    hovered: state.hovered, pressed: state.pressed, focused: state.focused, disabled: state.disabled,
+    colors: { background: theme.colors.control, border: theme.colors.border,
+      hover: theme.colors.control, pressed: theme.colors.control,
+      selected: theme.colors.control, focus: theme.colors.focus },
+  });
   const hasContent = renderContent !== undefined || children !== undefined;
   const isMenuPresentation = presentation !== 'popover';
   const shouldAutoFocusOnOpen = hasContent || autoFocusOnOpen;
@@ -120,11 +156,13 @@ function PopoverPresentation({
     const renderedChildren = renderContent ? renderContent(controls) : children;
     if (renderedChildren === undefined || renderedChildren === null) return null;
     const contentBody = (
-      <HappierScrollArea style={{ maxHeight: controls.maxHeight }}>
-        <Surface padding="small">
-          <HappierStack gap={4}>{renderedChildren}</HappierStack>
-        </Surface>
-      </HappierScrollArea>
+      <OverlayFieldTriggerContext.Provider value={null}>
+        <HappierScrollArea style={{ maxHeight: controls.maxHeight }}>
+          <Surface padding="small">
+            <HappierStack gap={4}>{renderedChildren}</HappierStack>
+          </Surface>
+        </HappierScrollArea>
+      </OverlayFieldTriggerContext.Provider>
     );
     return isMenuPresentation
       ? contentBody
@@ -163,12 +201,70 @@ function PopoverPresentation({
           }),
           alignItems: 'center',
           justifyContent: 'center',
-          opacity: state.disabled ? 0.45 : state.pressed ? 0.75 : 1,
+          // Like Happier's page field trigger: it hugs its choice beside a label, and under a label
+          // on a narrow row it takes the row's width up to the field box's own maximum.
+          ...(fieldTrigger ? { alignSelf: 'stretch', alignItems: 'stretch' } : {}),
+          ...(!fieldTrigger && triggerIcon !== undefined ? iconChrome(state).frame : {}),
+          ...(!fieldTrigger && triggerIcon !== undefined ? { borderRadius: HAPPIER_ICON_BUTTON_SIZE / 2 } : {}),
+          ...(!fieldTrigger && triggerIcon === undefined && triggerAppearance === 'primary'
+            ? resolveHappierButtonChrome({
+                theme,
+                variant: 'primary',
+                disabled: state.disabled,
+                focused: state.focused,
+              }).style
+            : {}),
+          ...(!fieldTrigger && triggerIcon === undefined && triggerAppearance === 'control'
+            ? {
+                flexDirection: 'row',
+                gap: theme.spacing.xsmall,
+                paddingHorizontal: theme.spacing.medium,
+                borderRadius: theme.radii.control,
+                borderWidth: 1,
+                borderColor: state.focused ? theme.colors.focus : 'transparent',
+                backgroundColor: theme.colors.control,
+              }
+            : {}),
+          opacity: state.disabled ? 0.45 : state.pressed ? HAPPIER_PRESS_FEEDBACK_V1.opacity : 1,
+          ...happierPressTransitionStyle(state.pressed, ['opacity']),
         })}
       >
-        <HappierText accessible={false} variant={triggerTextVariant} tone={triggerTextTone}>
-          {trigger}
-        </HappierText>
+        {fieldTrigger ? (state) => {
+          // The field box shows the choice; the row title names the field.
+          const label = resolveHappierFieldBoxLabel({
+            value: fieldTrigger.value,
+            placeholder: fieldTrigger.placeholder,
+            colors: { valueColor: theme.colors.text, placeholderColor: palette.placeholder },
+          });
+          return (
+            <HappierFieldBoxTrigger
+              colors={{
+                borderColor: state.focused ? theme.colors.focus : palette.controlBorder,
+                backgroundColor: palette.fieldBackground,
+              }}
+              trailing={<HappierFieldBoxChevron open={open} color={theme.colors.secondaryText} />}
+            >
+              <HappierText accessible={false} numberOfLines={1} style={label.style}>{label.text}</HappierText>
+            </HappierFieldBoxTrigger>
+          );
+        } : triggerIcon !== undefined ? (state) => (
+          <View style={iconChrome({ ...state, pressed: false }).surface}>
+            <Icon name={triggerIcon} size="medium" tone="neutral" />
+          </View>
+        ) : triggerAppearance === 'primary' ? (
+          <HappierText
+            accessible={false}
+            variant="label"
+            numberOfLines={1}
+            style={{ color: resolveHappierButtonChrome({ theme, variant: 'primary', disabled: false, focused: false }).foreground }}
+          >
+            {trigger}
+          </HappierText>
+        ) : (
+          <HappierText accessible={false} variant={triggerTextVariant} tone={triggerTextTone} numberOfLines={1}>
+            {trigger}
+          </HappierText>
+        )}
       </HappierPressable>
       {host && open
         ? host.renderPopover({
@@ -195,6 +291,12 @@ export function Popover(props: PopoverProps): ReactElement {
 type MenuItemBase = Readonly<{
   id: string;
   label: string;
+  /** A consequential operation uses the theme's danger tone. */
+  destructive?: boolean;
+  /** Identity glyph owned by the existing public icon catalog. */
+  icon?: IconName;
+  /** Supporting identity or consequence, kept separate from the action label. */
+  subtitle?: string;
   disabled?: boolean;
 }>;
 
@@ -349,7 +451,9 @@ function MenuRows({
   const onItemKey = useCallback((key: string, currentIndex: number) => {
     return handleKeyPress(key, (item) => {
       onSelect(item.id);
-      controls.requestClose('selection');
+      // Toggling a checkbox row is one of several choices, so the menu stays
+      // open for the next; an action or a radio choice completes the menu.
+      if (item.kind !== 'checkbox') controls.requestClose('selection');
     }, currentIndex);
   }, [controls, handleKeyPress, onSelect]);
   const activeItemId = items[selectedIndex]?.id;
@@ -377,7 +481,7 @@ function MenuRows({
           : item.kind === 'radio'
             ? 'menuitemradio'
             : undefined}
-        accessibilityLabel={item.label}
+        accessibilityLabel={item.subtitle ? `${item.label} · ${item.subtitle}` : item.label}
         checked={checked}
         highlighted={index === selectedIndex}
         disabled={item.disabled}
@@ -387,7 +491,7 @@ function MenuRows({
           if (item.disabled) return;
           setSelectedIndex(index);
           onSelect(item.id);
-          controls.requestClose('selection');
+          if (item.kind !== 'checkbox') controls.requestClose('selection');
         }}
         style={(state) => ({
           ...(nativeMinimumTouchTarget === undefined ? {} : {
@@ -399,11 +503,20 @@ function MenuRows({
           borderWidth: 2,
           borderColor: state.focused ? theme.colors.focus : 'transparent',
           backgroundColor: state.highlighted || state.hovered ? theme.colors.control : 'transparent',
-          justifyContent: 'center',
-          opacity: state.disabled ? 0.45 : state.pressed ? 0.9 : 1,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: theme.spacing.small,
+          opacity: state.disabled ? 0.45 : state.pressed ? HAPPIER_PRESS_FEEDBACK_V1.opacitySubtle : 1,
         })}
       >
-        <HappierText>{item.label}</HappierText>
+        {item.icon ? <Icon name={item.icon} size="medium" tone={item.destructive ? 'danger' : 'secondary'} /> : null}
+        <View style={{ flex: 1, flexShrink: 1 }}>
+          <HappierText tone={item.destructive ? 'danger' : 'neutral'}>{item.label}</HappierText>
+          {item.subtitle ? <HappierText variant="caption" tone="secondary">{item.subtitle}</HappierText> : null}
+        </View>
+        {/* The checked state is drawn, not only announced. */}
+        {checked === true ? <Icon name="check" size="small" tone="accent" /> : null}
       </HappierPressable>
     );
   };

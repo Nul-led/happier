@@ -9,27 +9,41 @@ import {
 } from './options.ts';
 
 describe('bundled Plugin publisher options', () => {
+  it('publishes source Agent facts without preparing executable runtimes', () => {
+    const options = parseGeneratorCliArgs(['--agent-definitions']);
+    expect(options).toMatchObject({ agentDefinitionsOnly: true, mode: 'write' });
+    expect(resolvePluginAuthorRuntimeLoadScope(options)).toBe('none');
+    expect(() => parseGeneratorCliArgs(['--agent-definitions', '--aggregate'])).toThrow();
+    expect(() => parseGeneratorCliArgs(['--agent-definitions', '--workspace', 'plugins-claude'])).toThrow();
+  });
   it('keeps noncanonical target generation read-only at canonical preparation owners', () => {
     expect(resolveGeneratorAuthoringPreparationPolicy({
       mode: 'write',
       targetsCanonicalRoot: false,
+      targetOwnedOnly: false,
     })).toEqual({
       generatedCompilerInputMode: 'check',
-      publishPluginSdkApiGovernance: false,
     });
     expect(resolveGeneratorAuthoringPreparationPolicy({
       mode: 'write',
       targetsCanonicalRoot: true,
+      targetOwnedOnly: false,
     })).toEqual({
       generatedCompilerInputMode: 'write',
-      publishPluginSdkApiGovernance: true,
     });
     expect(resolveGeneratorAuthoringPreparationPolicy({
       mode: 'check',
       targetsCanonicalRoot: true,
+      targetOwnedOnly: false,
     })).toEqual({
       generatedCompilerInputMode: 'check',
-      publishPluginSdkApiGovernance: false,
+    });
+    expect(resolveGeneratorAuthoringPreparationPolicy({
+      mode: 'write',
+      targetsCanonicalRoot: true,
+      targetOwnedOnly: true,
+    })).toEqual({
+      generatedCompilerInputMode: 'check',
     });
   });
 
@@ -56,6 +70,38 @@ describe('bundled Plugin publisher options', () => {
       workspaceNames: ['plugins-codex'],
       aggregateOnly: false,
     });
+  });
+
+  it('retains only the semantic projection check as a public scope', () => {
+    expect(parseGeneratorCliArgs(['--mode', 'check'])).toMatchObject({
+      mode: 'check',
+      scope: 'projections',
+    });
+    expect(parseGeneratorCliArgs(['--mode', 'write'])).toMatchObject({
+      mode: 'write',
+      scope: 'all',
+    });
+    expect(() => parseGeneratorCliArgs(['--mode', 'check', '--scope', 'all']))
+      .toThrow(/scope.*projections/u);
+  });
+
+  it('admits target-owned publication only for a targeted write', () => {
+    expect(parseGeneratorCliArgs([
+      '--mode', 'write',
+      '--workspace', 'plugins-codex',
+      '--target-owned-only',
+    ])).toMatchObject({
+      mode: 'write',
+      workspaceNames: ['plugins-codex'],
+      targetOwnedOnly: true,
+    });
+    expect(() => parseGeneratorCliArgs(['--target-owned-only']))
+      .toThrow(/target-owned-only.*workspace/u);
+    expect(() => parseGeneratorCliArgs([
+      '--mode', 'check',
+      '--workspace', 'plugins-codex',
+      '--target-owned-only',
+    ])).toThrow(/target-owned-only.*write/u);
   });
 
   it('rejects write-time narrowed scope and unpublished targets', () => {

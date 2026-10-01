@@ -37,6 +37,21 @@ describe('normalizeClaudeUnifiedPromptIdentityText', () => {
       .not.toBe(normalizeClaudeUnifiedPromptIdentityText(right));
   });
 
+  it('matches visual wraps inside tokens without matching changed token content', () => {
+    const prompt = 'Check https://example.invalid/?q=' + 'a'.repeat(90) + ' and {"key":"value"}';
+    const wrapped = `Check https://example.invalid/?q=${'a'.repeat(50)}\n${'a'.repeat(40)} and {"key":"val\nue"}`;
+
+    expect(isClaudeUnifiedComposerTextMatch({ promptText: prompt, composerText: wrapped })).toBe(true);
+    expect(isClaudeUnifiedComposerTextMatch({
+      promptText: prompt,
+      composerText: wrapped.replace('val\nue', 'bad\nue'),
+    })).toBe(false);
+    expect(isClaudeUnifiedComposerTextMatch({
+      promptText: prompt,
+      composerText: wrapped.replace('a'.repeat(40), 'b'.repeat(40)),
+    })).toBe(false);
+  });
+
   it('matches a pasted prompt against the composer rendering of the injected text', () => {
     const injected = 'please review the queue drain\nand report back';
 

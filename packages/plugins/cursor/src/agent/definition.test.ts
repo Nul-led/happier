@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { AGENT_DEFINITION } from './definition.js';
 
 describe('Cursor agent definition', () => {
-  it('keeps Cursor Happier tool delivery on the shell bridge until native MCP is validated', () => {
+  it('advertises the MCP delivery path used by its ACP runtime', () => {
     expect(AGENT_DEFINITION.core.tools).toEqual({
-      delivery: 'shell_bridge',
+      delivery: 'native_mcp',
       support: 'experimental',
     });
   });

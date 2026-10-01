@@ -12,7 +12,7 @@ import {
   isScmPatchBoundToPath,
 } from '@happier-dev/plugin-sdk/scm';
 import type { ScmBackendContext } from '../types.js';
-import { normalizeCommitRef, runScmCommand } from '../runtime.js';
+import { getScmCommandIndeterminateErrorCode, normalizeCommitRef, runScmCommand, type ScmExecResult } from '../runtime.js';
 import { mapGitErrorCode } from '../remote.js';
 import { toLiteralPathspec, toRepoRootLiteralPathspec } from '../literalPathspec.js';
 import {
@@ -24,6 +24,7 @@ import {
 
 import { normalizePaths } from './normalizePaths.js';
 import { hasAnyIncludedOrPendingChanges, readGitSnapshotForChecks } from './snapshotChecks.js';
+import { readGitOperationRepositoryState } from './branchOperationState.js';
 
 function parseZTerminatedTokens(input: string): string[] {
     // Git uses `\0` as a separator for `-z` outputs; a trailing separator is common.
@@ -67,6 +68,34 @@ function parseGitNameStatusZPaths(input: string): Set<string> {
     return paths;
 }
 
+function amendAdmissionFailure(result: ScmExecResult, fallback: string): ScmCommitCreateResponse {
+    const errorCode = getScmCommandIndeterminateErrorCode(result) ?? mapGitErrorCode(result.stderr);
+    return { success: false, errorCode, error: result.stderr || fallback, outcome: { v: 1, kind: 'failed', errorCode, nextActions: [] } };
+}
+
+async function evaluateAmendAdmission(context: ScmBackendContext, acknowledged: boolean): Promise<ScmCommitCreateResponse | null> {
+    const head = await runGitCommand({ cwd: context.cwd, args: ['rev-parse', '--verify', 'HEAD'], timeoutMs: 5000 });
+    if (!head.success || !head.stdout.trim()) return amendAdmissionFailure(head, 'Could not read the commit to amend');
+    const branch = await runGitCommand({ cwd: context.cwd, args: ['rev-parse', '--symbolic-full-name', 'HEAD'], timeoutMs: 5000 });
+    if (!branch.success || !branch.stdout.trim()) return amendAdmissionFailure(branch, 'Could not inspect the current branch');
+    const branchRef = branch.stdout.trim();
+    // Detached HEAD has no branch upstream; absence is not a claim about all remotes.
+    if (!branchRef.startsWith('refs/heads/')) return null;
+    const metadata = await runGitCommand({ cwd: context.cwd, args: ['for-each-ref', '--format=%(objectname)%00%(upstream)', branchRef], timeoutMs: 5000 });
+    if (!metadata.success) return amendAdmissionFailure(metadata, 'Could not inspect upstream configuration');
+    const [branchOid, upstreamRef] = metadata.stdout.trim().split('\0');
+    if (branchOid !== head.stdout.trim()) return amendAdmissionFailure(metadata, 'Could not prove the current branch metadata');
+    if (!upstreamRef) return null;
+    const upstream = await runGitCommand({ cwd: context.cwd, args: ['rev-parse', '--verify', `${upstreamRef}^{commit}`], timeoutMs: 5000 });
+    if (!upstream.success || !upstream.stdout.trim()) return amendAdmissionFailure(upstream, 'Could not read the configured upstream');
+    const published = await runGitCommand({ cwd: context.cwd, args: ['merge-base', '--is-ancestor', head.stdout.trim(), upstream.stdout.trim()], timeoutMs: 5000 });
+    if (getScmCommandIndeterminateErrorCode(published) || (!published.success && published.exitCode !== 1)) return amendAdmissionFailure(published, 'Could not determine whether the commit is upstream');
+    if (!published.success || acknowledged) return null;
+    const errorCode = SCM_OPERATION_ERROR_CODES.COMMIT_AMEND_PUBLISHED;
+    const error = 'The commit is already reachable from its upstream. Amending it rewrites published history and requires acknowledgment.';
+    return { success: false, errorCode, error, outcome: { v: 1, kind: 'needs_input', errorCode, message: error, nextActions: [] } };
+}
+
 export async function gitCommitCreate(input: {
     context: ScmBackendContext;
     request: ScmCommitCreateRequest;
@@ -86,6 +115,12 @@ export async function gitCommitCreate(input: {
             errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
             error: `Commit message exceeds maximum length of ${SCM_COMMIT_MESSAGE_MAX_LENGTH} characters`,
         };
+    }
+
+    const isAmend = request.mode === 'amend';
+    if (isAmend) {
+        const admissionFailure = await evaluateAmendAdmission(context, request.allowPublishedAmend === true);
+        if (admissionFailure) return admissionFailure;
     }
 
     const hasPatchSelection = Array.isArray(request.patches) && request.patches.length > 0;
@@ -145,7 +180,7 @@ export async function gitCommitCreate(input: {
         }
     }
 
-    const usesIsolatedIndex = Boolean(request.scope) || hasPatchSelection;
+    const usesIsolatedIndex = isAmend || Boolean(request.scope) || hasPatchSelection;
     let temporaryIndex: GitTemporaryIndex | null = null;
     if (usesIsolatedIndex) {
         const tempIndex = await createGitTemporaryIndex({
@@ -294,7 +329,7 @@ export async function gitCommitCreate(input: {
                     : 'Failed to inspect included changes',
             };
         }
-        if (hasIncludedChanges.exitCode === 0) {
+        if (hasIncludedChanges.exitCode === 0 && !isAmend) {
             return {
                 success: false,
                 errorCode: SCM_OPERATION_ERROR_CODES.COMMIT_REQUIRED,
@@ -304,15 +339,26 @@ export async function gitCommitCreate(input: {
 
         const commit = await runGitCommand({
             cwd: context.cwd,
-            args: ['commit', '-m', message],
+            args: ['commit', ...(isAmend ? ['--amend'] : []), ...(request.signOff ? ['--signoff'] : []), '-m', message],
             timeoutMs: 20_000,
             env: gitEnv,
         });
-        if (!commit.success) {
+        const indeterminateErrorCode = getScmCommandIndeterminateErrorCode(commit);
+        if (indeterminateErrorCode) {
             return {
                 success: false,
-                errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+                errorCode: indeterminateErrorCode,
+                error: commit.stderr || 'Commit completion could not be determined',
+                outcome: { v: 1, kind: 'outcome_unknown', errorCode: indeterminateErrorCode, reconciliation: { kind: 'repository_status', cwd: context.cwd }, nextActions: [{ kind: 'refresh' }] },
+            };
+        }
+        if (!commit.success) {
+            const errorCode = mapGitErrorCode(commit.stderr);
+            return {
+                success: false,
+                errorCode,
                 error: commit.stderr || 'Commit failed',
+                outcome: { v: 1, kind: 'failed', errorCode, nextActions: [] },
             };
         }
 
@@ -374,6 +420,7 @@ export async function gitCommitCreate(input: {
                 errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
                 error: `Commit was created, but live index synchronization failed: ${liveIndexSyncError}`,
                 commitSha,
+                outcome: commitSha ? { v: 1, kind: 'effect_applied_with_warning', errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED, effect: { kind: 'commit', commitSha }, nextActions: [{ kind: 'reconcile_index' }] } : { v: 1, kind: 'outcome_unknown', errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED, reconciliation: { kind: 'repository_status', cwd: context.cwd }, nextActions: [{ kind: 'refresh' }] },
             };
         }
         return {
@@ -453,12 +500,30 @@ export async function gitCommitBackout(input: {
         args: ['revert', '--no-edit', commitRef.commit],
         timeoutMs: 20_000,
     });
+    let repositoryState;
+    try {
+        repositoryState = await readGitOperationRepositoryState(context);
+    } catch {
+        return {
+            success: false,
+            errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+            error: 'Could not refresh repository state after backout',
+            stdout: backout.stdout,
+            stderr: backout.stderr,
+            outcome: { v: 1, kind: 'outcome_unknown', errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED, reconciliation: { kind: 'repository_status', cwd: context.cwd }, nextActions: [{ kind: 'refresh' }] },
+        };
+    }
+    const indeterminateErrorCode = getScmCommandIndeterminateErrorCode(backout);
+    if (indeterminateErrorCode && !repositoryState.hasConflicts) return { success: false, errorCode: indeterminateErrorCode, error: backout.stderr || 'Backout completion could not be determined', stdout: backout.stdout, stderr: backout.stderr, outcome: { v: 1, kind: 'outcome_unknown', errorCode: indeterminateErrorCode, repositoryState, reconciliation: { kind: 'repository_status', cwd: context.cwd }, nextActions: [{ kind: 'refresh' }] } };
     return backout.success
-        ? { success: true, stdout: backout.stdout, stderr: backout.stderr }
+        ? { success: true, stdout: backout.stdout, stderr: backout.stderr, outcome: { v: 1, kind: 'succeeded', repositoryState, nextActions: [] } }
         : {
             success: false,
             errorCode: mapGitErrorCode(backout.stderr),
             error: backout.stderr || 'Failed to backout commit',
             stderr: backout.stderr,
+            outcome: repositoryState.hasConflicts
+                ? { v: 1, kind: 'conflicted', errorCode: SCM_OPERATION_ERROR_CODES.CONFLICTING_WORKTREE, repositoryState, nextActions: [{ kind: 'resolve_conflicts' }, { kind: 'abort' }] }
+                : { v: 1, kind: 'failed', errorCode: mapGitErrorCode(backout.stderr), repositoryState, nextActions: [] },
         };
 }

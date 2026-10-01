@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 
-import { hasReviewSensitivePluginUpdate } from './updateReviewPolicy';
+import { hasPluginAuthorityExpansion } from './updateReviewPolicy';
 
 const NETWORK_TARGET = Object.freeze({
     kind: 'fixedOrigin',
@@ -43,7 +43,7 @@ function manifestWithLocalizedReasons(options: Readonly<{
     return parsed;
 }
 
-describe('hasReviewSensitivePluginUpdate localized host-access reasons', () => {
+describe('hasPluginAuthorityExpansion localized host-access reasons', () => {
     it('does not reopen review when separately parsed manifests declare the same localized reason objects', () => {
         const previous = manifestWithLocalizedReasons({
             version: '1.0.0',
@@ -56,7 +56,7 @@ describe('hasReviewSensitivePluginUpdate localized host-access reasons', () => {
             optionalReason: { key: 'acme.access.sessions', fallback: 'Read your sessions' },
         });
 
-        expect(hasReviewSensitivePluginUpdate(previous, candidate, [])).toBe(false);
+        expect(hasPluginAuthorityExpansion(previous, candidate, [])).toBe(false);
     });
 
     /**
@@ -81,7 +81,7 @@ describe('hasReviewSensitivePluginUpdate localized host-access reasons', () => {
             optionalReason: { key: 'acme.access.sessionsV2', fallback: 'Read your sessions today' },
         });
 
-        expect(hasReviewSensitivePluginUpdate(previous, rekeyed, [])).toBe(false);
-        expect(hasReviewSensitivePluginUpdate(previous, reworded, [])).toBe(false);
+        expect(hasPluginAuthorityExpansion(previous, rekeyed, [])).toBe(false);
+        expect(hasPluginAuthorityExpansion(previous, reworded, [])).toBe(false);
     });
 });

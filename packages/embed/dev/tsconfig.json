@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"], "strict": true, "noEmit": true,
+    "allowJs": true, "checkJs": false, "skipLibCheck": true, "jsx": "react-jsx",
+    "paths": {
+      "@happier-dev/embed": ["../src/index.ts"],
+      "@happier-dev/embed/react": ["../src/react/index.tsx"]
+    }
+  },
+  "include": ["host.tsx", "leads-fixture/index.ts", "leads-fixture/contracts.mjs"]
+}

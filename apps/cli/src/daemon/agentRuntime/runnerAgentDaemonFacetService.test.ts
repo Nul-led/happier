@@ -16,13 +16,18 @@ import {
 } from './runnerAgentDaemonFacetService';
 
 const sessionId = 'session-1';
+const retainedAgentGeneration = 'generation-1';
 const retainedAgent = createAgentSessionRunnerFactoryBinding({
   v: 1,
   pluginId: 'happier.agent.acme',
   pluginVersion: '1.0.0',
   agentId: 'acme',
   localAgentId: 'acme',
-  immutableGenerationId: 'generation-1',
+  sourceCustody: {
+    kind: 'managed',
+    immutableGenerationId: retainedAgentGeneration,
+    installSource: 'localPath',
+  },
   locator: {
     module: './agent/factory.js',
     export: 'createAgentRuntime',
@@ -121,7 +126,7 @@ async function setup(options: SetupOptions = {}) {
   await privateOwner.install(operations);
   let current = true;
   const snapshotVoiceAuthority = vi.fn(async () => ({
-    agentGeneration: retainedAgent.immutableGenerationId,
+    agentSourceCustody: retainedAgent.sourceCustody,
     providers: [],
   }));
   const waitVoiceAuthorityRetired = vi.fn(async () => undefined);
@@ -874,7 +879,7 @@ describe('runner Agent daemon-owned facet service', () => {
       }),
     ).resolves.toEqual({
       kind: 'voice.authority.snapshot',
-      agentGeneration: retainedAgent.immutableGenerationId,
+      agentSourceCustody: retainedAgent.sourceCustody,
       providers: [],
     });
     expect(fixture.snapshotVoiceAuthority).toHaveBeenCalledWith(direct);

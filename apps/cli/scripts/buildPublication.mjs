@@ -10,7 +10,7 @@
  *    build isolates that failure instead and keeps the plugin's last-green package
  *    installed, so a pack that follows it ships bytes current source cannot produce.
  *    That step also regenerates the runtime artifact records and the build-only source
- *    integrity inventory (`scripts/build-owned/generatedBundledPluginSourceIntegrities.json`).
+ *    package tree, validated directly against the prepared package before publication.
  * 2. The CLI dist build runs AFTER that regeneration, so the dist runtime-input
  *    fingerprint covers the runtime records this publication produced. Running it first is what
  *    makes `assertCliPackInputCurrentness` in `packTarball.mjs` trip on its own inputs.

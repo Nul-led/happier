@@ -4,14 +4,16 @@ import type {
   ScmWorkingSnapshot,
 } from '@happier-dev/plugin-sdk/scm';
 import {
-    evaluateScmRemoteMutationPreconditions,
+    normalizeScmOperationOutcome,
     SCM_OPERATION_ERROR_CODES,
 } from '@happier-dev/plugin-sdk/scm';
 
 import type { ScmBackendContext } from '../types.js';
 import { runScmCommand } from '../runtime.js';
 import { buildScmNonInteractiveEnv } from '../providers/shared/nonInteractiveEnv.js';
-import { mapGitErrorCode, normalizeScmRemoteRequest } from '../remote.js';
+import { normalizeScmRemoteRequest } from '../remote.js';
+import { evaluateRemoteMutationPreconditions } from '../remoteGuards.js';
+import { evaluateGitPushConfiguration, finalizeGitRemoteMutation } from './remoteOperations.js';
 
 import { invalidatePrStatusCacheAfterSuccessfulScmMutation } from '../hostingProviders/prStatusCacheInvalidation.js';
 import { readGitSnapshotForChecks } from './snapshotChecks.js';
@@ -46,6 +48,7 @@ export async function gitRemotePublish(input: {
             success: false,
             errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
             error: normalizedRemoteRequest.error,
+            outcome: normalizeScmOperationOutcome({ success: false, errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST, error: normalizedRemoteRequest.error }),
         };
     }
 
@@ -55,6 +58,7 @@ export async function gitRemotePublish(input: {
             success: false,
             errorCode: snapshotResponse.errorCode ?? SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
             error: snapshotResponse.error || 'Failed to evaluate repository state',
+            outcome: normalizeScmOperationOutcome({ success: false, errorCode: snapshotResponse.errorCode ?? SCM_OPERATION_ERROR_CODES.COMMAND_FAILED, error: snapshotResponse.error }),
         };
     }
 
@@ -65,60 +69,14 @@ export async function gitRemotePublish(input: {
             success: false,
             errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
             error: 'Publish is unavailable while HEAD is detached',
+            outcome: normalizeScmOperationOutcome({ success: false, errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST }),
         };
     }
 
-    const guard = evaluateScmRemoteMutationPreconditions({
+    const guard = evaluateRemoteMutationPreconditions({
         kind: 'push',
         snapshot,
-        hasExplicitTarget: true,
-        policy: {
-            requireUpstreamWhenNoExplicitTarget: false,
-            requireActiveHead: true,
-            blockPushOnConflicts: true,
-            blockPushWhenBehind: true,
-            requireCleanPull: false,
-        },
-        mapReasonToError: (kind, reason) => {
-            switch (reason) {
-                case 'conflicts_present':
-                    return {
-                        ok: false,
-                        errorCode: SCM_OPERATION_ERROR_CODES.CONFLICTING_WORKTREE,
-                        error: 'Resolve conflicts before publishing.',
-                    };
-                case 'detached_head':
-                    return {
-                        ok: false,
-                        errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
-                        error: 'Publish is unavailable while HEAD is detached',
-                    };
-                case 'branch_behind_remote':
-                    return {
-                        ok: false,
-                        errorCode: SCM_OPERATION_ERROR_CODES.REMOTE_NON_FAST_FORWARD,
-                        error: 'Local branch is behind upstream. Pull before publishing.',
-                    };
-                case 'clean_worktree_required':
-                    return {
-                        ok: false,
-                        errorCode: SCM_OPERATION_ERROR_CODES.CONFLICTING_WORKTREE,
-                        error: 'Working tree must be clean before publishing',
-                    };
-                case 'upstream_required':
-                    return {
-                        ok: false,
-                        errorCode: SCM_OPERATION_ERROR_CODES.REMOTE_UPSTREAM_REQUIRED,
-                        error: kind === 'push' ? 'Set an upstream branch before publishing.' : 'Set an upstream branch before publishing.',
-                    };
-                default:
-                    return {
-                        ok: false,
-                        errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
-                        error: 'Publish preconditions failed',
-                    };
-            }
-        },
+        hasExplicitRemoteOrBranch: true,
     });
 
     if (!guard.ok) {
@@ -126,6 +84,7 @@ export async function gitRemotePublish(input: {
             success: false,
             errorCode: guard.errorCode,
             error: guard.error,
+            outcome: normalizeScmOperationOutcome({ success: false, errorCode: guard.errorCode, error: guard.error }),
         };
     }
 
@@ -138,8 +97,12 @@ export async function gitRemotePublish(input: {
             success: false,
             errorCode: SCM_OPERATION_ERROR_CODES.REMOTE_NOT_FOUND,
             error: remote.error,
+            outcome: normalizeScmOperationOutcome({ success: false, errorCode: SCM_OPERATION_ERROR_CODES.REMOTE_NOT_FOUND, error: remote.error }),
         };
     }
+
+    const configured = await evaluateGitPushConfiguration({ context: input.context, remote: remote.remote, hasExplicitRefspec: true });
+    if (configured) return configured;
 
     const args = ['push', '--set-upstream', remote.remote, head];
     const push = await runScmCommand({
@@ -150,15 +113,7 @@ export async function gitRemotePublish(input: {
         env: buildScmNonInteractiveEnv(),
     });
 
-    const response: ScmRemotePublishResponse = push.success
-        ? { success: true, stdout: push.stdout, stderr: push.stderr }
-        : {
-            success: false,
-            errorCode: mapGitErrorCode(push.stderr),
-            error: push.stderr || 'Publish failed',
-            stdout: push.stdout,
-            stderr: push.stderr,
-        };
+    const response = await finalizeGitRemoteMutation({ context: input.context, kind: 'push', command: push, target: { remote: remote.remote, branch: head }, effect: { kind: 'remote', remote: remote.remote, branch: head } });
     invalidatePrStatusCacheAfterSuccessfulScmMutation({
         response,
         context: input.context,

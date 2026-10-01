@@ -180,11 +180,36 @@ export type ManagedServiceCredentialBinding = Readonly<{
     injection: ManagedServiceMaterializationInjection;
 }>;
 
+export type ManagedServiceHttpHealthJsonPropertyRequirement =
+    | 'true'
+    | 'nonEmptyString'
+    | 'nonNegativeInteger'
+    | 'array'
+    | 'object';
+
+export type ManagedServiceHttpHealthResponse = Readonly<{
+    kind: 'jsonObject';
+    required: Readonly<Record<
+        string,
+        ManagedServiceHttpHealthJsonPropertyRequirement
+    >>;
+}>;
+
+export type ManagedServiceHttpHealthAlternative = Readonly<{
+    target: Readonly<{ kind: 'servicePath'; path: string }>;
+    response: ManagedServiceHttpHealthResponse;
+}>;
+
 export type ManagedServiceHealthCheck =
     | Readonly<{ kind: 'none' }>
     | Readonly<{
         kind: 'http';
         target?: Readonly<{ kind: 'servicePath'; path: string }>;
+        /**
+         * Ordered shaped probes sharing this health check's one timeout and
+         * authenticated request context. Mutually exclusive with `target`.
+         */
+        alternatives?: readonly ManagedServiceHttpHealthAlternative[];
         headers?: Readonly<Record<string, string>>;
         timeoutMs?: number;
     }>

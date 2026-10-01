@@ -1,15 +1,14 @@
-import * as React from 'react';
 import { describe, expect, it } from 'vitest';
 
 import type { TriageListDisplayRowV1 } from '../marks/pinnedRows.js';
 import type { TriageTextResolverV1 } from '../shell/windowState.js';
 import {
   planTriageListContinuationV1,
-  type TriageListContinuationCopyV1,
+  readTriageWindowStatementV1,
 } from './continuation.js';
 import {
   TRIAGE_ROW_SELECT_ACTION_ID_V1,
-  TriageListContinuationRow,
+  readTriageRowMarkV1,
   triageListRowItemProps,
   triageListRowSecondaryActionsV1,
   triageListRowTestId,
@@ -39,6 +38,9 @@ function displayRow(
     scopeLabel: 'example/repository',
     detail: null,
     tone: 'neutral',
+    detailKind: null,
+    lifecyclePresentation: 'active',
+    activityAtMs: null,
     pinned: false,
     materialized: true,
     sourceInstanceId: null,
@@ -171,6 +173,7 @@ describe('a PRs & Issues entry row', () => {
       displayRow({
         detail: 'No longer reported by the source',
         tone: 'danger',
+        detailKind: 'presence',
         lifecycleLabel: null,
       }),
       false,
@@ -179,7 +182,10 @@ describe('a PRs & Issues entry row', () => {
 
     expect(props.accessibilityHint)
       .toBe('pull-request, example/repository, No longer reported by the source');
-    expect(props.tone).toBe('danger');
+    // The caution lives on the note that states it; the title stays a title,
+    // so a dropped row still reads as a row (DESIGN-SPEC §5.5).
+    expect(props.detailTone).toBe('danger');
+    expect(props).not.toHaveProperty('tone');
   });
 
   it('never repeats the entry it has already been named after', () => {
@@ -198,7 +204,7 @@ describe('a PRs & Issues entry row', () => {
     // The description is the row's own visible content, not a second copy that
     // can drift from it. Nothing is announced that the row does not display.
     const props = triageListRowItemProps(
-      displayRow({ detail: 'Your review is requested' }),
+      displayRow({ detail: 'Your review is requested', detailKind: 'attention' }),
       true,
       ANNOUNCED,
     );
@@ -208,7 +214,7 @@ describe('a PRs & Issues entry row', () => {
       title: 'Replace the duplicated normalizer',
       subtitle: 'pull-request · example/repository · Open',
       detail: 'Your review is requested',
-      tone: 'neutral',
+      detailTone: 'accent',
       busy: true,
       accessibilityLabel: 'Replace the duplicated normalizer',
       accessibilityHint: 'pull-request, example/repository, Open, Your review is requested',
@@ -221,6 +227,55 @@ describe('a PRs & Issues entry row', () => {
       subtitleNumberOfLines: 1,
       detailNumberOfLines: 1,
     });
+  });
+
+  it('makes a required-attention reason the one loud fact and keeps a summary quiet', () => {
+    const attention = triageListRowItemProps(
+      displayRow({ detail: 'Your review is requested', detailKind: 'attention' }),
+      false,
+      ANNOUNCED,
+    );
+    const summary = triageListRowItemProps(
+      displayRow({ detail: 'Adds retries to the fetcher', detailKind: 'summary' }),
+      false,
+      ANNOUNCED,
+    );
+    const suggestion = triageListRowItemProps(
+      displayRow({ detail: 'You were mentioned', detailKind: 'suggestion' }),
+      false,
+      ANNOUNCED,
+    );
+    expect(attention.detailTone).toBe('accent');
+    expect(summary).not.toHaveProperty('detailTone');
+    expect(suggestion).not.toHaveProperty('detailTone');
+    expect(readTriageRowMarkV1(displayRow({ detailKind: 'attention' }))).toEqual({ name: 'change-open', tone: 'accent' });
+    expect(readTriageRowMarkV1(displayRow({ lifecyclePresentation: 'resolved' }))).toEqual({ name: 'change-complete', tone: 'secondary' });
+    expect(readTriageRowMarkV1(displayRow({ lifecyclePresentation: null, detailKind: 'presence', tone: 'warning' })))
+      .toEqual({ name: 'info', tone: 'warning' });
+  });
+
+  it('marks an entry by its kind, and by where its lifecycle stands', () => {
+    // Before the kind vocabulary existed every row wore a pull-request glyph;
+    // an issue list and an error-group list were indistinguishable at a glance.
+    expect(readTriageRowMarkV1(displayRow({}), 'issue').name).toBe('issue');
+    expect(readTriageRowMarkV1(displayRow({}), 'errorIssue').name).toBe('bug');
+    expect(readTriageRowMarkV1(displayRow({}), 'pullRequest').name).toBe('change-open');
+    expect(readTriageRowMarkV1(displayRow({ lifecyclePresentation: 'resolved' }), 'issue').name).toBe('check');
+    expect(readTriageRowMarkV1(displayRow({ lifecyclePresentation: 'resolved' }), 'pullRequest').name)
+      .toBe('change-complete');
+    expect(readTriageRowMarkV1(displayRow({ lifecyclePresentation: 'closed' }), 'errorIssue').name).toBe('close');
+    // A kind nobody declared keeps the lifecycle glyph rather than a guess.
+    expect(readTriageRowMarkV1(displayRow({}), null).name).toBe('change-open');
+  });
+
+  it('shows and says the provider activity age in the same place', () => {
+    const props = triageListRowItemProps(
+      displayRow({ activityAtMs: ANNOUNCED.nowMs - 5 * 60_000 }),
+      false,
+      ANNOUNCED,
+    );
+    expect(props.subtitle).toBe('pull-request · example/repository · Open · 5 minutes ago');
+    expect(props.accessibilityHint).toBe('pull-request, example/repository, Open, 5 minutes ago');
   });
 
   it('bounds the row even when the projected title is a paragraph', () => {
@@ -257,66 +312,56 @@ describe('a PRs & Issues entry row', () => {
   });
 });
 
-describe("a section's continuation row", () => {
-  function continuationRow(
-    copy: Partial<TriageListContinuationCopyV1> = {},
-    onLoadMore: () => void = () => undefined,
-  ): React.ReactElement<Record<string, unknown>> {
-    return TriageListContinuationRow({
-      copy: {
-        title: 'More entries may exist',
-        description: 'This window is bounded; load more to reach the entries after these.',
-        tone: 'neutral',
-        busy: false,
-        ...copy,
+describe('the window-honesty line', () => {
+  const text = (key: string, fallback?: string, values?: Readonly<Record<string, string | number>>) =>
+    (fallback ?? key).replace(/\{(\w+)\}/gu, (_match, name: string) => String(values?.[name] ?? ''));
+  const entries = planTriageListContinuationV1({ section: 'entries', state: { kind: 'available' }, text });
+  const sources = [
+    { sourceInstanceId: 'gh', displayLabel: 'GitHub' },
+    { sourceInstanceId: 'ado', displayLabel: 'Azure DevOps' },
+  ];
+
+  it('says the loaded rows are everything only when the window claims complete coverage', () => {
+    expect(readTriageWindowStatementV1({
+      loadedCount: 12,
+      window: { coverage: 'complete', lanes: [] },
+      configuredSources: sources,
+      entries,
+      text,
+    })).toEqual(['12 loaded', 'complete']);
+  });
+
+  it('names the connections that may have more, rather than computing a total it does not know', () => {
+    expect(readTriageWindowStatementV1({
+      loadedCount: 12,
+      window: {
+        coverage: 'partial',
+        lanes: [
+          { sourceInstanceId: 'gh', source: SOURCE, health: { kind: 'walkFinished' }, exhausted: true },
+          { sourceInstanceId: 'ado', source: SOURCE, health: { kind: 'walkFinished' }, exhausted: false },
+        ],
       },
-      onLoadMore,
-    }) as React.ReactElement<Record<string, unknown>>;
-  }
-
-  it('announces the statement that the section is not finished', () => {
-    // §4.2 chose a stated row over an invisible scroll trigger precisely so the
-    // limit is announced. A name pinned to the heading alone said "More entries
-    // may exist" and withheld the sentence that says why.
-    const element = continuationRow();
-
-    expect(element.props.accessibilityLabel).toBe('More entries may exist');
-    expect(element.props.accessibilityHint)
-      .toBe('This window is bounded; load more to reach the entries after these.');
-    expect(element.props.subtitle)
-      .toBe('This window is bounded; load more to reach the entries after these.');
+      configuredSources: sources,
+      entries,
+      text,
+    })).toEqual(['12 loaded', 'Azure DevOps may have more']);
   });
 
-  it('carries the section continuation control, and it is what invokes the read', () => {
-    // The row was written inert because there was nothing for it to invoke.
-    // There is now, and the press has to reach it — a labelled control that
-    // does nothing is the exact failure the inert row was chosen to avoid.
-    let demands = 0;
-    const element = continuationRow(
-      { actionLabel: 'Load more' },
-      () => { demands += 1; },
-    );
-    const accessory = element.props.accessory as React.ReactElement<Record<string, unknown>>;
-
-    expect(accessory.props.title).toBe('Load more');
-    expect(accessory.props.busy).toBe(false);
-    (accessory.props.onPress as () => void)();
-    expect(demands).toBe(1);
+  it('says a failed read in the continuation copy\u2019s own words, and nothing before a window exists', () => {
+    const failed = planTriageListContinuationV1({ section: 'entries', state: { kind: 'failed' }, text });
+    expect(readTriageWindowStatementV1({
+      loadedCount: 3, window: { coverage: 'partial', lanes: [] }, configuredSources: sources, entries: failed, text,
+    })).toEqual(['3 loaded', failed.title]);
+    expect(readTriageWindowStatementV1({
+      loadedCount: 0, window: null, configuredSources: sources, entries, text,
+    })).toBeUndefined();
   });
 
-  it('renders no control at all when pressing would read nothing', () => {
-    // Not a DISABLED control: the row's own copy already says why there is
-    // nothing to press, and offering a dead affordance beside it is what
-    // `core/CORPUS.md` §4.2 refuses.
-    expect(Object.hasOwn(continuationRow().props, 'accessory')).toBe(false);
-  });
-
-  it('keeps the control mounted and busy while the read it asked for runs', () => {
-    // Unmounting it would move focus off the thing the reader just pressed.
-    const accessory = continuationRow({ actionLabel: 'Load more', busy: true })
-      .props.accessory as React.ReactElement<Record<string, unknown>>;
-
-    expect(accessory.props.busy).toBe(true);
+  it('says what the pins have left, beside the window, while there are more of them', () => {
+    const pins = planTriageListContinuationV1({ section: 'pins', state: { kind: 'available' }, text });
+    expect(readTriageWindowStatementV1({
+      loadedCount: 0, window: null, configuredSources: sources, entries, pins, text,
+    })).toEqual([pins.title]);
   });
 });
 

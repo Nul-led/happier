@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import {
     PluginOpenableContentViewerContributionV1Schema,
+    PluginProjectionV2Schema,
     PluginUiViewV2Schema,
 } from '@happier-dev/protocol';
 import { PLUGIN_UI_HOST_API_VERSION_V1 } from '@happier-dev/protocol/plugins/ui';
@@ -15,6 +16,20 @@ import type {
     ResolvedUiViewV2Contribution,
 } from '../types';
 import type { StablePluginDeclarativeModel } from '@/plugins/runtime/invocation/services/declarativeModel';
+import {
+    createPluginRuntimeOccurrenceId,
+    type PluginRuntimeOccurrenceId,
+} from '@/plugins/runtime/runtimeSlots';
+
+const admittedOccurrencesByPluginId = new Map<string, PluginRuntimeOccurrenceId>();
+
+function admittedOccurrenceForPlugin(pluginId: string): PluginRuntimeOccurrenceId {
+    const existing = admittedOccurrencesByPluginId.get(pluginId);
+    if (existing) return existing;
+    const occurrenceId = createPluginRuntimeOccurrenceId(pluginId);
+    admittedOccurrencesByPluginId.set(pluginId, occurrenceId);
+    return occurrenceId;
+}
 
 it('projects inline HTML source through the canonical renderer reference without an Artifact entry', () => {
     expect(projectPluginUiRendererRef({
@@ -99,7 +114,9 @@ it('reports admitted inline source availability without looking for an Artifact'
     })).toEqual({ state: 'available', reason: 'available', diagnostics: [] });
 });
 
-function createEmptyResolvedContributionRegistry(): ResolvedContributionRegistry {
+function createEmptyResolvedContributionRegistry(
+    ...admittedPluginIds: readonly string[]
+): ResolvedContributionRegistry {
     return {
         agents: [],
                 actions: [],
@@ -113,7 +130,11 @@ function createEmptyResolvedContributionRegistry(): ResolvedContributionRegistry
         resourcesById: new Map(),
                 catalogEntriesById: {},
         agentDefinitionsById: new Map(),
-                pluginDiagnosticsByPluginId: {},
+        pluginDiagnosticsByPluginId: {},
+        occurrenceIdsByPluginId: Object.fromEntries(admittedPluginIds.map((pluginId) => [
+            pluginId,
+            admittedOccurrenceForPlugin(pluginId),
+        ])),
     };
 }
 
@@ -134,7 +155,10 @@ const emptyDeclarativeInventory = Object.freeze({
 describe('plugin UI projection family', () => {
     it('stamps every UI entry with the exact current materialization rather than a coarse machine identity', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.materialized'),
+            occurrenceIdsByPluginId: {
+                'acme.materialized': 'materialized-occurrence-a',
+            },
             uiRenderersV2: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -187,6 +211,7 @@ describe('plugin UI projection family', () => {
 
         expect(project(undefined)).not.toHaveProperty('materializationRef');
         expect(project('materialization-a')).toMatchObject({
+            occurrenceId: 'materialized-occurrence-a',
             serverIdentityId: 'srv_projection_fixture',
             materializationRef: {
                 machineId: 'machine_projection_fixture',
@@ -204,6 +229,11 @@ describe('plugin UI projection family', () => {
         expect(project('materialization-b')).not.toMatchObject({
             materializationRef: { materializationId: 'materialization-a' },
         });
+
+        expect(buildPluginProjectionV2({
+            registry: { ...registry, occurrenceIdsByPluginId: {} },
+            generation: 7,
+        }).familiesById.pluginUi?.entriesById[entryId]).toBeUndefined();
     });
 
     it('derives an openable-content viewer from its existing direct details destination', () => {
@@ -248,7 +278,7 @@ describe('plugin UI projection family', () => {
             }),
         } satisfies ResolvedOpenableContentViewerContribution;
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.viewer'),
             uiRenderersV2: [renderer],
             uiViewsV2: [detailsView],
             openableContentViewers: [viewer],
@@ -322,7 +352,7 @@ describe('plugin UI projection family', () => {
 
     it('carries only the canonical Resource capability onto every V2 projected surface', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.generated-resource'),
             uiRenderersV2: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -367,7 +397,7 @@ describe('plugin UI projection family', () => {
 
     it('projects normalized destination bindings and the declared settings-page destination', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.navigation'),
             uiRenderersV2: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -471,7 +501,7 @@ describe('plugin UI projection family', () => {
 
     it('keeps tablet-capable destinations available for final native form-factor admission', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.tablet'),
             uiRenderersV2: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -527,7 +557,7 @@ describe('plugin UI projection family', () => {
 
     it('qualifies app-page header actions at the compiled projection boundary', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.navigation'),
             uiRenderersV2: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -583,9 +613,9 @@ describe('plugin UI projection family', () => {
         expect(entry).not.toHaveProperty('headerActions.0.action');
     });
 
-    it('projects bounded destination presentation defaults without assigning placement authority', () => {
+    it('projects a destination placement and its independently gated page column renderer', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.navigation'),
             uiRenderersV2: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -596,6 +626,17 @@ describe('plugin UI projection family', () => {
                     id: 'renderer',
                     kind: 'declarative',
                     root: { kind: 'text', text: 'Navigation' },
+                },
+            }, {
+                provenance: 'external',
+                source: { kind: 'path' },
+                pluginId: 'acme.navigation',
+                identity: { pluginId: 'acme.navigation', localId: 'column-renderer' },
+                manifestPath: '/plugins/acme/.happier-plugin/plugin.json',
+                definition: {
+                    id: 'column-renderer',
+                    kind: 'hostedHtml',
+                    source: { kind: 'html', html: '<p>Navigation</p>' },
                 },
             }],
             uiViewsV2: [{
@@ -615,7 +656,8 @@ describe('plugin UI projection family', () => {
                         label: { key: 'navigation.badge', fallback: 'Preview' },
                         tone: 'accent',
                     },
-                    groupHint: 'sessions',
+                    placement: { kind: 'column', column: 'sessions' },
+                    column: { renderer: 'column-renderer' },
                     rankHint: -25,
                     headerActions: [],
                 },
@@ -635,15 +677,24 @@ describe('plugin UI projection family', () => {
                     developerFallback: 'Preview',
                     tone: 'accent',
                 },
-                groupHint: 'sessions',
+                placement: { kind: 'column', column: 'sessions' },
                 rankHint: -25,
+            },
+            column: {
+                renderer: {
+                    kind: 'hostedHtml',
+                    contributionId: 'column-renderer',
+                    source: { kind: 'html', html: '<p>Navigation</p>' },
+                    requiredHostMethods: [],
+                },
+                availability: { state: 'available', reason: 'available', diagnostics: [] },
             },
         });
     });
 
     it('keeps authored literal destination presentation distinct from keyed localized presentation', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.navigation'),
             uiRenderersV2: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -706,7 +757,7 @@ describe('plugin UI projection family', () => {
         ] as const;
         const project = (translations: readonly (typeof v2Translations)[number][]) => {
             const registry = {
-                ...createEmptyResolvedContributionRegistry(),
+                ...createEmptyResolvedContributionRegistry('acme.preview'),
                 uiTranslationsV2: translations,
                 uiTranslations: [{
                     pluginId: 'acme.preview',
@@ -734,7 +785,7 @@ describe('plugin UI projection family', () => {
     it('ships only the locales a client can read when the describe request names one', () => {
         const contributedLocales = ['en', 'fr', 'ja', 'ru'] as const;
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.preview'),
             uiTranslationsV2: contributedLocales.map((locale) => ({
                 pluginId: 'acme.preview',
                 localeIdentity: { pluginId: 'acme.preview', locale },
@@ -776,7 +827,7 @@ describe('plugin UI projection family', () => {
         const { resolveBuiltInContributions } = await import('../resolveBuiltInContributions');
         const builtIn = resolveBuiltInContributions();
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('happier.scm.forge.bitbucket'),
             connectedAccountDescriptors: builtIn.connectedAccountDescriptors,
             scmHostingProviders: builtIn.scmHostingProviders,
         } as ResolvedContributionRegistry;
@@ -814,7 +865,7 @@ describe('plugin UI projection family', () => {
 
     it('does not project host-private structured-message descriptors even when a registry contains one', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.preview'),
             structuredMessages: [
                 {
                     pluginId: 'acme.preview',
@@ -842,7 +893,7 @@ describe('plugin UI projection family', () => {
 
     it('projects transcript Activity descriptors as same-plugin qualified Resource and Action identities', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.preview'),
             transcriptActivities: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -865,6 +916,7 @@ describe('plugin UI projection family', () => {
         expect(entries['transcriptActivity:acme.preview:outward-delivery']).toEqual({
             id: 'transcriptActivity:acme.preview:outward-delivery',
             pluginId: 'acme.preview',
+            occurrenceId: registry.occurrenceIdsByPluginId?.['acme.preview'],
             contributionKind: 'transcriptActivity',
             descriptorId: 'outward-delivery',
             resource: { pluginId: 'acme.preview', localId: 'outward-delivery-activities-v1' },
@@ -874,7 +926,7 @@ describe('plugin UI projection family', () => {
 
     it('projects a search provider as identity plus its resolved qualified query Action', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.triage'),
             searchProviders: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -895,6 +947,7 @@ describe('plugin UI projection family', () => {
         expect(entries['searchProvider:acme.triage:entries']).toEqual({
             id: 'searchProvider:acme.triage:entries',
             pluginId: 'acme.triage',
+            occurrenceId: registry.occurrenceIdsByPluginId?.['acme.triage'],
             contributionKind: 'searchProvider',
             descriptorId: 'entries',
             identity: { pluginId: 'acme.triage', localId: 'entries' },
@@ -902,9 +955,44 @@ describe('plugin UI projection family', () => {
         });
     });
 
+    it('keeps a search provider on its closed wire arm when its plugin has a machine execution origin', () => {
+        const registry = {
+            ...createEmptyResolvedContributionRegistry('acme.triage'),
+            searchProviders: [{
+                provenance: 'external',
+                source: { kind: 'path' },
+                pluginId: 'acme.triage',
+                identity: { pluginId: 'acme.triage', localId: 'entries' },
+                manifestPath: '/plugins/acme/.happier-plugin/plugin.json',
+                definition: { id: 'entries', action: 'entries/search-v1' },
+            }],
+        } satisfies ResolvedContributionRegistry;
+
+        const projection = buildPluginProjectionV2({
+            registry,
+            generation: 9,
+            pluginExecutionOriginsByPluginId: {
+                'acme.triage': {
+                    serverIdentityId: 'srv_projection_fixture',
+                    materializationRef: {
+                        machineId: 'machine_projection_fixture',
+                        materializationId: 'daemon-selected:acme.triage',
+                        pluginId: 'acme.triage',
+                    },
+                },
+            },
+        } as Parameters<typeof buildPluginProjectionV2>[0]);
+
+        // The execution origin is the referenced Action's own projected fact;
+        // stamping it here makes every client reject the whole projection.
+        expect(PluginProjectionV2Schema.safeParse(projection).success).toBe(true);
+        expect(projection.familiesById.pluginUi?.entriesById['searchProvider:acme.triage:entries'])
+            .not.toHaveProperty('materializationRef');
+    });
+
     it('projects a Session-info section through the canonical declarative model', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.preview'),
             sessionInfoSections: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -928,7 +1016,7 @@ describe('plugin UI projection family', () => {
                 pluginId: 'acme.preview',
                 localId: 'session-info-overview',
                 qualifiedId: 'acme.preview/session-info-overview',
-                generation: '9',
+                occurrenceId: '9',
             },
             visible: true,
             requiredHostMethods: ['context', 'executeAction', 'readResource', 'watchResource'],
@@ -1015,7 +1103,7 @@ describe('plugin UI projection family', () => {
             },
         });
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.review'),
             uiRenderersV2: [renderer],
             uiViewsV2: [makeView('First'), makeView('Second')],
         } as unknown as ResolvedContributionRegistry;
@@ -1026,34 +1114,22 @@ describe('plugin UI projection family', () => {
 
     it('projects every V2 view through the canonical surface-placement family and adopts the first admitted renderer fallback', () => {
         const generatedArtifact = {
-            contributionId: 'panel-artifact',
+            artifactId: 'panel-artifact',
             tier: 'reactNative' as const,
-            platform: 'web' as const,
-            entry: 'react-native/panel/index.js',
-            files: [
-                {
-                    relativePath: 'react-native/panel/chunk.js',
-                    digest: `sha256:${'2'.repeat(64)}`,
-                    byteSize: 11,
-                },
-                {
-                    relativePath: 'react-native/panel/index.js',
-                    digest: `sha256:${'3'.repeat(64)}`,
-                    byteSize: 12,
-                },
-            ],
+            entry: 'react-native/panel-artifact/entry.cjs.bundle',
+            files: [{
+                relativePath: 'react-native/panel-artifact/entry.cjs.bundle',
+                digest: `sha256:${'3'.repeat(64)}`,
+                byteSize: 12,
+            }],
             digest: `sha256:${'1'.repeat(64)}`,
-            builtWith: { bundler: 'vite' as const, version: '7.0.0' },
-            hostUiApiVersion: '1.0.0',
-            compat: {
-                react: '19.2.0',
-                reactNative: '0.83.4',
-            },
+            builtWith: { bundler: 'esbuild' as const, version: '0.25.0' },
+            executable: { exports: ['renderSurface'] },
+            hostUiApiRange: '^1.0.0',
         };
         const generatedHostedArtifact = {
-            contributionId: 'hosted-artifact',
+            artifactId: 'hosted-artifact',
             tier: 'hostedWeb' as const,
-            platform: 'web' as const,
             entry: 'hosted-web/hosted-artifact/index.html',
             files: [
                 {
@@ -1068,16 +1144,15 @@ describe('plugin UI projection family', () => {
                 },
             ],
             digest: `sha256:${'4'.repeat(64)}`,
-            builtWith: { bundler: 'vite' as const, version: '7.0.0' },
-            hostUiApiVersion: '1.0.0',
-            compat: {},
+            builtWith: { staging: 'staticDirectory' as const },
+            hostUiApiRange: '^1.0.0',
         };
         const stableDeclarativeModel = {
             identity: {
                 pluginId: 'acme.generated-rnw',
                 localId: 'declarative-renderer',
                 qualifiedId: 'acme.generated-rnw/declarative-renderer',
-                generation: '31',
+                occurrenceId: '31',
             },
             visible: true,
             requiredHostMethods: ['context', 'executeAction'],
@@ -1085,7 +1160,7 @@ describe('plugin UI projection family', () => {
             root: { kind: 'text', path: 'root', order: 0, text: 'Generated status' },
         } satisfies StablePluginDeclarativeModel;
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.generated-rnw'),
             uiRenderersV2: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -1094,7 +1169,7 @@ describe('plugin UI projection family', () => {
                 manifestPath: '/plugins/acme/.happier-plugin/plugin.json',
                 pluginRootPath: '/plugins/acme',
                 generatedUiArtifactsManifest: {
-                    version: 1 as const,
+                    version: 2 as const,
                     entries: [generatedArtifact],
                 },
                 definition: {
@@ -1122,7 +1197,7 @@ describe('plugin UI projection family', () => {
                 manifestPath: '/plugins/acme/.happier-plugin/plugin.json',
                 pluginRootPath: '/plugins/acme',
                 generatedUiArtifactsManifest: {
-                    version: 1 as const,
+                    version: 2 as const,
                     entries: [generatedHostedArtifact],
                 },
                 definition: {
@@ -1188,15 +1263,10 @@ describe('plugin UI projection family', () => {
                 },
                 reactNativeBundles: {
                     featureEnabled: true,
-                    loaderBackendAvailable: true,
                     hostRuntime: {
                         platform: 'web',
                         channel: 'internal',
-                        hostAppVersion: '2.0.0',
                         hostUiApiVersion: '1.0.0',
-                        reactVersion: '19.2.0',
-                        reactNativeVersion: '0.83.4',
-                        availableNativeCapabilities: [],
                     },
                 },
                 declarative: {
@@ -1213,17 +1283,14 @@ describe('plugin UI projection family', () => {
             pluginId: 'acme.generated-rnw',
             contributionKind: 'reactNativeBundle',
             contributionId: 'panel-renderer',
+            artifactSelectionOwner: 'daemonProjection',
             artifactGraph: generatedArtifact,
             requiredHostMethods: ['context', 'watchContext'],
             runtime: {
                 state: 'loadable',
                 decision: { state: 'load', reason: 'compatible' },
                 cacheIdentity: {
-                    pluginId: 'acme.generated-rnw',
-                    contributionId: 'panel-renderer',
                     artifactDigest: generatedArtifact.digest,
-                    platform: 'web',
-                    projectionGeneration: 31,
                 },
                 loadPolicy: { source: 'installedArtifact' },
             },
@@ -1294,6 +1361,7 @@ describe('plugin UI projection family', () => {
             pluginId: 'acme.generated-rnw',
             contributionKind: 'hostedWeb',
             contributionId: 'hosted-renderer',
+            artifactSelectionOwner: 'daemonProjection',
             generatedV2: true,
             bridge: { allowedMessages: ['ready', 'hostApi'] },
             entry: { routeMode: 'pathFallback', path: '/' },
@@ -1301,11 +1369,7 @@ describe('plugin UI projection family', () => {
                 state: 'available',
                 diagnostics: [],
                 artifactReadIdentity: {
-                    pluginId: 'acme.generated-rnw',
-                    contributionId: 'hosted-renderer',
                     artifactDigest: generatedHostedArtifact.digest,
-                    platform: 'web',
-                    projectionGeneration: 31,
                 },
                 decision: {
                     state: 'render',
@@ -1320,6 +1384,71 @@ describe('plugin UI projection family', () => {
         }
         expect(hostedWebEntry?.artifactGraph).toEqual(generatedHostedArtifact);
 
+        const portableProjection = buildPluginProjectionV2({
+            registry: {
+                ...registry,
+                uiRenderersV2: registry.uiRenderersV2?.map((renderer) => ({
+                    ...renderer,
+                    source: { kind: 'archive' as const },
+                })),
+                immutableGenerationIdsByPluginId: {
+                    'acme.generated-rnw': 'managed-generation-a',
+                },
+            },
+            generation: 31,
+            pluginUiHostRuntime: {
+                hostedWeb: {
+                    featureEnabled: true,
+                    frameCapability: { platform: 'web', adapter: 'domIframe' },
+                },
+                reactNativeBundles: {
+                    featureEnabled: true,
+                    hostRuntime: {
+                        platform: 'web',
+                        channel: 'internal',
+                        hostUiApiVersion: '1.0.0',
+                    },
+                },
+            },
+        });
+        expect(portableProjection.familiesById.pluginUi?.entriesById[
+            'reactNativeBundle:acme.generated-rnw:panel-renderer'
+        ]).toMatchObject({ artifactSelectionOwner: 'accountRelease' });
+
+        const bundledProjection = buildPluginProjectionV2({
+            registry: {
+                ...registry,
+                uiRenderersV2: registry.uiRenderersV2?.map((renderer) => ({
+                    ...renderer,
+                    provenance: 'first_party' as const,
+                    source: { kind: 'bundled' as const },
+                })),
+                // Bundled runtime registries also have immutable generations;
+                // source custody, not generation presence, owns selection.
+                immutableGenerationIdsByPluginId: {
+                    'acme.generated-rnw': 'bundled-generation-a',
+                },
+            },
+            generation: 31,
+            pluginUiHostRuntime: {
+                hostedWeb: {
+                    featureEnabled: true,
+                    frameCapability: { platform: 'web', adapter: 'domIframe' },
+                },
+                reactNativeBundles: {
+                    featureEnabled: true,
+                    hostRuntime: {
+                        platform: 'web',
+                        channel: 'internal',
+                        hostUiApiVersion: '1.0.0',
+                    },
+                },
+            },
+        });
+        expect(bundledProjection.familiesById.pluginUi?.entriesById[
+            'reactNativeBundle:acme.generated-rnw:panel-renderer'
+        ]).toMatchObject({ artifactSelectionOwner: 'daemonProjection' });
+
         // A missing physical frame fact does not leave a renderer-local
         // unavailable terminal. The canonical surface-placement selector
         // consumes the hosted renderer's fallback decision and adopts the
@@ -1331,15 +1460,10 @@ describe('plugin UI projection family', () => {
                 hostedWeb: { featureEnabled: true },
                 reactNativeBundles: {
                     featureEnabled: true,
-                    loaderBackendAvailable: true,
                     hostRuntime: {
                         platform: 'web',
                         channel: 'internal',
-                        hostAppVersion: '2.0.0',
                         hostUiApiVersion: '1.0.0',
-                        reactVersion: '19.2.0',
-                        reactNativeVersion: '0.83.4',
-                        availableNativeCapabilities: [],
                     },
                 },
                 declarative: {
@@ -1400,7 +1524,7 @@ describe('plugin UI projection family', () => {
                 pluginId: 'acme.declarative',
                 localId,
                 qualifiedId: `acme.declarative/${localId}`,
-                generation: '7',
+                occurrenceId: '7',
             },
             visible,
             requiredHostMethods: ['context'],
@@ -1408,7 +1532,7 @@ describe('plugin UI projection family', () => {
             root: { kind: 'text', path: 'root', order: 0, text: 'Status' },
         } satisfies StablePluginDeclarativeModel);
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.declarative'),
             uiRenderersV2: [
                 declarativeRenderer('visible-renderer'),
                 declarativeRenderer('hidden-renderer'),
@@ -1465,7 +1589,7 @@ describe('plugin UI projection family', () => {
 
     it('projects a declarative document source beside its evaluated static model', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.declarative'),
             uiRenderersV2: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -1501,7 +1625,7 @@ describe('plugin UI projection family', () => {
                 pluginId: 'acme.declarative',
                 localId: 'dashboard',
                 qualifiedId: 'acme.declarative/dashboard',
-                generation: '7',
+                occurrenceId: '7',
             },
             visible: true,
             requiredHostMethods: [],
@@ -1536,22 +1660,21 @@ describe('plugin UI projection family', () => {
 
     it('projects a Voice provider client from its canonical generated artifact graph without a UI renderer', () => {
         const generatedArtifact = {
-            contributionId: 'voice-runtime-web',
+            artifactId: 'voice-runtime-web',
             tier: 'reactNative' as const,
-            platform: 'web' as const,
-            entry: 'react-native/voice-runtime-web/index.js',
+            entry: 'react-native/voice-runtime-web/entry.cjs.bundle',
             files: [{
-                relativePath: 'react-native/voice-runtime-web/index.js',
+                relativePath: 'react-native/voice-runtime-web/entry.cjs.bundle',
                 digest: `sha256:${'4'.repeat(64)}`,
                 byteSize: 1,
             }],
             digest: `sha256:${'3'.repeat(64)}`,
-            builtWith: { bundler: 'vite' as const, version: '7.0.0' },
-            hostUiApiVersion: '1.0.0',
-            compat: { react: '19.2.0', reactNative: '0.83.4' },
+            builtWith: { bundler: 'esbuild' as const, version: '0.25.0' },
+            executable: { exports: ['activate'] },
+            hostUiApiRange: '^1.0.0',
         };
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.generated-voice'),
             voiceProviders: [{
                 provenance: 'external',
                 source: { kind: 'package' },
@@ -1560,7 +1683,7 @@ describe('plugin UI projection family', () => {
                 identity: { pluginId: 'acme.generated-voice', localId: 'conversation' },
                 manifestPath: '/plugins/acme/.happier-plugin/plugin.json',
                 pluginRootPath: '/plugins/acme',
-                generatedUiArtifactsManifest: { version: 1 as const, entries: [generatedArtifact] },
+                generatedUiArtifactsManifest: { version: 2 as const, entries: [generatedArtifact] },
                 definition: {
                     id: 'conversation',
                     title: 'Conversation',
@@ -1571,8 +1694,7 @@ describe('plugin UI projection family', () => {
                         turn: { cancelResponse: true, bargeIn: false },
                     },
                     client: {
-                        artifactId: generatedArtifact.contributionId,
-                        modulePath: './voiceRuntime',
+                        artifactId: generatedArtifact.artifactId,
                         exportName: 'activate',
                     },
                 },
@@ -1585,15 +1707,10 @@ describe('plugin UI projection family', () => {
             pluginUiHostRuntime: {
                 reactNativeBundles: {
                     featureEnabled: true,
-                    loaderBackendAvailable: true,
                     hostRuntime: {
                         platform: 'web',
                         channel: 'internal',
-                        hostAppVersion: '2.0.0',
                         hostUiApiVersion: '1.0.0',
-                        reactVersion: '19.2.0',
-                        reactNativeVersion: '0.83.4',
-                        availableNativeCapabilities: [],
                     },
                 },
             },
@@ -1609,11 +1726,7 @@ describe('plugin UI projection family', () => {
                 state: 'loadable',
                 decision: { state: 'load', reason: 'compatible' },
                 cacheIdentity: {
-                    pluginId: 'acme.generated-voice',
-                    contributionId: 'conversation',
                     artifactDigest: generatedArtifact.digest,
-                    platform: 'web',
-                    projectionGeneration: 33,
                 },
                 loadPolicy: { source: 'installedArtifact' },
             },
@@ -1625,47 +1738,35 @@ describe('plugin UI projection family', () => {
         const pluginId = 'acme.generated-client-action';
         const actionId = 'open-preview';
         const actionArtifact = {
-            contributionId: 'open-preview-artifact',
+            artifactId: 'open-preview-artifact',
             tier: 'reactNative' as const,
-            platform: 'ios' as const,
-            entry: 'react-native/open-preview/index.js',
+            entry: 'react-native/open-preview-artifact/entry.cjs.bundle',
             files: [{
-                relativePath: 'react-native/open-preview/index.js',
+                relativePath: 'react-native/open-preview-artifact/entry.cjs.bundle',
                 digest: `sha256:${'5'.repeat(64)}`,
                 byteSize: 1,
             }],
             digest: `sha256:${'6'.repeat(64)}`,
-            builtWith: { bundler: 'repack' as const, version: '5.2.5' },
-            repack: {
-                containerName: 'acme_generated_client_action',
-                modulePath: './openPreview',
-                exportName: 'activate',
-            },
-            hostUiApiVersion: '1.0.0',
-            compat: { react: '19.2.0', reactNative: '0.83.4' },
+            builtWith: { bundler: 'esbuild' as const, version: '0.25.0' },
+            executable: { exports: ['activate'] },
+            hostUiApiRange: '^1.0.0',
         };
         const voiceArtifact = {
-            contributionId: 'voice-artifact',
+            artifactId: 'voice-artifact',
             tier: 'reactNative' as const,
-            platform: 'ios' as const,
-            entry: 'react-native/voice/index.js',
+            entry: 'react-native/voice-artifact/entry.cjs.bundle',
             files: [{
-                relativePath: 'react-native/voice/index.js',
+                relativePath: 'react-native/voice-artifact/entry.cjs.bundle',
                 digest: `sha256:${'7'.repeat(64)}`,
                 byteSize: 1,
             }],
             digest: `sha256:${'8'.repeat(64)}`,
-            builtWith: { bundler: 'repack' as const, version: '5.2.5' },
-            repack: {
-                containerName: 'acme_generated_client_action',
-                modulePath: './voiceRuntime',
-                exportName: 'activate',
-            },
-            hostUiApiVersion: '1.0.0',
-            compat: { react: '19.2.0', reactNative: '0.83.4' },
+            builtWith: { bundler: 'esbuild' as const, version: '0.25.0' },
+            executable: { exports: ['activate'] },
+            hostUiApiRange: '^1.0.0',
         };
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry(pluginId),
             actions: [{
                 provenance: 'external',
                 source: { kind: 'package' },
@@ -1674,7 +1775,7 @@ describe('plugin UI projection family', () => {
                 identity: { pluginId, localId: actionId },
                 manifestPath: '/plugins/acme/.happier-plugin/plugin.json',
                 pluginRootPath: '/plugins/acme',
-                generatedUiArtifactsManifest: { version: 1 as const, entries: [actionArtifact] },
+                generatedUiArtifactsManifest: { version: 2 as const, entries: [actionArtifact] },
                 definition: {
                     kindVersion: 1,
                     id: actionId,
@@ -1700,8 +1801,7 @@ describe('plugin UI projection family', () => {
                     execution: {
                         target: 'client',
                         client: {
-                            artifactId: actionArtifact.contributionId,
-                            modulePath: './openPreview',
+                            artifactId: actionArtifact.artifactId,
                             exportName: 'activate',
                         },
                         platforms: ['ios'],
@@ -1720,7 +1820,7 @@ describe('plugin UI projection family', () => {
                 identity: { pluginId, localId: 'conversation' },
                 manifestPath: '/plugins/acme/.happier-plugin/plugin.json',
                 pluginRootPath: '/plugins/acme',
-                generatedUiArtifactsManifest: { version: 1 as const, entries: [voiceArtifact] },
+                generatedUiArtifactsManifest: { version: 2 as const, entries: [voiceArtifact] },
                 definition: {
                     id: 'conversation',
                     title: 'Conversation',
@@ -1731,8 +1831,7 @@ describe('plugin UI projection family', () => {
                         turn: { cancelResponse: true, bargeIn: false },
                     },
                     client: {
-                        artifactId: voiceArtifact.contributionId,
-                        modulePath: './voiceRuntime',
+                        artifactId: voiceArtifact.artifactId,
                         exportName: 'activate',
                     },
                 },
@@ -1755,15 +1854,10 @@ describe('plugin UI projection family', () => {
             pluginUiHostRuntime: {
                 reactNativeBundles: {
                     featureEnabled: true,
-                    loaderBackendAvailable: true,
                     hostRuntime: {
                         platform: 'ios',
                         channel: 'internal',
-                        hostAppVersion: '2.0.0',
                         hostUiApiVersion: '1.0.0',
-                        reactVersion: '19.2.0',
-                        reactNativeVersion: '0.83.4',
-                        availableNativeCapabilities: [],
                     },
                 },
             },
@@ -1778,17 +1872,12 @@ describe('plugin UI projection family', () => {
             generatedOwnerKind: 'clientContribution',
             artifactGraph: actionArtifact,
             entry: {
-                containerName: 'acme_generated_client_action',
-                modulePath: './openPreview',
                 exportName: 'activate',
             },
             runtime: {
                 state: 'loadable',
                 cacheIdentity: {
-                    pluginId,
-                    contributionId: actionId,
                     artifactDigest: actionArtifact.digest,
-                    projectionGeneration: 34,
                 },
             },
             serverIdentityId: 'srv_client_action',
@@ -1799,14 +1888,13 @@ describe('plugin UI projection family', () => {
             },
         });
         expect(actionEntry).not.toMatchObject({
-            artifactGraph: { contributionId: voiceArtifact.contributionId },
-            runtime: { cacheIdentity: { contributionId: 'conversation' } },
+            artifactGraph: { artifactId: voiceArtifact.artifactId },
         });
     });
 
     it('projects a V2-owned generated native renderer directly without reviving legacy artifact rows', () => {
         const registry = {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.preview'),
             uiRenderersV2: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -1815,29 +1903,20 @@ describe('plugin UI projection family', () => {
                 manifestPath: '/plugins/acme/.happier-plugin/plugin.json',
                 pluginRootPath: '/plugins/acme',
                 generatedUiArtifactsManifest: {
-                    version: 1 as const,
+                    version: 2 as const,
                     entries: [{
-                        contributionId: 'native-artifact',
+                        artifactId: 'native-artifact',
                         tier: 'reactNative' as const,
-                        platform: 'ios' as const,
-                        entry: 'react-native/native-preview/ios.bundle',
+                        entry: 'react-native/native-artifact/entry.cjs.bundle',
                         files: [{
-                            relativePath: 'react-native/native-preview/ios.bundle',
+                            relativePath: 'react-native/native-artifact/entry.cjs.bundle',
                             digest: `sha256:${'4'.repeat(64)}`,
                             byteSize: 1,
                         }],
                         digest: `sha256:${'2'.repeat(64)}`,
-                        builtWith: { bundler: 'repack' as const, version: '5.2.5' },
-                        repack: {
-                            containerName: 'acme_preview_native',
-                            modulePath: './renderSurface',
-                            exportName: 'renderSurface',
-                        },
-                        hostUiApiVersion: '1.0.0',
-                        compat: {
-                            react: '19.0.0',
-                            reactNative: '0.83.4',
-                        },
+                        builtWith: { bundler: 'esbuild' as const, version: '0.25.0' },
+                        executable: { exports: ['renderSurface'] },
+                        hostUiApiRange: '^1.0.0',
                     }],
                 },
                 definition: {
@@ -1854,15 +1933,10 @@ describe('plugin UI projection family', () => {
             pluginUiHostRuntime: {
                 reactNativeBundles: {
                     featureEnabled: true,
-                    loaderBackendAvailable: true,
                     hostRuntime: {
                         platform: 'ios',
                         channel: 'internal',
-                        hostAppVersion: '2.0.0',
                         hostUiApiVersion: '1.0.0',
-                        reactVersion: '19.0.0',
-                        reactNativeVersion: '0.83.4',
-                        availableNativeCapabilities: ['clipboard'],
                     },
                 },
             },
@@ -1875,14 +1949,9 @@ describe('plugin UI projection family', () => {
             contributionKind: 'reactNativeBundle',
             contributionId: 'native-preview',
             artifactGraph: expect.objectContaining({
-                contributionId: 'native-artifact',
-                platform: 'ios',
-                builtWith: { bundler: 'repack', version: '5.2.5' },
-                repack: {
-                    containerName: 'acme_preview_native',
-                    modulePath: './renderSurface',
-                    exportName: 'renderSurface',
-                },
+                artifactId: 'native-artifact',
+                builtWith: { bundler: 'esbuild', version: '0.25.0' },
+                executable: { exports: ['renderSurface'] },
             }),
             runtime: {
                 state: 'loadable',
@@ -1892,9 +1961,7 @@ describe('plugin UI projection family', () => {
                     diagnostics: [],
                 },
                 cacheIdentity: expect.objectContaining({
-                    platform: 'ios',
                     artifactDigest: `sha256:${'2'.repeat(64)}`,
-                    projectionGeneration: 32,
                 }),
             },
         });
@@ -1902,8 +1969,13 @@ describe('plugin UI projection family', () => {
     });
 });
 
-describe('embedded Session widget projection', () => {
-    const makeRegistry = (container: string) => {
+describe('embedded widget projection', () => {
+    const makeRegistry = (
+        container: string,
+        targetKind: 'session' | 'app' = 'session',
+        homeDefault?: 'shown' | 'available',
+        placements?: readonly ('board' | 'companion' | 'home')[],
+    ) => {
         const renderer = {
             provenance: 'external',
             source: { kind: 'path' },
@@ -1923,20 +1995,22 @@ describe('embedded Session widget projection', () => {
             definition: PluginUiViewV2Schema.parse({
                 id: 'review-status-widget',
                 container,
-                target: { kind: 'session' },
+                target: { kind: targetKind },
                 renderer: 'review-native',
                 title: 'Review status',
+                ...(homeDefault ? { home: { default: homeDefault } } : {}),
+                ...(placements ? { placements } : {}),
             }),
         };
         return {
-            ...createEmptyResolvedContributionRegistry(),
+            ...createEmptyResolvedContributionRegistry('acme.review'),
             uiRenderersV2: [renderer],
             uiViewsV2: [view],
         } as unknown as ResolvedContributionRegistry;
     };
 
     it('classifies a Registry inline role as an inline binding without a hardcoded role pair test', () => {
-        const entries = buildPluginProjectionV2({ registry: makeRegistry('sessionWidget'), generation: 9 })
+        const entries = buildPluginProjectionV2({ registry: makeRegistry('widget'), generation: 9 })
             .familiesById.pluginUi?.entriesById ?? {};
         const entry = entries['surfacePlacement:acme.review:review-status-widget'];
         expect(entry).toMatchObject({
@@ -1945,7 +2019,7 @@ describe('embedded Session widget projection', () => {
             target: { kind: 'session' },
             binding: expect.objectContaining({
                 kind: 'inline',
-                role: 'sessionWidget',
+                role: 'widget',
                 surface: { pluginId: 'acme.review', localId: 'review-status-widget' },
                 targetKind: 'session',
                 surfaceContextPlacement: 'sessionPane',
@@ -1955,6 +2029,39 @@ describe('embedded Session widget projection', () => {
         expect(entry).not.toHaveProperty('container');
         expect(entry).not.toHaveProperty('rightSidebar');
         expect(entry).not.toHaveProperty('headerActions');
+    });
+
+    it('carries explicit widget placements from the admitted view to its host projection', () => {
+        const projection = buildPluginProjectionV2({ registry: makeRegistry('widget', 'session', undefined, ['board', 'companion']), generation: 9 });
+        const entries = projection.familiesById.pluginUi?.entriesById ?? {};
+        expect(entries['surfacePlacement:acme.review:review-status-widget']).toMatchObject({
+            placements: ['board', 'companion'],
+        });
+        expect(PluginProjectionV2Schema.safeParse(projection).success).toBe(true);
+        const entry = entries['surfacePlacement:acme.review:review-status-widget']!;
+        const withPlacements = (placements: readonly string[]) => ({
+            ...projection,
+            familiesById: { ...projection.familiesById, pluginUi: {
+                ...projection.familiesById.pluginUi,
+                entriesById: { ...entries, [entry.id]: { ...entry, placements } },
+            } },
+        });
+        expect(PluginProjectionV2Schema.safeParse(withPlacements(['home'])).success).toBe(false);
+        expect(PluginProjectionV2Schema.safeParse(withPlacements(['arbitrary-host'])).success).toBe(false);
+    });
+
+    it('projects the App widget Home default beside its App binding', () => {
+        const entries = buildPluginProjectionV2({ registry: makeRegistry('widget', 'app', 'shown'), generation: 9 })
+            .familiesById.pluginUi?.entriesById ?? {};
+        expect(entries['surfacePlacement:acme.review:review-status-widget']).toMatchObject({
+            binding: { kind: 'inline', role: 'widget', targetKind: 'app', surfaceContextPlacement: 'appSurface' },
+            home: { default: 'shown' },
+        });
+        const omitted = buildPluginProjectionV2({ registry: makeRegistry('widget', 'app'), generation: 9 })
+            .familiesById.pluginUi?.entriesById ?? {};
+        expect(omitted['surfacePlacement:acme.review:review-status-widget']).toMatchObject({
+            home: { default: 'available' },
+        });
     });
 
     it('keeps every incumbent authored inline role on the same classification branch', () => {

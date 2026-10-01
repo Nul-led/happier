@@ -7,6 +7,7 @@ import type {
   PluginAccountCollectionContributionV1,
   PluginCommandContributionV2,
   PluginExecutionRunProfileContributionV2,
+  PluginRoleDeclarationV1,
   PluginEventContributionV1,
   PluginHookContributionV2,
   PluginHostedWebContributionV1,
@@ -39,6 +40,7 @@ import type {
   VoiceModelPackContributionV1,
   VoiceProviderContribution,
   NormalizedPluginAccountCollectionContractV1,
+  PluginCollectionMigrationArtifactReferenceV1,
   PluginContributionPointV1,
   PluginTargetedContributionV1,
   PluginComposerReferenceProviderContributionV1,
@@ -61,7 +63,7 @@ import {
 } from '@happier-dev/protocol';
 import type { PluginContributionIdentityV1 } from '@happier-dev/protocol';
 import type {
-  PluginUiArtifactsManifestV1,
+  PluginUiArtifactsManifestV2,
   PluginUiSettingsGroupV1,
   PluginUiSettingsPageV1,
 } from '@happier-dev/protocol/plugins/ui';
@@ -104,23 +106,26 @@ export type PluginOwnedLocaleContribution<T> = Readonly<
 >;
 
 export type PluginOwnedUiRendererContribution = PluginOwnedContribution<PluginUiRendererV2> & Readonly<{
-  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV1;
+  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
 }>;
 
 export type PluginOwnedVoiceProviderContribution = PluginOwnedContribution<VoiceProviderContribution> & Readonly<{
-  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV1;
+  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
 }>;
 
 export type PluginOwnedActionContribution = PluginOwnedContribution<ResolvedActionDefinition> & Readonly<{
   /** The Action's client execution target resolves only through this signed graph. */
-  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV1;
+  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
   /** Exact author presentation retained for the daemon/UI localization path. */
   localizedPresentation?: ResolvedActionLocalizedPresentation;
 }>;
 
 export type PluginOwnedContributionPoint = PluginOwnedContribution<PluginContributionPointV1>;
 
-export type PluginOwnedAccountCollectionContribution = PluginOwnedContribution<NormalizedPluginAccountCollectionContractV1>;
+export type PluginOwnedAccountCollectionContribution = PluginOwnedContribution<NormalizedPluginAccountCollectionContractV1> & Readonly<{
+  generatedUiArtifactsManifest?: PluginUiArtifactsManifestV2;
+  migrationArtifact?: PluginCollectionMigrationArtifactReferenceV1;
+}>;
 export type PluginOwnedOpenableContentViewerContribution = PluginOwnedContribution<PluginOpenableContentViewerContributionV1>;
 export type PluginOwnedComposerReferenceContribution = PluginOwnedContribution<PluginComposerReferenceProviderContributionV1>;
 export type PluginOwnedComposerAttachmentContribution = PluginOwnedContribution<PluginComposerAttachmentContributionV1>;
@@ -160,6 +165,7 @@ export type PluginContributionRegistry = Readonly<{
   notificationChannels: readonly PluginOwnedContribution<PluginNotificationChannelContributionV2>[];
   events: readonly PluginOwnedContribution<ResolvedEventDefinition>[];
   executionRunProfiles: readonly PluginOwnedContribution<PluginExecutionRunProfileContributionV2>[];
+  roles: readonly PluginOwnedContribution<PluginRoleDeclarationV1>[];
   mcpServers: readonly PluginOwnedContribution<PluginMcpServerContributionV1>[];
   mcpDiscoverySources: readonly PluginOwnedContribution<PluginMcpDiscoverySourceContributionV1>[];
   scmHostingProviders: readonly PluginOwnedContribution<ScmHostingProviderContribution>[];
@@ -410,6 +416,7 @@ export function buildPluginContributionRegistry(params: Readonly<{
   const notificationChannels: PluginOwnedContribution<PluginNotificationChannelContributionV2>[] = [];
   const events: PluginOwnedContribution<ResolvedEventDefinition>[] = [];
   const executionRunProfiles: PluginOwnedContribution<PluginExecutionRunProfileContributionV2>[] = [];
+  const roles: PluginOwnedContribution<PluginRoleDeclarationV1>[] = [];
   const mcpServers: PluginOwnedContribution<PluginMcpServerContributionV1>[] = [];
   const mcpDiscoverySources: PluginOwnedContribution<PluginMcpDiscoverySourceContributionV1>[] = [];
   const scmHostingProviders: PluginOwnedContribution<ScmHostingProviderContribution>[] = [];
@@ -541,10 +548,12 @@ export function buildPluginContributionRegistry(params: Readonly<{
       });
     }
 
+    const accountCollectionDeclarations = readSemanticDefinitions<PluginAccountCollectionContributionV1>('accountCollections');
     for (const definition of normalizePluginAccountCollectionContractsV1({
       pluginId: plugin.pluginId,
-      contributions: readSemanticDefinitions<PluginAccountCollectionContributionV1>('accountCollections'),
+      contributions: accountCollectionDeclarations,
     })) {
+      const declaration = accountCollectionDeclarations.find((candidate) => candidate.id === definition.collectionId);
       accountCollections.push({
         pluginId: plugin.pluginId,
         pluginVersion: plugin.manifest.version,
@@ -557,6 +566,12 @@ export function buildPluginContributionRegistry(params: Readonly<{
         daemonEntryPath: plugin.daemonEntryPath,
         devDaemonEntryPath: plugin.devDaemonEntryPath,
         sourceSpec: plugin.sourceSpec,
+        ...(plugin.generatedUiArtifactsManifest
+          ? { generatedUiArtifactsManifest: plugin.generatedUiArtifactsManifest }
+          : {}),
+        ...(declaration?.migrationArtifact
+          ? { migrationArtifact: declaration.migrationArtifact }
+          : {}),
         definition,
       });
     }
@@ -1039,6 +1054,20 @@ export function buildPluginContributionRegistry(params: Readonly<{
       });
     }
 
+    for (const definition of readSemanticDefinitions<PluginRoleDeclarationV1>('roles')) {
+      roles.push({
+        pluginId: plugin.pluginId,
+        pluginVersion: plugin.manifest.version,
+        identity: createPluginContributionIdentity({ pluginId: plugin.pluginId, localId: definition.id }),
+        pluginRootPath: plugin.pluginRootPath,
+        manifestPath: plugin.manifestPath,
+        daemonEntryPath: plugin.daemonEntryPath,
+        devDaemonEntryPath: plugin.devDaemonEntryPath,
+        sourceSpec: plugin.sourceSpec,
+        definition,
+      });
+    }
+
     for (const definition of readSemanticDefinitions<VoiceModelPackContributionV1>('voiceModelPacks')) {
       voiceModelPacks.push({
         pluginId: plugin.pluginId,
@@ -1106,6 +1135,7 @@ export function buildPluginContributionRegistry(params: Readonly<{
     notificationChannels: Object.freeze(notificationChannels),
     events: Object.freeze(events),
     executionRunProfiles: Object.freeze(executionRunProfiles),
+    roles: Object.freeze(roles),
     mcpServers: Object.freeze(mcpServers),
     mcpDiscoverySources: Object.freeze(mcpDiscoverySources),
     scmHostingProviders: Object.freeze(scmHostingProviders),

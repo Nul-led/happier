@@ -14,7 +14,6 @@ describe('current Channels connection fixture', () => {
       providerPluginId: 'happier.channel.fixture',
       providerContributionSelection: {
         contributionId: 'fixture-provider',
-        immutableGenerationId: 'fixture-generation',
       },
       providerSetupInput: { source: 'fixture' },
       credentialRef: null,

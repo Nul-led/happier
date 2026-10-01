@@ -12,7 +12,7 @@ import type { ActivationTarget } from '../activation/targets';
 
 type TargetRegistration = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     registration: ContributionRuntimeRegistration;
 }>;
 
@@ -36,11 +36,11 @@ function guardCapturedRuntimeValue<T>(params: Readonly<{
     value: T;
     pluginId: string;
     family: 'scmBackends' | 'scmHostingProviders';
-    isGenerationActive(): boolean;
+    isOccurrenceCurrent(): boolean;
 }>): T {
     const guardedByValue = new WeakMap<object, object>();
     const assertActive = (): void => {
-        if (!params.isGenerationActive()) {
+        if (!params.isOccurrenceCurrent()) {
             throw new Error(`Plugin '${params.pluginId}' ${params.family} runtime is no longer active`);
         }
     };
@@ -107,24 +107,20 @@ function guardCapturedRuntimeValue<T>(params: Readonly<{
 }
 
 export type TargetScmRuntimeEntries = Readonly<{
-    backends: readonly Readonly<{ pluginId: string; generation: string; registration: ScmBackendRuntimeRegistration }>[];
-    hostingProviders: readonly Readonly<{ pluginId: string; generation: string; registration: ScmHostingProviderRuntimeRegistration }>[];
+    backends: readonly Readonly<{ pluginId: string; occurrenceId: string; registration: ScmBackendRuntimeRegistration }>[];
+    hostingProviders: readonly Readonly<{ pluginId: string; occurrenceId: string; registration: ScmHostingProviderRuntimeRegistration }>[];
 }>;
 
 export function createTargetScmRuntimeEntries(params: Readonly<{
-    generation: number;
     activationTargets: readonly ActivationTarget[];
     targetRegistrations: readonly TargetRegistration[];
-    isGenerationActive(): boolean;
+    isOccurrenceCurrent(): boolean;
 }>): TargetScmRuntimeEntries {
-    const backends: Array<Readonly<{ pluginId: string; generation: string; registration: ScmBackendRuntimeRegistration }>> = [];
-    const hostingProviders: Array<Readonly<{ pluginId: string; generation: string; registration: ScmHostingProviderRuntimeRegistration }>> = [];
+    const backends: Array<Readonly<{ pluginId: string; occurrenceId: string; registration: ScmBackendRuntimeRegistration }>> = [];
+    const hostingProviders: Array<Readonly<{ pluginId: string; occurrenceId: string; registration: ScmHostingProviderRuntimeRegistration }>> = [];
 
     for (const entry of params.targetRegistrations) {
         if (entry.registration.family !== 'scmBackends' && entry.registration.family !== 'scmHostingProviders') continue;
-        if (entry.generation !== String(params.generation)) {
-            throw new Error(`Target SCM registration '${entry.pluginId}/${entry.registration.localId}' was published for the wrong generation`);
-        }
         const target = params.activationTargets.find((candidate) => candidate.pluginId === entry.pluginId);
         if (!target) {
             throw new Error(`Target SCM registration '${entry.pluginId}/${entry.registration.localId}' has no activation target`);
@@ -138,7 +134,7 @@ export function createTargetScmRuntimeEntries(params: Readonly<{
             }
             backends.push(Object.freeze({
                 pluginId: target.pluginId,
-                generation: entry.generation,
+                occurrenceId: entry.occurrenceId,
                 registration: Object.freeze({
                     id: declaration.id,
                     ...(entry.registration.value.runtime === undefined
@@ -148,7 +144,7 @@ export function createTargetScmRuntimeEntries(params: Readonly<{
                         value: entry.registration.value.handlers,
                         pluginId: target.pluginId,
                         family: 'scmBackends',
-                        isGenerationActive: params.isGenerationActive,
+                        isOccurrenceCurrent: params.isOccurrenceCurrent,
                     }),
                 }),
             }));
@@ -162,14 +158,14 @@ export function createTargetScmRuntimeEntries(params: Readonly<{
         }
         hostingProviders.push(Object.freeze({
             pluginId: target.pluginId,
-            generation: entry.generation,
+            occurrenceId: entry.occurrenceId,
             registration: Object.freeze({
                 id: declaration.id,
                 adapter: guardCapturedRuntimeValue({
                     value: entry.registration.value.adapter,
                     pluginId: target.pluginId,
                     family: 'scmHostingProviders',
-                    isGenerationActive: params.isGenerationActive,
+                    isOccurrenceCurrent: params.isOccurrenceCurrent,
                 }),
             }),
         }));

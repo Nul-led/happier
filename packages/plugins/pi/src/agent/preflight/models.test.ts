@@ -1,45 +1,43 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  buildPiPreflightModelsFromListModelsOutput,
-  PI_PREFLIGHT_SESSION_CONTROLS,
-} from './models.js';
+import { PI_PREFLIGHT_SESSION_CONTROLS } from './models.js';
 
-describe('Pi preflight model parsing', () => {
-  it('adds a Thinking option only for models that report thinking support', () => {
-    expect(buildPiPreflightModelsFromListModelsOutput([
-      'provider  model  context  max-out  thinking  images',
-      'openai  gpt-5.4  200K  4K  yes  yes',
-      'openai  gpt-4o-mini  128K  4K  no  yes',
-    ].join('\n'))).toEqual([
-      expect.objectContaining({ id: 'openai/gpt-5.4', modelOptions: expect.any(Array) }),
-      { id: 'openai/gpt-4o-mini', name: 'gpt-4o-mini', description: 'openai' },
+const observation = (models: unknown[]) => JSON.stringify({ type: 'happier-pi-model-catalog', models });
+
+describe('Pi structured preflight model discovery', () => {
+  it('preserves friendly names, nested model ids, and model-scoped Thinking support', () => {
+    expect(PI_PREFLIGHT_SESSION_CONTROLS.models.parseOutput?.({
+      ok: true, stdout: '', exitCode: 0,
+      stderr: ['vendor diagnostic', observation([
+        { provider: 'openai-codex', id: 'gpt-6-sol', name: 'GPT-6 Sol', reasoning: true },
+        { provider: 'openrouter', id: 'meta/muse', name: 'Muse', reasoning: false },
+      ])].join('\n'),
+    })).toEqual([
+      expect.objectContaining({ id: 'openai-codex/gpt-6-sol', name: 'GPT-6 Sol', modelOptions: expect.any(Array) }),
+      { id: 'openrouter/meta/muse', name: 'Muse', description: 'openrouter' },
     ]);
   });
 
-  it('keeps nested OpenRouter model ids under their actual Pi provider', () => {
-    expect(buildPiPreflightModelsFromListModelsOutput(
-      'openrouter  meta/muse-spark-1.3-contributor  128K  8K  yes  no\n',
-    )).toEqual([
-      expect.objectContaining({
-        id: 'openrouter/meta/muse-spark-1.3-contributor',
-        description: 'openrouter',
-      }),
-    ]);
+  it.each([
+    'provider model context max-out thinking images\nopenai stale 200K 4K yes no',
+    JSON.stringify({ type: 'happier-pi-model-catalog', error: 'refresh-unsupported' }),
+    JSON.stringify({ type: 'happier-pi-model-catalog', error: 'offline' }),
+    observation([{ nonsense: true }]),
+  ])('does not promote an unrefreshed or invalid catalog: %s', (stderr) => {
+    expect(PI_PREFLIGHT_SESSION_CONTROLS.models.parseOutput?.({ ok: true, stdout: '', stderr, exitCode: 0 })).toBeNull();
   });
 
-  it('declares the exact Pi environment allowlist and delegates command execution', () => {
-    const models = PI_PREFLIGHT_SESSION_CONTROLS.models;
-    expect(models?.command).toMatchObject({
-      toolId: 'pi-cli',
-      args: ['--list-models'],
-      environmentKeys: expect.arrayContaining(['OPENAI_API_KEY', 'CI']),
+  it('labels a supported predecessor local snapshot as degraded rather than network-refreshed', () => {
+    const stderr = JSON.stringify({ type: 'happier-pi-model-catalog', error: 'refresh-unsupported', models: [
+      { provider: 'openai-codex', id: 'gpt-6-sol', name: 'GPT-6 Sol', reasoning: true },
+    ] });
+    expect(PI_PREFLIGHT_SESSION_CONTROLS.models.parseOutput?.({ ok: true, stdout: '', stderr, exitCode: 0 })).toEqual({
+      source: 'static', refreshError: true,
+      availableModels: [expect.objectContaining({ id: 'openai-codex/gpt-6-sol', name: 'GPT-6 Sol' })],
     });
-    expect(models?.parseOutput?.({
-      ok: true,
-      stdout: '',
-      stderr: 'openai-codex  gpt-5.4  272K  128K  yes  yes\n',
-      exitCode: 0,
-    })).toEqual([expect.objectContaining({ id: 'openai-codex/gpt-5.4' })]);
+  });
+
+  it('preserves a confirmed empty catalog', () => {
+    expect(PI_PREFLIGHT_SESSION_CONTROLS.models.parseOutput?.({ ok: true, stdout: '', stderr: observation([]), exitCode: 0 })).toEqual([]);
   });
 });

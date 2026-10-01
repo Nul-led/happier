@@ -38,7 +38,8 @@
             "loginLaunches": [
               {
                 "args": [],
-                "kind": "primary"
+                "kind": "primary",
+                "target": "agent_acp"
               }
             ],
             "machineLoginKey": "antigravity-cli",
@@ -111,6 +112,9 @@
         "primary": "sessions",
         "runtime": {
           "definition": {
+            "auth": {
+              "methodId": "oauth-personal"
+            },
             "mcp": {
               "policy": "pass_through"
             }
@@ -216,6 +220,12 @@
         ],
         "sources": [
           {
+            "archiveExtractionLimits": {
+              "maxArchiveBytes": 1073741824,
+              "maxExpandedBytes": 2147483648,
+              "maxFileBytes": 2147483648,
+              "timeoutMs": 600000
+            },
             "assetsByPlatform": {
               "darwin-arm64": {
                 "archiveUrl": "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-agy_acp_server_1.1.1-darwin-arm64.zip",
@@ -236,7 +246,8 @@
                   "--uid="
                 ],
                 "executableSubpath": "agy_acp_server.par",
-                "sha256": "38f62d01b32deb0907b3d39a71ec301fd36369f6ffd1cf262d4af385177f79df"
+                "sha256": "38f62d01b32deb0907b3d39a71ec301fd36369f6ffd1cf262d4af385177f79df",
+                "sizeBytes": 681969407
               },
               "win32-arm64": {
                 "archiveUrl": "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-agy_acp_server_1.1.1-windows-arm64.zip",

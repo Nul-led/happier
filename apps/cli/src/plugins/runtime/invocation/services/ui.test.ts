@@ -94,7 +94,7 @@ describe('plugin invocation interaction and presentation facades', () => {
         const interactions = createPluginInteractionsService({
             currentSession: { interactions: new TestInteractions(handle) },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         await expect(interactions.askQuestions(request)).resolves.toMatchObject({
@@ -116,7 +116,7 @@ describe('plugin invocation interaction and presentation facades', () => {
         const interactions = createPluginInteractionsService({
             currentSession: { interactions: new TestInteractions(handle) },
             signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         await expect(interactions.confirm(request)).resolves.toEqual({
@@ -134,12 +134,12 @@ describe('plugin invocation interaction and presentation facades', () => {
         const facade = createPluginInvocationPresentation({
             currentSession: { presentation: hostPresentation },
             signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             createOperationId: () => `host-operation-${++operation}`,
             presentationOwner: {
                 pluginId: 'acme.alpha',
                 contributionId: 'run',
-                generationId: 'immutable-generation-alpha',
+                generationId: 'immutable-occurrenceId-alpha',
                 invocationId: 'invocation-a',
             },
         });
@@ -171,7 +171,7 @@ describe('plugin invocation interaction and presentation facades', () => {
             owner: {
                 pluginId: 'acme.alpha',
                 contributionId: 'run',
-                generationId: 'immutable-generation-alpha',
+                generationId: 'immutable-occurrenceId-alpha',
                 invocationId: 'invocation-a',
             },
         }, { signal });
@@ -185,13 +185,13 @@ describe('plugin invocation interaction and presentation facades', () => {
         const owner: HostSessionPresentationOwner = {
             pluginId: 'acme.alpha',
             contributionId: 'run',
-            generationId: 'immutable-generation-a',
+            generationId: 'immutable-occurrenceId-a',
             invocationId: 'invocation-a',
         };
         const facade = createPluginInvocationPresentation({
             currentSession: { presentation: hostPresentation },
             signal: controller.signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             presentationOwner: owner,
             createOperationId: () => 'host-operation',
         });
@@ -218,7 +218,7 @@ describe('plugin invocation interaction and presentation facades', () => {
         const facade = createPluginInvocationPresentation({
             currentSession: { presentation: hostPresentation },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         await expect(facade.status.set('progress', 'Running')).rejects.toMatchObject({
@@ -235,7 +235,7 @@ describe('plugin invocation interaction and presentation facades', () => {
         const facade = createPluginInvocationPresentation({
             currentSession: { presentation: presentation() },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect('actionable' in facade).toBe(false);
@@ -247,10 +247,13 @@ describe('plugin invocation interaction and presentation facades', () => {
         const params = {
             currentSession: null,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             createOperationId: () => `fallback-${++operation}`,
         };
-        const interactions = createPluginInteractionsService(params);
+        const interactions = createPluginInteractionsService({
+            ...params,
+            isOccurrenceCurrent: params.isOccurrenceCurrent,
+        });
         const facade = createPluginInvocationPresentation(params);
 
         await expect(interactions.confirm({
@@ -284,9 +287,9 @@ describe('plugin invocation interaction and presentation facades', () => {
         const retired = createPluginInvocationPresentation({
             currentSession: { presentation: retiredPresentation },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => false,
+            isOccurrenceCurrent: () => false,
         });
-        await expect(retired.notify('Stale generation')).rejects.toMatchObject({
+        await expect(retired.notify('Stale occurrenceId')).rejects.toMatchObject({
             name: 'PluginError',
             code: 'plugin_ui_generation_retired',
         } satisfies Partial<PluginError>);
@@ -306,11 +309,11 @@ describe('plugin invocation interaction and presentation facades', () => {
                 }),
             },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             presentationOwner: {
                 pluginId: 'acme.alpha',
                 contributionId: 'run',
-                generationId: 'immutable-generation-alpha',
+                generationId: 'immutable-occurrenceId-alpha',
                 invocationId: 'invocation-a',
             },
         });

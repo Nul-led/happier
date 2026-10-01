@@ -13,7 +13,7 @@ import type { ActivationTarget } from '../activation/targets';
 import type { ContributionRuntimeRegistration } from '../../api/registrationRightsHost';
 import {
     createTargetAgentRuntimeRegistry,
-} from './targetAgents';
+} from './targetAgents.testkit';
 
 const TEST_RETIREMENT_SIGNAL = new AbortController().signal;
 
@@ -70,6 +70,7 @@ function request(
         deadlineAtMs: Date.now() + 60_000,
         maxSerializedBytes: 262_144,
         linkedSessionId: 'linked-session-1',
+        transcriptStorage: 'persisted',
         source: { kind: 'fixture' },
         remoteSessionId: 'remote-session-1',
         linkData: {},
@@ -80,7 +81,7 @@ function request(
 
 function registry(params: Readonly<{
     takeover: AgentExternalSessionTakeoverContribution;
-    isGenerationActive?: () => boolean;
+    isOccurrenceCurrent?: () => boolean;
     retirementSignal?: AbortSignal;
 }>) {
     return createTargetAgentRuntimeRegistry({
@@ -95,7 +96,7 @@ function registry(params: Readonly<{
         activationTargets: [target()],
         targetRegistrations: [{
             pluginId: 'happier.agent.fixture',
-            generation: 'generation-7',
+            occurrenceId: 'generation-7',
             registration: {
                 family: 'agents',
                 localId: 'assistant',
@@ -105,7 +106,7 @@ function registry(params: Readonly<{
                 },
             } as ContributionRuntimeRegistration,
         }],
-        isGenerationActive: params.isGenerationActive ?? (() => true),
+        isOccurrenceCurrent: params.isOccurrenceCurrent ?? (() => true),
         retirementSignal:
             params.retirementSignal ?? TEST_RETIREMENT_SIGNAL,
         onDuplicate: vi.fn(),
@@ -120,6 +121,7 @@ describe('target Agent External Session takeover lease', () => {
             expect(args).toHaveLength(1);
             expect(args[0]).toMatchObject({
                 linkedSessionId: 'linked-session-1',
+                transcriptStorage: 'persisted',
                 remoteSessionId: 'remote-session-1',
                 targetDirectory: '/local/selected/workspace',
                 linkedDirectory: '/linked/workspace',
@@ -313,7 +315,7 @@ describe('target Agent External Session takeover lease', () => {
             const retirement = new AbortController();
             const takeover = registry({
                 takeover: Object.freeze({ resolveLaunch }),
-                isGenerationActive: () => current,
+                isOccurrenceCurrent: () => current,
                 retirementSignal: retirement.signal,
             }).get('assistant')?.externalSessionTakeover;
             if (!takeover) throw new Error('Expected takeover lease');

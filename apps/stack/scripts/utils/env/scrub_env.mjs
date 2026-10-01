@@ -1,3 +1,41 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+function resolveAgentFactsProjectionPath() {
+  const sourcePackage = new URL('../../../../../packages/agents/package.json', import.meta.url);
+  if (existsSync(sourcePackage)) {
+    return fileURLToPath(new URL('../../../../../packages/agents/src/generated/bundledAgentDefinitions.ts', import.meta.url));
+  }
+  // Installed Stack bundles Agents. Read the same projection's compiled bytes
+  // without importing an Agent runtime or requiring TypeScript support.
+  const manifestPath = createRequire(import.meta.url).resolve('@happier-dev/agents/manifest');
+  return join(dirname(manifestPath), 'generated', 'bundledAgentDefinitions.js');
+}
+
+export function readBundledAgentNativeHomeEnvironmentKeys(projectionPath) {
+  // Source preparation and full publication emit the same static Agent facts.
+  // A missing/corrupt authority must not silently leak an inherited Agent home.
+  let literal;
+  try {
+    const source = readFileSync(projectionPath ?? resolveAgentFactsProjectionPath(), 'utf8');
+    literal = source.match(/^export const BUNDLED_AGENT_NATIVE_HOME_ENVIRONMENT_KEYS[^=\n]*= Object\.freeze\((\[[\s\S]*?\])\);/mu)?.[1];
+  } catch (cause) {
+    throw new Error('Agent native-home projection is unavailable; run source Agent preparation', { cause });
+  }
+  let keys;
+  try {
+    keys = JSON.parse(literal);
+  } catch {
+    keys = undefined;
+  }
+  if (!Array.isArray(keys) || keys.some((key) => typeof key !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key))) {
+    throw new Error('Agent native-home projection is malformed; run source Agent preparation');
+  }
+  return Object.freeze([...new Set(keys)]);
+}
+
 export const SANDBOX_PRESERVE_KEYS = [
   'HAPPIER_STACK_VERBOSE',
   'HAPPIER_STACK_INVOKED_CWD',
@@ -100,6 +138,9 @@ export const STACK_WRAPPER_PRESERVE_KEYS = [
 ];
 
 export const STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS = [
+  // Inherited Agent homes must not become another stack's native-home authority.
+  // Explicit stack env values are applied after scrubbing.
+  ...readBundledAgentNativeHomeEnvironmentKeys(),
   'HAPPIER_SERVER_URL',
   'HAPPIER_PUBLIC_SERVER_URL',
   'HAPPIER_CANONICAL_SERVER_URL',

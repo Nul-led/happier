@@ -4,12 +4,11 @@ import {
   readInstalledPluginCatalogSnapshot,
   type PluginCatalogEntry,
 } from '@/plugins/projection/catalog/installed';
-import { loadBundledPluginLocators } from '@/plugins/projection/registry/builtIn/locators';
-import { BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS } from '@/plugins/projection/registry/sources/generatedBundledPluginManifests';
+import { loadCurrentBundledPluginLocatorResult } from '@/plugins/projection/registry/builtIn/locators';
 import { joinInstalledCatalogRuntimeIntrospection } from '@/plugins/projection/introspection/catalogSnapshot';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import {
-  projectGenerationBoundExecutablePluginToolCatalog,
+  projectOccurrenceBoundExecutablePluginToolCatalog,
   type ProjectedPluginToolCatalogEntry,
 } from '@/plugins/runtime/toolCatalog';
 
@@ -18,21 +17,27 @@ export type CurrentDaemonPluginCatalogSnapshot = Readonly<{
   tools: readonly ProjectedPluginToolCatalogEntry[];
 }>;
 
-const bundledPlugins = loadBundledPluginLocators(BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS);
+const bundledPlugins = loadCurrentBundledPluginLocatorResult();
 
 function projectCurrentDaemonPluginCatalogEntries(
   installedEntries: readonly PluginCatalogEntry[],
-  runtimeRegistry?: Pick<ResolvedExecutablePluginRuntimeRegistry, 'pluginFinalPolicyCurrentGenerationsById'>,
+  runtimeRegistry?: Pick<ResolvedExecutablePluginRuntimeRegistry, 'pluginFinalPolicyCurrentRuntimesById'>,
 ): readonly PluginCatalogEntry[] {
   const installedPluginIds = new Set(installedEntries.map((entry) => entry.pluginId));
   const desiredGenerationByPluginId = Object.freeze(Object.fromEntries(
-    [...(runtimeRegistry?.pluginFinalPolicyCurrentGenerationsById ?? new Map())]
-      .map(([pluginId, current]) => [pluginId, current.immutableGenerationId]),
+    [...(runtimeRegistry?.pluginFinalPolicyCurrentRuntimesById ?? new Map())]
+      .map(([pluginId, current]) => [
+        pluginId,
+        current.sourceCustody.kind === 'managed'
+          ? current.sourceCustody.immutableGenerationId
+          : current.occurrenceId,
+      ]),
   ));
   return Object.freeze([
     ...installedEntries,
     ...projectBundledPluginCatalogEntries({
-      loadedPlugins: bundledPlugins,
+      loadedPlugins: bundledPlugins.loadedPlugins,
+      pluginFailures: bundledPlugins.pluginFailures,
       desiredGenerationByPluginId,
       excludedPluginIds: installedPluginIds,
     }),
@@ -40,9 +45,9 @@ function projectCurrentDaemonPluginCatalogEntries(
 }
 
 function projectCurrentDaemonPluginTools(
-  registry: Parameters<typeof projectGenerationBoundExecutablePluginToolCatalog>[0],
+  registry: Parameters<typeof projectOccurrenceBoundExecutablePluginToolCatalog>[0],
 ): readonly ProjectedPluginToolCatalogEntry[] {
-  return projectGenerationBoundExecutablePluginToolCatalog(registry);
+  return projectOccurrenceBoundExecutablePluginToolCatalog(registry);
 }
 
 /**

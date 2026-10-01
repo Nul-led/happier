@@ -18,6 +18,7 @@ import type { SurfaceFilterSelectionV1, TriageListOrderV1 } from '../../projecti
 import { mintTriageOpaqueIdV1 } from '../../opaqueId.js';
 import {
   CORPUS_EMPTY_SAVED_VIEWS_V1,
+  type TriageSavedViewPresentationV1,
   type CorpusSavedViewV1,
   type CorpusSavedViewsReadV1,
 } from '../../settings/savedViews.js';
@@ -56,12 +57,13 @@ export type TriageSavedViewsHostV1 = Readonly<{
   ): Promise<unknown>;
 }>;
 
-/** The lens half of a view: exactly what a saved view stores. */
+/** The lens half of a view, and how it presents: exactly what a saved view stores. */
 export type TriageSavedViewLensV1 = Readonly<{
   query: string;
   filters: SurfaceFilterSelectionV1;
   order: TriageListOrderV1;
   smartPolicy: CorpusSmartPolicyV1;
+  view: TriageSavedViewPresentationV1;
 }>;
 
 /**
@@ -172,6 +174,7 @@ export function readTriageSavedViewsProjectionV1(projection: Readonly<{
       filters: view.filters,
       order: view.order,
       smartPolicy,
+      view: view.view ?? 'list',
     });
   }
   return {
@@ -195,6 +198,7 @@ export function triageCreateSavedViewInputV1(
     filters: lens.filters,
     order: lens.order,
     smartPolicy: lens.smartPolicy,
+    view: lens.view,
     // Creation cannot select before the route carrying the writer-minted id has
     // settled. The mounted controller performs the explicit select afterward.
     select: false,
@@ -224,6 +228,7 @@ export function triageRenameSavedViewInputV1(
     filters: view.filters,
     order: view.order,
     smartPolicy: view.smartPolicy,
+    view: view.view,
   };
 }
 
@@ -243,6 +248,7 @@ export function triageUpdateSavedViewInputV1(
     filters: lens.filters,
     order: lens.order,
     smartPolicy: lens.smartPolicy,
+    view: lens.view,
   };
 }
 

@@ -24,13 +24,12 @@ import { recordStackRuntimeStart } from './utils/stack/runtime_state.mjs';
 import {
   writeStubCliDistBuildManifest,
   writeStubHappierCliFiles,
+  publishPinnedRunnerSnapshotFixture,
 } from './testkit/core/stub_happier_cli_files.mjs';
+import { buildStubHappierServerSetSource } from './testkit/core/stub_happier_cli_server_set.mjs';
 import { resolvePreferredStackDaemonStatePaths } from './utils/auth/credentials_paths.mjs';
 import { resolveCliDistBuildLockPath, withCliDistBuildLock } from './utils/proc/cliDistBuildLock.mjs';
-import cliDistBuildManifest from '../../../packages/cli-common/cliDistBuildManifest.cjs';
-import { CLI_RUNTIME_SIDECAR_ENTRIES } from '../../../packages/cli-common/cliRuntimeSidecars.mjs';
 import {
-  PINNED_RUNNER_LAYOUT_VERSION,
   PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH,
   resolveNewestReadyPinnedRunnerSnapshot,
 } from '../../../packages/cli-common/pinnedRunnerSnapshot.mjs';
@@ -48,6 +47,17 @@ function buildDaemonDistGuardEnv(overrides = {}) {
   return {
     ...process.env,
     HAPPIER_STACK_REPO_DIR: '',
+    HAPPIER_STACK_CLI_ROOT_DIR: '',
+    HAPPIER_STACK_ENV_FILE: '',
+    HAPPIER_STACK_RUNTIME_MODE: '',
+    HAPPIER_STACK_RUNTIME_DIR: '',
+    HAPPIER_STACK_NODE: '',
+    HAPPIER_CLI_SUBPROCESS_ENTRYPOINT: '',
+    HAPPIER_CLI_SUBPROCESS_DIST_ENTRYPOINT: '',
+    HAPPIER_CLI_SUBPROCESS_PREFER_TSX: '',
+    HAPPIER_CLI_SUBPROCESS_DAEMON_DIST_CLOSURE_FINGERPRINT: '',
+    HAPPIER_CLI_SUBPROCESS_STACK_RUNTIME_STATE_PATH: '',
+    HAPPIER_STACK_TUI: '0',
     HAPPIER_STACK_AUTO_AUTH_SEED: '0',
     HAPPIER_STACK_MIGRATE_CREDENTIALS: '0',
     ...overrides,
@@ -129,13 +139,11 @@ test('watch startup admits the newest ready immutable runner when the mutable CL
   const cliDir = join(repoDir, 'apps', 'cli');
   const cliBin = join(cliDir, 'bin', 'happier.mjs');
   const distEntrypoint = join(cliDir, 'dist', 'index.mjs');
-  const snapshotEntrypoint = join(
-    cliDir,
-    '.runner-snapshots',
-    `${'b'.repeat(16)}-${'c'.repeat(64)}-${'d'.repeat(64)}-${PINNED_RUNNER_LAYOUT_VERSION}`,
-    'package-dist',
-    'index.mjs',
-  );
+  const snapshot = publishPinnedRunnerSnapshotFixture({
+    stagingRoot: join(cliDir, '.runner-snapshots', '.staging'),
+    workspaceRuntimeIdentity: 'd'.repeat(64),
+  });
+  const { snapshotEntrypoint } = snapshot;
   await writeHappyMonorepoMarkers(repoDir);
   await writeFile(join(repoDir, 'package.json'), '{ "private": true }\n', 'utf-8');
   await writeFile(join(repoDir, 'yarn.lock'), '# test lock\n', 'utf-8');
@@ -170,7 +178,7 @@ test('watch startup admits the newest ready immutable runner when the mutable CL
       readCliWorkspaceRuntimeIdentityImpl: () => ({ fingerprint: 'e'.repeat(64) }),
       resolveNewestReadyPinnedSnapshotLocationImpl: () => ({
         snapshotEntrypoint,
-        fingerprint: 'b'.repeat(16),
+        fingerprint: snapshot.fingerprint,
       }),
     },
   );
@@ -181,7 +189,7 @@ test('watch startup admits the newest ready immutable runner when the mutable CL
   assert.equal(result.current, true);
   assert.equal(result.degraded, true);
   assert.equal(result.distEntrypoint, snapshotEntrypoint);
-  assert.equal(result.fallbackFingerprint, 'b'.repeat(16));
+  assert.equal(result.fallbackFingerprint, snapshot.fingerprint);
   assert.equal(result.reason, 'admitted-pinned-runner-for-watch-startup');
 });
 
@@ -1435,6 +1443,7 @@ import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
+${buildStubHappierServerSetSource()}
 if (args[0] !== 'daemon') process.exit(0);
 const sub = args[1] || '';
 if (sub === '--help') process.exit(0);
@@ -1522,6 +1531,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const args = process.argv.slice(2);
+${buildStubHappierServerSetSource()}
 if (args[0] !== 'daemon') process.exit(0);
 const sub = args[1] || '';
 if (sub === '--help') process.exit(0);
@@ -1577,6 +1587,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const args = process.argv.slice(2);
+${buildStubHappierServerSetSource()}
 if (args[0] !== 'daemon') process.exit(0);
 const sub = args[1] || '';
 if (sub === '--help') process.exit(0);
@@ -1645,6 +1656,7 @@ import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
+${buildStubHappierServerSetSource()}
 const home = process.env.HAPPIER_HOME_DIR || process.env.HAPPIER_STACK_CLI_HOME_DIR;
 if (!home) process.exit(2);
 const state = join(home, 'daemon.state.json');
@@ -1722,6 +1734,7 @@ import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
+${buildStubHappierServerSetSource()}
 const home = process.env.HAPPIER_HOME_DIR || process.env.HAPPIER_STACK_CLI_HOME_DIR;
 if (!home) process.exit(2);
 const state = join(home, 'daemon.state.json');
@@ -1808,6 +1821,7 @@ import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
+${buildStubHappierServerSetSource()}
 const home = process.env.HAPPIER_HOME_DIR || process.env.HAPPIER_STACK_CLI_HOME_DIR;
 if (!home) process.exit(2);
 const state = join(home, 'daemon.state.json');
@@ -1869,6 +1883,7 @@ import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
+${buildStubHappierServerSetSource()}
 const home = process.env.HAPPIER_HOME_DIR || process.env.HAPPIER_STACK_CLI_HOME_DIR;
 if (!home) process.exit(2);
 const state = join(home, 'daemon.state.json');
@@ -1934,6 +1949,7 @@ import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
+${buildStubHappierServerSetSource()}
 const home = process.env.HAPPIER_HOME_DIR || process.env.HAPPIER_STACK_CLI_HOME_DIR;
 if (!home) process.exit(2);
 const state = join(home, 'daemon.state.json');
@@ -1977,6 +1993,12 @@ process.exit(0);
 async function writePathResolvedRuntimeCommand({ binDir, stopMode = 'kill-state' } = {}) {
   await mkdir(binDir, { recursive: true });
   const commandPath = join(binDir, 'happier-runtime-cmd');
+  const serverSetHelperPath = join(binDir, 'happier-runtime-server-set.mjs');
+  await writeFile(
+    serverSetHelperPath,
+    `const args = process.argv.slice(2);\n${buildStubHappierServerSetSource()}\n`,
+    'utf-8',
+  );
   const script = `#!/bin/sh
 HOME_DIR="${'$'}{HAPPIER_HOME_DIR:-${'$'}{HAPPIER_STACK_CLI_HOME_DIR:-}}"
 if [ -z "$HOME_DIR" ]; then
@@ -1984,6 +2006,9 @@ if [ -z "$HOME_DIR" ]; then
 fi
 STATE="$HOME_DIR/daemon.state.json"
 case "$1" in
+  server)
+    exec "${process.execPath}" "${serverSetHelperPath}" "$@"
+    ;;
   daemon)
     case "$2" in
       start)
@@ -2139,35 +2164,19 @@ test('source daemon cold-start executes a ready immutable runner while retaining
   const workspaceRuntimeIdentity = 'd'.repeat(64);
   const snapshotsDir = join(cliDir, '.runner-snapshots');
   const stagingSnapshotRoot = join(snapshotsDir, '.immutable-runner-staging');
-  const stagingEntrypoint = join(stagingSnapshotRoot, 'package-dist', 'index.mjs');
   await mkdir(stagingSnapshotRoot, { recursive: true });
   await cp(join(cliDir, 'dist'), join(stagingSnapshotRoot, 'package-dist'), { recursive: true });
   await cp(join(cliDir, 'package.json'), join(stagingSnapshotRoot, 'package.json'));
-  for (const sidecar of CLI_RUNTIME_SIDECAR_ENTRIES) {
-    const sidecarPath = join(stagingSnapshotRoot, 'scripts', ...sidecar);
-    if (sidecar.length === 1 && (sidecar[0] === 'runtime' || sidecar[0] === 'shims')) {
-      await mkdir(sidecarPath, { recursive: true });
-    } else {
-      await mkdir(dirname(sidecarPath), { recursive: true });
-      await writeFile(sidecarPath, 'module.exports = {};\n', 'utf-8');
-    }
-  }
   const managedRuntimePath = join(
     stagingSnapshotRoot,
     ...PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH,
   );
   await mkdir(dirname(managedRuntimePath), { recursive: true });
   await writeFile(managedRuntimePath, 'managed-runtime\n', 'utf-8');
-  const runtimeAsset = cliDistBuildManifest.writeCliRuntimeAssetBuildManifest({
-    runtimeRoot: stagingSnapshotRoot,
-    entrypoint: stagingEntrypoint,
-    relativePath: PINNED_RUNNER_MANAGED_PROVIDER_RUNTIME_RELATIVE_PATH.join('/'),
-  }).runtimeAsset;
-  const snapshotIdentity = `${manifest.fingerprint}-${runtimeAsset.sha256}-${workspaceRuntimeIdentity}-${PINNED_RUNNER_LAYOUT_VERSION}`;
-  const snapshotRoot = join(snapshotsDir, snapshotIdentity);
-  await rename(stagingSnapshotRoot, snapshotRoot);
-  await writeFile(join(snapshotRoot, '.fingerprint'), `${manifest.fingerprint}\n`, 'utf-8');
-  await writeFile(join(snapshotRoot, '.workspace-runtime-identity'), `${workspaceRuntimeIdentity}\n`, 'utf-8');
+  const { snapshotRoot } = publishPinnedRunnerSnapshotFixture({
+    stagingRoot: stagingSnapshotRoot,
+    workspaceRuntimeIdentity,
+  });
 
   // Keep the canonical mutable path present but deliberately inadmissible. The last-known-good
   // immutable runner must boot without waiting for or rewriting this in-flight publication.
@@ -2879,6 +2888,7 @@ import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
+${buildStubHappierServerSetSource()}
 if (args[0] !== 'daemon') process.exit(0);
 if (args[1] === '--help') process.exit(0);
 const home = process.env.HAPPIER_HOME_DIR || process.env.HAPPIER_STACK_CLI_HOME_DIR;
@@ -2946,6 +2956,7 @@ process.exit(0);
     const cliBin = join(cliBinDir, 'happier.mjs');
     const env = buildDaemonDistGuardEnv({
       HAPPIER_STACK_CLI_BUILD: '1',
+      HAPPIER_STACK_HOME_DIR: join(tmp, 'hstack-home'),
       HAPPIER_STACK_TUI: '0',
     });
 
@@ -3982,6 +3993,7 @@ test('failed Stack restart preserves a concurrently published successor lock and
     const binDir = join(tmp, 'bin');
     const cliCommand = 'happier-successor-publication-fixture';
     const commandPath = join(binDir, cliCommand);
+    const serverSetHelperPath = join(binDir, 'happier-successor-server-set.mjs');
     const lsofPath = join(binDir, 'lsof');
     await mkdir(binDir, { recursive: true });
     await mkdir(cliHomeDir, { recursive: true });
@@ -4024,10 +4036,15 @@ test('failed Stack restart preserves a concurrently published successor lock and
       processStartedAtMs: 7_777,
       createdAtMs: 7_777,
     })}\n`;
+    await writeFile(
+      serverSetHelperPath,
+      `const args = process.argv.slice(2);\n${buildStubHappierServerSetSource()}\n`,
+      'utf-8',
+    );
     await writeFile(commandPath, `#!/bin/sh
 case "$1:$2" in
   server:set)
-    exit 0
+    exec "${process.execPath}" "${serverSetHelperPath}" "$@"
     ;;
   daemon:stop)
     mkdir -p "$(dirname "$HAPPIER_TEST_SUCCESSOR_STATE_PATH")"

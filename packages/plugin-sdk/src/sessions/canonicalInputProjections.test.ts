@@ -57,7 +57,7 @@ describe('Session input canonical SDK projections', () => {
 
         const validSpawnInput = {
             executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-            directory: '/workspace/project',
+            directory: { kind: 'path', path: '/workspace/project' },
             agentTarget: {
                 kind: 'agent',
                 identity: { pluginId: 'happier.agent.codex', localId: 'codex' },

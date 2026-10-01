@@ -10,6 +10,7 @@ import { resolveWindowsCommandInvocation } from '../../../scripts/pipeline/lib/w
 import { sanitizePackageArtifactEnv } from '../../../scripts/pipeline/npm/sanitize-package-artifact-env.mjs';
 import { assertCliManagedRuntimeTarballPublication } from '../../../scripts/pipeline/npm/cli-managed-runtime-tarball.mjs';
 import { createWorkspaceChildBuildEnv } from '../../../scripts/workspaces/workspaceChildBuildEnv.mjs';
+import { BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH } from '../../../packages/cli-common/bundledPluginPublicationPolicy.mjs';
 import { readHappyCliRuntimeInputFreshness } from '../../stack/scripts/utils/proc/cli_runtime_inputs.mjs';
 import {
   bundleWorkspaceDeps as runCanonicalBundleWorkspaceDeps,
@@ -529,6 +530,20 @@ function createPackSnapshot({ packageRoot, ownedTempRoot, includeBundledDependen
       cpSync(sourcePath, targetPath, {
         recursive: lstatSync(sourcePath).isDirectory(),
       });
+    }
+    // Artifact publication is strict. Publish explicit healthy state in the
+    // private pack tree, never reuse the source-dev admission projection.
+    const failuresPath = resolve(snapshotRoot, BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH);
+    mkdirSync(dirname(failuresPath), { recursive: true });
+    fs.writeFileSync(failuresPath, '[]\n', 'utf8');
+    const snapshotPackageJsonPath = resolve(snapshotRoot, 'package.json');
+    const snapshotPackageJson = JSON.parse(readFileSync(snapshotPackageJsonPath, 'utf8'));
+    if (Array.isArray(snapshotPackageJson.files)) {
+      snapshotPackageJson.files = [...new Set([
+        ...snapshotPackageJson.files,
+        BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH,
+      ])];
+      fs.writeFileSync(snapshotPackageJsonPath, `${JSON.stringify(snapshotPackageJson, null, 2)}\n`, 'utf8');
     }
   } catch (error) {
     rmSync(snapshotContainer, { recursive: true, force: true });

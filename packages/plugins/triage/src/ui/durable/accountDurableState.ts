@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { usePluginUiDataClientOrNull } from '@happier-dev/plugin-ui/data';
+import { usePluginUiDataClientOrNull } from '@happier-dev/plugin-ui';
 
 import {
   bindCorpusCollectionsWith,

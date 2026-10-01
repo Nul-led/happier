@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
-import { isAbsolute, resolve } from 'node:path';
+import { lstat, realpath } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
 import type { PluginExecutionScopeV1 } from '@happier-dev/protocol';
@@ -59,6 +59,7 @@ type StoredTranscriptFileFollowPathGrant = Readonly<{
     runtimeId: string;
     scopeKey: string | null;
     realPath: string;
+    pendingPath: string | null;
     reason: TranscriptFileFollowPathGrantReason;
     evidence: TranscriptFileFollowPathGrantEvidence;
     expiresAtMs: number | null;
@@ -80,9 +81,8 @@ export function createTranscriptFileFollowPathGrantRegistry(): TranscriptFileFol
             return null;
         }
         const realPath = await resolveTranscriptFileFollowRealPath(normalizedPath);
-        if (!realPath) {
-            return null;
-        }
+        const pendingPath = realPath ? null : await resolvePendingTranscriptPath(normalizedPath);
+        if (!realPath && !pendingPath) return null;
         const now = Date.now();
         for (const grant of grantsById.values()) {
             if (grant.expiresAtMs !== null && grant.expiresAtMs <= now) {
@@ -93,7 +93,8 @@ export function createTranscriptFileFollowPathGrantRegistry(): TranscriptFileFol
                 grant.pluginId === scope.pluginId
                 && grant.runtimeId === scope.runtimeId
                 && grant.scopeKey === scope.scopeKey
-                && grant.realPath === realPath
+                && (grant.realPath === realPath
+                    || (grant.pendingPath === normalizedPath && grant.realPath === pendingPath))
             ) {
                 return Object.freeze({
                     path: grant.realPath,
@@ -114,7 +115,12 @@ export function createTranscriptFileFollowPathGrantRegistry(): TranscriptFileFol
                     'Transcript file-follow grants require an absolute transcript path',
                 );
             }
-            const realPath = await resolveTranscriptFileFollowRealPath(normalizedPath);
+            let realPath = await resolveTranscriptFileFollowRealPath(normalizedPath);
+            let pendingPath: string | null = null;
+            if (!realPath && input.evidence.kind === 'sessionStartTranscriptPath') {
+                pendingPath = normalizedPath;
+                realPath = await resolvePendingTranscriptPath(normalizedPath);
+            }
             if (!realPath) {
                 throw new PluginContextServiceError(
                     'PLUGIN_TRANSCRIPTS_FILE_FOLLOW_GRANT_INVALID',
@@ -127,6 +133,7 @@ export function createTranscriptFileFollowPathGrantRegistry(): TranscriptFileFol
                 id,
                 ...scope,
                 realPath,
+                pendingPath,
                 reason: input.reason,
                 evidence: input.evidence,
                 expiresAtMs,
@@ -154,6 +161,31 @@ export function createTranscriptFileFollowPathGrantRegistry(): TranscriptFileFol
             }
         },
     });
+}
+
+async function resolvePendingTranscriptPath(path: string): Promise<string | null> {
+    try {
+        await lstat(path);
+        return null;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null;
+    }
+    const missingSegments = [basename(path)];
+    let ancestor = dirname(path);
+    while (true) {
+        const realAncestor = await resolveTranscriptFileFollowRealPath(ancestor);
+        if (realAncestor) return join(realAncestor, ...missingSegments);
+        try {
+            await lstat(ancestor);
+            return null;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null;
+        }
+        const parent = dirname(ancestor);
+        if (parent === ancestor) return null;
+        missingSegments.unshift(basename(ancestor));
+        ancestor = parent;
+    }
 }
 
 export function normalizeTranscriptFileFollowAbsolutePath(path: string): string | null {

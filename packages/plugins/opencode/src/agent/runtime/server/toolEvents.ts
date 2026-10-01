@@ -5,6 +5,10 @@ import { readOpenCodeToolCallKey, type OpenCodeServerRuntimeState } from './stat
 import type { OpenCodeRuntimeEvent } from './runtimeEvents.js';
 import type { OpenCodeRuntimeScope } from './runtimeEvents.js';
 import { projectOpenCodeRuntimeScope } from './openCodeRuntimeEvents.js';
+import {
+  canonicalizeOpenCodeProjectedMcpToolName,
+  type OpenCodeSessionMcpProjection,
+} from './mcpRegistration.js';
 
 export function buildOpenCodeToolResultOutput(part: OpenCodeToolPart): unknown {
   const title = normalizeString(part.state.title);
@@ -32,6 +36,7 @@ export function publishOpenCodeToolPartRuntimeEvents(params: Readonly<{
   state: OpenCodeServerRuntimeState;
   scope: OpenCodeRuntimeScope;
   publishRuntimeEvent: (event: OpenCodeRuntimeEvent) => void;
+  mcpProjection: OpenCodeSessionMcpProjection;
   nowMs?: () => number;
 }>): void {
   const turnId = params.state.activeTurnId;
@@ -49,7 +54,7 @@ export function publishOpenCodeToolPartRuntimeEvents(params: Readonly<{
       ...projectOpenCodeRuntimeScope(params.scope),
       turnId,
       toolCallId: params.part.callID,
-      toolName: params.part.tool,
+      toolName: canonicalizeOpenCodeProjectedMcpToolName(params.part.tool, params.mcpProjection),
       toolInput,
       emittedAtMs,
     });

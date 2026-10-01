@@ -13,7 +13,9 @@ export type CodexTerminalPermissionMode =
 
 export function resolveCodexTerminalPermissionPolicy(
   permissionMode: CodexTerminalPermissionMode | string,
+  workspaceWrites?: 'allow' | 'deny',
 ): CodexTerminalPermissionPolicy {
+  if (workspaceWrites === 'deny') return { approvalPolicy: 'never', sandbox: 'read-only' };
   switch (normalizeAcpPermissionIntent(permissionMode)) {
     case 'read-only':
       return { approvalPolicy: 'never', sandbox: 'read-only' };

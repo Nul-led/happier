@@ -78,6 +78,13 @@ describe('Agent runner-factory registration transaction', () => {
   it('captures the focused provider CLI attach declaration in the one Agent registration', () => {
     const scope = scopeFor(['factory']);
     const providerCliAttach = Object.freeze({
+      commandToolIds: ['assistant', 'assistant-v2'],
+      resolveCommandToolId: () => 'assistant-v2',
+      managedServiceAccess: {
+        credentialEnvironmentKey: 'ASSISTANT_SERVER_PASSWORD',
+        credentialEnvironmentAliases: ['ASSISTANT_PASSWORD'],
+        resolveTargetBaseUrl: () => 'http://127.0.0.1:4096',
+      },
       resolveTarget: () => ({ ok: false as const, reason: 'fixture target is unavailable' }),
       createArgs: () => [],
       resolveReachability: () => null,
@@ -95,12 +102,25 @@ describe('Agent runner-factory registration transaction', () => {
     expect(capturedProviderCliAttach).toBeDefined();
     expect(capturedProviderCliAttach).not.toBe(providerCliAttach);
     expect(Object.isFrozen(capturedProviderCliAttach)).toBe(true);
+    expect(capturedProviderCliAttach?.commandToolIds).toEqual(['assistant', 'assistant-v2']);
+    expect(capturedProviderCliAttach?.resolveCommandToolId?.({ accountSettings: null }))
+      .toBe('assistant-v2');
+    expect(capturedProviderCliAttach?.managedServiceAccess).toEqual({
+      credentialEnvironmentKey: 'ASSISTANT_SERVER_PASSWORD',
+      credentialEnvironmentAliases: ['ASSISTANT_PASSWORD'],
+      resolveTargetBaseUrl: expect.any(Function),
+    });
+    expect(capturedProviderCliAttach?.managedServiceAccess?.credentialEnvironmentAliases)
+      .not.toBe(providerCliAttach.managedServiceAccess.credentialEnvironmentAliases);
+    expect(Object.isFrozen(
+      capturedProviderCliAttach?.managedServiceAccess?.credentialEnvironmentAliases,
+    )).toBe(true);
     expect(capturedProviderCliAttach?.resolveTarget({ metadata: {} })).toEqual({
       ok: false,
       reason: 'fixture target is unavailable',
     });
-    expect(capturedProviderCliAttach?.createArgs({})).toEqual([]);
-    expect(capturedProviderCliAttach?.resolveReachability({})).toBeNull();
+    expect(capturedProviderCliAttach?.createArgs({}, { cliVersion: null })).toEqual([]);
+    expect(capturedProviderCliAttach?.resolveReachability({}, { cliVersion: null })).toBeNull();
   });
 
   it('captures a focused Agent CLI session-command declaration in the one Agent registration', async () => {
@@ -510,13 +530,28 @@ describe('Agent runner-factory registration transaction', () => {
     expect(captured?.verifyAfterSubmit({ promptText: 'continue', screenText: 'continue' })).toBe(true);
   });
 
+  it('retains prepared command descriptors through Agent registration', () => {
+    const scope = scopeFor(['factory']);
+    const prepareCommand = () => ({ args: [{ kind: 'temporaryTextFile' as const, suffix: '.mjs', contents: 'export default {};' }] });
+    scope.api.agents.register('assistant', factory, {
+      preflightSessionControls: { models: { command: { toolId: 'assistant', args: ['models'], prepareCommand } } },
+    });
+    const registered = scope.commit()[0]?.value as { preflightSessionControls: { models: { command: { prepareCommand?: typeof prepareCommand } } } };
+    expect(registered.preflightSessionControls.models.command.prepareCommand?.()).toEqual({
+      args: [{ kind: 'temporaryTextFile', suffix: '.mjs', contents: 'export default {};' }],
+    });
+  });
+
   it('projects only declared preflight fields from trusted structural author objects', () => {
+    const resolveCommandToolId = vi.fn(() => 'assistant-v2');
     const scope = scopeFor(['factory']);
     scope.api.agents.register('assistant', factory, {
       preflightSessionControls: {
         authorState: 'ignored',
         models: {
           authorState: 'ignored',
+          commandToolIds: ['assistant', 'assistant-v2'],
+          resolveCommandToolId,
           command: {
             authorState: 'ignored',
             toolId: 'assistant',
@@ -544,6 +579,8 @@ describe('Agent runner-factory registration transaction', () => {
       preflightSessionControls?: unknown;
     }).preflightSessionControls).toEqual({
       models: {
+        commandToolIds: ['assistant', 'assistant-v2'],
+        resolveCommandToolId: expect.any(Function),
         command: { toolId: 'assistant', args: ['models'] },
         fallback: {
           command: { toolId: 'assistant', args: ['models', '--fallback'] },
@@ -554,6 +591,13 @@ describe('Agent runner-factory registration transaction', () => {
         args: ['app-server', '--enable', 'realtime'],
       }],
     });
+    const captured = (scope.registrations()[0]?.value as {
+      preflightSessionControls?: {
+        models?: { resolveCommandToolId?: (input: unknown) => string | null | undefined };
+      };
+    }).preflightSessionControls?.models?.resolveCommandToolId;
+    expect(captured).not.toBe(resolveCommandToolId);
+    expect(captured?.({ accountSettings: null, environment: {} })).toBe('assistant-v2');
   });
 
   it('captures an auth-only auxiliary registration for a declarative ACP Agent', async () => {

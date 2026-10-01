@@ -371,7 +371,7 @@ export async function resumeEntrySessionStart(
             'session.spawn_new',
             {
                 ...withoutProhibitedSpawnMembers(pending.spawn),
-                directory: pending.directory,
+                directory: { kind: 'path', path: pending.directory },
                 creationKey: pending.creationKey,
             },
             deps.signal ? { signal: deps.signal } : undefined,
@@ -554,7 +554,7 @@ export async function startEntrySession(
     const workspace = materializationWorkspaceFacts(resolved.materialization);
     const spawnInput: SessionSpawnInput = {
         ...withoutProhibitedSpawnMembers(destination.spawn),
-        directory: materializationDirectory(resolved.materialization),
+        directory: { kind: 'path', path: materializationDirectory(resolved.materialization) },
         creationKey: destination.creationKey,
     };
     const result = await deps.execute(

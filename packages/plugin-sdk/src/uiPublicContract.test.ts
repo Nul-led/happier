@@ -101,16 +101,6 @@ type DuplicateClientPluginUiHostApi = never; /* @sdk-negative-type-case-end */
 /* @sdk-negative-type-case:src-uiPublicContract-test-ts-51:LS0gY2FsbGVycyBpbmZlciB0aGUgY2xpZW50IGZhY3RvcnkgcmVzdWx0IGluc3RlYWQgb2YgaW1wb3J0aW5nIGEgY29udmVuaWVuY2UgZnVuY3Rpb24gdHlwZS4:aW1wb3J0IHR5cGUgeyBDcmVhdGVQbHVnaW5VaUhvc3RBcGlDbGllbnQgfSBmcm9tICcuL3VpL2NsaWVudC5qcyc7 */
 type CreatePluginUiHostApiClient = never; /* @sdk-negative-type-case-end */
 
-import {
-    createReactNativeWebVitePlugins,
-    defineBuildConfig,
-    defineReactNativeWebViteBuildPreset,
-} from './ui/build/index.js';
-import type {
-    PluginUiArtifactPlatform,
-    PluginUiBuildConfig,
-    PluginUiBuildTarget,
-} from './ui/build/index.js';
 /* @sdk-negative-type-case:src-uiPublicContract-test-ts-56:LS0gaG9zdGVkLXdlYiBwcmVzZXQgY29uc3RydWN0aW9uIGlzIGhvc3QgYnVpbGQgbWFjaGluZXJ5OyBhdXRob3JzIGRlY2xhcmUgYnVpbGQgdGFyZ2V0cy4:aW1wb3J0IHR5cGUgeyBIb3N0ZWRXZWJWaXRlQnVpbGRQcmVzZXRJbnB1dCB9IGZyb20gJy4vdWkvYnVpbGQvaW5kZXguanMnOw */
 type HostedWebViteBuildPresetInput = never; /* @sdk-negative-type-case-end */
 /* @sdk-negative-type-case:src-uiPublicContract-test-ts-57:LS0gUmUuUGFjayBwcmVzZXQgY29uc3RydWN0aW9uIGlzIGhvc3QgYnVpbGQgbWFjaGluZXJ5OyBhdXRob3JzIGRlY2xhcmUgYnVpbGQgdGFyZ2V0cy4:aW1wb3J0IHR5cGUgeyBSZWFjdE5hdGl2ZVJlcGFja0J1aWxkUHJlc2V0SW5wdXQgfSBmcm9tICcuL3VpL2J1aWxkL2luZGV4LmpzJzs */
@@ -179,12 +169,6 @@ import type { ResourceSubscriptionEvent } from './ui.js';
 import type { defineHostedWebBridgeMessage } from './ui.js';
 
 type InferredClientOptions = Parameters<typeof createPluginUiHostApiClient>[0];
-type InferredBuildConfig = Parameters<typeof defineBuildConfig>[0];
-type InferredBuildTarget = InferredBuildConfig['targets'][number];
-type InferredReactNativeBuildTarget = Extract<InferredBuildTarget, { kind: 'reactNative' }>;
-type InferredArtifactPlatform = InferredReactNativeBuildTarget['platforms'][number];
-type InferredReactNativeWebPresetInput =
-    Parameters<typeof defineReactNativeWebViteBuildPreset>[0];
 type InferredTestkit = Awaited<ReturnType<typeof createPluginTestkit>>;
 type InferredTestkitInvokeOptions =
     Parameters<InferredTestkit['invokeAction']>[2];
@@ -221,13 +205,6 @@ type PublicContractProof =
     | RenderSurface
     | InferredClientOptions
     | DuplicateClientPluginUiHostApi
-    | InferredArtifactPlatform
-    | InferredBuildConfig
-    | InferredBuildTarget
-    | InferredReactNativeWebPresetInput
-    | PluginUiArtifactPlatform
-    | PluginUiBuildConfig
-    | PluginUiBuildTarget
     | InferredTestkit
     | InferredTestkitInvokeOptions
     | InferredTestkitRegistration
@@ -246,7 +223,6 @@ type PublicContractProof =
 void (undefined as unknown as PublicContractProof);
 void (undefined as unknown as typeof defineHostedWebBridgeMessage);
 void (undefined as unknown as typeof NormalCreatePluginRegistrationScope);
-void (undefined as unknown as typeof createReactNativeWebVitePlugins);
 
 describe('UI/testing public type contract', () => {
     it('keeps the concise author host and resource vocabulary identical to the canonical UI types', () => {

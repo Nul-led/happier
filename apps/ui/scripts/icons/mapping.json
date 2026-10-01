@@ -332,5 +332,7 @@
   "warning": "warning",
   "wifi": "wifi-high",
   "worktrees": "tree-structure",
-  "x": "x"
+  "x": "x",
+  "split-pane-right": "square-split-horizontal",
+  "split-pane-down": "square-split-vertical"
 }

@@ -1,12 +1,57 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+import { createTempFixture } from '../../testkit/core/temp_fixture.mjs';
 
 import {
   SANDBOX_PRESERVE_KEYS,
   STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS,
   STACK_WRAPPER_PRESERVE_KEYS,
   scrubHappierStackEnv,
+  readBundledAgentNativeHomeEnvironmentKeys,
 } from './scrub_env.mjs';
+
+test('Agent home projection accepts generated TS/JS and rejects unavailable or malformed authority', async (t) => {
+  const { root } = await createTempFixture(t, { prefix: 'hstack-agent-homes-' });
+  const path = join(root, 'facts.ts');
+  const readKeys = () => readBundledAgentNativeHomeEnvironmentKeys(path);
+  assert.throws(readKeys, /native-home projection/u);
+  for (const declaration of [
+    '',
+    'export const BUNDLED_AGENT_NATIVE_HOME_ENVIRONMENT_KEYS = Object.freeze(null);',
+    'export const BUNDLED_AGENT_NATIVE_HOME_ENVIRONMENT_KEYS = Object.freeze(["NOT A KEY"]);',
+  ]) {
+    await writeFile(path, declaration);
+    assert.throws(readKeys, /native-home projection/u);
+  }
+  for (const annotation of [': readonly string[]', '']) {
+    await writeFile(path, `export const BUNDLED_AGENT_NATIVE_HOME_ENVIRONMENT_KEYS${annotation} = Object.freeze(["CUSTOM_AGENT_ROOT", "customAgent_home"]);`);
+    assert.deepEqual(readKeys(), ['CUSTOM_AGENT_ROOT', 'customAgent_home']);
+  }
+  await writeFile(path, 'export const BUNDLED_AGENT_NATIVE_HOME_ENVIRONMENT_KEYS = Object.freeze([]);');
+  assert.deepEqual(readKeys(), []);
+});
+
+test('stack wrapper scrubs native-home keys supplied by the generated Agent projection', async (t) => {
+  const { root } = await createTempFixture(t, { prefix: 'hstack-agent-home-policy-' });
+  const policyPath = join(root, 'apps/stack/scripts/utils/env/scrub_env.mjs');
+  const agentsPath = join(root, 'packages/agents');
+  await mkdir(dirname(policyPath), { recursive: true });
+  await mkdir(join(agentsPath, 'src/generated'), { recursive: true });
+  await copyFile(new URL('./scrub_env.mjs', import.meta.url), policyPath);
+  await writeFile(join(agentsPath, 'package.json'), '{}');
+  await writeFile(join(agentsPath, 'src/generated/bundledAgentDefinitions.ts'),
+    'export const BUNDLED_AGENT_NATIVE_HOME_ENVIRONMENT_KEYS: readonly string[] | null = Object.freeze(["CUSTOM_AGENT_ROOT"]);');
+  const policy = await import(pathToFileURL(policyPath).href);
+  const scrubbed = policy.scrubHappierStackEnv({ CUSTOM_AGENT_ROOT: '/foreign-home', PATH: '/bin' }, {
+    clearUnprefixedKeys: policy.STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS,
+  });
+  assert.ok(scrubbed.CUSTOM_AGENT_ROOT === undefined, 'generated native-home key must be scrubbed');
+  assert.ok(scrubbed.PATH === '/bin', 'unrelated environment must be retained');
+});
 
 test('scrubHappierStackEnv removes non-preserved HAPPIER_STACK_* vars and clears selected unprefixed keys', () => {
   const env = {
@@ -139,6 +184,9 @@ test('scrubHappierStackEnv preserves stack wrapper routing and runtime selection
 
 test('STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS covers stale cross-stack runtime and server context', () => {
   for (const key of [
+    'CODEX_HOME',
+    'CLAUDE_CONFIG_DIR',
+    'PI_CODING_AGENT_DIR',
     'HAPPIER_HOME_DIR',
     'HAPPIER_SERVER_URL',
     'HAPPIER_PUBLIC_SERVER_URL',

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, posix, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { execYarn } from '../../../../../scripts/workspaces/execYarnCommand.mjs';
@@ -53,6 +53,8 @@ async function installInitialDependencies({ repoDir, env }) {
 
 export async function bootstrapRemoteDependencies({
   repoDir = resolve(process.cwd()),
+  validationKind = 'runtime',
+  componentRelativeDir = '.',
   env = process.env,
   packageExists = existsSync,
   installInitialDependencies: installInitialDependenciesImpl = installInitialDependencies,
@@ -61,6 +63,14 @@ export async function bootstrapRemoteDependencies({
   loadDependencyOwner = async () => await import('../proc/pm.mjs'),
 } = {}) {
   const componentDir = join(repoDir, 'apps', 'stack');
+  if (validationKind === 'source-test') {
+    // Source tests consume installed tools, not the Stack dependency owner's
+    // compiled closure. Keep installation freshness and its lock authoritative.
+    return await withDependencyRefreshImpl(
+      { installDir: repoDir, componentDir, env },
+      async () => await installInitialDependenciesImpl({ repoDir, env }),
+    );
+  }
   const dependencyOwnerEntrypoints = ['workspaces', 'process'].map((domain) => join(
     repoDir,
     'packages',
@@ -83,15 +93,32 @@ export async function bootstrapRemoteDependencies({
     );
   }
 
-  const { ensureDepsInstalled } = await loadDependencyOwner();
+  const {
+    ensureDepsInstalled,
+    ensureWorkspacePackagesBuiltForComponent,
+  } = await loadDependencyOwner();
   await ensureDepsInstalled(
     componentDir,
     'remote Happier workspace',
     { env },
   );
+  // The launcher needs its dependency owner, while only Stack commands consume
+  // Stack's emitted workspace closure. Other components prepare their own outputs.
+  const componentPath = posix.normalize(String(componentRelativeDir).replaceAll('\\', '/'));
+  if (/^apps\/stack(?:\/|$)/u.test(componentPath)) {
+    if (typeof ensureWorkspacePackagesBuiltForComponent !== 'function') {
+      throw new Error('Remote Happier workspace dependency owner does not expose component workspace preparation');
+    }
+    await ensureWorkspacePackagesBuiltForComponent(componentDir, { env });
+  }
 }
 
 const entryPath = String(process.argv[1] ?? '').trim();
 if (entryPath && pathToFileURL(resolve(entryPath)).href === import.meta.url) {
-  await bootstrapRemoteDependencies();
+  const kind = process.argv.slice(2).find(value => value.startsWith('--validation-kind='));
+  const component = process.argv.slice(2).find(value => value.startsWith('--component-relative-dir='));
+  await bootstrapRemoteDependencies({
+    validationKind: kind?.slice('--validation-kind='.length) ?? 'runtime',
+    componentRelativeDir: component?.slice('--component-relative-dir='.length) ?? '.',
+  });
 }

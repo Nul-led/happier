@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
+import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
+import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
+import { createPluginTrustRecord } from '@/plugins/store/install/trustIdentity';
 
 import {
   DaemonPluginChangePreparationError,
@@ -8,6 +11,80 @@ import {
 } from './changeService';
 
 describe('createDaemonPluginChangeService', () => {
+  it('publishes an ephemeral development candidate without running rejection cleanup', async () => {
+    const cleanup = vi.fn(async () => undefined);
+    const candidate = Object.freeze({
+      kind: 'preparedDevelopmentCandidate' as const,
+      pluginId: 'acme.development',
+      sourceAuthority: Object.freeze({
+        kind: 'development' as const,
+        registeredRootId: '/plugins/acme.development',
+        canonicalRoot: '/plugins/acme.development',
+        observedRevision: 3,
+      }),
+      manifest: readCanonicalPluginManifest(createPluginManifestV2Fixture({
+        id: 'acme.development',
+        version: '1.0.0',
+        entrypoints: { development: './src/index.ts' },
+      }))!,
+      preparedActivationGraph: Object.freeze({
+        module: Object.freeze({}),
+        candidateScope: Object.freeze({}),
+        sourceAuthority: Object.freeze({
+          kind: 'development' as const,
+          registeredRootId: '/plugins/acme.development',
+          canonicalRoot: '/plugins/acme.development',
+          observedRevision: 3,
+        }),
+        rootPath: '/plugins/acme.development',
+        entryPath: '/plugins/acme.development/src/index.ts',
+      }),
+      catalogRecord: {
+        source: {
+          kind: 'path' as const,
+          locator: '/plugins/acme.development',
+          trustPolicy: 'local_trusted' as const,
+          installPolicy: 'link' as const,
+          resolvedPath: '/plugins/acme.development',
+          manifestPath: '/plugins/acme.development/.happier-plugin/plugin.json',
+          resolvedVersion: '1.0.0',
+          installedAt: 1,
+          devWatch: true,
+        },
+        compatibility: { status: 'compatible' as const, diagnostics: [] },
+        install: { mode: 'link' as const, manifestVersion: '1.0.0', installedPath: null },
+        state: { enabled: true, lastLoadedAtMs: 1, lastError: null },
+      },
+      trust: createPluginTrustRecord({
+        pluginId: 'acme.development',
+        distribution: { kind: 'localPath', canonicalPath: '/plugins/acme.development' },
+        approvedAtMs: 1,
+      }),
+      updatePolicy: 'allowed' as const,
+      requiresReview: false,
+      cleanup,
+    });
+    const applyDevelopment = vi.fn(async () => ({
+      kind: 'committed' as const,
+      pluginId: candidate.pluginId,
+      desiredGeneration: null,
+      appliedGeneration: null,
+      pendingSurfaces: Object.freeze([]),
+    }));
+    const service = createDaemonPluginChangeService({
+      prepare: async () => candidate,
+      applyDevelopment,
+    });
+
+    await expect(service.requestPluginChange({
+      kind: 'development',
+      sourceRootPath: candidate.sourceAuthority.canonicalRoot,
+      observedRevision: candidate.sourceAuthority.observedRevision,
+    })).resolves.toMatchObject({ kind: 'committed', pluginId: candidate.pluginId });
+    expect(applyDevelopment).toHaveBeenCalledWith(candidate, undefined);
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
   it('preserves a daemon-owner preparation denial code', async () => {
     const service = createDaemonPluginChangeService({
       prepare: async () => {
@@ -38,7 +115,7 @@ describe('createDaemonPluginChangeService', () => {
     await expect(service.requestPluginChange({
       kind: 'installPath',
       locator: '/tmp/example',
-      development: true,
+      development: false,
     })).resolves.toEqual({
       kind: 'failed',
       code: 'plugin_change_preparation_failed',
@@ -58,7 +135,7 @@ describe('createDaemonPluginChangeService', () => {
     const result = await service.requestPluginChange({
       kind: 'installPath',
       locator: '/tmp/example',
-      development: true,
+      development: false,
     });
 
     expect(result.kind).toBe('failed');
@@ -83,7 +160,7 @@ describe('createDaemonPluginChangeService', () => {
     const result = await service.requestPluginChange({
       kind: 'installPath',
       locator: '/tmp/example',
-      development: true,
+      development: false,
     });
 
     expect(result.kind).toBe('failed');
@@ -118,7 +195,7 @@ describe('createDaemonPluginChangeService', () => {
       development: false,
     });
     expect(begun).toEqual({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       pendingChangeId: 'pending-1',
       review: expect.objectContaining({ pluginId: 'acme.example' }),
     });
@@ -287,10 +364,10 @@ describe('createDaemonPluginChangeService', () => {
     });
     const service = createDaemonPluginChangeService({
       prepare: async () => ({
-        kind: 'sourceRootApprovalRequired',
+        kind: 'projectTrustApprovalRequired',
         pendingKey: '/tmp/example',
         review: { source: { kind: 'path', locator: '/tmp/example' } },
-        continueAfterSourceRootApproval: async () => ({
+        continueAfterProjectTrustApproval: async () => ({
           pluginId: 'acme.example',
           requiresReview: false,
           apply: async () => ({
@@ -315,11 +392,11 @@ describe('createDaemonPluginChangeService', () => {
       pluginId: 'acme.example',
       sourceRootPath: '/tmp/example',
     });
-    if (begun.kind !== 'sourceRootReviewRequired') throw new Error('Expected source-root review');
+    if (begun.kind !== 'reviewRequired' || begun.reviewKind !== 'projectTrust') throw new Error('Expected source-root review');
 
     const deciding = service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
-      decision: 'trustSourceRoot',
+      decision: 'installAndTrust', optionalSelections: [],
     });
     await cleanupStarted;
 
@@ -535,7 +612,7 @@ describe('createDaemonPluginChangeService', () => {
 
     await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
     await expect(unrelated).resolves.toEqual(expect.objectContaining({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: expect.objectContaining({ pluginId: 'acme.ready' }),
     }));
 
@@ -996,10 +1073,10 @@ describe('createDaemonPluginChangeService', () => {
     const service = createDaemonPluginChangeService({
       prepare: async (request) => (request.kind === 'development'
         ? {
-            kind: 'sourceRootApprovalRequired' as const,
+            kind: 'projectTrustApprovalRequired' as const,
             pendingKey: '/tmp/agent-authored',
             review: { source: { kind: 'path' as const, locator: '/tmp/agent-authored' } },
-            continueAfterSourceRootApproval: async () => ({
+            continueAfterProjectTrustApproval: async () => ({
               pluginId: 'acme.agent-authored',
               requiresReview: false,
               apply: async () => ({
@@ -1034,7 +1111,7 @@ describe('createDaemonPluginChangeService', () => {
       kind: 'development',
       sourceRootPath: '/tmp/agent-authored',
     });
-    if (sourceRoot.kind !== 'sourceRootReviewRequired') throw new Error('Expected source-root review');
+    if (sourceRoot.kind !== 'reviewRequired' || sourceRoot.reviewKind !== 'projectTrust') throw new Error('Expected source-root review');
     const install = await service.requestPluginChange({
       kind: 'installPath',
       locator: '/tmp/example',

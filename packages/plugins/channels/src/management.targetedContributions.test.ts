@@ -37,7 +37,7 @@ import { assertChannelsTestCollectionQueryLimit } from './testkit/collectionQuer
 const providerSelection = {
   target: {
     pluginId: 'happier.channels',
-    immutableGenerationId: 'channels-generation-a',
+    sourceCustody: { kind: 'development', registeredRootId: 'channels-root-a' },
   },
   point: {
     pointId: 'providers',
@@ -46,7 +46,7 @@ const providerSelection = {
   contributor: {
     pluginId: 'example.channels.provider',
     contributionId: 'example-socket',
-    immutableGenerationId: 'provider-generation-a',
+    sourceCustody: { kind: 'managed', immutableGenerationId: 'provider-generation-a', installSource: 'npm' },
   },
 } as const satisfies PluginTargetedContributionSelectionV1;
 
@@ -55,7 +55,7 @@ const replacementProviderSelection = {
   contributor: {
     pluginId: providerSelection.contributor.pluginId,
     contributionId: 'example-socket-replacement',
-    immutableGenerationId: 'provider-generation-b',
+    sourceCustody: { kind: 'managed', immutableGenerationId: 'provider-generation-b', installSource: 'npm' },
   },
 } as const satisfies PluginTargetedContributionSelectionV1;
 
@@ -63,11 +63,14 @@ function admittedProviderOperation(input: Readonly<{
   contributor?: Readonly<{
     pluginId: string;
     contributionId: string;
-    immutableGenerationId: string;
+    sourceCustody: PluginTargetedContributionSelectionV1['contributor']['sourceCustody'];
   }>;
   role: string;
 }>) {
   const contributor = input.contributor ?? providerSelection.contributor;
+  const occurrenceId = contributor.sourceCustody.kind === 'managed'
+    ? contributor.sourceCustody.immutableGenerationId
+    : contributor.contributionId;
   return Object.freeze({
     identity: Object.freeze({
       target: Object.freeze({ pluginId: providerSelection.target.pluginId }),
@@ -75,7 +78,11 @@ function admittedProviderOperation(input: Readonly<{
         pointId: providerSelection.point.pointId,
         protocol: Object.freeze({ ...providerSelection.point.protocol }),
       }),
-      contributor: Object.freeze({ ...contributor }),
+      contributor: Object.freeze({
+        pluginId: contributor.pluginId,
+        contributionId: contributor.contributionId,
+        occurrenceId,
+      }),
       role: input.role,
     }),
   });
@@ -100,6 +107,7 @@ type TargetedProviderFixtureSnapshot = Readonly<{
   contributorPluginId?: string;
   operations?: unknown;
   targetImmutableGenerationId?: string;
+  targetSourceCustody?: PluginTargetedContributionSelectionV1['target']['sourceCustody'];
   contributions?: readonly TargetedProviderFixtureSnapshot[];
 }>;
 
@@ -122,13 +130,14 @@ function targetedContributionsFixture(input: TargetedProviderFixtureSnapshot & R
           // This is the host admission boundary fixture. The real snapshot carries
           // the contributor generation with the exact role Action handle.
           return {
-            generation: current.targetImmutableGenerationId
-              ?? providerSelection.target.immutableGenerationId,
+            occurrenceId: current.targetImmutableGenerationId ?? 'channels-occurrence-a',
+            sourceCustody: current.targetSourceCustody ?? providerSelection.target.sourceCustody,
             contributions: (current.contributions ?? [current]).map((contribution) => ({
               contributor: {
                 pluginId: contribution.contributorPluginId ?? providerSelection.contributor.pluginId,
                 contributionId: contribution.contributorId ?? providerSelection.contributor.contributionId,
-                immutableGenerationId: contribution.contributorImmutableGenerationId,
+                occurrenceId: contribution.contributorImmutableGenerationId,
+                sourceCustody: { kind: 'managed', immutableGenerationId: contribution.contributorImmutableGenerationId, installSource: 'npm' },
               },
               protocol: providerSelection.point.protocol,
               operations: contribution.operations ?? {
@@ -326,7 +335,7 @@ function readyConnectionCreateContext(input: Readonly<{ stateCollection: unknown
     context: invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -443,7 +452,7 @@ function durablePushCreateContext(input: Readonly<{
         execute: correspondence,
       } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         contributorPluginId: input.contributorPluginId,
         operations: {
           setup: setupAction,
@@ -515,7 +524,7 @@ describe('prepareConversationConnectionForInvocation targeted provider selection
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
       }),
     });
 
@@ -563,7 +572,7 @@ describe('prepareConversationConnectionForInvocation targeted provider selection
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
       }),
     });
 
@@ -606,7 +615,7 @@ describe('prepareConversationConnectionForInvocation targeted provider selection
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
       }),
     });
 
@@ -641,7 +650,7 @@ describe('prepareConversationConnectionForInvocation targeted provider selection
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
       }),
     });
 
@@ -714,7 +723,7 @@ describe('prepareConversationConnectionForInvocation targeted provider selection
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
       }),
     });
 
@@ -748,8 +757,8 @@ describe('prepareConversationConnectionForInvocation targeted provider selection
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
-        targetImmutableGenerationId: 'channels-generation-b',
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
+        targetSourceCustody: { kind: 'development', registeredRootId: 'channels-root-b' },
       }),
     });
 
@@ -789,7 +798,6 @@ describe('deleteConversationConnectionForInvocation transport ownership', () => 
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'saved' },
       credentialRef: null,
@@ -918,7 +926,7 @@ describe('createConversationConnectionForInvocation targeted provider selection'
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -962,7 +970,6 @@ describe('createConversationConnectionForInvocation targeted provider selection'
           providerPluginId: providerSelection.contributor.pluginId,
           providerContributionSelection: {
             contributionId: providerSelection.contributor.contributionId,
-            immutableGenerationId: providerSelection.contributor.immutableGenerationId,
           },
           providerSetupInput: { source: 'create' },
           credentialRef: selectedCredentialRef,
@@ -1100,7 +1107,7 @@ describe('createConversationConnectionForInvocation targeted provider selection'
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -1156,7 +1163,7 @@ describe('createConversationConnectionForInvocation targeted provider selection'
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -1222,7 +1229,7 @@ describe('createConversationConnectionForInvocation targeted provider selection'
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -1287,7 +1294,7 @@ describe('createConversationConnectionForInvocation targeted provider selection'
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: { setup: setupAction, connectionTest: connectionTestAction, messageDeliver: messageDeliverAction },
       }),
       stateCollection: collection,
@@ -1344,10 +1351,10 @@ describe('createConversationConnectionForInvocation targeted provider selection'
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         snapshots: [
           {
-            contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+            contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
             operations: {
               setup: setupAction,
               connectionTest: connectionTestAction,
@@ -1407,7 +1414,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'same' },
       credentialRef: null,
@@ -1503,7 +1509,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -1571,7 +1577,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'same' },
       credentialRef: null,
@@ -1648,7 +1653,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -1707,7 +1712,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'same' },
       credentialRef: null,
@@ -1773,7 +1777,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -1847,7 +1851,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'same' },
       credentialRef: null,
@@ -1907,7 +1910,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -1984,7 +1987,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'old' },
       credentialRef: null,
@@ -2054,11 +2056,11 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: replacementProviderSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: replacementProviderSelection.contributor.sourceCustody.immutableGenerationId,
         contributions: [
           {
             contributorId: providerSelection.contributor.contributionId,
-            contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+            contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
             operations: {
               setup: setupAction,
               connectionTest: connectionTestAction,
@@ -2068,7 +2070,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
           },
           {
             contributorId: replacementProviderSelection.contributor.contributionId,
-            contributorImmutableGenerationId: replacementProviderSelection.contributor.immutableGenerationId,
+            contributorImmutableGenerationId: replacementProviderSelection.contributor.sourceCustody.immutableGenerationId,
             operations: {
               setup: replacementSetupAction,
               connectionTest: replacementConnectionTestAction,
@@ -2106,7 +2108,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
           providerPluginId: replacementProviderSelection.contributor.pluginId,
           providerContributionSelection: {
             contributionId: replacementProviderSelection.contributor.contributionId,
-            immutableGenerationId: replacementProviderSelection.contributor.immutableGenerationId,
           },
           providerSetupInput: { source: 'replacement' },
           transportOrigin: replacementExecutionOrigin,
@@ -2125,7 +2126,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
             transportOrigin: oldExecutionOrigin,
             providerContributionSelection: {
               contributionId: providerSelection.contributor.contributionId,
-              immutableGenerationId: providerSelection.contributor.immutableGenerationId,
             },
             stopRequest: {
               v: 1,
@@ -2176,7 +2176,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'same' },
       credentialRef: null,
@@ -2239,7 +2238,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -2286,7 +2285,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'old' },
       credentialRef: null,
@@ -2357,7 +2355,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -2413,7 +2411,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
           providerPluginId: providerSelection.contributor.pluginId,
           providerContributionSelection: {
             contributionId: providerSelection.contributor.contributionId,
-            immutableGenerationId: providerSelection.contributor.immutableGenerationId,
           },
           providerSetupInput: { source: 'same' },
           credentialRef: null,
@@ -2520,7 +2517,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
           providerPluginId: providerSelection.contributor.pluginId,
           providerContributionSelection: {
             contributionId: providerSelection.contributor.contributionId,
-            immutableGenerationId: providerSelection.contributor.immutableGenerationId,
           },
           providerSetupInput: { source: 'same' },
           credentialRef: null,
@@ -2601,7 +2597,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
           providerActions.executeAdmittedTargetedOperationWithExecutionOrigin,
       } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -2714,7 +2710,6 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
           providerPluginId: providerSelection.contributor.pluginId,
           providerContributionSelection: {
             contributionId: providerSelection.contributor.contributionId,
-            immutableGenerationId: providerSelection.contributor.immutableGenerationId,
           },
           providerSetupInput: { source: 'same' },
           credentialRef: null,
@@ -2788,7 +2783,7 @@ describe('updateConversationConnectionForInvocation targeted provider stop', () 
       contributor: {
         pluginId: providerSelection.contributor.pluginId,
         contributionId: 'other-socket',
-        immutableGenerationId: 'provider-generation-other',
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'provider-generation-other', installSource: 'npm' },
       },
       role: 'connectionStop',
     });
@@ -2796,7 +2791,6 @@ describe('updateConversationConnectionForInvocation targeted provider stop', () 
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'persisted' },
       credentialRef: null,
@@ -2855,7 +2849,7 @@ describe('updateConversationConnectionForInvocation targeted provider stop', () 
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         contributions: [
           {
             contributorId: 'other-socket',
@@ -2863,7 +2857,7 @@ describe('updateConversationConnectionForInvocation targeted provider stop', () 
             operations: { connectionStop: otherConnectionStop },
           },
           {
-            contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+            contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
             operations: { connectionStop: selectedConnectionStop },
           },
         ],
@@ -2889,7 +2883,6 @@ describe('updateConversationConnectionForInvocation targeted provider stop', () 
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'persisted' },
       credentialRef: null,
@@ -2951,7 +2944,7 @@ describe('updateConversationConnectionForInvocation targeted provider stop', () 
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -2988,7 +2981,6 @@ describe('updateConversationConnectionForInvocation targeted provider stop', () 
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'persisted' },
       credentialRef: null,
@@ -3054,7 +3046,7 @@ describe('updateConversationConnectionForInvocation targeted provider stop', () 
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,
@@ -3106,7 +3098,6 @@ describe('retestConversationConnectionForInvocation', () => {
     providerPluginId: providerSelection.contributor.pluginId,
     providerContributionSelection: {
       contributionId: providerSelection.contributor.contributionId,
-      immutableGenerationId: providerSelection.contributor.immutableGenerationId,
     },
     providerSetupInput: { source: 'persisted' },
     credentialRef: selectedCredentialRef,
@@ -3243,7 +3234,7 @@ describe('retestConversationConnectionForInvocation', () => {
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: { setup: setupAction, connectionTest },
       }),
       stateCollection: fixture.stateCollection,
@@ -3280,7 +3271,7 @@ describe('retestConversationConnectionForInvocation', () => {
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: { setup: setupAction, connectionTest },
       }),
       stateCollection: fixture.stateCollection,
@@ -3341,7 +3332,7 @@ describe('retestConversationConnectionForInvocation', () => {
         })),
       } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: { setup: setupAction, connectionTest },
       }),
       stateCollection,
@@ -3374,15 +3365,15 @@ describe('retestConversationConnectionForInvocation', () => {
         })),
       } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: { setup: setupAction, connectionTest },
         snapshots: [
           {
-            contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+            contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
             operations: { setup: setupAction, connectionTest },
           },
           {
-            contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+            contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
             targetImmutableGenerationId: 'channels-target-generation-replaced',
             operations: { setup: setupAction, connectionTest },
           },
@@ -3425,7 +3416,7 @@ describe('retestConversationConnectionForInvocation', () => {
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: { setup: setupAction, connectionTest },
       }),
       stateCollection: fixture.stateCollection,
@@ -3477,7 +3468,7 @@ describe('retestConversationConnectionForInvocation', () => {
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: { setup: setupAction, connectionTest },
       }),
       stateCollection: fixture.stateCollection,
@@ -3512,7 +3503,7 @@ describe('retestConversationConnectionForInvocation', () => {
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: { setup: setupAction, connectionTest },
       }),
       stateCollection: fixture.stateCollection,
@@ -3543,7 +3534,7 @@ describe('retestConversationConnectionForInvocation', () => {
     const context = invocationContext({
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: { setup: setupAction, connectionTest },
       }),
       stateCollection: fixture.stateCollection,
@@ -4016,7 +4007,6 @@ describe('transferConversationConnectionForInvocation predecessor custody recove
       providerPluginId: providerSelection.contributor.pluginId,
       providerContributionSelection: {
         contributionId: providerSelection.contributor.contributionId,
-        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
       },
       providerSetupInput: { source: 'same' },
       credentialRef: null,
@@ -4220,7 +4210,7 @@ describe('transferConversationConnectionForInvocation predecessor custody recove
         ...(input.execute === undefined ? {} : { execute: input.execute }),
       } as unknown as ActionsService,
       targetedContributions: targetedContributionsFixture({
-        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        contributorImmutableGenerationId: providerSelection.contributor.sourceCustody.immutableGenerationId,
         operations: {
           setup: setupAction,
           connectionTest: connectionTestAction,

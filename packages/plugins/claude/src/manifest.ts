@@ -13,12 +13,11 @@ import type {
 import { CLAUDE_SUBSCRIPTION_OAUTH_PROFILE } from './connectedAccounts/claudeSubscriptionProfile.js';
 
 import { CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPES } from './agent/auth/services/native/scopes.js';
-import { claudeAuthStateSharingDescriptor } from './agent/auth/services/stateSharing.js';
 import {
   createClaudeConnectedAccountNativeAuthCodec,
   createClaudeConnectedServiceRuntimeAuthAdapter,
 } from './agent/auth/services/runtime/failure.js';
-import { AGENT_DEFINITION } from './agent/definition.js';
+import { AGENT_DEFINITION, AGENT_STATE_SHARING_DESCRIPTOR } from './agent/definition.js';
 import {
   claudeCliSessionCommandConfig,
   resolveClaudeCliSessionOptions,
@@ -54,11 +53,6 @@ const resolveClaudeDaemonSpawnPrerequisitesHook: HookHandler = (event, context) 
 
 const augmentClaudeDaemonSpawnEnvHook: HookHandler = (event) =>
   augmentClaudeDaemonSpawnEnv(event);
-
-const CLAUDE_SUBAGENT_LAUNCH_VIEW_ID = 'subagent-launch';
-const CLAUDE_SUBAGENT_DETAILS_VIEW_ID = 'subagent-details';
-const CLAUDE_SUBAGENT_LAUNCH_RENDERER_ID = 'subagent-launch-renderer';
-const CLAUDE_SUBAGENT_DETAILS_RENDERER_ID = 'subagent-details-renderer';
 
 function readActionString(input: unknown, key: string): string {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
@@ -125,10 +119,6 @@ const {
   id: CLAUDE_AGENT_SETTINGS_CONTRIBUTION_ID,
   ...CLAUDE_AGENT_SETTINGS_DECLARATION
 } = CLAUDE_AGENT_SETTINGS_CONTRIBUTION;
-const {
-  providerId: _claudeStateSharingProviderId,
-  ...CLAUDE_STATE_SHARING_DECLARATION
-} = claudeAuthStateSharingDescriptor;
 
 export const CLAUDE_PLUGIN = definePlugin({
   id: 'happier.agent.claude',
@@ -296,6 +286,14 @@ export const CLAUDE_PLUGIN = definePlugin({
             recommendationOrder: 10,
             guideUrl: 'https://code.claude.com/docs/en/setup',
             docsUrl: 'https://claude.ai',
+            npmPackageName: '@anthropic-ai/claude-code',
+            // https://code.claude.com/docs/en/setup ("Update manually": `claude update`). The native
+            // installer links ~/.local/bin/claude into ~/.local/share/claude/versions/ and, on
+            // Windows, installs %USERPROFILE%\.local\bin\claude.exe beside ~/.local/share/claude.
+            nativeUpdate: {
+              args: ['update'],
+              installPaths: ['.local/share/claude', '.local/bin/claude.exe'],
+            },
           },
           auth: {
             support: 'login_terminal',
@@ -344,10 +342,12 @@ export const CLAUDE_PLUGIN = definePlugin({
           surfaces: ['externalSessions'],
           sessions: {
             open: ['create', 'resume'],
+            startupInstructions: { versions: [1], revisionChanges: 'resume' },
             executionRunContext: { versions: [1] },
             delivery: ['newTurn', 'steer', 'followUp'],
             cancel: true,
             configuration: true,
+            workspaceWrites: 'deny',
             goals: {
               active: {
                 clear: true,
@@ -439,13 +439,7 @@ export const CLAUDE_PLUGIN = definePlugin({
           purpose: 'model_upstream_api_key',
           environmentKey: 'ANTHROPIC_API_KEY',
         }],
-        stateSharingDescriptor: {
-          ...CLAUDE_STATE_SHARING_DECLARATION,
-          nativeHome: {
-            environmentKey: 'CLAUDE_CONFIG_DIR',
-            defaultRelativePath: '.claude',
-          },
-        },
+        stateSharingDescriptor: AGENT_STATE_SHARING_DESCRIPTOR,
         continuity: {
           nativeAuthCodec: createClaudeConnectedAccountNativeAuthCodec(),
           runtimeAuthAdapter: createClaudeConnectedServiceRuntimeAuthAdapter(),
@@ -536,11 +530,9 @@ export const CLAUDE_PLUGIN = definePlugin({
     'subagent-team-launch': {
       title: 'Create agent team',
       description: 'Creates one Claude agent team in the current Session.',
-      execution: { target: 'daemon' },
       scopes: ['session'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent'],
       placementBindings: ['primary'],
-      dangerLevel: 'safe',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -555,11 +547,9 @@ export const CLAUDE_PLUGIN = definePlugin({
     'subagent-member-launch': {
       title: 'Launch teammate',
       description: 'Launches one Claude teammate in the current Session.',
-      execution: { target: 'daemon' },
       scopes: ['session'],
-      surfaces: ['ui'],
+      surfaces: ['ui', 'agent'],
       placementBindings: ['primary'],
-      dangerLevel: 'safe',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -575,50 +565,47 @@ export const CLAUDE_PLUGIN = definePlugin({
   },
   ui: {
     translations: CLAUDE_UI_TRANSLATION_BUNDLES,
-    views: [{
-      id: CLAUDE_SUBAGENT_LAUNCH_VIEW_ID,
-      container: 'sessionSubagentLaunch',
+    surfaces: [{
+      id: 'subagent-launch',
+      placement: 'sessionSubagentLaunch',
       target: { kind: 'session' },
-      renderer: CLAUDE_SUBAGENT_LAUNCH_RENDERER_ID,
-    }, {
-      id: CLAUDE_SUBAGENT_DETAILS_VIEW_ID,
-      container: 'sessionSubagentDetails',
-      target: { kind: 'session' },
-      renderer: CLAUDE_SUBAGENT_DETAILS_RENDERER_ID,
-    }],
-    renderers: [{
-      id: CLAUDE_SUBAGENT_LAUNCH_RENDERER_ID,
-      kind: 'declarative',
-      root: {
-        kind: 'actionPanel',
-        children: [{
-          kind: 'action',
-          action: 'subagent-team-launch',
-          label: 'Create team',
-          variant: 'primary',
-        }, {
-          kind: 'action',
-          action: 'subagent-member-launch',
-          label: 'Launch teammate',
-        }],
-      },
-    }, {
-      id: CLAUDE_SUBAGENT_DETAILS_RENDERER_ID,
-      kind: 'declarative',
-      root: {
-        kind: 'stack',
-        children: [{
-          kind: 'text',
-          text: 'Launch a Claude teammate in an agent team.',
-        }, {
+      renderer: {
+        kind: 'declarative',
+        root: {
           kind: 'actionPanel',
           children: [{
             kind: 'action',
+            action: 'subagent-team-launch',
+            label: 'Create team',
+            variant: 'primary',
+          }, {
+            kind: 'action',
             action: 'subagent-member-launch',
             label: 'Launch teammate',
-            variant: 'primary',
           }],
-        }],
+        },
+      },
+    }, {
+      id: 'subagent-details',
+      placement: 'sessionSubagentDetails',
+      target: { kind: 'session' },
+      renderer: {
+        kind: 'declarative',
+        root: {
+          kind: 'stack',
+          children: [{
+            kind: 'text',
+            text: 'Launch a Claude teammate in an agent team.',
+          }, {
+            kind: 'actionPanel',
+            children: [{
+              kind: 'action',
+              action: 'subagent-member-launch',
+              label: 'Launch teammate',
+              variant: 'primary',
+            }],
+          }],
+        },
       },
     }],
   },

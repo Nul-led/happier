@@ -1,11 +1,11 @@
 /**
  * What every GitLab write declaration must say to be reachable from its mounted
- * human control while remaining unreachable to direct plugin or backend code.
+ * human control and centrally approved agent surfaces.
  *
  * The mounted contributed-Action dispatcher host-stamps `executionSurface: 'ui'`.
  * `plugin` is reserved for direct plugin/backend execution, so adding it here
  * would widen these human mutations beyond the detail-panel interaction that
- * owns them. Exact equality keeps every autonomous surface out of the contract.
+ * owns them. Agent, MCP and CLI invocation use the shared host approval owner.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -66,8 +66,9 @@ describe('GitLab merge-request write declarations', () => {
     expect(new Set(declared).size).toBe(declared.length);
   });
 
-  it.each(WRITE_IDS)('%s is reachable only from a mounted human surface', (id) => {
-    expect(declarationOf(id).surfaces).toEqual(['ui']);
+  it.each(WRITE_IDS)('%s preserves its native surfaces and central approval metadata', (id) => {
+    expect(declarationOf(id).surfaces).toEqual(id.startsWith('gitlab/merge-request/')
+      ? ['ui', 'agent', 'mcp', 'cli'] : ['ui']);
   });
 
   it.each(WRITE_IDS)('%s carries a confirmation and a non-safe danger level', (id) => {

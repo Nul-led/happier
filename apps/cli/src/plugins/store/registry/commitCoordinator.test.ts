@@ -268,7 +268,7 @@ describe('PluginRegistryCommitCoordinator', () => {
         return {
           creator: next.creator,
           createdAtMs: next.createdAtMs,
-          pluginGenerations: next.pluginGenerations,
+          pluginOccurrenceIds: next.pluginOccurrenceIds,
           installationState: next.installationState,
           baseRevision: next.baseRevision,
           transactionId: next.transactionId,
@@ -309,7 +309,7 @@ describe('PluginRegistryCommitCoordinator', () => {
       expectedCurrent: await readPluginRegistryCommitRecord(paths),
       buildNext: (current) => ({
         ...createNext(current!, 'tx-missing-generation'),
-        pluginGenerations: {
+        pluginOccurrenceIds: {
           'acme.plugin': {
             immutableGenerationId: 'generation-retired',
           },
@@ -355,7 +355,7 @@ describe('PluginRegistryCommitCoordinator', () => {
           source: {
             distribution: { kind: 'localPath', canonicalPath: '/tmp/acme-plugin' },
           },
-          updatePolicy: 'reviewEveryUpdate',
+          updatePolicy: 'allowed',
           optionalAccess: [],
         },
       },
@@ -377,7 +377,7 @@ describe('PluginRegistryCommitCoordinator', () => {
       buildNext: (current) => ({
         ...createNext(current!, 'tx-prepublication-bytes'),
         installationState,
-        pluginGenerations: { 'acme.plugin': prepared.reference },
+        pluginOccurrenceIds: { 'acme.plugin': prepared.reference },
       }),
     })).rejects.toThrow(/manifest|required|missing/i);
     await expect(readPluginRegistryCommitRecord(paths)).resolves.toMatchObject({ revision: 0, transactionId: 'bootstrap' });

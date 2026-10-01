@@ -792,11 +792,16 @@ test('a ready direct replacement remains active after incumbent shutdown when a 
     const replacement = { pid: 202, exitCode: null };
     const options = executorOptions(serverDir);
     let revalidations = 0;
+    let stablePortObservations = 0;
     const activations = [];
     const executor = createDevServerReloadExecutor(options, {
       ensureSourceServerWorkspacePackagesBuiltImpl: async () => {},
       preflightDevServerRestartImpl: async () => {},
-      listListenPidsImpl: async (port) => Number(port) === 5101 ? [101] : [202],
+      listListenPidsImpl: async (port) => {
+        if (Number(port) !== 4101) return [];
+        stablePortObservations += 1;
+        return [stablePortObservations === 1 ? 101 : 202];
+      },
       getProcessGroupIdImpl: async (pid) => Number(pid),
       killProcessGroupOwnedByStackImpl: async () => ({ killed: true }),
       waitForTcpPortFreeImpl: async () => ({ status: 'free' }),

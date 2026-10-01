@@ -336,6 +336,14 @@ describe('pinned archive managed dependencies', () => {
             }]);
             const source = registry.descriptors[0]?.descriptor.source;
             expect(source?.kind === 'pinned_archive'
+                ? source.archiveExtractionLimits
+                : null).toEqual({
+                maxArchiveBytes: 1024 * 1024 * 1024,
+                maxFileBytes: 2 * 1024 * 1024 * 1024,
+                maxExpandedBytes: 2 * 1024 * 1024 * 1024,
+                timeoutMs: 10 * 60_000,
+            });
+            expect(source?.kind === 'pinned_archive'
                 ? source.assetsByPlatform[host.targetKey]?.executableSubpath
                 : null).toBe(host.executableSubpath);
         }
@@ -374,6 +382,12 @@ describe('pinned archive managed dependencies', () => {
                     kind: 'pinnedArchive',
                     installId: 'dep.acme.tool',
                     version: '3.2.1',
+                    archiveExtractionLimits: {
+                        maxArchiveBytes: 1024,
+                        maxFileBytes: 2048,
+                        maxExpandedBytes: 4096,
+                        timeoutMs: 10_000,
+                    },
                     assetsByPlatform: {
                         'linux-x64': {
                             archiveUrl: 'https://downloads.acme.test/acme-tool-3.2.1-linux-x64.zip',
@@ -390,7 +404,19 @@ describe('pinned archive managed dependencies', () => {
             { platform: 'linux', architecture: 'x64' },
         ).descriptors).toMatchObject([{
             owner: { provenance: 'external_plugin', pluginId: 'acme.pinned' },
-            descriptor: { key: 'dep.acme.tool', capabilityId: 'dep.acme.tool' },
+            descriptor: {
+                key: 'dep.acme.tool',
+                capabilityId: 'dep.acme.tool',
+                source: {
+                    kind: 'pinned_archive',
+                    archiveExtractionLimits: {
+                        maxArchiveBytes: 1024,
+                        maxFileBytes: 2048,
+                        maxExpandedBytes: 4096,
+                        timeoutMs: 10_000,
+                    },
+                },
+            },
         }]);
         // The declaration publishes no Windows artifact, so no Windows host may claim one.
         expect(resolveExecutableManagedDependenciesRegistry(

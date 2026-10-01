@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -32,6 +33,21 @@ describe('per-Plugin TypeScript inspection worker', () => {
       await expect(session.inspect(first)).resolves.toMatchObject({ FIRST: { value: 1 } });
       await expect(session.inspect(second)).resolves.toMatchObject({ SECOND: { value: 2 } });
       expect(spawnCount).toBe(1);
+    } finally {
+      await session.close();
+    }
+  }, 120_000);
+
+  it('inspects the Codex authored manifest within the worker heap budget', async () => {
+    const manifestPath = fileURLToPath(new URL(
+      '../../../../../packages/plugins/codex/src/manifest.ts',
+      import.meta.url,
+    ));
+    const session = createTypescriptModuleInspectionSession();
+    try {
+      await expect(session.inspect(manifestPath)).resolves.toMatchObject({
+        PLUGIN_MANIFEST: { id: 'happier.agent.codex' },
+      });
     } finally {
       await session.close();
     }

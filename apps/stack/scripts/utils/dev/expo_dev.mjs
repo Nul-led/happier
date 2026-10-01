@@ -141,6 +141,13 @@ export function buildExpoDevEnv({
   const env = { ...(baseEnv || process.env) };
   delete env.CI;
 
+  // Remote Dev Target workers have no display server. Expo uses this supported
+  // headless mode to avoid starting its standalone React Native DevTools shell;
+  // retain local Stack DevTools by using the remote command owner's exact marker.
+  if (env.HAPPIER_DEV_TARGET_EXECUTION === '1') {
+    env.EXPO_UNSTABLE_HEADLESS = '1';
+  }
+
   // Expo app config: this is what both web + native app use to reach the Happy server.
   // When dev-client is enabled, `localhost` / `*.localhost` are not reachable from the phone,
   // so rewrite to LAN IP here (centralized) to avoid relying on call sites.
@@ -232,6 +239,7 @@ export async function ensureDevExpoServer({
   quiet = false,
   prepareExpoWorkspace = ensureExpoWorkspacePrepared,
   hasUsableWorkspaceLastGreen = hasUsableExpoWorkspaceLastGreen,
+  onWorkspacePrepared = null,
 } = {}) {
   const wantWeb = Boolean(startUi);
   const wantDevClient = Boolean(startMobile);
@@ -312,6 +320,12 @@ export async function ensureDevExpoServer({
     try {
       hasLastGreen = await hasUsableWorkspaceLastGreen({ projectDir });
       await prepareWorkspace();
+      try {
+        onWorkspacePrepared?.();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(`[local] Expo workspace refresh notification failed.\n${detail}`);
+      }
     } catch (error) {
       warnAndContinue(error, { hasLastGreen });
     }
@@ -541,13 +555,13 @@ export async function ensureDevExpoServer({
   env.HAPPIER_STACK_EXPO_DEV_PORT = String(metroPort);
   const host = resolveExpoDevHost({ env });
   const baseClearCache = wantsExpoClearCache({ env: baseEnv || process.env });
-  const buildStartArgs = ({ forceClearCache = false } = {}) => buildExpoStartArgs({
+  const buildStartArgs = () => buildExpoStartArgs({
     port: metroPort,
     host,
     wantWeb,
     wantDevClient,
     scheme,
-    clearCache: baseClearCache || forceClearCache,
+    clearCache: baseClearCache,
   });
   const args = buildStartArgs();
 
@@ -661,20 +675,19 @@ export async function ensureDevExpoServer({
     throw completion?.error ?? new Error('Expo process failed to spawn without reporting an error.');
   };
 
-  function runScheduledRestart({ restartAttempt, forceClearCache }) {
+  function runScheduledRestart({ restartAttempt }) {
     if (isShuttingDown?.() === true) {
       return;
     }
-    void spawnTrackedExpo({ restartAttempt, forceClearCache }).catch((error) => {
+    void spawnTrackedExpo({ restartAttempt }).catch((error) => {
       scheduleRetryAfterSpawnFailure({
         failedAttempt: restartAttempt,
-        forceClearCache,
         error,
       });
     });
   }
 
-  function scheduleRetryAfterSpawnFailure({ failedAttempt, forceClearCache, error }) {
+  function scheduleRetryAfterSpawnFailure({ failedAttempt, error }) {
     if (isShuttingDown?.() === true) {
       return;
     }
@@ -691,18 +704,18 @@ export async function ensureDevExpoServer({
       `Expo restart failed (${error instanceof Error ? error.message : String(error)}); retrying in ${Math.ceil(delayMs / 1000)}s (attempt ${nextAttempt}/${restartPolicy.maxAttempts}).`
     );
     const timer = setTimeout(() => {
-      runScheduledRestart({ restartAttempt: nextAttempt, forceClearCache });
+      runScheduledRestart({ restartAttempt: nextAttempt });
     }, delayMs);
     timer.unref?.();
   }
 
-  const spawnTrackedExpo = async ({ restartAttempt = 0, forceClearCache = false } = {}) => {
+  const spawnTrackedExpo = async ({ restartAttempt = 0 } = {}) => {
     const outputTracker = createExpoCrashOutputTracker();
     const proc = await expoSpawn({
       label: 'expo',
       dir: uiDir,
       projectDir,
-      args: forceClearCache ? buildStartArgs({ forceClearCache: true }) : args,
+      args,
       env,
       workspacePrepared: true,
       options: {
@@ -744,15 +757,11 @@ export async function ensureDevExpoServer({
         }
 
         const delayMs = computeExpoRestartDelayMs({ attempt: nextAttempt, policy: restartPolicy });
-        const forceClearCacheOnRestart = outputTracker.sawHeapOutOfMemory?.() === true;
         writeSupervisorLine(
-          `Expo exited unexpectedly (${describeExpoTermination({ code, signal, outputTracker })}); restarting in ${Math.ceil(delayMs / 1000)}s (attempt ${nextAttempt}/${restartPolicy.maxAttempts})${forceClearCacheOnRestart && !baseClearCache ? ' with cleared Metro cache' : ''}.`
+          `Expo exited unexpectedly (${describeExpoTermination({ code, signal, outputTracker })}); restarting in ${Math.ceil(delayMs / 1000)}s (attempt ${nextAttempt}/${restartPolicy.maxAttempts}).`
         );
         const timer = setTimeout(() => {
-          runScheduledRestart({
-            restartAttempt: nextAttempt,
-            forceClearCache: forceClearCacheOnRestart,
-          });
+          runScheduledRestart({ restartAttempt: nextAttempt });
         }, delayMs);
         timer.unref?.();
       })();

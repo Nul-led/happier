@@ -4,7 +4,7 @@ import type { ScmBackendContext } from '../types.js';
 import { getGitSnapshot } from '../repository.js';
 
 export async function readGitSnapshotForChecks(context: ScmBackendContext) {
-    return getGitSnapshot({ context });
+    return getGitSnapshot({ context, request: { operationStateVersion: 1 } });
 }
 
 export function hasAnyIncludedOrPendingChanges(snapshot: ScmWorkingSnapshot): boolean {

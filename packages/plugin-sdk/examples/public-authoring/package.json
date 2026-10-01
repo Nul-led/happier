@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./happier-plugin-ui/review-native": "./ui/reviewPanel.native.tsx",
+    "./happier-plugin-ui/review-openable-native": "./ui/reviewPanel.native.tsx",
+    "./happier-plugin-ui/review-client-actions": "./ui/reviewClientActions.ts",
+    "./happier-plugin-ui/voice-runtime-web": "./voiceProvider.ts"
+  },
   "description": "Production-shaped public Happier SDK authoring reference.",
   "happier": {
     "manifest": ".happier-plugin/plugin.json"
@@ -12,7 +18,11 @@
   ],
   "files": [
     "dist",
-    "resources"
+    "resources",
+    ".happier-plugin/ui/hosted-web/review-openable-web/entry.ts",
+    ".happier-plugin/ui/hosted-web/review-openable-web/index.html",
+    ".happier-plugin/ui/hosted-web/review-web/entry.ts",
+    ".happier-plugin/ui/hosted-web/review-web/index.html"
   ],
   "scripts": {
     "build": "happier plugins dev build .",
@@ -30,15 +40,9 @@
     "react-native-web": "0.21.2"
   },
   "devDependencies": {
-    "@callstack/repack": "5.2.5",
-    "@react-native-community/cli": "20.1.2",
-    "@rspack/core": "2.1.3",
-    "@swc/helpers": "0.5.23",
     "@types/node": "25.0.10",
     "@types/react": "19.2.0",
     "@typescript/native": "npm:typescript@7.0.2",
-    "@vitejs/plugin-react": "4.7.0",
-    "vite": "7.3.1",
     "typescript": "5.9.3"
   }
 }

@@ -30,6 +30,7 @@ const request = {
     linkData: {
         nativeIdentity: 'native-session-1',
     },
+    transcriptStorage: 'direct',
     targetDirectory: '/local/selected/project',
     linkedDirectory: '/work/project',
 } as const satisfies AgentExternalSessionTakeoverResolveLaunchRequest;
@@ -38,6 +39,7 @@ const plan = {
     environmentVariables: {
         AGENT_PROFILE: 'profile-1',
     },
+    applyConnectedAccountDefaults: true,
 } as const satisfies AgentExternalSessionTakeoverLaunchPlan;
 
 const runtimeDescriptorV1 = {
@@ -176,6 +178,8 @@ describe('External Session takeover public contract', () => {
             { ...request, linkedDirectory: 'd'.repeat(10_001) },
             { ...request, source: { kind: '', rootIdentity: 'root-1' } },
             { ...request, linkData: [] },
+            { ...request, transcriptStorage: undefined },
+            { ...request, transcriptStorage: 'external-linked' },
             { ...request, targetSessionId: 'plugin-chosen-target' },
             { ...request, transcriptMode: 'hosted' },
             { ...request, services: {} },

@@ -7,9 +7,12 @@ import test from 'node:test';
 
 import {
   createBackgroundRuntimeSnapshotPublisher,
+  createRuntimeSnapshotPublicationReloadDescriptors,
+  createRuntimeSnapshotPublicationReloadExecutor,
   createRepositoryRuntimePublicationController,
   isRepositoryRuntimePublicationOwner,
   publishRepositoryRuntimeSnapshotInChildProcess,
+  resolveRemoteRuntimePublicationComponents,
   RUNTIME_PUBLICATION_RESULT_PREFIX,
   wrapReloadExecutorWithRuntimeSnapshotPublication,
 } from './runtimeSnapshotPublisher.mjs';
@@ -366,6 +369,72 @@ test('a burst during publication performs exactly one trailing identity recomput
   ]);
 });
 
+test('startup watcher daemon dirtiness folds into restart reconciliation before daemon publication', async () => {
+  const webResolutionEntered = createDeferred();
+  const releaseWebResolution = createDeferred();
+  const resolvedRequests = [];
+  const publications = [];
+  const publisher = createBackgroundRuntimeSnapshotPublisher({
+    resolveComponents: async ({ requestedComponents }) => {
+      resolvedRequests.push(requestedComponents);
+      if (requestedComponents[0] === 'web') {
+        webResolutionEntered.resolve();
+        await releaseWebResolution.promise;
+        return { components: [], currentSnapshotId: 'snapshot-old' };
+      }
+      if (requestedComponents[0] === 'server') {
+        return { components: [], currentSnapshotId: 'snapshot-old' };
+      }
+      return { components: ['daemon'], currentSnapshotId: 'snapshot-old' };
+    },
+    publishComponents: async ({ components }) => {
+      publications.push(components);
+      return { snapshotId: 'snapshot-daemon-new', changedComponents: components };
+    },
+  });
+
+  const reconciliation = publisher.reconcileAfterRestart();
+  await webResolutionEntered.promise;
+  const watcherRefresh = publisher.markRefreshed(['daemon']);
+  releaseWebResolution.resolve();
+
+  await Promise.all([reconciliation, watcherRefresh]);
+
+  assert.deepEqual(resolvedRequests, [['web'], ['server'], ['daemon']]);
+  assert.deepEqual(publications, [['daemon']]);
+});
+
+test('a daemon input change during daemon publication receives one bounded trailing pass', async () => {
+  const firstPublicationEntered = createDeferred();
+  const releaseFirstPublication = createDeferred();
+  const resolvedRequests = [];
+  const publications = [];
+  const publisher = createBackgroundRuntimeSnapshotPublisher({
+    resolveComponents: async ({ requestedComponents }) => {
+      resolvedRequests.push(requestedComponents);
+      return { components: requestedComponents, currentSnapshotId: 'snapshot-old' };
+    },
+    publishComponents: async ({ components }) => {
+      publications.push(components);
+      if (publications.length === 1) {
+        firstPublicationEntered.resolve();
+        await releaseFirstPublication.promise;
+      }
+      return { snapshotId: `snapshot-daemon-${publications.length}`, changedComponents: components };
+    },
+  });
+
+  const first = publisher.markRefreshed(['daemon']);
+  await firstPublicationEntered.promise;
+  const changedDuringPublication = publisher.markRefreshed(['daemon']);
+  releaseFirstPublication.resolve();
+
+  await Promise.all([first, changedDuringPublication]);
+
+  assert.deepEqual(resolvedRequests, [['daemon'], ['daemon']]);
+  assert.deepEqual(publications, [['daemon'], ['daemon']]);
+});
+
 test('a failed publication retains the current snapshot and leaves services outside publisher authority', async () => {
   let currentSnapshotId = 'snapshot-old';
   const services = { server: 'running', daemon: 'running' };
@@ -495,7 +564,7 @@ test('a failed publication leaves requested components already matching the curr
   });
 });
 
-test('a failed publication waits for the next material refresh before retrying', async () => {
+test("a failed publication waits for its component's next material refresh before retrying", async () => {
   const requested = [];
   let attempts = 0;
   const publisher = createBackgroundRuntimeSnapshotPublisher({
@@ -517,7 +586,10 @@ test('a failed publication waits for the next material refresh before retrying',
   assert.deepEqual(requested, [['server']]);
 
   await publisher.markRefreshed(['daemon']);
-  assert.deepEqual(requested, [['server'], ['server'], ['daemon']]);
+  assert.deepEqual(requested, [['server'], ['daemon']]);
+
+  await publisher.markRefreshed(['server']);
+  assert.deepEqual(requested, [['server'], ['daemon'], ['server']]);
 });
 
 test('an input-change rejection gets one bounded trailing publication attempt', async () => {
@@ -640,4 +712,67 @@ test('successful preparation marks its component publishable before stale activa
     reason: 'stale-generation',
   });
   assert.deepEqual(marked, [['server']], 'restart must not enqueue the same prepared component twice');
+});
+
+test('publication-only reload executors keep remotely hosted components subscribed to source changes', async () => {
+  const marked = [];
+  const executor = createRuntimeSnapshotPublicationReloadExecutor({
+    component: 'server',
+    publisher: {
+      markRefreshed(components) {
+        marked.push(components);
+        return Promise.resolve();
+      },
+    },
+  });
+
+  assert.equal(executor.target, 'server');
+  assert.deepEqual(await executor.build({ generation: 3 }), {
+    publicationRequested: true,
+  });
+  assert.deepEqual(await executor.restart({ generation: 3 }), {
+    restarted: false,
+    reason: 'publication-only',
+  });
+  assert.deepEqual(marked, [['server']]);
+});
+
+test('runtime publication descriptors use the artifact identity owner for every component', () => {
+  const calls = [];
+  const descriptors = createRuntimeSnapshotPublicationReloadDescriptors({
+    repoDir: '/work/happier',
+  }, {
+    resolveRuntimeComponentSourcePathsImpl({ component, sourceMetadata }) {
+      calls.push({ component, sourceMetadata });
+      return [`/work/happier/${component}/sources`];
+    },
+  });
+
+  assert.deepEqual(descriptors.map(({ id, target, paths }) => ({ id, target, paths })), [
+    { id: 'runtime-publication:server', target: 'server', paths: ['/work/happier/server/sources'] },
+    { id: 'runtime-publication:daemon', target: 'daemon', paths: ['/work/happier/daemon/sources'] },
+  ]);
+  assert.deepEqual(calls.map(({ component }) => component), ['server', 'daemon']);
+  assert.ok(calls.every(({ sourceMetadata }) => sourceMetadata.repoDir === '/work/happier'));
+});
+
+test('remote readiness republishes only components that newly reached running', () => {
+  assert.deepEqual(resolveRemoteRuntimePublicationComponents({
+    previousState: {
+      serviceStatus: { server: 'starting', expo: 'running', daemon: 'degraded' },
+    },
+    nextState: {
+      status: 'running',
+      services: { server: true, expo: true, daemon: true },
+      serviceStatus: { server: 'running', expo: 'running', daemon: 'running' },
+    },
+  }), ['server', 'daemon']);
+  assert.deepEqual(resolveRemoteRuntimePublicationComponents({
+    previousState: null,
+    nextState: {
+      status: 'running',
+      services: { expo: true },
+      serviceStatus: { expo: 'running' },
+    },
+  }), ['web']);
 });

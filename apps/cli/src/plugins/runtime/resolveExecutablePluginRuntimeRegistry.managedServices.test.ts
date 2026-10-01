@@ -226,9 +226,42 @@ describe('resolveExecutablePluginRuntimeRegistry managed-services production own
             generation: 29,
             generationAuthority: {
                 commit: null,
-                generations: new Map(),
+                generations: new Map([[pluginId, {
+                    pluginId,
+                    immutableGenerationId: '29',
+                    rootPath: happyHomeDir,
+                    record: {
+                        t: 'happier_plugin_generation_v1',
+                        schemaVersion: 1,
+                        pluginId,
+                        immutableGenerationId: '29',
+                        createdAtMs: 1,
+                        sourceProvenance: 'localSource',
+                        manifestRelativePath: '.happier-plugin/plugin.json',
+                        files: [],
+                    },
+                    installation: {
+                        enabled: true,
+                        trust: {
+                            pluginId,
+                            distribution: {
+                                kind: 'localPath',
+                                canonicalPath: happyHomeDir,
+                            },
+                            state: 'trusted',
+                            approvedAtMs: 1,
+                        },
+                        source: {
+                            distribution: {
+                                kind: 'localPath',
+                                canonicalPath: happyHomeDir,
+                            },
+                        },
+                        updatePolicy: 'allowed',
+                        optionalAccess: [],
+                    },
+                }]]),
                 rejectedGenerations: new Map(),
-                unavailableBundledPackageNames: new Set(),
                 isCurrent: async () => true,
             },
         });
@@ -237,11 +270,11 @@ describe('resolveExecutablePluginRuntimeRegistry managed-services production own
                 pluginId,
                 pluginVersion: '1.0.0',
                 agentId,
-                generation: '29',
+                occurrenceId: '29',
                 correlationId: 'daemon-managed-service-files',
                 cwd: happyHomeDir,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 session: {
                     id: 'daemon-managed-service-session',
                     current: createNativeAgentCurrentSessionUiServices({
@@ -250,7 +283,7 @@ describe('resolveExecutablePluginRuntimeRegistry managed-services production own
                         contributionId: agentId,
                         runtimeId: agentId,
                         sessionId: 'daemon-managed-service-session',
-                        generationId: '29',
+                        occurrenceId: 'occurrence-29',
                         isCurrent: () => true,
                     }),
                 },
@@ -417,7 +450,6 @@ describe('resolveExecutablePluginRuntimeRegistry managed-services production own
                 commit: null,
                 generations: new Map(),
                 rejectedGenerations: new Map(),
-                unavailableBundledPackageNames: new Set(),
                 isCurrent: async () => true,
             },
         });
@@ -432,11 +464,11 @@ describe('resolveExecutablePluginRuntimeRegistry managed-services production own
                 pluginId,
                 pluginVersion: '1.0.0',
                 agentId,
-                generation: '23',
+                occurrenceId: '23',
                 correlationId: 'daemon-managed-services-production',
                 cwd: happyHomeDir,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
 
             expect(services.availability('managedServices')).toEqual({

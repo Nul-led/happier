@@ -472,7 +472,7 @@ describe('activate', () => {
       kind: 'jsonStream',
       launch: expect.objectContaining({
         executable: { kind: 'systemTool', id: 'pi-cli' },
-        args: ['--mode', 'rpc', '--thinking', 'medium'],
+        args: ['--extension', expect.stringMatching(/model-discovery\.mjs$/), '--mode', 'rpc', '--thinking', 'medium'],
         env: expect.objectContaining({ NODE_ENV: 'production', DEBUG: '', CI: '1' }),
       }),
     })]);
@@ -570,11 +570,10 @@ describe('activate', () => {
       }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
       const spec = capture.specs[0] as Readonly<{ launch?: Readonly<{ args?: readonly string[] }> }>;
       const args = spec.launch?.args ?? [];
-      const extensionIndex = args.indexOf('--extension');
+      const extensionPaths = args.filter((_arg, index) => args[index - 1] === '--extension');
       const configIndex = args.indexOf('--happier-tools-config');
-      expect(extensionIndex).toBeGreaterThanOrEqual(0);
       expect(configIndex).toBeGreaterThanOrEqual(0);
-      expect(args[extensionIndex + 1]).toContain('happier-pi-tools-bridge.js');
+      expect(extensionPaths).toEqual(expect.arrayContaining([expect.stringContaining('happier-pi-tools-bridge.js')]));
       const configPath = args[configIndex + 1];
       expect(configPath).toBeTruthy();
       expect(JSON.parse(await readFile(configPath!, 'utf8'))).toMatchObject({

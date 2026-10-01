@@ -1,6 +1,9 @@
 export {
   HappierUiEnvironmentProvider,
+  HappierUiPaletteProvider,
   HappierUiPlatformProvider,
+  HappierUiTypographyProvider,
+  resolveHappierUiPalette,
   resolveHappierUiPresentationTheme,
   useHappierUiAccessibility,
   useHappierUiInsets,
@@ -9,20 +12,27 @@ export {
   useHappierUiTheme,
   useOptionalHappierUiAccessibility,
   useOptionalHappierUiLocalization,
+  useOptionalHappierUiPalette,
   useOptionalHappierUiPlatform,
   useOptionalHappierUiTheme,
+  useOptionalHappierUiTypography,
   type HappierUiEnvironmentProviderProps,
   type HappierUiPlatformProviderProps,
 } from './context.js';
 export type {
   HappierUiAccessibility,
   HappierUiEdgeInsets,
+  HappierFontFace,
   HappierUiEnvironment,
   HappierUiInsets,
   HappierUiLocalization,
+  HappierUiPalette,
   HappierUiPlatformFacts,
   HappierUiTextDirection,
   HappierUiTheme,
+  HappierUiTypography,
+  HappierTypeRole,
+  HappierTypeRoleStyle,
 } from './types.js';
 export {
   HAPPIER_ANDROID_MINIMUM_INTERACTIVE_TARGET_SIZE,

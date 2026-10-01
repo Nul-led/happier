@@ -44,7 +44,7 @@ async function createManifestDeclaredSecretService() {
         declarations: declarations.map(({ declaration }) => declaration),
         resolveCustody: createPluginSecretCustodyRouter({ daemon: daemonCustody.resolve }).resolve,
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         registerRawForRedaction: vi.fn(),
     });
     return { happyHomeDir, paths, service };

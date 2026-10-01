@@ -105,7 +105,7 @@ describe('readCurrentDaemonPluginCatalogSnapshot', () => {
           generation: 4,
           targetActivationFacts: [{
             pluginId: 'acme.vertical-a', pluginVersion: '1.0.0', source: 'localPath',
-            generation: '4', host: 'daemon', platform: 'darwin', occurredAtMs: 10,
+            occurrenceId: '4', host: 'daemon', platform: 'darwin', occurredAtMs: 10,
             status: 'active',
             required: registrationRefs,
             bound: registrationRefs,
@@ -129,8 +129,8 @@ describe('readCurrentDaemonPluginCatalogSnapshot', () => {
           domainId: 'packed-managed-provider',
           qualifiedId: 'acme.vertical-a/providers/packed-managed-provider',
         }),
-        registration: { requirement: 'required', state: 'bound', generation: '4' },
-        activation: { state: 'active', generation: '4' },
+        registration: { requirement: 'required', state: 'bound', occurrenceId: '4' },
+        activation: { state: 'active', occurrenceId: '4' },
       }),
     ]);
   });
@@ -176,15 +176,12 @@ describe('readCurrentDaemonPluginCatalogSnapshot', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it('binds each daemon-published tool to the exact contributor generation in its runtime lease', async () => {
+  it('binds each daemon-published tool to the exact contributor occurrence in its runtime lease', async () => {
     const release = vi.fn(async () => {});
     const reloadController = {
       tryAcquireRuntimeRegistry: () => ({
         registry: {
           contributes: {
-            immutableGenerationIdsByPluginId: {
-              'acme.review.plugin': 'generation-g',
-            },
             tools: [{
               provenance: 'external',
               pluginId: 'acme.review.plugin',
@@ -210,6 +207,9 @@ describe('readCurrentDaemonPluginCatalogSnapshot', () => {
           targetActionInvocations: {
             evaluateCatalogPolicy: () => ({ outcome: 'visible' as const }),
           },
+          readPluginOccurrenceId: (pluginId: string) => (
+            pluginId === 'acme.review.plugin' ? 'occurrence-g' : null
+          ),
         },
         source: 'active',
         durableRevision: -1,
@@ -221,7 +221,7 @@ describe('readCurrentDaemonPluginCatalogSnapshot', () => {
       tools: [{
         toolId: 'acme.review.plugin/review-tool',
         actionId: 'acme.review.plugin/review-start',
-        expectedContributorImmutableGenerationId: 'generation-g',
+        expectedContributorOccurrenceId: 'occurrence-g',
       }],
     });
     expect(release).toHaveBeenCalledOnce();

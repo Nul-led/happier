@@ -1,14 +1,15 @@
 # `@happier-dev/sdk`
 
-Typed Node.js client for Happier's authenticated Action API.
+Typed client for Happier's authenticated Action API and live Sessions.
 
 The current Developer Preview requires Node.js 18.17 or newer and supports
 server-side Node.js use through the package's ESM root export. Use NodeNext (or
 an equivalent ESM-aware configuration); CommonJS `require()` and package deep
-imports are not public entry points. Public Action routes do not enable CORS, so this is not
-a browser client for arbitrary web origins; same-origin browser delivery has
-not been proven as a supported environment. Do not put an API Token in browser
-code.
+imports are not public entry points. This development branch also adds a browser
+HTTP transport through the same root export. Browser requests require an origin
+explicitly allowed by the server and an appropriately scoped credential; do not
+ship a broad Account API Token in browser code. These additions are not a claim
+of availability in an already published SDK release.
 
 ## Choose the interface
 
@@ -18,7 +19,7 @@ Happier exposes one Action contract through several clients:
 | --- | --- |
 | Human CLI | Interactive terminal work with compact output |
 | CLI JSON/JSONL | Shell and agent automation |
-| Fluent SDK | Node.js Session creation, messaging, history, and stream lifecycles |
+| Fluent SDK | Session creation, messaging, history, live observation, and stream lifecycles |
 | Raw SDK | Typed or dynamic access to the complete public Action catalog |
 | HTTP | Non-Node.js clients and infrastructure tools |
 
@@ -163,6 +164,76 @@ For a correlated send that settles only after the target Session becomes idle,
 use `session.sendAndWait(message, input?, executionOptions?)`. It calls the
 canonical `session.message.send` Action with `wait: true`; `input` can include
 the retry-safe `localId` and `timeoutSeconds`. It does not start a second wait.
+
+### Development-only live Sessions
+
+Live controllers require an Account-server endpoint. Daemon-local finite Actions
+remain supported; preserving its existing `followTranscript()` contract during
+the push conversion is unresolved in development source (see below). Bind an
+existing Session through a server client, open its controller, and subscribe to snapshots:
+
+```ts
+const controller = await serverAccount.sessions.get(sessionId).live();
+const unsubscribe = controller.subscribe(() => {
+  const snapshot = controller.getSnapshot();
+  console.log(snapshot.connection, snapshot.pendingRequests);
+  for (const id of snapshot.transcript.messageIdsOldestFirst) {
+    const message = snapshot.transcript.messagesById[id];
+    // Render the canonical Message, not the compact followTranscript item.
+  }
+});
+
+try {
+  await controller.send('Continue with the agreed change.');
+} finally {
+  unsubscribe();
+  await controller.close();
+}
+```
+
+`getSnapshot()` is an external-store read: unchanged Message objects retain their
+identity. The snapshot includes history loading, opened metadata and Agent state,
+pending requests, connection state, and action availability. A permission response
+acknowledges the operation; it does not optimistically remove the pending request.
+Reconciled Agent state and recipient-safe shared Action-confirmation metadata
+remain the source of truth. The Action adapter also carries that shared metadata and its
+public completion facts; it never exposes Account-private owner metadata.
+
+`live()` selects its transport once. Plain Sessions use a Session-scoped viewer
+socket; E2EE Sessions also use it when an encryption-capable credential can open
+the viewer's Session data key. A bearer-only credential on an E2EE Session uses
+the daemon's opened `transcript.follow` projection. On that Action transport,
+daemon-opened content crosses the Account server in plaintext. The socket
+transport keeps E2EE content sealed end to end. A content-opening failure never
+silently switches transports. You can request `transport: 'socket'` or `'action'`
+explicitly, and `history.afterSeq` sets the initial history boundary. Both open a viewer
+socket: the Action adapter treats pushed ciphertext as an invalidation, never as content.
+There are no idle interval reads; reconnect uses the changes feed and message repair.
+
+`respondToPermission()`, `answerUserAction()`, `abort()`, `loadOlder()` and `send()`
+accept per-call cancellation. The Action adapter has no abort Action; rich permission
+responses use the same native decision vocabulary through the existing permission
+Action. Answering agent questions uses Send authority, not Approve. The existing `followTranscript()` iterator remains
+the compact semantic Action stream, not a rendering model. It also wakes on viewer pushes
+and has no polling-interval option. The current development push conversion uses an Account
+Home viewer endpoint. Preserving daemon-local iterator support is an unresolved integration
+boundary; finite Actions do not replace that existing iterator contract.
+
+Closing one controller leaves other controllers running. Closing the root client
+also closes its controllers, including ones created through machine-bound views.
+
+List Sessions with the same fluent collection:
+
+```ts
+const page = await happier.sessions.list({
+  folderIds: ['folder-1'],
+  tagIds: ['tag-1', 'tag-2'],
+  includeInactive: false,
+});
+```
+
+Folder ids match exact membership, not descendants. Each folder/tag selector
+matches any supplied id; supplying both selectors combines them with AND.
 
 `HappierActionError` means the Action API admitted the request but could not
 produce its typed Action result, either because the Action failed or because
@@ -315,17 +386,21 @@ present in development source. A loaded end-to-end SDK journey through both the
 direct-daemon and server-relay origins has not yet been certified, and this
 contract has not shipped in a public release.
 
-Protected delivery to a restricted Runner works when the call names that
-**Machine** as its target. The SDK resolves the Runner's published data
-encryption key through the bootstrap projection, checks the creator-signed
+In development source, protected delivery to a restricted Runner accepts its
+**Machine** or exact activated **Session** as the target. The SDK resolves the
+Runner's published data encryption key through the bootstrap projection, checks the creator-signed
 binding against the Home, Account and Machine pinned in its own credential, and
 seals the request with the resolved Runner content key; it never downgrades a
 Runner target to plaintext or to Account-only sealing, and a substituted
 binding, verifier fact, envelope or Machine fails the call with
 `invalid_encrypted_envelope`. The SDK still does not accept a key supplied by
-the configured Home as proof of a Machine claim on its own. A **Session**-targeted
-protected call to a Runner is not implemented yet: bind the Runner's Machine, or
-use an ordinary authorized Account daemon.
+the configured Home as proof of a Machine claim on its own. A Session-targeted
+call additionally verifies the activation-signed claim for that exact Session,
+Machine and activation; substituted or ambiguous claims fail before dispatch.
+The Runner's canonical receiver refuses foreign targets before opening the
+envelope and uses only its own content key, with no Account encryption material.
+This source implementation remains subject to the loaded-runtime and release
+validation limits above.
 
 With `hapc_v1`, the SDK sends only the embedded bearer in Authorization. It
 retrieves that token's wrapped content key, checks the locally pinned Home,
@@ -367,6 +442,83 @@ stay on that same target. On a root client, a run input with `sessionId`
 automatically binds start, reads, and cancel to that Session; a detached run still
 needs an explicit machine target at a server endpoint. Snapshot Actions remain
 ordinary methods.
+
+In development source, execution-run iterators wait on producer events through
+the existing `execution.run.stream.read` Action (`waitForEvents: true`), including
+detached runs and daemon-local endpoints. Idle reads stay pending until the stream
+owner appends events, finishes, or the caller cancels; no interval runs. A finite-only
+older producer returns `execution_run_stream_update_required` instead of starting
+an idle polling loop.
+Terminal reads retain the handle until its existing cancel operation releases it;
+the SDK does this automatically without cancelling an already-completed turn.
+
+## Embed backend helpers (development)
+
+An embed is a parent API token with an attached configuration. Keep that parent
+key on your backend; give the browser only the short-lived child returned by
+`client.embed.createCredential()`. The backend must authorize the signed-in
+user's access to each requested Session before minting its credential.
+
+The parent has Account-wide Session targets for its granted Actions. Configured
+folder and tags are listing defaults, not access restrictions on that key; the
+backend's user authorization and the Session child's target bound each chat.
+
+```ts
+const config = await client.embed.get();
+const lead = await client.embed.createSession({
+  title: 'Inbound lead', initialMessage: 'Analyse this lead.',
+}, { requestId: 'lead-123-create' });
+const sessions = await client.embed.listSessions();
+// Call only after your own user-to-Session authorization check:
+const credential = await client.embed.createCredential({
+  sessionId: lead.id, embedPublicKey: request.embedPublicKey,
+  expiresInSeconds: 900,
+});
+```
+
+Creation uses the parent's bound Machine, Agent, managed directory and placement,
+with the existing Session spawn owner. Retain `requestId` across retries after
+an uncertain response. If initial input is refused after creation,
+`HappierSessionInitialInputError.session` still names the created Session.
+Backend creation does not depend on the presentation choice to enable new chats.
+
+Listing defaults to the configuration's folder and tags. Tags match ANY of the
+chosen tags; an empty resolved folder/tag filter throws
+`listing_filter_required` before an account-wide request can run.
+
+Omitting `sessionId` mints a spawn-only child when new chats are enabled. Record
+its returned `tokenId` against the signed-in user until that child expires. On
+the frame's `reason: 'created'` request, verify that mapping and pass
+`requireCreatedBy: request.createdByTokenId`: the server verifies creation
+attribution while minting the Session child. The helper does not revoke the
+spawn-only child, since revocation removes attribution. Session children have
+neither creation nor listing authority.
+
+Plain Accounts carry no encryption material. For an E2EE Account, the backend
+requires the encryption-capable `hapc_v1` credential and seals a bounded
+composer-options projection to the frame's ephemeral public key. An E2EE Session
+also requires an available standalone Session-key envelope, which the SDK seals
+to that same key. A plain Session in an E2EE Account receives sealed options but
+no Session key. Legacy E2EE Sessions without a standalone envelope
+throw `session_key_not_transferable`; this boundary depends on the actual key
+envelope, including Sessions created by a daemon with legacy credentials.
+An E2EE Account with a bearer-only backend key throws
+`encryption_credential_required`.
+
+Both the credential-serving backend and active host-page code are trusted. The
+E2EE parent key gives your backend Account-wide content access. During the normal
+handoff the host page passes sealed blobs and the frame keeps opened material in
+memory. The SDK seals to the supplied `embedPublicKey`; it does not authenticate
+that key as belonging to a Happier frame. An authorized hostile host script can
+supply its own key and open the returned Session key and options. Use a dedicated
+Account whose content you trust your host app's backend and page code to access.
+Revocation stops future token use; it cannot recall keys or content already disclosed.
+Customize its appearance through
+the embed theme-token contract; raw CSS and generated class names are not an API.
+Your dashboard must also set its own `Content-Security-Policy: frame-ancestors`
+policy: browsers without `ancestorOrigins` expose only the immediate parent to
+the frame's origin check. These helpers and the embed flow are development
+source, with composed validation and package publication owned separately.
 
 ## Session-owned execution runs
 
@@ -426,9 +578,10 @@ The bound handle preserves the canonical Action behavior:
   correspondence and then reads that exact sidechain through
   `session.transcript.get`. It caches nothing and never falls back to the main
   transcript scope; if the run read fails, no transcript request is sent. A
-  response that names no sidechain correspondence is not a result
-  `execution.run.get` can return, so it rejects as `invalid_action_output`
-  before any transcript request is sent. A caller-supplied
+  run read that succeeds without a valid current sidechain correspondence
+  rejects as a `HappierActionError` with code
+  `execution_run_correspondence_unavailable` before any transcript request is
+  sent. A caller-supplied
   `requestId` applies only to the transcript request. The handle reads its own
   sidechain, so it refuses a `projection` rather than quietly ignoring one.
 - The handle's bound `sessionId`, recipient and wait mode are written after your

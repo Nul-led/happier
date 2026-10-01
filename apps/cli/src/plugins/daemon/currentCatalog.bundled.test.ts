@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 const installedBoundary = vi.hoisted(() => ({
   readInstalledPluginCatalogSnapshot: vi.fn(async () => ({ revision: 8, entries: [] })),
@@ -10,6 +11,18 @@ vi.mock('@/plugins/projection/catalog/installed', async (importOriginal) => {
     ...actual,
     readInstalledPluginCatalogSnapshot: installedBoundary.readInstalledPluginCatalogSnapshot,
   };
+});
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const { createBundledPluginPublicationFsFixture } = await import(
+    '@/plugins/projection/registry/builtIn/locators.testkit'
+  );
+  return createBundledPluginPublicationFsFixture(actual, [{
+    packageName: '@happier-dev/plugins-broken',
+    pluginId: 'happier.broken',
+    diagnostic: { code: 'plugin_package_build_failed', message: 'Missing staged export ./dist/index.js' },
+  }]);
 });
 
 vi.mock('@/plugins/projection/registry/sources/generatedBundledPluginManifests', () => ({
@@ -41,6 +54,7 @@ import type { PluginReloadController } from '@/plugins/runtime/reload/controller
 import { readCurrentDaemonPluginCatalogSnapshot } from './currentCatalog';
 
 function runtimeLease() {
+  const occurrenceId = createPluginRuntimeOccurrenceId('happier.channels');
   return {
     registry: {
       contributes: { tools: [], actionsById: new Map() },
@@ -57,11 +71,11 @@ function runtimeLease() {
           },
         }],
       },
-      pluginFinalPolicyCurrentGenerationsById: new Map([['happier.channels', {
-        immutableGenerationId: 'bundled-generation',
-        desiredImmutableGenerationId: 'bundled-generation',
-        appliedImmutableGenerationId: 'bundled-generation',
-        distribution: { kind: 'bundled' },
+      pluginFinalPolicyCurrentRuntimesById: new Map([['happier.channels', {
+        occurrenceId,
+        sourceCustody: { kind: 'bundled_first_party', packagedRuntime: { kind: 'cli_version_root', versionRootId: 'fixture-cli-root' } },
+        desiredOccurrenceId: occurrenceId,
+        appliedOccurrenceId: occurrenceId,
         applied: true,
         selectedAccess: [],
       }]]),
@@ -73,17 +87,37 @@ function runtimeLease() {
 }
 
 describe('current daemon bundled plugin catalog', () => {
+  it('keeps a failed bundled plugin visible as a diagnostic without admitting its contributions', async () => {
+    const reloadController = {
+      tryAcquireRuntimeRegistry: () => null,
+    } as unknown as PluginReloadController;
+    const catalog = await readCurrentDaemonPluginCatalogSnapshot({ reloadController });
+    expect(catalog.plugins.map((entry) => entry.pluginId)).toEqual([
+      'happier.broken', 'happier.channels',
+    ]);
+    expect(catalog.plugins[0]).toMatchObject({
+      enabled: false,
+      manifest: null,
+      compatibility: { status: 'load_error' },
+      diagnostics: [{ code: 'plugin_package_build_failed', message: 'Missing staged export ./dist/index.js' }],
+    });
+  });
+
   it('retains an attributable bundled diagnostic in the one current catalog', async () => {
     const lease = runtimeLease();
+    const currentRuntime = lease.registry.pluginFinalPolicyCurrentRuntimesById
+      .get('happier.channels');
+    if (!currentRuntime) throw new Error('Expected current bundled runtime');
+    const occurrenceId = currentRuntime.occurrenceId;
     const reloadController = {
       tryAcquireRuntimeRegistry: () => lease,
     } as unknown as PluginReloadController;
 
     await expect(readCurrentDaemonPluginCatalogSnapshot({ reloadController })).resolves.toMatchObject({
-      plugins: [{
+      plugins: [{ pluginId: 'happier.broken' }, {
         pluginId: 'happier.channels',
-        desiredGeneration: 'bundled-generation',
-        appliedGeneration: 'bundled-generation',
+        desiredGeneration: occurrenceId,
+        appliedGeneration: occurrenceId,
         source: { kind: 'bundled' },
         contributionIntrospection: {
           diagnostics: [expect.objectContaining({
@@ -139,8 +173,8 @@ describe('current daemon bundled plugin catalog', () => {
 
     const snapshot = await readCurrentDaemonPluginCatalogSnapshot({ reloadController });
 
-    expect(snapshot.plugins).toHaveLength(1);
-    expect(snapshot.plugins[0]).toMatchObject({
+    expect(snapshot.plugins).toHaveLength(2);
+    expect(snapshot.plugins[1]).toMatchObject({
       pluginId: 'happier.channels',
       source: { kind: 'path' },
     });

@@ -76,7 +76,7 @@ function waitForChildOutput(
   });
 }
 
-function runPhysicalPackageAlias(aliasKind: 'directory' | 'file') {
+async function runPhysicalPackageAlias(aliasKind: 'directory' | 'file') {
   const fixture = writeIsolatedPkgrollRepo(`happier-dev-cli-pkgroll-${aliasKind}-owner-`);
   const aliasRepoRoot = createTempDirSync(`happier-dev-cli-pkgroll-${aliasKind}-alias-`);
   const aliasPackageRoot = join(aliasRepoRoot, 'apps', 'cli');
@@ -102,7 +102,7 @@ function runPhysicalPackageAlias(aliasKind: 'directory' | 'file') {
       expect(existsSync(join(fixture.stagingDir, 'package.json'))).toBe(true);
       return { status: 0 };
     });
-    runPkgrollBuild({
+    await runPkgrollBuild({
       packageJsonPath: aliasPackageJsonPath,
       pkgrollCliPath: fixture.pkgrollCliPath,
       outputDir: fixture.outputDir,
@@ -116,34 +116,34 @@ function runPhysicalPackageAlias(aliasKind: 'directory' | 'file') {
 }
 
 describe('runPkgrollBuild', () => {
-  it('converges a directory symlink or junction alias on the physical package stage', () => {
-    runPhysicalPackageAlias('directory');
+  it('converges a directory symlink or junction alias on the physical package stage', async () => {
+    await runPhysicalPackageAlias('directory');
   }, 20_000);
 
   it.skipIf(process.platform === 'win32')(
     'converges a file symlink alias on the physical package stage',
-    () => {
-      runPhysicalPackageAlias('file');
+    async () => {
+      await runPhysicalPackageAlias('file');
     },
     20_000,
   );
 
-  it('fails on a missing physical package manifest before any build work', () => {
+  it('fails on a missing physical package manifest before any build work', async () => {
     const fixture = writeIsolatedPkgrollRepo('happier-dev-cli-pkgroll-missing-manifest-');
     rmSync(fixture.packageJsonPath);
     try {
-      expect(() => runPkgrollBuild({
+      await expect(runPkgrollBuild({
         packageJsonPath: fixture.packageJsonPath,
         pkgrollCliPath: fixture.pkgrollCliPath,
         outputDir: fixture.outputDir,
         spawn: vi.fn(() => ({ status: 0 })),
-      })).toThrow(/ENOENT|no such file or directory/i);
+      })).rejects.toThrow(/ENOENT|no such file or directory/i);
     } finally {
       rmSync(fixture.repoRoot, { recursive: true, force: true });
     }
   });
 
-  it('requires an explicit relative builder-owned output directory', () => {
+  it('requires an explicit relative builder-owned output directory', async () => {
     const fixture = writeIsolatedPkgrollRepo('happier-dev-cli-pkgroll-required-stage-');
     const spawn = vi.fn(() => ({ status: 0 }));
     try {
@@ -155,12 +155,12 @@ describe('runPkgrollBuild', () => {
         '../escape',
         'nested/../escape',
       ]) {
-        expect(() => runPkgrollBuild({
+        await expect(runPkgrollBuild({
           packageJsonPath: fixture.packageJsonPath,
           pkgrollCliPath: fixture.pkgrollCliPath,
           outputDir,
           spawn,
-        })).toThrow(/explicit relative builder-owned output directory/);
+        })).rejects.toThrow(/explicit relative builder-owned output directory/);
       }
       expect(spawn).not.toHaveBeenCalled();
     } finally {
@@ -168,7 +168,7 @@ describe('runPkgrollBuild', () => {
     }
   });
 
-  it('uses a transformed stage-owned manifest while preserving parent manifests', () => {
+  it('uses a transformed stage-owned manifest while preserving parent manifests', async () => {
     const fixture = writeIsolatedPkgrollRepo('happier-dev-cli-pkgroll-stage-manifest-');
     const parentYamlRaw = 'name: user-authored-parent-manifest\ncustom: preserve-exactly\n';
     writeFileSync(fixture.packageYamlPath, parentYamlRaw, 'utf8');
@@ -178,13 +178,15 @@ describe('runPkgrollBuild', () => {
       main: './dist/index.cjs',
       module: './package-dist/index.mjs',
       dependencies: {
+        '@happier-dev/agents': '0.0.0',
+        '@happier-dev/plugin-sdk': '0.0.0',
         '@happier-dev/protocol': '0.0.0',
         zod: '4.3.6',
       },
       devDependencies: {
         vitest: '3.2.4',
       },
-      bundledDependencies: ['@happier-dev/protocol'],
+      bundledDependencies: ['@happier-dev/agents', '@happier-dev/plugin-sdk', '@happier-dev/protocol'],
       bin: {
         happier: './bin/happier.mjs',
       },
@@ -202,7 +204,7 @@ describe('runPkgrollBuild', () => {
     });
 
     try {
-      runPkgrollBuild({
+      await runPkgrollBuild({
         packageJsonPath: fixture.packageJsonPath,
         pkgrollCliPath: fixture.pkgrollCliPath,
         outputDir: fixture.outputDir,
@@ -219,15 +221,24 @@ describe('runPkgrollBuild', () => {
         '--input',
         'index.mjs',
       ]);
+      // Bundled internals are inlined, except the packages bundled plugins
+      // import from the packaged closure at runtime: inlining those gives the
+      // host a second module instance of the whole protocol schema graph.
       expect(observedStageManifest).toMatchObject({
         main: './index.cjs',
         module: './index.mjs',
-        dependencies: { zod: '4.3.6' },
-        devDependencies: {
+        dependencies: {
+          '@happier-dev/plugin-sdk': '0.0.0',
           '@happier-dev/protocol': '0.0.0',
+          zod: '4.3.6',
+        },
+        devDependencies: {
+          '@happier-dev/agents': '0.0.0',
           vitest: '3.2.4',
         },
       });
+      expect(Object.keys((observedStageManifest as { devDependencies: object }).devDependencies))
+        .not.toContain('@happier-dev/protocol');
       expect(observedStageManifest).not.toHaveProperty('bin');
       expect(readFileSync(fixture.packageJsonPath, 'utf8')).toBe(sourceManifestRaw);
       expect(readFileSync(fixture.packageYamlPath, 'utf8')).toBe(parentYamlRaw);
@@ -237,7 +248,7 @@ describe('runPkgrollBuild', () => {
     }
   });
 
-  it('removes the stage manifest after failure without mutating the source package', () => {
+  it('removes the stage manifest after failure without mutating the source package', async () => {
     const fixture = writeIsolatedPkgrollRepo('happier-dev-cli-pkgroll-stage-failure-');
     const spawn = vi.fn(() => {
       expect(existsSync(join(fixture.stagingDir, 'package.json'))).toBe(true);
@@ -245,12 +256,12 @@ describe('runPkgrollBuild', () => {
       throw new Error('simulated pkgroll failure');
     });
     try {
-      expect(() => runPkgrollBuild({
+      await expect(runPkgrollBuild({
         packageJsonPath: fixture.packageJsonPath,
         pkgrollCliPath: fixture.pkgrollCliPath,
         outputDir: fixture.outputDir,
         spawn,
-      })).toThrow(/simulated pkgroll failure/);
+      })).rejects.toThrow(/simulated pkgroll failure/);
       expect(existsSync(join(fixture.stagingDir, 'package.json'))).toBe(false);
       expect(existsSync(fixture.packageYamlPath)).toBe(false);
     } finally {
@@ -263,7 +274,7 @@ describe('runPkgrollBuild', () => {
     const wrapperModuleUrl = new URL('../runPkgrollBuild.mjs', import.meta.url).href;
     const childSource = `
 const { runPkgrollBuild } = await import(${JSON.stringify(wrapperModuleUrl)});
-runPkgrollBuild({
+await runPkgrollBuild({
   packageJsonPath: ${JSON.stringify(fixture.packageJsonPath)},
   pkgrollCliPath: ${JSON.stringify(fixture.pkgrollCliPath)},
   outputDir: ${JSON.stringify(fixture.outputDir)},
@@ -300,7 +311,7 @@ runPkgrollBuild({
     }
   }, 20_000);
 
-  it('includes the deferred Voice inference runtime in the real CLI package build inputs', () => {
+  it('includes the deferred Voice inference runtime in the real CLI package build inputs', async () => {
     const manifest = JSON.parse(readFileSync(join(cliPackageRoot, 'package.json'), 'utf8'));
 
     expect(collectPkgrollInputPaths(manifest)).toContain(
@@ -308,7 +319,7 @@ runPkgrollBuild({
     );
   });
 
-  it('runs pkgroll with a package.json entrypoint filter without mutating the package manifest', () => {
+  it('runs pkgroll with a package.json entrypoint filter without mutating the package manifest', async () => {
     const dir = createTempDirSync('happier-cli-pkgroll-manifest-');
     const packageJsonPath = join(dir, 'package.json');
     const pkgrollCliPath = join(dir, 'pkgroll-cli.mjs');
@@ -337,7 +348,7 @@ runPkgrollBuild({
       return { status: 0 };
     });
 
-    runPkgrollBuild({ cwd: dir, outputDir, pkgrollCliPath, spawn });
+    await runPkgrollBuild({ cwd: dir, outputDir, pkgrollCliPath, spawn });
 
     expect(spawn).toHaveBeenCalledWith(
       process.execPath,
@@ -372,7 +383,7 @@ runPkgrollBuild({
     expect(existsSync(join(dir, outputDir, 'package.json'))).toBe(false);
   });
 
-  it('fails fast with a clear error when the resolved pkgroll entrypoint is a shell shim without mutating the manifest', () => {
+  it('fails fast with a clear error when the resolved pkgroll entrypoint is a shell shim without mutating the manifest', async () => {
     const dir = createTempDirSync('happier-cli-pkgroll-shell-shim-');
     const packageJsonPath = join(dir, 'package.json');
     const pkgrollCliPath = join(dir, 'pkgroll-shell-shim.mjs');
@@ -391,19 +402,19 @@ runPkgrollBuild({
 
     const spawn = vi.fn(() => ({ status: 0 }));
 
-    expect(() =>
+    await expect(
       runPkgrollBuild({
         cwd: dir,
         outputDir: 'dist.staging.shell-shim',
         pkgrollCliPath,
         spawn,
       }),
-    ).toThrow(/expected a JavaScript entrypoint but found a shell wrapper/i);
+    ).rejects.toThrow(/expected a JavaScript entrypoint but found a shell wrapper/i);
     expect(spawn).not.toHaveBeenCalled();
     expect(JSON.parse(readFileSync(packageJsonPath, 'utf8'))).toEqual(original);
   });
 
-  it('fails when pkgroll is terminated by a signal instead of reporting a successful build', () => {
+  it('fails when pkgroll is terminated by a signal instead of reporting a successful build', async () => {
     const dir = createTempDirSync('happier-cli-pkgroll-signal-');
     const packageJsonPath = join(dir, 'package.json');
     const pkgrollCliPath = join(dir, 'pkgroll-cli.mjs');
@@ -412,17 +423,17 @@ runPkgrollBuild({
 
     const spawn = vi.fn(() => ({ status: null, signal: 'SIGTERM' }));
 
-    expect(() => runPkgrollBuild({
+    await expect(runPkgrollBuild({
       cwd: dir,
       outputDir: 'dist.staging.signal',
       pkgrollCliPath,
       spawn,
-    })).toThrow(
+    })).rejects.toThrow(
       /terminated by signal SIGTERM/i,
     );
   });
 
-  it('applies bounded timeout override from environment for Windows stall protection', () => {
+  it('applies bounded timeout override from environment for Windows stall protection', async () => {
     const dir = createTempDirSync('happier-cli-pkgroll-timeout-');
     const packageJsonPath = join(dir, 'package.json');
     const pkgrollCliPath = join(dir, 'pkgroll-cli.mjs');
@@ -431,7 +442,7 @@ runPkgrollBuild({
 
     const spawn = vi.fn(() => ({ status: 0 }));
 
-    runPkgrollBuild({
+    await runPkgrollBuild({
       cwd: dir,
       outputDir: 'dist.staging.timeout',
       pkgrollCliPath,
@@ -455,7 +466,7 @@ runPkgrollBuild({
     );
   });
 
-  it('gives pkgroll the canonical Node heap budget while preserving existing Node options', () => {
+  it('gives pkgroll the canonical Node heap budget while preserving existing Node options', async () => {
     const dir = createTempDirSync('happier-cli-pkgroll-heap-');
     const packageJsonPath = join(dir, 'package.json');
     const pkgrollCliPath = join(dir, 'pkgroll-cli.mjs');
@@ -464,7 +475,7 @@ runPkgrollBuild({
 
     const spawn = vi.fn(() => ({ status: 0 }));
 
-    runPkgrollBuild({
+    await runPkgrollBuild({
       cwd: dir,
       outputDir: 'dist.staging.heap',
       pkgrollCliPath,
@@ -483,7 +494,7 @@ runPkgrollBuild({
     );
   });
 
-  it('runs executable and declaration bundles in separate pkgroll processes', () => {
+  it('runs executable and declaration bundles in separate pkgroll processes', async () => {
     const dir = createTempDirSync('happier-cli-pkgroll-memory-boundaries-');
     const packageJsonPath = join(dir, 'package.json');
     const pkgrollCliPath = join(dir, 'pkgroll-cli.mjs');
@@ -508,7 +519,7 @@ runPkgrollBuild({
 
     const spawn = vi.fn(() => ({ status: 0 }));
 
-    runPkgrollBuild({
+    await runPkgrollBuild({
       cwd: dir,
       outputDir: 'dist.staging.memory-boundaries',
       pkgrollCliPath,
@@ -539,7 +550,7 @@ runPkgrollBuild({
     ]);
   });
 
-  it('copies bundled first-party static assets into dist after pkgroll succeeds', () => {
+  it('copies bundled first-party static assets into dist after pkgroll succeeds', async () => {
     const dir = createTempDirSync('happier-cli-pkgroll-static-assets-');
     const packageJsonPath = join(dir, 'package.json');
     const pkgrollCliPath = join(dir, 'pkgroll-cli.mjs');
@@ -564,7 +575,7 @@ runPkgrollBuild({
 
     const spawn = vi.fn(() => ({ status: 0 }));
 
-    runPkgrollBuild({ cwd: dir, outputDir, pkgrollCliPath, spawn });
+    await runPkgrollBuild({ cwd: dir, outputDir, pkgrollCliPath, spawn });
 
     expect(readFileSync(join(
       dir,
@@ -582,7 +593,7 @@ runPkgrollBuild({
     ), 'utf8')).toBe('<!doctype html>\n');
   });
 
-  it('stages built dist output into the stack-provided build output directory', () => {
+  it('stages built dist output into the stack-provided build output directory', async () => {
     const dir = createTempDirSync('happier-cli-pkgroll-output-dir-');
     const packageJsonPath = join(dir, 'package.json');
     const pkgrollCliPath = join(dir, 'pkgroll-cli.mjs');
@@ -611,7 +622,7 @@ runPkgrollBuild({
       return { status: 0 };
     });
 
-    runPkgrollBuild({
+    await runPkgrollBuild({
       cwd: dir,
       outputDir,
       pkgrollCliPath,

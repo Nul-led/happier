@@ -2,7 +2,7 @@ import type { ResolveDeclaredManagedServiceSecret } from './managedServicesOwner
 
 /**
  * Resolves the user-recorded credential that authenticates an attached managed
- * service. The caller's exact admitted generation supplies the operation
+ * service. The caller's exact admitted occurrenceId supplies the operation
  * scoped port, which is already bound to one manifest declaration and the
  * canonical secret custody router.
  *
@@ -14,7 +14,7 @@ import type { ResolveDeclaredManagedServiceSecret } from './managedServicesOwner
 export function createDeclaredManagedServiceSecretResolver(): ResolveDeclaredManagedServiceSecret {
     return async ({ scope, secretId, canonicalOrigin, signal }) => {
         signal?.throwIfAborted();
-        if (!scope.isGenerationCurrent()) return null;
+        if (!scope.isOccurrenceCurrent()) return null;
         const readSecret = scope.declaredSecretReadPort;
         if (!readSecret) return null;
         const result = await readSecret({
@@ -23,7 +23,7 @@ export function createDeclaredManagedServiceSecretResolver(): ResolveDeclaredMan
             ...(signal ? { signal } : {}),
         });
         signal?.throwIfAborted();
-        if (!scope.isGenerationCurrent()) return null;
+        if (!scope.isOccurrenceCurrent()) return null;
         return result;
     };
 }

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { PluginError, type Disposable } from '@happier-dev/plugin-sdk';
 import type { PluginAccountStorageScope } from '@happier-dev/plugin-sdk/storage';
 import { accountSettingsParse, type PluginResourceContextV1 } from '@happier-dev/protocol';
+import { logger } from '@/ui/logger';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedContributionRegistry, ResolvedResourceContribution } from '@/plugins/projection/registry/types';
@@ -76,7 +77,7 @@ const resolvePlainAccountEncryptionCurrentness = async () => Object.freeze({
     updatedAt: 1,
     recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
 });
-// r0.22 extends the incumbent per-generation Resource bound into the one
+// r0.22 extends the incumbent per-occurrenceId Resource bound into the one
 // owner-local aggregate cap for active exact Resource/Session contexts.
 const ACTIVE_CONTEXT_LIMIT = MAX_PLUGIN_RESOURCES_PER_GENERATION;
 
@@ -139,7 +140,7 @@ async function bindSessionResource(
         pluginId: params.pluginId ?? 'acme.alpha',
         resourceId: params.resourceId,
         signal: new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         context: { kind: 'session', sessionId: params.sessionId },
     });
 }
@@ -193,7 +194,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             bindDynamicResourceAccountStorage: createPluginResourceAccountStorageResolver({
                 accountStorage: accountStorageHost,
             }),
@@ -227,7 +228,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         await service.read('live');
         expect(capturedScopes).toHaveLength(2);
@@ -268,7 +269,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             bindDynamicResourceAccountStorage: createPluginResourceAccountStorageResolver({
                 accountStorage: accountStorageHost,
             }),
@@ -299,7 +300,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const subscription = service.watch('live', () => undefined);
         try {
@@ -327,8 +328,8 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
-            isCommittedGenerationCurrent: async () => false,
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+            isDynamicOccurrenceCurrent: async () => false,
             bindDynamicResourceAccountStorage: bindAccountStorage,
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
@@ -352,12 +353,12 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         expect(read).not.toHaveBeenCalled();
     });
 
-    it('rejects late global admission bytes when committed generation currentness changes', async () => {
+    it('rejects late global admission bytes when exact plugin occurrence currentness changes', async () => {
         const lateRead = deferred<Uint8Array>();
-        let committedGenerationCurrent = true;
+        let occurrenceCurrent = true;
         let boundCurrent: (() => boolean | Promise<boolean>) | undefined;
         const bindAccountStorage = vi.fn((input: Parameters<NonNullable<Parameters<typeof createStablePluginResourcesOwner>[0]['bindDynamicResourceAccountStorage']>>[0]) => {
-            boundCurrent = input.isGenerationCurrent;
+            boundCurrent = input.isOccurrenceCurrent;
             return Object.freeze({ marker: 'account-storage' }) as unknown as PluginAccountStorageScope;
         });
         const read = vi.fn(() => lateRead.promise);
@@ -367,8 +368,8 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
-            isCommittedGenerationCurrent: async () => committedGenerationCurrent,
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+            isDynamicOccurrenceCurrent: async () => occurrenceCurrent,
             bindDynamicResourceAccountStorage: bindAccountStorage,
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
@@ -389,21 +390,21 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
             }],
         });
         await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
-        committedGenerationCurrent = false;
+        occurrenceCurrent = false;
         lateRead.resolve(new Uint8Array(Buffer.from('late')));
 
         await expect(pendingOwner).rejects.toMatchObject({ code: 'plugin_generation_stale' });
         expect(await boundCurrent?.()).toBe(false);
     });
 
-    it('does not let a held global admission callback mutate Account storage after committed authority flips', async () => {
+    it('does not let a held global admission callback mutate Account storage after exact occurrence flips', async () => {
         // A post-read currentness fence alone is too late: the Resource
         // callback can retain its Account leaf and use it just before that
         // fence runs. This must fail against the real Account host, rather
         // than a Resource-local wrapper that only protects output bytes.
         const callbackStarted = deferred<void>();
         const releaseCallback = deferred<void>();
-        let committedGenerationCurrent = true;
+        let occurrenceCurrent = true;
         const accountMutation = vi.fn(async () => ({
             status: 200,
             data: { status: 'updated' as const, revision: 1 },
@@ -429,8 +430,8 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
-            isCommittedGenerationCurrent: async () => committedGenerationCurrent,
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+            isDynamicOccurrenceCurrent: async () => occurrenceCurrent,
             bindDynamicResourceAccountStorage: createPluginResourceAccountStorageResolver({
                 accountStorage: accountStorageHost,
             }),
@@ -461,17 +462,17 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         });
 
         await callbackStarted.promise;
-        committedGenerationCurrent = false;
+        occurrenceCurrent = false;
         releaseCallback.resolve(undefined);
 
         await expect(pendingOwner).rejects.toMatchObject({ code: 'plugin_generation_stale' });
         expect(accountMutation).not.toHaveBeenCalled();
     });
 
-    it('does not let a held direct Resource read callback mutate Account storage after committed authority flips', async () => {
+    it('does not let a held direct Resource read callback mutate Account storage after exact occurrence flips', async () => {
         const callbackStarted = deferred<void>();
         const releaseCallback = deferred<void>();
-        let committedGenerationCurrent = true;
+        let occurrenceCurrent = true;
         let reads = 0;
         const accountMutation = vi.fn(async () => ({
             status: 200,
@@ -498,8 +499,8 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
-            isCommittedGenerationCurrent: async () => committedGenerationCurrent,
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+            isDynamicOccurrenceCurrent: async () => occurrenceCurrent,
             bindDynamicResourceAccountStorage: createPluginResourceAccountStorageResolver({
                 accountStorage: accountStorageHost,
             }),
@@ -533,20 +534,20 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         const pendingRead = service.read('live');
         await callbackStarted.promise;
-        committedGenerationCurrent = false;
+        occurrenceCurrent = false;
         releaseCallback.resolve(undefined);
 
         await expect(pendingRead).rejects.toMatchObject({ code: 'plugin_generation_stale' });
         expect(accountMutation).not.toHaveBeenCalled();
     });
 
-    it('does not let a retained Resource observation callback mutate Account storage after committed authority flips', async () => {
-        let committedGenerationCurrent = true;
+    it('does not let a retained Resource observation callback mutate Account storage after exact occurrence flips', async () => {
+        let occurrenceCurrent = true;
         let observedAccountStorage: PluginAccountStorageScope | undefined;
         const accountMutation = vi.fn(async () => ({
             status: 200,
@@ -573,8 +574,8 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
-            isCommittedGenerationCurrent: async () => committedGenerationCurrent,
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+            isDynamicOccurrenceCurrent: async () => occurrenceCurrent,
             bindDynamicResourceAccountStorage: createPluginResourceAccountStorageResolver({
                 accountStorage: accountStorageHost,
             }),
@@ -602,12 +603,12 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const subscription = service.watch('live', () => undefined);
         if (!observedAccountStorage) throw new Error('Expected the Resource observation Account storage scope');
 
-        committedGenerationCurrent = false;
+        occurrenceCurrent = false;
         await expect(observedAccountStorage.kv.set('resource-state', { saved: true }, {
             expectedVersion: 'absent',
         })).rejects.toMatchObject({
@@ -617,10 +618,10 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         subscription.dispose();
     });
 
-    it('does not let a held Resource watch settlement callback mutate Account storage after committed authority flips', async () => {
+    it('does not let a held Resource watch settlement callback mutate Account storage after exact occurrence flips', async () => {
         const callbackStarted = deferred<void>();
         const releaseCallback = deferred<void>();
-        let committedGenerationCurrent = true;
+        let occurrenceCurrent = true;
         let reads = 0;
         let invalidate: (() => void) | undefined;
         const accountMutation = vi.fn(async () => ({
@@ -648,8 +649,8 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
-            isCommittedGenerationCurrent: async () => committedGenerationCurrent,
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+            isDynamicOccurrenceCurrent: async () => occurrenceCurrent,
             bindDynamicResourceAccountStorage: createPluginResourceAccountStorageResolver({
                 accountStorage: accountStorageHost,
             }),
@@ -686,7 +687,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const subscription = service.watch('live', () => undefined);
         await vi.waitFor(() => expect(reads).toBe(2));
@@ -694,7 +695,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
 
         invalidate();
         await callbackStarted.promise;
-        committedGenerationCurrent = false;
+        occurrenceCurrent = false;
         releaseCallback.resolve(undefined);
         await settle();
 
@@ -702,10 +703,10 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         subscription.dispose();
     });
 
-    it('does not publish a settled Resource snapshot after committed authority flips', async () => {
+    it('does not publish a settled Resource snapshot after exact occurrence flips', async () => {
         const callbackStarted = deferred<void>();
         const releaseCallback = deferred<void>();
-        let committedGenerationCurrent = true;
+        let occurrenceCurrent = true;
         let reads = 0;
         let invalidate: (() => void) | undefined;
         const baseline = new Uint8Array(Buffer.from('baseline'));
@@ -716,8 +717,8 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live'),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
-            isCommittedGenerationCurrent: async () => committedGenerationCurrent,
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+            isDynamicOccurrenceCurrent: async () => occurrenceCurrent,
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -739,7 +740,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const subscription = service.watch('live', listener);
         await vi.waitFor(() => expect(reads).toBe(2));
@@ -749,7 +750,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
 
         invalidate();
         await callbackStarted.promise;
-        committedGenerationCurrent = false;
+        occurrenceCurrent = false;
         releaseCallback.resolve(undefined);
         await settle();
 
@@ -782,7 +783,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             bindDynamicResourceAccountStorage: () => (
                 activeAccount === 'account-a' ? accountA : accountB
             ),
@@ -836,7 +837,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const changes: Array<{ digest: string }> = [];
         const subscription = service.watch('live', (change) => { changes.push(change); });
@@ -916,7 +917,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             bindDynamicResourceAccountStorage: () => {
                 if (
                     activeAccount === 'account-b'
@@ -971,7 +972,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const changes: Array<{ digest: string }> = [];
         const subscription = service.watch('live', (change) => { changes.push(change); });
@@ -1025,7 +1026,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             bindDynamicResourceAccountStorage: () => (
                 activeAccount === 'account-a' ? accountA : accountB
             ),
@@ -1067,7 +1068,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const subscription = service.watch('live', vi.fn());
         await settle();
@@ -1111,7 +1112,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             bindDynamicResourceAccountStorage: () => (
                 activeAccount === 'account-a' ? accountA : accountB
             ),
@@ -1144,7 +1145,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(service.describe('live')).toMatchObject({ digest: digest(Buffer.from('A')) });
@@ -1197,7 +1198,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             bindDynamicResourceAccountStorage: () => accountStorage,
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
@@ -1235,7 +1236,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const changes: Array<{ digest: string }> = [];
 
@@ -1288,7 +1289,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             bindDynamicResourceAccountStorage: () => (
                 initiallyBindsAccountStorage || accountAvailable ? accountStorage : undefined
             ),
@@ -1313,7 +1314,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(owner.getPluginUiResourceCapability('acme.alpha')).toEqual({
@@ -1370,7 +1371,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
             // deliberately violates the registered runtime return contract.
             read: () => ({ invalid: true } as unknown as Uint8Array),
         },
-    ] as const)('keeps admission fatal when $label', async ({ code, hostAccess, read }) => {
+    ] as const)('isolates a failed global resource when $label', async ({ hostAccess, read }) => {
         const hostAccessRequests = hostAccess === undefined
             ? []
             : [{
@@ -1383,12 +1384,13 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 },
             }];
 
-        await expect(createStablePluginResourcesOwner({
+        const owner = await createStablePluginResourcesOwner({
             registry: registry([
                 dynamicContribution('acme.alpha', 'live', 'global', hostAccess),
+                dynamicContribution('acme.alpha', 'healthy'),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             bindDynamicResourceAccountStorage: () => accountStorageFixture(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
@@ -1398,8 +1400,20 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                     read,
                     observe: () => ({ dispose: () => undefined }),
                 },
+            }, {
+                pluginId: 'acme.alpha',
+                localId: 'healthy',
+                runtime: {
+                    read: () => new Uint8Array(Buffer.from('healthy')),
+                    observe: () => ({ dispose: () => undefined }),
+                },
             }],
-        })).rejects.toMatchObject({ code });
+        });
+        const service = owner.bind({ pluginId: 'acme.alpha', signal: new AbortController().signal, isOccurrenceCurrent: () => true });
+        await expect(service.read('live')).rejects.toMatchObject({ code: 'plugin_resource_admission_unavailable' });
+        expect(() => service.describe('live')).toThrowError(expect.objectContaining({ code: 'plugin_resource_admission_unavailable' }));
+        expect(() => service.watch('live', () => undefined)).toThrowError(expect.objectContaining({ code: 'plugin_resource_admission_unavailable' }));
+        await expect(service.read('healthy')).resolves.toMatchObject({ bytes: new Uint8Array(Buffer.from('healthy')) });
     });
 
     it('binds admitted Account storage only for each read and observe lifetime', async () => {
@@ -1412,7 +1426,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
                 dynamicContribution('acme.alpha', 'live', 'global', ['account-storage']),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             bindDynamicResourceAccountStorage: bindAccountStorage,
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
@@ -1450,7 +1464,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: bindingController.signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         await service.read('live');
         const watch = service.watch('live', () => undefined);
@@ -1469,7 +1483,7 @@ describe('dynamic Resource HostAccess callback binding (SDK-RESOURCE-01)', () =>
         expect(bindAccountStorage).toHaveBeenCalledWith(expect.objectContaining({
             pluginId: 'acme.alpha',
             resourceId: 'live',
-            generation: DYNAMIC_GENERATION,
+            occurrenceId: DYNAMIC_GENERATION,
             hostAccessRequests: [expect.objectContaining({ required: true })],
         }));
         watch.dispose();
@@ -1483,7 +1497,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'session-live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'session-live',
@@ -1497,7 +1511,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const session = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             context: { kind: 'session', sessionId: 'session-a' },
         });
 
@@ -1517,7 +1531,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const createOwner = async () => await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'session-live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'session-live',
@@ -1536,7 +1550,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         await expect(predecessor.bindForResource({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             context: { kind: 'session', sessionId: 'session-a' },
             resourceId: 'session-live',
         })).rejects.toMatchObject({
@@ -1551,7 +1565,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         await expect(replacement.bindForResource({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             context: { kind: 'session', sessionId: 'session-a' },
             resourceId: 'session-live',
         })).rejects.toMatchObject({
@@ -1575,7 +1589,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'session-live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'session-live',
@@ -1592,7 +1606,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
             pluginId: 'acme.alpha',
             resourceId: 'session-live',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             context: { kind: 'session', sessionId: 'session-a' },
         });
 
@@ -1619,7 +1633,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'session-live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'session-live',
@@ -1656,7 +1670,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const rejected = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             context: { kind: 'session', sessionId: 'session-a' },
         });
         await expect(rejected.read('session-live')).rejects.toMatchObject({
@@ -1684,7 +1698,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'session-live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'session-live',
@@ -1729,8 +1743,8 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
                 ...survivorIds.map((localId) => dynamicContribution('acme.alpha', localId, 'session')),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
-            isCommittedGenerationCurrent: () => {
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+            isDynamicOccurrenceCurrent: () => {
                 if (scheduleRetirement && ++retirementChecks === 2) {
                     return new Promise<boolean>((resolve) => {
                         setImmediate(() => {
@@ -1819,8 +1833,8 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
                 ...survivorIds.map((localId) => dynamicContribution('acme.alpha', localId, 'session')),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
-            isCommittedGenerationCurrent: () => {
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+            isDynamicOccurrenceCurrent: () => {
                 if (targetSettlement && ++settlementChecks === 2) {
                     return new Promise<boolean>((resolve) => {
                         setImmediate(() => {
@@ -1909,7 +1923,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
                 dynamicContribution('acme.alpha', 'account-live', 'global'),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [
                 {
                     pluginId: 'acme.alpha',
@@ -1933,13 +1947,13 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const session = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             context: { kind: 'session', sessionId: 'session-1' },
         });
         const global = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         // An old server has no additive witness. Only the Session-scoped
@@ -1999,7 +2013,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
                 dynamicContribution('acme.alpha', 'account-live', 'global'),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [
                 {
                     pluginId: 'acme.alpha',
@@ -2028,7 +2042,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const global = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         await session.read('session-live');
         const globalBeforeSwitch = global.describe('account-live');
@@ -2060,7 +2074,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -2100,7 +2114,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
             ? owner.bind({
                 pluginId: 'acme.alpha',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             })
             : await bindSessionResource(owner, { resourceId: 'live', sessionId });
         const missing = await bind();
@@ -2147,7 +2161,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -2212,7 +2226,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
                 dynamicContribution('acme.alpha', 'global', 'global'),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: ['first', 'second', 'global'].map((localId) => ({
                 pluginId: 'acme.alpha',
                 localId,
@@ -2262,7 +2276,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
             ? owner.bind({
                 pluginId: 'acme.alpha',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             })
             : await bindSessionResource(owner, { resourceId: 'first', sessionId });
         const removed = await bind(removedSessionId);
@@ -2333,7 +2347,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live', 'session')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -2370,7 +2384,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         });
     });
 
-    it('reclaims aggregate active contextual capacity when a plugin generation retires', async () => {
+    it('reclaims aggregate active contextual capacity when a plugin occurrenceId retires', async () => {
         const retiredDisposals = new Map<string, number>();
         const owner = await createStablePluginResourcesOwner({
             registry: registry([
@@ -2378,7 +2392,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
                 dynamicContribution('acme.beta', 'live', 'session'),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([
+            dynamicOccurrenceIdsByPluginId: new Map([
                 ['acme.alpha', DYNAMIC_GENERATION],
                 ['acme.beta', 'immutable-beta-dynamic'],
             ]),
@@ -2444,7 +2458,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -2459,11 +2473,11 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         });
         const watcherService = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const unrelatedService = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         const first = await watcherService.read('live');
@@ -2495,7 +2509,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -2511,7 +2525,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const changes: { digest: string }[] = [];
         service.watch('live', (change) => { changes.push(change); });
@@ -2525,7 +2539,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -2537,7 +2551,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         await service.read('live');
         current = Buffer.from('B');
@@ -2556,7 +2570,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -2568,7 +2582,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const changes: { digest: string }[] = [];
         service.watch('live', (change) => { changes.push(change); });
@@ -2587,7 +2601,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -2610,7 +2624,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const service = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const changes: Array<{ digest: string }> = [];
         const subscription = service.watch('live', (change) => { changes.push(change); });
@@ -2632,7 +2646,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         expect(reads).toBe(3);
     });
 
-    it('does not late-admit ignored-abort settlement bytes after generation retirement', async () => {
+    it('does not late-admit ignored-abort settlement bytes after occurrenceId retirement', async () => {
         const empty = new Uint8Array();
         const maximum = new Uint8Array(MAX_PLUGIN_RESOURCE_BYTES);
         const lateSettlement = deferred<Uint8Array>();
@@ -2649,7 +2663,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
                 dynamicContribution('acme.beta', 'probe'),
             ]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: new Map([
+            dynamicOccurrenceIdsByPluginId: new Map([
                 ['acme.alpha', DYNAMIC_GENERATION],
                 ['acme.beta', 'immutable-beta-dynamic'],
             ]),
@@ -2694,12 +2708,12 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
         const alpha = owner.bind({
             pluginId: 'acme.alpha',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const beta = owner.bind({
             pluginId: 'acme.beta',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         alpha.watch('live', () => undefined);
         await settle(); // alpha watch-establishment resync is read #2
@@ -2730,7 +2744,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
             const owner = await createStablePluginResourcesOwner({
                 registry: registry([dynamicContribution('acme.alpha', 'live')]),
                 generations: new Map(),
-                immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+                dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
                 dynamicProducers: [{
                     pluginId: 'acme.alpha',
                     localId: 'live',
@@ -2755,7 +2769,7 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
             const service = owner.bind({
                 pluginId: 'acme.alpha',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             const changes: Array<{ digest: string }> = [];
             service.watch('live', (change) => { changes.push(change); });
@@ -2782,14 +2796,56 @@ describe('dynamic resource invalidation is owed to observers, not to the last re
 });
 
 describe('dynamic resource producer callbacks are bounded at the boundary (EU-4b)', () => {
-    it('fails admission with a bounded typed failure when a producer read never answers', async () => {
+    it('bounds several stalled global admissions to one initialization window and keeps a healthy resource', async () => {
         vi.useFakeTimers();
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+        try {
+            const pending = createStablePluginResourcesOwner({
+                registry: registry([
+                    dynamicContribution('acme.alpha', 'healthy'),
+                    ...['stalled-a', 'stalled-b', 'stalled-c', 'stalled-d', 'stalled-e']
+                        .map((localId) => dynamicContribution('acme.alpha', localId)),
+                ]),
+                generations: new Map(),
+                dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+                dynamicProducers: ['healthy', 'stalled-a', 'stalled-b', 'stalled-c', 'stalled-d', 'stalled-e'].map((localId) => ({
+                    pluginId: 'acme.alpha',
+                    localId,
+                    runtime: {
+                        read: () => localId === 'healthy'
+                            ? new Uint8Array(Buffer.from('ready'))
+                            : new Promise<Uint8Array>(() => undefined),
+                        observe: () => ({ dispose: () => undefined }),
+                    },
+                })),
+            });
+            let settled: StablePluginResourcesOwner | null = null;
+            void pending.then((owner) => { settled = owner; });
+            await vi.advanceTimersByTimeAsync(30_000);
+            for (let flush = 0; flush < 10; flush += 1) await Promise.resolve();
+
+            expect(settled).not.toBeNull();
+            const service = settled!.bind({ pluginId: 'acme.alpha', signal: new AbortController().signal, isOccurrenceCurrent: () => true });
+            expect(service.describe('healthy')).toMatchObject({ digest: digest(Buffer.from('ready')) });
+            await expect(service.read('stalled-a')).rejects.toMatchObject({ code: 'plugin_resource_admission_unavailable' });
+            await expect(service.read('stalled-b')).rejects.toMatchObject({ code: 'plugin_resource_admission_unavailable' });
+            expect(() => service.describe('stalled-e')).toThrowError();
+            expect(warn).toHaveBeenCalledTimes(5);
+        } finally {
+            warn.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it('keeps daemon resource ownership available after a bounded producer timeout', async () => {
+        vi.useFakeTimers();
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
         try {
             let admissionSignal: AbortSignal | undefined;
             const pending = createStablePluginResourcesOwner({
                 registry: registry([dynamicContribution('acme.alpha', 'live')]),
                 generations: new Map(),
-                immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+                dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
                 dynamicProducers: [{
                     pluginId: 'acme.alpha',
                     localId: 'live',
@@ -2802,16 +2858,119 @@ describe('dynamic resource producer callbacks are bounded at the boundary (EU-4b
                     },
                 }],
             });
-            let settled: unknown = 'still pending';
+            let settled: StablePluginResourcesOwner | null = null;
             void pending.then(
-                () => { settled = 'admitted'; },
-                (error: unknown) => { settled = error; },
+                (owner) => { settled = owner; },
             );
             await vi.advanceTimersByTimeAsync(60_000);
             for (let flush = 0; flush < 10; flush += 1) await Promise.resolve();
 
-            expect(settled).toMatchObject({ code: 'plugin_resource_producer_timed_out' });
+            expect(settled).not.toBeNull();
+            const service = settled!.bind({ pluginId: 'acme.alpha', signal: new AbortController().signal, isOccurrenceCurrent: () => true });
+            await expect(service.read('live')).rejects.toMatchObject({ code: 'plugin_resource_admission_unavailable' });
             expect(admissionSignal?.aborted).toBe(true);
+            expect(warn).toHaveBeenCalledWith(
+                '[PLUGIN RUNTIME] Dynamic Resource admission failed',
+                {
+                    pluginId: 'acme.alpha',
+                    localId: 'live',
+                    elapsedMs: 30_000,
+                    abortReason: 'admission_timeout',
+                },
+            );
+        } finally {
+            warn.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it('ends a hung global admission within the remaining daemon startup budget', async () => {
+        vi.useFakeTimers();
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+        try {
+            const pending = createStablePluginResourcesOwner({
+                registry: registry([dynamicContribution('acme.alpha', 'live')]),
+                generations: new Map(),
+                dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+                startupDeadlineAtMs: Date.now() + 1_000,
+                dynamicProducers: [{
+                    pluginId: 'acme.alpha', localId: 'live',
+                    runtime: {
+                        read: () => new Promise<Uint8Array>(() => undefined),
+                        observe: () => ({ dispose: () => undefined }),
+                    },
+                }],
+            });
+            let settled = false;
+            void pending.then(() => { settled = true; });
+            await vi.advanceTimersByTimeAsync(1_000);
+            expect(settled).toBe(true);
+        } finally {
+            warn.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it('leaves a queued producer available for a later read when startup expires before its first call', async () => {
+        vi.useFakeTimers();
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+        try {
+            const healthyRead = vi.fn(() => new Uint8Array(Buffer.from('ready')));
+            const ids = ['stalled-a', 'stalled-b', 'stalled-c', 'stalled-d', 'healthy'];
+            const pending = createStablePluginResourcesOwner({
+                registry: registry(ids.map((id) => dynamicContribution('acme.alpha', id))),
+                generations: new Map(),
+                dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+                dynamicProducers: ids.map((localId) => ({
+                    pluginId: 'acme.alpha', localId,
+                    runtime: {
+                        read: localId === 'healthy'
+                            ? healthyRead
+                            : () => new Promise<Uint8Array>(() => undefined),
+                        observe: () => ({ dispose: () => undefined }),
+                    },
+                })),
+            });
+            await vi.advanceTimersByTimeAsync(30_000);
+            const owner = await pending;
+            expect(healthyRead).not.toHaveBeenCalled();
+            const service = owner.bind({
+                pluginId: 'acme.alpha', signal: new AbortController().signal,
+                isOccurrenceCurrent: () => true,
+            });
+            await expect(service.read('healthy')).resolves.toMatchObject({
+                bytes: new Uint8Array(Buffer.from('ready')),
+            });
+            expect(healthyRead).toHaveBeenCalledOnce();
+        } finally {
+            warn.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it('admits a valid global producer after the old five-second cutoff', async () => {
+        vi.useFakeTimers();
+        try {
+            const pending = createStablePluginResourcesOwner({
+                registry: registry([dynamicContribution('acme.alpha', 'live')]),
+                generations: new Map(),
+                dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
+                dynamicProducers: [{
+                    pluginId: 'acme.alpha',
+                    localId: 'live',
+                    runtime: {
+                        read: async () => {
+                            await new Promise((resolve) => setTimeout(resolve, 10_000));
+                            return new Uint8Array(Buffer.from('ready'));
+                        },
+                        observe: () => ({ dispose: () => undefined }),
+                    },
+                }],
+            });
+            await vi.advanceTimersByTimeAsync(10_000);
+            const owner = await pending;
+            const service = owner.bind({ pluginId: 'acme.alpha', signal: new AbortController().signal, isOccurrenceCurrent: () => true });
+            expect(service.describe('live')).toMatchObject({ digest: digest(Buffer.from('ready')) });
         } finally {
             vi.useRealTimers();
         }
@@ -2822,7 +2981,7 @@ describe('dynamic resource producer callbacks are bounded at the boundary (EU-4b
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -2837,7 +2996,7 @@ describe('dynamic resource producer callbacks are bounded at the boundary (EU-4b
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(() => service.watch('live', () => undefined)).toThrowError(
@@ -2856,7 +3015,7 @@ describe('dynamic resource producer callbacks are bounded at the boundary (EU-4b
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -2868,7 +3027,7 @@ describe('dynamic resource producer callbacks are bounded at the boundary (EU-4b
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         expect(() => service.watch('live', () => undefined)).toThrowError(
@@ -2881,7 +3040,7 @@ describe('dynamic resource producer callbacks are bounded at the boundary (EU-4b
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'live')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'live',
@@ -2898,7 +3057,7 @@ describe('dynamic resource producer callbacks are bounded at the boundary (EU-4b
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
         const subscription = service.watch('live', () => undefined);
         await settle();
@@ -2936,12 +3095,12 @@ describe('dynamic resource reads stay inside the aggregate byte bound (EU-4b)', 
                 localIds.map((localId) => dynamicContribution('acme.alpha', localId)),
             ),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: producers,
         });
         const service = owner.bind({
             pluginId: 'acme.alpha', signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         // 60 MiB admitted; growing one resource to 16 MiB lands exactly on the
@@ -2980,7 +3139,7 @@ describe('dynamic resource reads stay inside the aggregate byte bound (EU-4b)', 
             const owner = await createStablePluginResourcesOwner({
                 registry: registry(localIds.map((localId) => dynamicContribution('acme.alpha', localId))),
                 generations: new Map(),
-                immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+                dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
                 dynamicProducers: localIds.map((localId) => ({
                     pluginId: 'acme.alpha',
                     localId,
@@ -2996,7 +3155,7 @@ describe('dynamic resource reads stay inside the aggregate byte bound (EU-4b)', 
             const service = owner.bind({
                 pluginId: 'acme.alpha',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
             const changes: Array<{ digest: string }> = [];
             service.watch('r1', (change) => { changes.push(change); });
@@ -3028,7 +3187,7 @@ describe('surface-scoped dynamic Resources (SDK-EU-28)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'targeted-document', 'surface')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'targeted-document',
@@ -3043,7 +3202,7 @@ describe('surface-scoped dynamic Resources (SDK-EU-28)', () => {
             pluginId: 'acme.alpha',
             resourceId: 'targeted-document',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             context: {
                 kind: 'surface',
                 mountInstanceKey: 'target/acme.target/point/contributor/detail/entry-7',
@@ -3072,7 +3231,7 @@ describe('surface-scoped dynamic Resources (SDK-EU-28)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'targeted-document', 'surface')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'targeted-document',
@@ -3086,7 +3245,7 @@ describe('surface-scoped dynamic Resources (SDK-EU-28)', () => {
             pluginId: 'acme.alpha',
             resourceId: 'targeted-document',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         };
 
         // `bind` is the raw Resource service path. A surface scope is not a
@@ -3178,7 +3337,7 @@ describe('surface-scoped dynamic Resources (SDK-EU-28)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'targeted-document', 'surface')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'targeted-document',
@@ -3199,14 +3358,14 @@ describe('surface-scoped dynamic Resources (SDK-EU-28)', () => {
             pluginId: 'acme.alpha',
             resourceId: 'targeted-document',
             signal: firstController.signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             context,
         });
         const second = await owner.bindForResource({
             pluginId: 'acme.alpha',
             resourceId: 'targeted-document',
             signal: secondController.signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             context,
         });
         await first.read('targeted-document');
@@ -3219,7 +3378,7 @@ describe('surface-scoped dynamic Resources (SDK-EU-28)', () => {
             pluginId: 'acme.alpha',
             resourceId: 'targeted-document',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             context,
         });
         expect(() => replacement.describe('targeted-document')).toThrowError(
@@ -3239,7 +3398,7 @@ describe('surface-scoped dynamic Resources (SDK-EU-28)', () => {
         const owner = await createStablePluginResourcesOwner({
             registry: registry([dynamicContribution('acme.alpha', 'targeted-document', 'surface')]),
             generations: new Map(),
-            immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+            dynamicOccurrenceIdsByPluginId: dynamicGenerationIds(),
             dynamicProducers: [{
                 pluginId: 'acme.alpha',
                 localId: 'targeted-document',
@@ -3275,7 +3434,7 @@ describe('surface-scoped dynamic Resources (SDK-EU-28)', () => {
             pluginId: 'acme.alpha',
             resourceId: 'targeted-document',
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         };
         const first = await owner.bindForResource({
             ...common,

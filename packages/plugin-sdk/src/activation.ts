@@ -194,7 +194,8 @@ export type PluginEventHandler<TPayload extends JsonValue = JsonValue> =
 export type PluginNotificationSendRequest = Readonly<{
     clientRequestId: string;
     deliveryId: string;
-    categoryId: string;
+    /** Qualified plugin category for plugin-originated sends; absent for host Activity notifications. */
+    categoryId?: string;
     channelId: string;
     title: string;
     body?: string;

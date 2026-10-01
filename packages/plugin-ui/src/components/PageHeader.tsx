@@ -1,0 +1,68 @@
+import type { ReactElement, ReactNode } from 'react';
+
+import { HappierPageHeader } from '../presentation/layout/PageHeader.js';
+import { useHappierPageChrome } from '../presentation/layout/pageChrome.js';
+import { Icon, type IconName } from './Icon.js';
+import { usePluginTranslation } from './PluginUiProvider.js';
+import { resolveAuthorText } from './resolveAuthorText.js';
+
+/** One fact on the page header's meta line ("v2.4.0", "Personal Home", "End-to-end encrypted"). */
+export type PageHeaderMetaFact = Readonly<{
+  key: string;
+  text: string;
+  /** A key from this plugin's declared translation bundle; `text` is its fallback. */
+  textKey?: string;
+  /** A small glyph before the text. */
+  icon?: IconName;
+  testID?: string;
+}>;
+
+export type PageHeaderProps = Readonly<{
+  /** The page's title. Hidden when the host's navigation already shows it; the purpose line stays. */
+  title: string;
+  /** A key from this plugin's declared translation bundle; `title` is its fallback. */
+  titleKey?: string;
+  /** One sentence saying what the page is for. */
+  description?: string;
+  descriptionKey?: string;
+  /** A leading identity mark: the thing the page is about (a `BrandMark`, an `Image`). */
+  leading?: ReactNode;
+  /** The distinguishing facts of the thing the page is about, on one quiet line. */
+  meta?: readonly PageHeaderMetaFact[];
+  /** At most one primary page action plus context controls. */
+  actions?: ReactNode;
+  testID?: string;
+}>;
+
+/**
+ * The header of a plugin configuration or detail page: title, one-line
+ * purpose, an optional identity mark, a meta line and actions — the same
+ * owner, layout and type scale as Happier's own settings pages, including the
+ * host's back arrow in the gutter beside the title when the page is opened
+ * from another page.
+ */
+export function PageHeader(props: PageHeaderProps): ReactElement {
+  const translate = usePluginTranslation();
+  const chrome = useHappierPageChrome();
+  const title = resolveAuthorText(translate, props.title, props.titleKey) ?? props.title;
+  const description = resolveAuthorText(translate, props.description, props.descriptionKey);
+  const meta = props.meta?.map((fact) => ({
+    key: fact.key,
+    text: resolveAuthorText(translate, fact.text, fact.textKey) ?? fact.text,
+    ...(fact.testID === undefined ? {} : { testID: fact.testID }),
+    ...(fact.icon === undefined ? {} : { icon: <Icon name={fact.icon} size="small" tone="secondary" /> }),
+  }));
+  return (
+    <HappierPageHeader
+      title={title}
+      showTitle={chrome?.showsTitle !== true}
+      description={description}
+      leading={props.leading}
+      meta={meta}
+      actions={props.actions}
+      renderBack={chrome?.renderBack ?? null}
+      {...(chrome?.columnMaxWidthPx === undefined ? {} : { columnMaxWidthPx: chrome.columnMaxWidthPx })}
+      {...(props.testID === undefined ? {} : { testID: props.testID })}
+    />
+  );
+}

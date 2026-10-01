@@ -194,7 +194,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits,
             declarations: [{
                 id: 'main',
@@ -268,9 +268,9 @@ describe('plugin daemon database owner', () => {
         try {
             await host.prepare({
                 pluginId: 'acme.indexer',
-                generation: '7',
+                occurrenceId: '7',
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 declarations: [{
                     id: 'index',
                     migrations: [{ version: 1, id: 'create-index' }],
@@ -286,9 +286,9 @@ describe('plugin daemon database owner', () => {
             });
             await expect(host.bind({
                 pluginId: 'acme.indexer',
-                generation: '7',
+                occurrenceId: '7',
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             }).database('index', runtime.index)).rejects.toMatchObject({
                 code: 'daemon_database_policy_unavailable',
             });
@@ -342,24 +342,24 @@ describe('plugin daemon database owner', () => {
             ] as const) {
                 await host.prepare({
                     pluginId,
-                    generation: '1',
+                    occurrenceId: '1',
                     signal: controller.signal,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                     declarations: declaration,
                     runtime,
                 });
             }
             const failedDatabase = await host.bind({
                 pluginId: 'acme.failed-agent',
-                generation: '1',
+                occurrenceId: '1',
                 signal: failedController.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             }).database('state', runtime.state);
             const healthyDatabase = await host.bind({
                 pluginId: 'acme.healthy',
-                generation: '1',
+                occurrenceId: '1',
                 signal: healthyController.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             }).database('state', runtime.state);
 
             await host.retire(['acme.failed-agent']);
@@ -438,9 +438,9 @@ describe('plugin daemon database owner', () => {
         try {
             await host.prepare({
                 pluginId: 'acme.indexer',
-                generation: '7',
+                occurrenceId: '7',
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 declarations: [
                     { id: 'beta', migrations: [{ version: 1, id: 'create-beta' }], incumbentQueryFixtureId: 'beta-v1' },
                     { id: 'alpha', migrations: [{ version: 1, id: 'create-alpha' }], incumbentQueryFixtureId: 'alpha-v1' },
@@ -457,9 +457,9 @@ describe('plugin daemon database owner', () => {
             const storage = createStablePluginStorageService({
                 pluginId: 'acme.indexer',
                 paths,
-                generation: '7',
+                occurrenceId: '7',
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 daemonDatabase: host,
             });
             await storage.daemon.set('retained-key', 'retained-value');
@@ -497,7 +497,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits,
             declarations: [
                 { id: 'alpha', migrations: [{ version: 1, id: 'create-alpha' }], incumbentQueryFixtureId: 'alpha-v1' },
@@ -568,7 +568,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits,
             declarations: [
                 { id: 'alpha', migrations: [{ version: 1, id: 'create-alpha' }], incumbentQueryFixtureId: 'alpha-v1' },
@@ -724,18 +724,18 @@ describe('plugin daemon database owner', () => {
         try {
             await incumbent.prepare({
                 pluginId: 'acme.indexer',
-                generation: '1',
+                occurrenceId: '1',
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 declarations,
                 runtime: incumbentRuntime,
             });
             const incumbentStorage = createStablePluginStorageService({
                 pluginId: 'acme.indexer',
                 paths,
-                generation: '1',
+                occurrenceId: '1',
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 daemonDatabase: incumbent,
             });
             const incumbentDatabase = await incumbentStorage.daemon.database('index', incumbentRuntime.index);
@@ -748,9 +748,9 @@ describe('plugin daemon database owner', () => {
             rejectIncumbentFixture = true;
             await expect(candidate.prepare({
                 pluginId: 'acme.indexer',
-                generation: '2',
+                occurrenceId: '2',
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 declarations: [{
                     id: 'index',
                     migrations: [
@@ -774,9 +774,9 @@ describe('plugin daemon database owner', () => {
             await incumbent.quiesce(['acme.indexer']);
             await expect(candidate.prepare({
                 pluginId: 'acme.indexer',
-                generation: '2',
+                occurrenceId: '2',
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 declarations: [{
                     id: 'index',
                     migrations: [
@@ -791,9 +791,9 @@ describe('plugin daemon database owner', () => {
             const candidateStorage = createStablePluginStorageService({
                 pluginId: 'acme.indexer',
                 paths,
-                generation: '2',
+                occurrenceId: '2',
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 daemonDatabase: candidate,
             });
             const candidateDatabase = await candidateStorage.daemon.database('index', candidateRuntime.index);
@@ -815,7 +815,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths: resolvePluginStorePaths({ happyHomeDir }),
             signal: controller.signal,
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
             limits: {
                 maximumDatabaseBytes: 1_048_576,
                 maximumInputBytes: 16_384,
@@ -955,7 +955,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths: resolvePluginStorePaths({ happyHomeDir }),
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits: {
                 maximumDatabaseBytes: 1_048_576,
                 maximumInputBytes: 16_384,
@@ -1014,7 +1014,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths: resolvePluginStorePaths({ happyHomeDir }),
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits: {
                 maximumDatabaseBytes: 1_048_576,
                 maximumInputBytes: 16_384,
@@ -1053,7 +1053,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths: resolvePluginStorePaths({ happyHomeDir }),
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits: {
                 maximumDatabaseBytes: 1_048_576,
                 maximumInputBytes: 16_384,
@@ -1124,7 +1124,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths: resolvePluginStorePaths({ happyHomeDir }),
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits: {
                 maximumDatabaseBytes: 1_048_576,
                 maximumInputBytes: 16_384,
@@ -1194,7 +1194,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths: resolvePluginStorePaths({ happyHomeDir }),
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits: {
                 maximumDatabaseBytes: 1_048_576,
                 maximumInputBytes: 16_384,
@@ -1275,7 +1275,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths: resolvePluginStorePaths({ happyHomeDir }),
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits: {
                 maximumDatabaseBytes: 1_048_576,
                 maximumInputBytes: 16_384,
@@ -1341,7 +1341,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths: resolvePluginStorePaths({ happyHomeDir }),
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits: {
                 maximumDatabaseBytes: 1_048_576,
                 maximumInputBytes: 16_384,
@@ -1403,7 +1403,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths: resolvePluginStorePaths({ happyHomeDir }),
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits: {
                 maximumDatabaseBytes: 1_048_576,
                 maximumInputBytes: 16_384,
@@ -1495,7 +1495,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits,
             declarations: [{
                 id: 'main',
@@ -1537,7 +1537,7 @@ describe('plugin daemon database owner', () => {
                 pluginId: 'acme.indexer',
                 paths,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 limits,
                 incumbentContracts,
                 declarations: [{
@@ -1607,7 +1607,7 @@ describe('plugin daemon database owner', () => {
             pluginId: 'acme.indexer',
             paths,
             signal: controller.signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             limits,
             declarations: [{
                 id: 'main',
@@ -1653,7 +1653,7 @@ describe('plugin daemon database owner', () => {
                 pluginId: 'acme.indexer',
                 paths,
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 limits,
                 incumbentContracts,
                 declarations: [{

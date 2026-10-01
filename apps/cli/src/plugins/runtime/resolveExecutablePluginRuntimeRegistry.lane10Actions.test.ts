@@ -120,7 +120,7 @@ describe('installed external plugin Lane 10 Actions', () => {
                         manifestVersion: '1.0.0',
                         installedPath: null,
                         trust,
-                        updatePolicy: 'reviewEveryUpdate',
+                        updatePolicy: 'allowed',
                         optionalAccess: [],
                     },
                     state: { enabled: true },

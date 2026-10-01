@@ -1,5 +1,6 @@
 import type { PluginAccountStorageScope } from '@happier-dev/plugin-sdk/storage';
 import { ComposerControlStateV1Schema } from '@happier-dev/plugin-sdk/ui';
+import { PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1 } from '@happier-dev/plugin-sdk/collections';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -23,6 +24,7 @@ import {
   type ConversationConnectionFixtureAuthority,
 } from './testkit/currentConnectionFixture.js';
 import { resourceText } from './testkit/resourceContract.js';
+import type { ConversationDeliveryCustodyState } from './deliveryCustody.js';
 
 class MemoryAccountCollection {
   readonly rows = new Map<string, Readonly<{
@@ -170,7 +172,6 @@ const CONNECTION_AUTHORITY = {
   providerPluginId: 'example.channel.provider',
   providerContributionSelection: {
     contributionId: 'session-conversations-test-provider',
-    immutableGenerationId: 'session-conversations-test-generation',
   },
   providerSetupInput: { source: 'session-conversations-resource-test' },
   credentialRef: null,
@@ -224,8 +225,8 @@ async function seedBoundSession(): Promise<Readonly<{
   state: MemoryAccountCollection;
   deliveries: MemoryAccountCollection;
 }>> {
-  const state = new MemoryAccountCollection();
-  const deliveries = new MemoryAccountCollection();
+  const state = new WatchableMemoryAccountCollection();
+  const deliveries = new WatchableMemoryAccountCollection();
   await state.put(createCurrentConversationConnectionFixture({
     connectionId: 'connection-1',
     authority: CONNECTION_AUTHORITY,
@@ -380,6 +381,142 @@ describe('Channels Session conversations Composer control state', () => {
 });
 
 describe('Channels Session conversations Resource', () => {
+  it('selects the latest custody across every page of the retained binding index', async () => {
+    const { state, deliveries } = await seedBoundSession();
+    const store = createConversationOutwardDeliveryCollectionStore({
+      stateCollection: state as never,
+      deliveriesCollection: deliveries as never,
+      signal: new AbortController().signal,
+      now: () => 100,
+    });
+    const created = await store.ensure(bindingDeliveryObligation('binding-a', 'paged'));
+    if (created.kind !== 'created') throw new Error('Expected canonical custody.');
+    const template = deliveries.rows.get(created.record.custodyId);
+    if (template === undefined) throw new Error('Expected retained collection row.');
+    for (let index = 0; index <= PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1; index += 1) {
+      const rowId = `z${index.toString().padStart(42, '0')}`;
+      deliveries.rows.set(rowId, {
+        rowId,
+        revision: 1,
+        value: { ...template.value, id: rowId, 'updated-at': 200 + index },
+      });
+    }
+    const result = JSON.parse(resourceText(await SESSION_CONVERSATIONS_RESOURCE_RUNTIME.read({
+      signal: new AbortController().signal,
+      context: { kind: 'session', sessionId: 'session-a' },
+      accountStorage: accountStorageFor(state, deliveries),
+    }))) as Readonly<{ lastDeliveries?: unknown }>;
+    expect(result.lastDeliveries).toEqual([{
+      bindingId: 'binding-a', atMs: 200 + PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1, outcome: 'pending',
+    }]);
+  });
+
+  it('refuses a last-delivery claim when the retained custody timestamp is unreadable', async () => {
+    const { state, deliveries } = await seedBoundSession();
+    const store = createConversationOutwardDeliveryCollectionStore({
+      stateCollection: state as never,
+      deliveriesCollection: deliveries as never,
+      signal: new AbortController().signal,
+      now: () => 100,
+    });
+    const created = await store.ensure(bindingDeliveryObligation('binding-a', 'corrupt'));
+    if (created.kind !== 'created') throw new Error('Expected canonical custody.');
+    const row = deliveries.rows.get(created.record.custodyId);
+    if (row === undefined) throw new Error('Expected retained collection row.');
+    deliveries.rows.set(row.rowId, { ...row, value: { ...row.value, 'updated-at': 'unreadable' } });
+    await expect(SESSION_CONVERSATIONS_RESOURCE_RUNTIME.read({
+      signal: new AbortController().signal,
+      context: { kind: 'session', sessionId: 'session-a' },
+      accountStorage: accountStorageFor(state, deliveries),
+    })).rejects.toMatchObject({ code: 'channels_session_conversations_resource_delivery_row_invalid' });
+  });
+
+  it('rereads the mounted list after canonical delivery custody settles', async () => {
+    const { state, deliveries } = await seedBoundSession();
+    let now = 100;
+    const options = {
+      signal: new AbortController().signal,
+      context: { kind: 'session' as const, sessionId: 'session-a' },
+      accountStorage: accountStorageFor(state, deliveries),
+    };
+    const store = createConversationOutwardDeliveryCollectionStore({
+      stateCollection: state as never,
+      deliveriesCollection: deliveries as never,
+      signal: options.signal,
+      now: () => now,
+    });
+    const created = await store.ensure(bindingDeliveryObligation('binding-a', 'mounted'));
+    if (created.kind !== 'created') throw new Error('Expected canonical custody.');
+    let refreshed: Promise<unknown> | undefined;
+    const observation = SESSION_CONVERSATIONS_RESOURCE_RUNTIME.observe(() => {
+      refreshed = Promise.resolve(SESSION_CONVERSATIONS_RESOURCE_RUNTIME.read(options)).then((result) => (
+        (JSON.parse(resourceText(result)) as Readonly<{ lastDeliveries?: unknown }>).lastDeliveries
+      ));
+    }, options);
+    now = 200;
+    await store.compareAndSwap({
+      custodyId: created.record.custodyId,
+      expectedRevision: created.record.revision,
+      custody: { state: 'delivered', attemptCount: 1, providerMessageIds: ['provider-private'] },
+    });
+    expect(refreshed).toBeDefined();
+    await expect(refreshed).resolves.toEqual([{ bindingId: 'binding-a', atMs: 200, outcome: 'delivered' }]);
+    observation.dispose();
+  });
+
+  it.each([
+    ['ready', 'pending'],
+    ['retryDue', 'pending'],
+    ['attempting', 'pending'],
+    ['delivered', 'delivered'],
+    ['notDelivered', 'notDelivered'],
+    ['suppressed', 'notDelivered'],
+    ['connectionDeleted', 'notDelivered'],
+    ['partial', 'unknown'],
+    ['outcomeUnknown', 'unknown'],
+    ['resolvedAccepted', 'unknown'],
+    ['resolvedDiscarded', 'unknown'],
+  ] as const satisfies readonly (readonly [ConversationDeliveryCustodyState, string])[])(
+    'projects the latest retained %s custody as %s without leaking delivery content',
+    async (custodyState, outcome) => {
+      const { state, deliveries } = await seedBoundSession();
+      let now = 100;
+      const store = createConversationOutwardDeliveryCollectionStore({
+        stateCollection: state as never,
+        deliveriesCollection: deliveries as never,
+        signal: new AbortController().signal,
+        now: () => now,
+      });
+      const older = await store.ensure(bindingDeliveryObligation('binding-a', 'older'));
+      now = 200;
+      await store.ensure(bindingDeliveryObligation('binding-a', 'newer-created'));
+      await store.ensure(bindingDeliveryObligation('binding-b', 'foreign-session'));
+      if (older.kind !== 'created') throw new Error('Expected canonical custody.');
+      now = 300;
+      const changed = await store.compareAndSwap({
+        custodyId: older.record.custodyId,
+        expectedRevision: older.record.revision,
+        custody: {
+          state: custodyState,
+          attemptCount: custodyState === 'ready' ? 0 : 1,
+          providerMessageIds: [],
+          ...(custodyState === 'attempting' ? { attemptId: 'attempt-private', startedAt: 250 } : {}),
+          ...(custodyState === 'partial' ? { failedChunk: 1 } : {}),
+        },
+      });
+      if (changed.kind !== 'updated') throw new Error('Expected canonical custody update.');
+      const serialized = resourceText(await SESSION_CONVERSATIONS_RESOURCE_RUNTIME.read({
+        signal: new AbortController().signal,
+        context: { kind: 'session', sessionId: 'session-a' },
+        accountStorage: accountStorageFor(state, deliveries),
+      }));
+      const projection = JSON.parse(serialized) as Readonly<{ lastDeliveries?: unknown }>;
+      expect(projection.lastDeliveries).toEqual([{ bindingId: 'binding-a', atMs: 300, outcome }]);
+      expect(serialized).not.toContain('Private delivery body');
+      expect(serialized).not.toContain('attempt-private');
+      expect(serialized).not.toContain('binding-b');
+    },
+  );
   it('projects the current Session conversation counts through the shared declarative grammar', async () => {
     const { state, deliveries } = await seedBoundSession();
 
@@ -393,11 +530,11 @@ describe('Channels Session conversations Resource', () => {
       version: 1,
       root: {
         kind: 'group',
-        title: 'External conversations',
-        description: 'Conversation bridges associated with this Session.',
+        title: { key: 'plugins.channels.session.title', fallback: 'External conversations' },
+        description: { key: 'plugins.channels.session.emptyDescription', fallback: 'Conversations bound to this Session will appear here.' },
         children: [
-          { kind: 'status', label: 'Conversations', value: '1' },
-          { kind: 'status', label: 'Need attention', value: '0' },
+          { kind: 'status', label: { key: 'plugins.channels.session.title', fallback: 'External conversations' }, value: '1' },
+          { kind: 'status', label: { key: 'plugins.channels.session.composerChipAttention', fallback: 'External delivery needs attention' }, value: '0' },
         ],
       },
     });
@@ -539,7 +676,7 @@ describe('Channels Session conversations Resource', () => {
     expect(parsed.bindings.map(({ bindingId }) => bindingId)).toEqual(['binding-long']);
   });
 
-  it('invalidates the Session list when binding or connection state changes, not from a delivery attempt', () => {
+  it('invalidates the Session list when binding, connection, or delivery custody changes', () => {
     const state = createWatchableCollection();
     const deliveries = createWatchableCollection();
     const invalidate = vi.fn();
@@ -550,7 +687,7 @@ describe('Channels Session conversations Resource', () => {
       accountStorage: accountStorageFor(state, deliveries),
     });
 
-    expect(deliveries.watch).not.toHaveBeenCalled();
+    expect(deliveries.watch).toHaveBeenCalledWith({ kind: 'collection' }, expect.any(Function));
     expect(state.watch).toHaveBeenNthCalledWith(1, {
       index: 'by-kind',
       prefix: [CHANNEL_STATE_RECORD_KIND.binding],
@@ -571,14 +708,17 @@ describe('Channels Session conversations Resource', () => {
     state.emitWatch(1);
     expect(invalidate).toHaveBeenCalledTimes(2);
     deliveries.emit();
-    expect(invalidate).toHaveBeenCalledTimes(2);
+    expect(invalidate).toHaveBeenCalledTimes(3);
     observation.dispose();
     expect(state.dispose).toHaveBeenCalledTimes(3);
+    expect(deliveries.dispose).toHaveBeenCalledOnce();
+    deliveries.emit();
+    expect(invalidate).toHaveBeenCalledTimes(3);
   });
 
   it('rereads the mounted Session projection after a connection-only state change', async () => {
     const state = new WatchableMemoryAccountCollection();
-    const deliveries = new MemoryAccountCollection();
+    const deliveries = new WatchableMemoryAccountCollection();
     const connection = await state.put(createCurrentConversationConnectionFixture({
       connectionId: 'connection-1',
       authority: CONNECTION_AUTHORITY,

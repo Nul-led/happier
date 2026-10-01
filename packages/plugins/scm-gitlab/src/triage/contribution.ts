@@ -87,6 +87,7 @@ export const GITLAB_TRIAGE_ACTION_IDS = Object.freeze({
   listInstances: 'triage/list-gitlab-instances',
   scan: 'triage/scan-gitlab',
   get: 'triage/get-gitlab-entry',
+  readPullRequestStatus: 'triage/read-gitlab-pull-request-status',
   prepareReviewWorkspace: 'triage/prepare-gitlab-review-workspace',
   verifyReviewWorkspace: 'triage/verify-gitlab-review-workspace',
 });
@@ -96,9 +97,8 @@ export const GITLAB_TRIAGE_ACTION_IDS = Object.freeze({
  *
  * They carry no Triage role: a note, a resource event, a discussion, an approval
  * state, a pipeline and a changed file are GitLab-native content this source's
- * own mounted detail body reads. Their published surface is `ui`: the mounted
- * dispatcher supplies present-user authority, while direct plugin/backend code
- * is refused because the declarations omit `plugin`.
+ * own mounted detail body reads. UI, agent, MCP and CLI share these native reads;
+ * direct plugin execution is refused because the declarations omit `plugin`.
  */
 export const GITLAB_TRIAGE_DETAIL_ACTION_IDS = Object.freeze({
   readOverview: 'triage/read-gitlab-overview',
@@ -209,8 +209,29 @@ export const GITLAB_TRIAGE_SOURCE_DESCRIPTOR_V1: TriageSourceDescriptorV1 =
     settingsPageId: GITLAB_TRIAGE_SETTINGS_PAGE_ID,
     displayName: 'GitLab',
     kinds: [
-      { id: 'merge-request', ...KIND_DISPLAY['merge-request'] },
-      { id: 'issue', ...KIND_DISPLAY.issue },
+      {
+        id: 'merge-request',
+        ...KIND_DISPLAY['merge-request'],
+        // r0.42: the Triage detail frame draws these tabs and asks this source
+        // for each as a panel; the writes render as the header `actions` panel.
+        detailTabs: [
+          { kind: 'shared', id: 'overview' },
+          { kind: 'shared', id: 'activity' },
+          { kind: 'shared', id: 'files' },
+          { kind: 'shared', id: 'checks' },
+        ],
+        detailActions: true,
+      },
+      {
+        id: 'issue',
+        ...KIND_DISPLAY.issue,
+        // Files and Checks for an issue come from its linked fix PR.
+        detailTabs: [
+          { kind: 'shared', id: 'overview' },
+          { kind: 'shared', id: 'activity' },
+        ],
+        detailActions: true,
+      },
     ],
   });
 
@@ -278,7 +299,7 @@ type GitlabMutationActionDeclaration = Readonly<{
   title: string;
   description: string;
   scopes: readonly ['global'];
-  surfaces: readonly ['ui'];
+  surfaces: readonly ['ui'] | readonly ['ui', 'agent', 'mcp', 'cli'];
   placementBindings: readonly ['detailsPanel'];
   execution: Readonly<{ target: 'daemon' }>;
   dangerLevel: 'destructive' | 'externalSideEffect' | 'writesRemote';
@@ -298,7 +319,7 @@ function declareOperationAction(input: Readonly<{
   title: string;
   description: string;
   scopes: readonly ['settings'] | readonly ['global'];
-  role: 'listInstances' | 'scan' | 'get' | 'prepareReviewWorkspace' | 'verifyReviewWorkspace';
+  role: 'listInstances' | 'scan' | 'get' | 'readPullRequestStatus' | 'prepareReviewWorkspace' | 'verifyReviewWorkspace';
   connectedAccountPurposeBindings?: readonly Readonly<{ path: string; purpose: string }>[];
 }>): TriageActionDeclaration {
   const declaration = sourceOperations[input.role].declaration;
@@ -324,7 +345,7 @@ function declareOperationAction(input: Readonly<{
   };
 }
 
-/** The five Action declarations the contribution's operation roles bind to. */
+/** Action declarations derive their contracts from the contribution's shared operation roles. */
 export const GITLAB_TRIAGE_ACTION_DECLARATIONS: readonly TriageActionDeclaration[] = Object.freeze([
   declareOperationAction({
     id: GITLAB_TRIAGE_ACTION_IDS.listInstances,
@@ -356,6 +377,14 @@ export const GITLAB_TRIAGE_ACTION_DECLARATIONS: readonly TriageActionDeclaration
     description: 'Authoritatively reads one GitLab merge request or issue for a configured deployment.',
     scopes: ['global'],
     role: 'get',
+    connectedAccountPurposeBindings: INSTANCE_ACCOUNT_BINDINGS,
+  }),
+  declareOperationAction({
+    id: GITLAB_TRIAGE_ACTION_IDS.readPullRequestStatus,
+    title: 'Read GitLab merge request status',
+    description: 'Reads checks, review, merge and branch facts when one merge request is expanded.',
+    scopes: ['global'],
+    role: 'readPullRequestStatus',
     connectedAccountPurposeBindings: INSTANCE_ACCOUNT_BINDINGS,
   }),
   declareOperationAction({
@@ -445,7 +474,7 @@ export const GITLAB_TRIAGE_DETAIL_ACTION_DECLARATIONS: readonly TriageActionDecl
   ].map((declaration) => Object.freeze({
     ...declaration,
     scopes: ['global'] as const,
-    surfaces: ['ui'] as const,
+    surfaces: ['ui', 'agent', 'mcp', 'cli'] as const,
     execution: { target: 'daemon' as const },
     dangerLevel: 'safe' as const,
     hostAccess: [...GITLAB_NETWORK_HOST_ACCESS_IDS, GITLAB_CONNECTED_ACCOUNT_PURPOSE],
@@ -456,19 +485,12 @@ export const GITLAB_TRIAGE_DETAIL_ACTION_DECLARATIONS: readonly TriageActionDecl
  * The mutation Action declarations.
  *
  * Four properties of these declarations are load-bearing rather than
- * decorative, and each is a rule from `sources/SCM.md` §3.8:
+ * decorative:
  *
- * - **`surfaces: ['ui']`, and the OMISSIONS are the gate.** The human
- *   gate is *reachability*, not a prompt: with no `agent` and no `mcp` surface no
- *   agent can reach these Actions at all — no tool, no prompt, no exposure —
- *   where a danger level plus `agent: true` would only *floor* them to an
- *   approval prompt, which is not the required guarantee.
- *
- *   `ui` is the write's whole product reach. The daemon derives the invoking
- *   surface from the authenticated mounted-UI provenance, so this source's own
- *   mounted detail artifact reaches each write as present-user authority while
- *   direct plugin code — ActionsService — checks only the `plugin` surface and
- *   is refused here.
+ * - Merge-request writes reach UI, agent, MCP and CLI through the central
+ *   present-user gate. Their non-safe danger levels require live approval.
+ *   Issue writes retain their UI-only reachability contract. Neither subset
+ *   admits direct plugin or voice writes.
  * - **The declared danger level is the contract's, row for row.** `merge` is
  *   `destructive` because it is irreversible on the forge; `mark-ready` is
  *   `externalSideEffect` because its reviewer notification fan-out *is* the
@@ -729,7 +751,9 @@ export const GITLAB_TRIAGE_MUTATION_ACTION_DECLARATIONS:
   ].map((declaration) => Object.freeze({
     ...declaration,
     scopes: ['global'] as const,
-    surfaces: ['ui'] as const,
+    surfaces: declaration.id.startsWith('gitlab/merge-request/')
+      ? ['ui', 'agent', 'mcp', 'cli'] as const
+      : ['ui'] as const,
     placementBindings: ['detailsPanel'] as const,
     execution: { target: 'daemon' as const },
     hostAccess: [...GITLAB_NETWORK_HOST_ACCESS_IDS, GITLAB_CONNECTED_ACCOUNT_PURPOSE],
@@ -747,6 +771,7 @@ export const GITLAB_TRIAGE_CONTRIBUTION_DECLARATION = TriageSourcesContributionP
     listInstances: sourceOperations.listInstances.bind(GITLAB_TRIAGE_ACTION_IDS.listInstances),
     scan: sourceOperations.scan.bind(GITLAB_TRIAGE_ACTION_IDS.scan),
     get: sourceOperations.get.bind(GITLAB_TRIAGE_ACTION_IDS.get),
+    readPullRequestStatus: sourceOperations.readPullRequestStatus.bind(GITLAB_TRIAGE_ACTION_IDS.readPullRequestStatus),
     prepareReviewWorkspace: sourceOperations.prepareReviewWorkspace.bind(
       GITLAB_TRIAGE_ACTION_IDS.prepareReviewWorkspace,
     ),

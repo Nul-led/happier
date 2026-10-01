@@ -82,9 +82,9 @@ export type AdmittedTargetedOperationExecutionRequest = Readonly<{
   }>;
   target: Readonly<{
     pluginId: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
   }>;
-  contributorImmutableGenerationId: string;
+  contributorOccurrenceId: string;
   targetProtocol: RehydratedPluginContributionPointOperationV1;
 }>;
 
@@ -171,8 +171,8 @@ async function resolveCurrentTargetApprovalReplayPlacement(
 }
 
 /**
- * A targeted-contribution admission binds the contributor's exact committed
- * immutable generation. That identity exists before demand activation, unlike
+ * A targeted-contribution admission binds the contributor's exact process-local
+ * occurrence. That identity exists before demand activation, unlike
  * a real runtime materialization. When the admitted execution context has a
  * real materialization too, it remains an additional post-activation fence;
  * no caller may synthesize one for a cold bundled contributor.
@@ -180,15 +180,14 @@ async function resolveCurrentTargetApprovalReplayPlacement(
 async function isExpectedPluginCurrent(params: Readonly<{
   runtimeRegistry: ResolvedExecutablePluginRuntimeRegistry | null;
   pluginId: string;
-  expectedImmutableGenerationId: string;
+  expectedOccurrenceId: string;
   expectedMaterializationId?: string;
   requireMaterialization: boolean;
 }>): Promise<boolean> {
   if (!params.runtimeRegistry) return false;
   try {
-    const currentGeneration = await params.runtimeRegistry
-      .resolveCurrentPluginImmutableGenerationId?.(params.pluginId);
-    if (currentGeneration !== params.expectedImmutableGenerationId) {
+    const currentOccurrenceId = params.runtimeRegistry.readPluginOccurrenceId?.(params.pluginId);
+    if (currentOccurrenceId !== params.expectedOccurrenceId) {
       return false;
     }
     if (!params.requireMaterialization || params.expectedMaterializationId === undefined) {
@@ -215,17 +214,17 @@ function actionHandlerNotStartedFailure(
   };
 }
 
-function admittedContributorGenerationRetired(): PluginActionExecutorResult {
+function admittedContributorOccurrenceRetired(): PluginActionExecutorResult {
   return actionHandlerNotStartedFailure(
     'plugin_action_generation_retired',
-    'Admitted contributor generation is no longer current',
+    'Admitted contributor occurrence is no longer current',
   );
 }
 
-function admittedTargetGenerationRetired(): PluginActionExecutorResult {
+function admittedTargetOccurrenceRetired(): PluginActionExecutorResult {
   return actionHandlerNotStartedFailure(
     'plugin_action_generation_retired',
-    'Admitted target generation is no longer current',
+    'Admitted target occurrence is no longer current',
   );
 }
 
@@ -342,7 +341,7 @@ export async function executeContributedAction(params: Readonly<{
    * Host-stamped targeted-contribution admission fence. It is never Action
    * input, a target selector, or public SDK call option.
    */
-  expectedContributorImmutableGenerationId?: string;
+  expectedContributorOccurrenceId?: string;
   /**
    * Optional only when the host admitted this operation with a real runtime
    * materialization. Cold bundled contributors never manufacture this value.
@@ -479,46 +478,30 @@ export async function executeContributedAction(params: Readonly<{
     ? registry
     : null;
   const admittedTargetedOperation = params.admittedTargetedOperation;
-  const expectedContributorImmutableGenerationId = admittedTargetedOperation === undefined
-    ? params.expectedContributorImmutableGenerationId
-    : admittedTargetedOperation.contributorImmutableGenerationId;
+  const expectedContributorOccurrenceId = admittedTargetedOperation === undefined
+    ? params.expectedContributorOccurrenceId
+    : admittedTargetedOperation.contributorOccurrenceId;
   const expectedContributorMaterializationId =
     params.expectedContributorMaterializationId;
   if (
     admittedTargetedOperation !== undefined
-    && params.expectedContributorImmutableGenerationId !== undefined
-    && params.expectedContributorImmutableGenerationId
-      !== admittedTargetedOperation.contributorImmutableGenerationId
+    && params.expectedContributorOccurrenceId !== undefined
+    && params.expectedContributorOccurrenceId
+      !== admittedTargetedOperation.contributorOccurrenceId
   ) {
     return { matched: true, result: admittedTargetedOperationInvalid() };
   }
   if (
     expectedContributorMaterializationId !== undefined
-    && expectedContributorImmutableGenerationId === undefined
+    && expectedContributorOccurrenceId === undefined
   ) {
-    return { matched: true, result: admittedContributorGenerationRetired() };
+    return { matched: true, result: admittedContributorOccurrenceRetired() };
   }
-  if (expectedContributorImmutableGenerationId !== undefined
-    && !(await isExpectedPluginCurrent({
-      runtimeRegistry,
-      pluginId,
-      expectedImmutableGenerationId: expectedContributorImmutableGenerationId,
-      requireMaterialization: false,
-    }))) {
-    return { matched: true, result: admittedContributorGenerationRetired() };
-  }
-  if (admittedTargetedOperation !== undefined) {
-    if (!matchesAdmittedTargetedOperation(admittedTargetedOperation, action, params.context.caller)) {
-      return { matched: true, result: admittedTargetedOperationInvalid() };
-    }
-    if (!(await isExpectedPluginCurrent({
-      runtimeRegistry,
-      pluginId: admittedTargetedOperation.target.pluginId,
-      expectedImmutableGenerationId: admittedTargetedOperation.target.immutableGenerationId,
-      requireMaterialization: false,
-    }))) {
-      return { matched: true, result: admittedTargetGenerationRetired() };
-    }
+  if (
+    admittedTargetedOperation !== undefined
+    && !matchesAdmittedTargetedOperation(admittedTargetedOperation, action, params.context.caller)
+  ) {
+    return { matched: true, result: admittedTargetedOperationInvalid() };
   }
   const targetActionInvocations = runtimeRegistry
     ? runtimeRegistry.targetActionInvocations
@@ -553,18 +536,6 @@ export async function executeContributedAction(params: Readonly<{
           'Declared target action did not publish a committed generation handler',
         ),
       };
-    }
-    // Demand activation can await. Revalidate the exact admitted contributor
-    // immediately before this registry admits a target handler.
-    if (expectedContributorImmutableGenerationId !== undefined
-      && !(await isExpectedPluginCurrent({
-        runtimeRegistry,
-        pluginId,
-        expectedImmutableGenerationId: expectedContributorImmutableGenerationId,
-        expectedMaterializationId: expectedContributorMaterializationId,
-        requireMaterialization: true,
-      }))) {
-      return { matched: true, result: admittedContributorGenerationRetired() };
     }
     const requiresExecutionOrigin = params.captureExecutionOrigin === true
       || params.expectedExecutionOrigin !== undefined;
@@ -638,14 +609,29 @@ export async function executeContributedAction(params: Readonly<{
         ),
       };
     }
+    // One admission fence for the host-stamped contributor and targeted
+    // operation, after every await above (demand activation, execution
+    // origin, replay placement) and immediately before the target registry
+    // admits the handler. The registry's post-approval re-check covers the
+    // only later await on user input.
+    if (expectedContributorOccurrenceId !== undefined
+      && !(await isExpectedPluginCurrent({
+        runtimeRegistry,
+        pluginId,
+        expectedOccurrenceId: expectedContributorOccurrenceId,
+        expectedMaterializationId: expectedContributorMaterializationId,
+        requireMaterialization: true,
+      }))) {
+      return { matched: true, result: admittedContributorOccurrenceRetired() };
+    }
     if (admittedTargetedOperation !== undefined
       && !(await isExpectedPluginCurrent({
         runtimeRegistry,
         pluginId: admittedTargetedOperation.target.pluginId,
-        expectedImmutableGenerationId: admittedTargetedOperation.target.immutableGenerationId,
+        expectedOccurrenceId: admittedTargetedOperation.target.occurrenceId,
         requireMaterialization: false,
       }))) {
-      return { matched: true, result: admittedTargetGenerationRetired() };
+      return { matched: true, result: admittedTargetOccurrenceRetired() };
     }
     const validatedInput = admittedTargetedOperation === undefined
       ? null
@@ -707,9 +693,9 @@ export async function executeContributedAction(params: Readonly<{
       ...(admittedTargetedOperation === undefined
         ? {}
         : {
-          expectedAdmittedTargetGeneration: Object.freeze({
+          expectedAdmittedTargetOccurrence: Object.freeze({
             pluginId: admittedTargetedOperation.target.pluginId,
-            immutableGenerationId: admittedTargetedOperation.target.immutableGenerationId,
+            occurrenceId: admittedTargetedOperation.target.occurrenceId,
           }),
         }),
       ...(params.context.isMountedCallerCurrent
@@ -763,7 +749,7 @@ export async function executeContributedAction(params: Readonly<{
         : validateTargetedOperationResult(admittedTargetedOperation.targetProtocol, targetResult.value);
       if (validatedResult !== null && !validatedResult.ok) return validatedResult.result;
       if (targetResult.status === 'executed') {
-        // Generation fences protect admission before the effect begins, and an
+        // Occurrence fences protect admission before the effect begins, and an
         // ordinary Action's known successful settlement survives later
         // retirement so callers never mistake it for absence and retry blindly.
         // The origin-bearing request is a different contract: it publishes the

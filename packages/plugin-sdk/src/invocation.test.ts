@@ -1,6 +1,7 @@
 import type {
     AutomationRunCause as ProtocolAutomationRunCause,
     AutomationRunCauseDeclarationV1 as ProtocolAutomationRunCauseDeclarationV1,
+    PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import { describe, expectTypeOf, it } from 'vitest';
 
@@ -57,8 +58,9 @@ describe('Plugin invocation context', () => {
                 kind: 'plugin';
                 pluginId: string;
                 contribution: PluginInvocationContributionIdentity;
-                immutableGenerationId: string;
-                materialization: PluginMachineMaterializationRefV1;
+                occurrenceId: string;
+                sourceCustody: PluginSourceCustodyV1;
+                materialization?: PluginMachineMaterializationRefV1;
                 originSurface?: 'cli' | 'mcp' | 'agent' | 'ui' | 'voice' | 'background' | 'api';
             }>
             | Readonly<{

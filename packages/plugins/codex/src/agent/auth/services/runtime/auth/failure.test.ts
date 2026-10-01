@@ -270,6 +270,20 @@ describe('classifyCodexConnectedServiceAuthFailure', () => {
     });
   });
 
+  it('classifies revoked application network permission as a transient provider failure', () => {
+    expect(classifyCodexConnectedServiceAuthFailure({
+      providerErrorPath: true,
+      error: new Error('Fatal error: application network permission was revoked'),
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      groupId: 'pool',
+    })).toMatchObject({
+      kind: 'capacity',
+      limitCategory: 'capacity',
+      quotaScope: 'provider',
+    });
+  });
+
   it('does not treat ambiguous local-time retry wording as authoritative reset metadata', () => {
     const now = new Date(2026, 4, 17, 16, 0, 0, 0).getTime();
 
@@ -345,6 +359,25 @@ describe('classifyCodexConnectedServiceAuthFailure', () => {
     expect(result).toMatchObject({
       kind: 'auth_expired',
       limitCategory: 'auth_invalid',
+    });
+  });
+
+  it('classifies Codex workspace routing discovery 401 as authentication failure', () => {
+    const result = classifyCodexConnectedServiceAuthFailure({
+      providerErrorPath: true,
+      error: { turn: { error: {
+        message: 'workspace routing discovery unauthorized (401)',
+        codex_error_info: 'other',
+      } } },
+      serviceId: 'openai-codex',
+      profileId: null,
+      groupId: null,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'auth_expired',
+      limitCategory: 'auth_invalid',
+      source: 'structured_provider_error',
     });
   });
 

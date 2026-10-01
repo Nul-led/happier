@@ -5,6 +5,7 @@ import {
   parseClaudeRemoteAdvancedOptionsJson,
   type ClaudeRemoteAdvancedOptions,
 } from '../../protocol/remoteSettings.js';
+import { buildClaudeHookSettingsOverlay } from '../hooks/settings.js';
 
 const CLAUDE_AGENT_TEAMS_SETTING_KEY = 'claudeCodeExperimentalAgentTeamsEnabled';
 const CLAUDE_ADVANCED_OPTIONS_SETTING_KEY = 'claudeRemoteAdvancedOptionsJson';
@@ -30,8 +31,9 @@ export function resolveClaudeLaunchSettingsOverlayArgs(input: Readonly<{
   interactionKind: 'interactive_terminal' | 'noninteractive_sdk';
   permissionMode: string | null;
   launchSettings: Readonly<Record<string, unknown>>;
+  workspaceWrites?: 'allow' | 'deny';
 }>): readonly string[] {
-  if (input.interactionKind !== 'interactive_terminal') return input.args;
+  if (input.interactionKind !== 'interactive_terminal' && input.workspaceWrites !== 'deny') return input.args;
 
   // Claude treats bypass selection and acknowledgement as distinct inputs. Happier's YOLO mode
   // is the user's explicit choice, so acknowledge it only in the trusted command-line settings
@@ -39,12 +41,10 @@ export function resolveClaudeLaunchSettingsOverlayArgs(input: Readonly<{
   // protocols where Claude's ordinary permission/question handling remains authoritative.
   const launchSettings = {
     ...input.launchSettings,
-    ...(input.permissionMode === 'bypassPermissions'
+    ...(input.interactionKind === 'interactive_terminal' && input.permissionMode === 'bypassPermissions'
       ? { skipDangerousModePermissionPrompt: true }
       : {}),
   };
-  if (Object.keys(launchSettings).length === 0) return input.args;
-
   const argsWithoutSettings: string[] = [];
   let firstSettingsIndex: number | null = null;
   let existingSettingsValue: string | null = null;
@@ -88,7 +88,22 @@ export function resolveClaudeLaunchSettingsOverlayArgs(input: Readonly<{
     }
   }
 
-  const mergedSettings = { ...baseSettings, ...launchSettings };
+  const mergedSettings: Record<string, unknown> = { ...baseSettings, ...launchSettings };
+  const basePermissions = baseSettings.permissions && typeof baseSettings.permissions === 'object' && !Array.isArray(baseSettings.permissions)
+    ? baseSettings.permissions as Record<string, unknown> : {};
+  const existingPermissions = mergedSettings.permissions;
+  const permissions = existingPermissions && typeof existingPermissions === 'object' && !Array.isArray(existingPermissions)
+    ? existingPermissions as Record<string, unknown>
+    : {};
+  const rules = (value: unknown) => Array.isArray(value) ? value.filter((rule): rule is string => typeof rule === 'string') : [];
+  const existingAllow = [...rules(basePermissions.allow), ...rules(permissions.allow)];
+  const deny = [...rules(basePermissions.deny), ...rules(permissions.deny),
+    ...(input.workspaceWrites === 'deny' ? ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash'] : [])];
+  mergedSettings.permissions = {
+    ...permissions,
+    allow: [...new Set([...existingAllow, ...(buildClaudeHookSettingsOverlay().permissions?.allow ?? [])])],
+    ...(deny.length ? { deny: [...new Set(deny)] } : {}),
+  };
   argsWithoutSettings.splice(
     firstSettingsIndex ?? argsWithoutSettings.length,
     0,

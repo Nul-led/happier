@@ -57,7 +57,7 @@ export function createStablePluginComposerContentOwner(input: Readonly<{
         operationSignal?: AbortSignal,
     ): ComposerContentUnavailableCode | null => {
         try {
-            if (!seed.isGenerationCurrent()) return 'plugin_generation_stale';
+            if (!seed.isOccurrenceCurrent()) return 'plugin_generation_stale';
         } catch {
             return 'plugin_generation_stale';
         }
@@ -83,7 +83,7 @@ export function createStablePluginComposerContentOwner(input: Readonly<{
         bind({ seed, fileSystem }) {
             const throwUnavailable = (code: ComposerContentUnavailableCode): never => {
                 if (code === 'plugin_generation_stale') {
-                    fail(code, 'Plugin generation is stale');
+                    fail(code, 'Plugin occurrenceId is stale');
                 }
                 if (code === 'plugin_composer_content_aborted') {
                     fail(code, 'Composer content staging was cancelled');

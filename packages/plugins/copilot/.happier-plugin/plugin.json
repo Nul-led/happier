@@ -22,7 +22,7 @@
             ]
           },
           "tools": {
-            "delivery": "shell_bridge"
+            "delivery": "native_mcp"
           }
         },
         "catalog": {
@@ -265,6 +265,18 @@
   },
   "id": "happier.agent.copilot",
   "runtime": {
+    "agentFactories": [
+      {
+        "loadMode": "immutable-js",
+        "localAgentId": "copilot",
+        "locator": {
+          "export": "createCopilotAgentRuntime",
+          "module": "./agent/runtime/factory",
+          "runtimeApiVersion": 1
+        },
+        "normalizedModulePath": ".happier-plugin/agent/runtime/factory.js"
+      }
+    ],
     "apiVersion": 1
   },
   "schemaVersion": 2,

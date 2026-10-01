@@ -362,7 +362,7 @@ describe('the mounted GitLab merge-request writes', () => {
 
   it('offers no close on a merge request that is no longer open', async () => {
     const detail = await mountDetail(launchInput({
-      state: { presentation: 'closed', nativeLabel: 'Merged' },
+      state: { presentation: 'resolved', nativeLabel: 'Merged' },
     }));
 
     await expect(detail.queryByRole('button', { name: 'Merge' })).resolves.toBeUndefined();

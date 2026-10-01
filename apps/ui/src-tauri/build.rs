@@ -16,12 +16,12 @@ use tauri_build::{AppManifest, Attributes};
 
 const APP_TAURI_COMMANDS: &[&str] = &[
     "desktop_fetch_update",
+    "desktop_download_update",
     "desktop_install_update",
     "desktop_pick_ssh_identity_file",
     "desktop_pick_personal_home_backup_archive",
     "desktop_save_personal_home_backup_archive",
-    "desktop_get_autostart_enabled",
-    "desktop_set_autostart_enabled",
+    "desktop_finish_shutdown",
     "desktop_set_tray_state",
     "start_system_task",
     "cancel_system_task",

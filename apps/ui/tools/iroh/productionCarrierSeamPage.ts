@@ -5,7 +5,7 @@
  * Unlike the A7.2 page, this one owns no transport at all. It imports the
  * PRODUCTION owners — `browserIrohHomeCarrierOwner` (the production entry to
  * `createBrowserIrohHomeCarrierOwner`), `createServerFetchAtEndpoint`,
- * `createSyncSocketTransport`, and `acquireBrowserMachineCarrierStreamLease` —
+ * `createHappierSocket`, and `acquireBrowserMachineCarrierStreamLease` —
  * and only sequences them, because A7.3's completion evidence is a real
  * Chromium journey through those owners, not through a proof's
  * re-implementation of them. That is also why this page is built by Metro
@@ -46,7 +46,11 @@ import {
     type MachineCarrierHttpLease,
     type MachineCarrierRoute,
 } from '@/sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierHttpLease';
-import { createSyncSocketTransport } from '@/sync/api/session/connection/createSyncSocketTransport';
+import { createHappierSocket } from '@happier-dev/sync-client';
+import {
+    CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+    buildAccountStoredContentCompatibilitySocketAuthV1,
+} from '@happier-dev/protocol';
 import { apiSocket } from '@/sync/api/session/apiSocket';
 import { createServerFetchAtEndpoint } from '@/sync/http/client';
 import type { BrowserIrohHomeCarrier } from '@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier';
@@ -280,10 +284,12 @@ function openSocket(input: Readonly<{
     const connects: number[] = [];
     const disconnects: string[] = [];
 
-    const { socket, transport } = createSyncSocketTransport({
+    const { socket, transport } = createHappierSocket({
+        clientType: 'user-scoped',
+        clientPurpose: 'sync',
+        authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
         endpoint: input.canonicalServerUrl,
         token: input.token,
-        carrier: 'iroh',
         websocketFactory: (uri, protocols, options) => {
             requestedUris.push(uri);
             return carrier.createWebSocket(uri, protocols, options);
@@ -498,6 +504,15 @@ function publishMachineDescriptor(input: Readonly<{
         storageMode: 'plain',
         metadata: null,
         metadataVersion: 1,
+        operationProtocolCapabilities: {
+            finiteTransferRpc: { protocolVersions: [1] },
+            irohMachineEndpoint: {
+                protocolVersions: [1],
+                endpointId: input.machineEndpointId,
+                relayUrls: [...input.machineRelayUrls],
+            },
+        },
+        operationProtocolCapabilitiesRevision: 1,
         daemonState: {
             peerMediation: {
                 iroh: {
@@ -548,7 +563,7 @@ async function resolveMachineRoute(input: Readonly<{
             activeServerId: activeServer.serverId,
             requestedServerId: input.serverId,
             resolvedTargetServer: resolveTargetServer(input.serverId),
-            publishedMachineEndpoint: published?.daemonState?.peerMediation?.iroh?.endpoint ?? null,
+            publishedMachineEndpoint: published?.operationProtocolCapabilities?.irohMachineEndpoint ?? null,
             machineListLength: machineList?.length ?? null,
             serverFeatures,
             serverFeaturesError,
@@ -679,7 +694,6 @@ async function productionDirectImport(input: Readonly<{
     machineId: string;
     serverId: string;
     workingDirectory: string;
-    transferKind?: 'file' | 'attachment';
     path?: string;
     messageLocalId?: string;
     fileName?: string;
@@ -691,7 +705,10 @@ async function productionDirectImport(input: Readonly<{
     payloadBase64: string;
     declaredSizeBytes?: number;
     cancelAfterReadCalls?: number;
-}>): Promise<JsonRecord> {
+}> & (
+    | Readonly<{ transferKind: 'attachment'; sessionId: string }>
+    | Readonly<{ transferKind?: 'file' }>
+)): Promise<JsonRecord> {
     const payload = new Uint8Array(decodeBase64(input.payloadBase64));
     const controller = new AbortController();
     let readCalls = 0;
@@ -713,6 +730,7 @@ async function productionDirectImport(input: Readonly<{
             fileReader,
             request: {
                 t: 'session_attachment_upload_v1',
+                sessionId: input.sessionId,
                 workingDirectory: input.workingDirectory,
                 messageLocalId: input.messageLocalId ?? 'browser-attachment',
                 fileName: input.fileName ?? 'attachment.bin',

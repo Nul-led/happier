@@ -141,7 +141,7 @@ describe('installed external plugin Lane 09 awareness Action', () => {
                         manifestVersion: '1.0.0',
                         installedPath: null,
                         trust,
-                        updatePolicy: 'reviewEveryUpdate',
+                        updatePolicy: 'allowed',
                         optionalAccess: [],
                     },
                     state: { enabled: true },

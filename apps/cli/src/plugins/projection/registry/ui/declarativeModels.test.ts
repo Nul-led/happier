@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-    PluginSettingsContributionV2Schema,
-    preparePluginJsonSchema,
-    rehydrateCanonicalProtocolComposableSchema,
-} from '@happier-dev/protocol';
+import { PluginSettingsContributionV2Schema } from '@happier-dev/protocol';
 
 import type { ResolvedContributionRegistry, ResolvedSettingsContribution } from '../types';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
@@ -89,7 +85,7 @@ describe('declarative projection models', () => {
     it('binds fields and only enables current committed policy-visible actions', () => {
         const models = resolveDeclarativeProjectionModels({
             registry: registry(),
-            generation: 42,
+            readPluginOccurrenceId: () => '42',
             actionRuntime: {
                 has: (pluginId, localId) => pluginId === 'acme.forms' && localId === 'save',
                 evaluateCatalogPolicy: () => ({
@@ -104,7 +100,7 @@ describe('declarative projection models', () => {
             identity: {
                 pluginId: 'acme.forms',
                 localId: 'preferences',
-                generation: '42',
+                occurrenceId: '42',
             },
             visible: true,
             root: {
@@ -122,76 +118,12 @@ describe('declarative projection models', () => {
                         action: {
                             identity: { pluginId: 'acme.forms', localId: 'save' },
                             qualifiedId: 'acme.forms/save',
-                            generation: '42',
+                            occurrenceId: '42',
                         },
                         enabled: true,
                     },
                 ],
             },
-        });
-    });
-
-    it('normalizes a target renderer only through its exact mounted surface inventory', () => {
-        const inputValidation = preparePluginJsonSchema({
-            type: 'object',
-            properties: { reviewId: { type: 'string' } },
-            required: ['reviewId'],
-            additionalProperties: false,
-        });
-        const inputNormalizer = rehydrateCanonicalProtocolComposableSchema(inputValidation.jsonSchema);
-        if (!inputNormalizer) throw new Error('Expected canonical Surface schema to rehydrate');
-        const models = resolveDeclarativeProjectionModels({
-            registry: {
-                uiRenderersV2: [{
-                    pluginId: 'acme.dashboard',
-                    definition: {
-                        id: 'dashboard',
-                        kind: 'declarative',
-                        root: {
-                            kind: 'targetedSurface',
-                            surface: {
-                                point: { pointId: 'details', protocol: { id: 'review-detail', version: 1 } },
-                                contributor: { pluginId: 'acme.review', contributionId: 'detail' },
-                                role: 'detail',
-                            },
-                            input: { reviewId: 'review-42' },
-                            instanceKey: 'review-42',
-                        },
-                    },
-                }],
-            } as unknown as ResolvedContributionRegistry,
-            generation: 52,
-            preparedTargetedSurfacesByPluginId: {
-                'acme.dashboard': [{
-                    targetPluginId: 'acme.dashboard',
-                    handle: {
-                        point: { pointId: 'details', protocol: { id: 'review-detail', version: 1 } },
-                        contributor: {
-                            pluginId: 'acme.review',
-                            contributionId: 'detail',
-                            immutableGenerationId: 'review-generation-a',
-                        },
-                        role: 'detail',
-                        presentation: 'content',
-                    },
-                    inputSchema: inputValidation.jsonSchema,
-                    inputValidation,
-                    inputNormalizer,
-                }],
-            },
-        });
-
-        expect(models['acme.dashboard\0dashboard']?.root).toMatchObject({
-            kind: 'targetedSurface',
-            surface: {
-                contributor: {
-                    pluginId: 'acme.review',
-                    contributionId: 'detail',
-                    immutableGenerationId: 'review-generation-a',
-                },
-            },
-            input: { reviewId: 'review-42' },
-            instanceKey: expect.stringMatching(/^targeted-surface:v1:[a-f0-9]{64}$/u),
         });
     });
 
@@ -231,7 +163,7 @@ describe('declarative projection models', () => {
                     },
                 }],
             } as unknown as ResolvedContributionRegistry,
-            generation: 47,
+            readPluginOccurrenceId: () => '47',
         });
 
         expect(models['acme.forms\0preferences']).toMatchObject({
@@ -239,7 +171,7 @@ describe('declarative projection models', () => {
                 destinations: [{
                     identity: { pluginId: 'acme.forms', localId: 'preferences-settings' },
                     qualifiedId: 'acme.forms/preferences-settings',
-                    generation: '47',
+                    occurrenceId: '47',
                 }],
             },
             root: {
@@ -249,7 +181,7 @@ describe('declarative projection models', () => {
                     destination: {
                         identity: { pluginId: 'acme.forms', localId: 'preferences-settings' },
                         qualifiedId: 'acme.forms/preferences-settings',
-                        generation: '47',
+                        occurrenceId: '47',
                     },
                 }],
             },
@@ -280,7 +212,7 @@ describe('declarative projection models', () => {
                     },
                 })),
             },
-            generation: 46,
+            readPluginOccurrenceId: () => '46',
         });
 
         expect(models['acme.forms\0preferences']).toMatchObject({
@@ -309,7 +241,7 @@ describe('declarative projection models', () => {
     it('fails closed when no current action runtime exists', () => {
         const model = resolveDeclarativeProjectionModels({
             registry: registry(),
-            generation: 43,
+            readPluginOccurrenceId: () => '43',
         })['acme.forms\0preferences'];
 
         expect(listDeclarativeNodesInPreorder(model!.root)[2]).toMatchObject({ kind: 'action', enabled: false });
@@ -339,7 +271,7 @@ describe('declarative projection models', () => {
                     },
                 }],
             } as unknown as ResolvedContributionRegistry,
-            generation: 43,
+            readPluginOccurrenceId: () => '43',
             onRendererModelUnavailable: ({ error }) => unavailable.push(error),
         });
 
@@ -348,7 +280,7 @@ describe('declarative projection models', () => {
             identity: {
                 pluginId: 'happier.channels',
                 localId: 'session-info-external-conversations',
-                generation: '43',
+                occurrenceId: '43',
             },
             declarativeInventory: { actions: [] },
         });
@@ -357,7 +289,7 @@ describe('declarative projection models', () => {
     it('keeps a model inert when current action policy evaluation fails', () => {
         const models = resolveDeclarativeProjectionModels({
             registry: registry(),
-            generation: 43,
+            readPluginOccurrenceId: () => '43',
             actionRuntime: {
                 has: () => true,
                 evaluateCatalogPolicy: () => {
@@ -385,7 +317,7 @@ describe('declarative projection models', () => {
                     },
                 })),
             },
-            generation: 43,
+            readPluginOccurrenceId: () => '43',
             actionRuntime: {
                 has: () => true,
                 evaluateCatalogPolicy: () => ({
@@ -409,7 +341,7 @@ describe('declarative projection models', () => {
                 ...invalid,
                 settings: [],
             },
-            generation: 44,
+            readPluginOccurrenceId: () => '44',
         });
 
         expect(models).toEqual({});
@@ -425,14 +357,14 @@ describe('declarative projection models', () => {
                     definition: { ...setting.definition, scope: 'account' as const },
                 })),
             },
-            generation: 45,
+            readPluginOccurrenceId: () => '45',
         });
 
         expect(models['acme.forms\0preferences']).toMatchObject({
             identity: {
                 pluginId: 'acme.forms',
                 localId: 'preferences',
-                generation: '45',
+                occurrenceId: '45',
             },
             root: {
                 children: [
@@ -492,7 +424,7 @@ describe('declarative projection models', () => {
                 })),
                 settings: [...accountSettings, daemonSettings],
             },
-            generation: 46,
+            readPluginOccurrenceId: () => '46',
         });
 
         expect(models['acme.forms\0preferences']?.root).toMatchObject({

@@ -1,13 +1,17 @@
 import {
   evaluatePluginActionPolicy,
-  evaluatePluginPolicyExpressionV2,
-  type PluginAvailabilityDescriptorV2,
-  type PluginActionConfirmationV2,
-  type PluginActionDangerLevelV2,
   type PluginActionPolicyDecision,
   type PluginActionPolicyInput,
-  type PluginActionPresentUserAuthorizationFacts,
+} from '@happier-dev/protocol/plugins/actions/policy';
+import type {
+  PluginActionConfirmationV2,
+  PluginActionDangerLevelV2,
+  PluginActionPresentUserAuthorizationFacts,
 } from '@happier-dev/protocol';
+import {
+  evaluatePluginPolicyExpressionV2,
+  type PluginAvailabilityDescriptorV2,
+} from '@happier-dev/protocol/plugins/contributions/public-types';
 
 export type TargetActionPolicyOutcome = PluginActionPolicyDecision['outcome'];
 
@@ -83,7 +87,7 @@ export type TargetActionHostAccessDecision = Readonly<{
 
 export type NormalizedTargetActionPolicy = Readonly<{
   qualifiedId: string;
-  generation: string;
+  occurrenceId: string;
   dangerLevel: PluginActionDangerLevelV2;
   scopes: readonly string[];
   surfaces: readonly string[];

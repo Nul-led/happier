@@ -65,6 +65,15 @@ export type AgentCliManagedInstallSpec =
       packageBinarySetup?: Readonly<{ kind: 'opencode_platform_binary' }> | null;
     }>;
 
+/**
+ * The vendor's own updater (manifest `cli.install.nativeUpdate`): run against the resolved
+ * executable only when it lives under one of `installPaths` (home-relative, `/`-separated).
+ */
+export type AgentCliNativeUpdateSpec = Readonly<{
+  args: ReadonlyArray<string>;
+  installPaths: ReadonlyArray<string>;
+}>;
+
 export type AgentCliRuntimeSpec = Readonly<{
   id: BundledAgentId;
   title: string;
@@ -81,6 +90,9 @@ export type AgentCliRuntimeSpec = Readonly<{
   setupRecommendation?: AgentCliSetupRecommendation | null;
   installGuideUrl?: string | null;
   docsUrl?: string | null;
+  /** The vendor's npm package when it is not already the managed package (manifest `cli.install.npmPackageName`). */
+  npmPackageName?: string | null;
+  nativeUpdate?: AgentCliNativeUpdateSpec | null;
 }>;
 
 export function projectAgentCliRuntimeSpec(
@@ -112,6 +124,8 @@ export function projectAgentCliRuntimeSpec(
       : {}),
     ...(install.guideUrl !== undefined ? { installGuideUrl: install.guideUrl } : {}),
     ...(install.docsUrl !== undefined ? { docsUrl: install.docsUrl } : {}),
+    ...(install.npmPackageName !== undefined ? { npmPackageName: install.npmPackageName } : {}),
+    ...(install.nativeUpdate !== undefined ? { nativeUpdate: install.nativeUpdate } : {}),
   });
 }
 

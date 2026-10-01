@@ -147,7 +147,7 @@ export async function diagnoseInstalledPluginGenerations(input: Readonly<{
   });
   const reports: InstalledPluginGenerationReport[] = [];
 
-  const committedPluginIds = Object.keys(current?.commit?.pluginGenerations ?? {}).sort();
+  const committedPluginIds = Object.keys(current?.commit?.pluginOccurrenceIds ?? {}).sort();
   for (const pluginId of committedPluginIds) {
     if (input.pluginId !== undefined && input.pluginId !== pluginId) continue;
     const rejected = current?.rejectedGenerations.get(pluginId);

@@ -13,7 +13,7 @@ import {
  * the canonical scope. `exact` and `changed` are the two unconditional
  * relations; `narrower` is reported only when every canonical field of the
  * candidate is provably contained in the previous authority, which the
- * `reviewSensitiveChanges` update policy admits without reopening review.
+ * `allowed` update policy admits without reopening review.
  * Direction is never inferred from JSON shape: a capability ranks only the
  * fields listed in its {@link PluginAccessScopeRegistration.fieldDirections},
  * and any other differing field keeps the comparison at `changed`.

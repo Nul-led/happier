@@ -56,11 +56,21 @@ export type AgentModelConfig = Readonly<{
    * - `static-only`: skip dynamic probing and use catalog defaults only
    */
   dynamicProbe?: 'auto' | 'static-only';
+  /** Optional account/environment control for dynamic model discovery. */
+  dynamicProbeControl?: Readonly<{
+    accountSettingId: string;
+    environmentVariable?: string;
+  }>;
   /** Same-plugin Provider catalog observed with one exact connected-account purpose. */
   nativeCatalogObservation?: Readonly<{
     providerLocalId: string;
     purpose: string;
     connectedServiceId: string;
+    /** Declarative native OAuth bearer location inside the Agent's declared native home. */
+    nativeBearer?: Readonly<{
+      fileId: string;
+      jsonPath: readonly string[];
+    }>;
   }>;
   defaultMode: string | null;
   allowedModes: readonly string[];

@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { createSecureTempDirectorySync, writeAtomicTextFile } from '@happier-dev/plugin-sdk/fs';
+import { buildPiModelDiscoveryExtensionSource, parsePiModelDiscoveryRecord } from '../../models/discoveryExtension.js';
 
 import type {
   AgentSessionCompactRequest,
@@ -435,6 +438,7 @@ async function withTimeout(promise: Promise<void>, opts: Readonly<Record<string,
 function createPiExecSpec(
   params: PiExecutionRunConversationParams,
   executable: ManagedExecutableRef,
+  modelDiscoveryExtensionPath?: string,
 ) {
   const thinkingLevel = resolvePiThinkingLevelFromEnv(params.env);
   return {
@@ -442,6 +446,7 @@ function createPiExecSpec(
     launch: {
       executable,
       args: buildPiRpcArgs({
+        modelDiscoveryExtensionPath,
         permissionMode: params.permissionMode,
         thinkingLevel,
         resumeSessionId: params.resumeSessionSelector,
@@ -1311,6 +1316,8 @@ async function createPiConversationRuntimeOperations(
     })
     : null;
   const sessionOpenLifecycle = params.sessionOpenLifecycle ?? ownedSessionOpenLifecycle;
+  let modelDiscoveryDirectory: ReturnType<typeof createSecureTempDirectorySync> | null = null;
+  let runtimeOwnsDiscoveryDirectory = false;
   try {
   const normalizedEnv = normalizeEnv(params.env);
   const requestAuthEnabled = hasPiRequestAuthProvider(normalizedEnv);
@@ -1335,6 +1342,16 @@ async function createPiConversationRuntimeOperations(
       sessionOpenLifecycle ?? undefined,
     );
   }
+  let modelDiscoveryExtensionPath: string | undefined;
+  if (params.models) {
+    modelDiscoveryDirectory = createSecureTempDirectorySync({ prefix: 'happier-pi-models-' });
+    modelDiscoveryExtensionPath = join(modelDiscoveryDirectory.path, 'model-discovery.mjs');
+    await writeAtomicTextFile({
+      path: modelDiscoveryExtensionPath,
+      contents: buildPiModelDiscoveryExtensionSource({ background: true, output: 'stdout' }),
+      mode: 0o600,
+    });
+  }
   const processSpawn = params.services.exec.clients.spawn(createPiExecSpec({
     ...params,
     env: {
@@ -1343,7 +1360,7 @@ async function createPiConversationRuntimeOperations(
         ? { [PI_REQUEST_AUTH_PRODUCER_VERSION_ENV]: requestAuthProducerVersion }
         : {}),
     },
-  }, executable), sessionOpenLifecycle ? { signal: sessionOpenLifecycle.signal } : undefined);
+  }, executable, modelDiscoveryExtensionPath), sessionOpenLifecycle ? { signal: sessionOpenLifecycle.signal } : undefined);
   const handle = sessionOpenLifecycle
     ? await sessionOpenLifecycle.waitFor(
       processSpawn,
@@ -1452,9 +1469,24 @@ async function createPiConversationRuntimeOperations(
     })();
     blockingExtensionUiRequests.set(request.id, { controller, task });
   };
+  const modelsSource = params.models
+    ? createPiSessionModelsSource({
+        readState: async () => (await rpc.send({ type: 'get_state' }, 30_000)).data,
+        onError: (error) => {
+          params.logger.warn('[PiRuntime] Model catalog refresh failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      })
+    : null;
   rpc = createPiJsonStreamRpcClient({
     handle,
     onEvent(record) {
+      const catalog = parsePiModelDiscoveryRecord(record);
+      if (catalog) {
+        modelsSource?.observeCatalog(catalog);
+        return;
+      }
       if (record.type === 'runtime_event') {
         if (!happierSessionId || !isRecord(record.event)) {
           publishMalformedRuntimeEventDiagnostic(record.event, [{
@@ -1501,17 +1533,6 @@ async function createPiConversationRuntimeOperations(
     });
     return refresh;
   };
-  const modelsSource = params.models
-    ? createPiSessionModelsSource({
-        readState: async () => (await rpc.send({ type: 'get_state' }, 30_000)).data,
-        readAvailableModels: async () => (await rpc.send({ type: 'get_available_models' }, 30_000)).data,
-        onError: (error) => {
-          params.logger.warn('[PiRuntime] Model catalog refresh failed', {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-      })
-    : null;
   operations = createRuntimeOperations({
     rpc,
     logger: params.logger,
@@ -1597,8 +1618,16 @@ async function createPiConversationRuntimeOperations(
       throw error;
     }
   }
-  return runtime;
+  runtimeOwnsDiscoveryDirectory = true;
+  return {
+    ...runtime,
+    async dispose() {
+      try { await runtime.dispose(); }
+      finally { modelDiscoveryDirectory?.cleanup(); }
+    },
+  };
   } finally {
+    if (!runtimeOwnsDiscoveryDirectory) modelDiscoveryDirectory?.cleanup();
     ownedSessionOpenLifecycle?.dispose();
   }
 }

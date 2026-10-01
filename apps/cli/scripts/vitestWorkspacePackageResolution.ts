@@ -54,6 +54,29 @@ function readCliWorkspacePackageSpecs(): readonly WorkspacePackageSpec[] {
         addWorkspacePackage(workspacePackage);
     }
 
+    // Source entrypoints also consume first-party runtime dependencies. Resolve
+    // that same closure from source rather than requiring their dist outputs.
+    const pending = [...workspacePackages.values()];
+    for (let index = 0; index < pending.length; index += 1) {
+        const owner = pending[index]!;
+        const manifest = JSON.parse(readFileSync(resolve(owner.packageSourceRoot, '..', 'package.json'), 'utf8')) as Readonly<{
+            dependencies?: Readonly<Record<string, unknown>>;
+        }>;
+        for (const packageName of Object.keys(manifest.dependencies ?? {}).sort()) {
+            if (!packageName.startsWith(FIRST_PARTY_PACKAGE_PREFIX) || workspacePackages.has(packageName)) continue;
+            const packageRoot = packageName.startsWith(FIRST_PARTY_PLUGIN_PACKAGE_PREFIX)
+                ? resolve(repoRoot, 'packages', 'plugins', packageName.slice(FIRST_PARTY_PLUGIN_PACKAGE_PREFIX.length))
+                : resolve(repoRoot, 'packages', packageName.slice(FIRST_PARTY_PACKAGE_PREFIX.length));
+            const packageSourceRoot = resolve(packageRoot, 'src');
+            if (!existsSync(packageSourceRoot)) {
+                throw new Error(`Missing source root for ${owner.packageName} workspace dependency ${packageName}: ${packageSourceRoot}`);
+            }
+            const dependency = { packageName, packageSourceRoot };
+            addWorkspacePackage(dependency);
+            pending.push(dependency);
+        }
+    }
+
     return [...workspacePackages.values()].sort((left, right) => (
         left.packageName.localeCompare(right.packageName)
     ));

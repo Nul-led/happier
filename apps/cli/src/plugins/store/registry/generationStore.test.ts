@@ -7,7 +7,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   PluginInstallReviewPrincipalDigestSchema,
   PluginInstallReviewPrincipalPresentationV1Schema,
+  PluginManifestV2Schema,
 } from '@happier-dev/protocol';
+import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 
 const packagedRuntime = vi.hoisted(() => ({ root: '' }));
 
@@ -26,13 +28,13 @@ import {
   persistValidatedAgentSessionRunnerFactories,
   prepareImmutablePluginGeneration,
   prepareOwnedImmutablePluginGeneration,
-  prepareOwnedPluginDevelopmentGenerationFromEdit,
   readCurrentCommittedPluginGenerations,
   readPluginRegistryCommitInstallationAuthority,
   readCurrentPluginImmutableGenerationIntegrityCurrentness,
   readInstallationStateRevision,
   readPreparedImmutablePluginGeneration,
   readValidatedAgentSessionRunnerFactories,
+  ValidatedAgentSessionRunnerFactoriesRecordV1Schema,
   verifyPluginRegistryCommitGenerationReferences,
   PluginInstallationStateRevisionSchema,
   PluginRollbackRetentionRecordSchema,
@@ -52,7 +54,7 @@ function stateRevision(generationId = 'generation-a'): PluginInstallationStateRe
         source: {
           distribution: { kind: 'localPath', canonicalPath: '/tmp/acme-plugin' },
         },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         optionalAccess: [],
       },
     },
@@ -73,6 +75,51 @@ it('requests copy-on-write cloning for immutable generation copies while preserv
 });
 
 describe('immutable plugin generation store', () => {
+  it('rejects bundled first-party authority in a managed generation factory record', () => {
+    expect(ValidatedAgentSessionRunnerFactoriesRecordV1Schema.safeParse({
+      t: 'happier_agent_session_runner_factories_v1',
+      schemaVersion: 1,
+      pluginId: 'happier.agent.fixture',
+      immutableGenerationId: 'generation-a',
+      manifestAuthority: 'bundled_first_party',
+      factories: [],
+    }).success).toBe(false);
+  });
+
+  it('round-trips the exact approved authority manifest with installation and rollback state', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-authority-baseline-'));
+    const paths = resolvePluginStorePaths({ happyHomeDir });
+    const approvedAuthorityManifest = PluginManifestV2Schema.parse(createPluginManifestV2Fixture({
+      id: 'acme.plugin',
+      version: '1.0.0',
+    }));
+    const state: PluginInstallationStateRevision = {
+      ...stateRevision(),
+      revisionId: 'state-authority-baseline',
+      plugins: {
+        'acme.plugin': {
+          ...stateRevision().plugins['acme.plugin']!,
+          approvedAuthorityManifest,
+        },
+      },
+      rollbackRetention: [{
+        pluginId: 'acme.plugin',
+        immutableGenerationId: 'generation-prior',
+        retainedAtMs: 1,
+        byteAvailability: 'available',
+        pluginVersion: '1.0.0',
+        distribution: { kind: 'localPath', canonicalPath: '/tmp/acme-plugin' },
+        approvedAuthorityManifest,
+      }],
+    };
+
+    const reference = await persistInstallationStateRevision({ paths, state });
+    await expect(readInstallationStateRevision({ paths, reference })).resolves.toMatchObject({
+      plugins: { 'acme.plugin': { approvedAuthorityManifest } },
+      rollbackRetention: [{ approvedAuthorityManifest }],
+    });
+  });
+
   it('does not commit retained Agent factory facts after activation currentness is lost', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-factory-fence-'));
     const sourceRootPath = await mkdtemp(join(tmpdir(), 'happier-generation-factory-fence-source-'));
@@ -194,7 +241,7 @@ describe('immutable plugin generation store', () => {
         revisionId: 'state-0',
         digest: `sha256:${'0'.repeat(64)}`,
       },
-      pluginGenerations: {},
+      pluginOccurrenceIds: {},
       createdAtMs: 1,
       creator: { pid: 1, instanceId: 'daemon-a' },
     };
@@ -359,7 +406,7 @@ describe('immutable plugin generation store', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         generatedManifestContents: manifestContents,
         distribution: { kind: 'localPath', canonicalPath: join(sourceRootPath, 'plugin.ts') },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
         immutableGenerationId: 'generation-one-file-a',
       });
@@ -384,38 +431,6 @@ describe('immutable plugin generation store', () => {
       await expect(readFile(join(prepared.rootPath, 'unrelated.txt'), 'utf8'))
         .rejects.toMatchObject({ code: 'ENOENT' });
 
-      const nextSourceContents = "export const sentinel = 'two';\n";
-      await writeFile(join(sourceRootPath, 'plugin.ts'), nextSourceContents, 'utf8');
-      const nextDraft = await prepareOwnedPluginDevelopmentGenerationFromEdit({
-        paths,
-        sourceRootPath,
-        changedPaths: ['plugin.ts'],
-        priorReference: prepared.reference,
-        generatedManifestRelativePath: '.happier-plugin/plugin.json',
-      });
-      const next = await nextDraft.finalize({
-        pluginId: 'acme.one-file',
-        manifestRelativePath: '.happier-plugin/plugin.json',
-        generatedManifestContents: manifestContents,
-        distribution: { kind: 'localPath', canonicalPath: join(sourceRootPath, 'plugin.ts') },
-        updatePolicy: 'reviewEveryUpdate',
-        createdAtMs: 2,
-      });
-      await expect(readFile(join(next.rootPath, 'plugin.ts'), 'utf8')).resolves.toContain("'two'");
-      await expect(readFile(join(next.rootPath, '.happier-plugin', 'plugin.json'), 'utf8'))
-        .resolves.toBe(manifestContents);
-      expect(next.record.files).toEqual([
-        {
-          relativePath: '.happier-plugin/plugin.json',
-          byteLength: Buffer.byteLength(manifestContents),
-        },
-        {
-          relativePath: 'plugin.ts',
-          byteLength: Buffer.byteLength(nextSourceContents),
-        },
-      ]);
-      expect(next.reference).toEqual({ immutableGenerationId: nextDraft.immutableGenerationId });
-      await next.cleanup();
     } finally {
       await rm(happyHomeDir, { recursive: true, force: true });
       await rm(sourceRootPath, { recursive: true, force: true });
@@ -435,7 +450,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
         immutableGenerationId: 'generation-structural-read',
       });
@@ -492,7 +507,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
         immutableGenerationId: 'generation-owned-cleanup',
       });
@@ -508,7 +523,7 @@ describe('immutable plugin generation store', () => {
           transactionId: 'owned-candidate-cleanup-race',
           baseRevision: null,
           installationState,
-          pluginGenerations: {
+          pluginOccurrenceIds: {
             'acme.plugin': { immutableGenerationId: 'generation-current' },
           },
           createdAtMs: 1,
@@ -523,7 +538,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
         immutableGenerationId: 'generation-owned-cleanup',
       })).rejects.toThrow(/already exists/i);
@@ -541,7 +556,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 2,
         immutableGenerationId: 'generation-owned-adopted',
       });
@@ -578,7 +593,7 @@ describe('immutable plugin generation store', () => {
           sourceRootPath,
           manifestRelativePath: '.happier-plugin/plugin.json',
           distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-          updatePolicy: 'reviewEveryUpdate',
+          updatePolicy: 'allowed',
           createdAtMs: 1,
           immutableGenerationId: 'generation-write-isolation-g',
         }),
@@ -591,7 +606,7 @@ describe('immutable plugin generation store', () => {
           sourceRootPath,
           manifestRelativePath: '.happier-plugin/plugin.json',
           distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-          updatePolicy: 'reviewEveryUpdate',
+          updatePolicy: 'allowed',
           createdAtMs: 2,
           immutableGenerationId: 'generation-write-isolation-h',
         }),
@@ -607,7 +622,7 @@ describe('immutable plugin generation store', () => {
     }
   });
 
-  it('derives and persists source provenance from the minting distribution', async () => {
+  it('derives and persists source provenance and exact custody from the minting distribution', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-provenance-home-'));
     const sourceRootPath = await mkdtemp(join(tmpdir(), 'happier-generation-provenance-source-'));
     const paths = resolvePluginStorePaths({ happyHomeDir });
@@ -622,7 +637,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution,
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
         immutableGenerationId,
       });
@@ -646,6 +661,24 @@ describe('immutable plugin generation store', () => {
 
       expect([localPath.sourceProvenance, npm.sourceProvenance, archive.sourceProvenance])
         .toEqual(['localSource', 'registryCustodied', 'registryCustodied']);
+      expect([localPath.sourceCustody, npm.sourceCustody, archive.sourceCustody])
+        .toEqual([
+          {
+            kind: 'managed',
+            immutableGenerationId: 'generation-provenance-local',
+            installSource: 'localPath',
+          },
+          {
+            kind: 'managed',
+            immutableGenerationId: 'generation-provenance-npm',
+            installSource: 'npm',
+          },
+          {
+            kind: 'managed',
+            immutableGenerationId: 'generation-provenance-archive',
+            installSource: 'archive',
+          },
+        ]);
 
       // The mint-time fact must survive the on-disk round trip: a runtime
       // reader holding only the persisted record is the consumer that could
@@ -673,7 +706,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
         immutableGenerationId: 'generation-opaque-record',
       })).resolves.toEqual({
@@ -684,6 +717,11 @@ describe('immutable plugin generation store', () => {
         createdAtMs: 1,
         manifestRelativePath: '.happier-plugin/plugin.json',
         sourceProvenance: 'localSource',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'generation-opaque-record',
+          installSource: 'localPath',
+        },
         files: [
           {
             relativePath: '.happier-plugin/plugin.json',
@@ -696,96 +734,6 @@ describe('immutable plugin generation store', () => {
         ],
       });
     } finally {
-      await rm(sourceRootPath, { recursive: true, force: true });
-    }
-  });
-
-  it('copies only changed author bytes while keeping reused dependencies write-isolated', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-development-home-'));
-    const sourceRootPath = await mkdtemp(join(tmpdir(), 'happier-generation-development-source-'));
-    const paths = resolvePluginStorePaths({ happyHomeDir });
-    try {
-      await mkdir(join(sourceRootPath, '.happier-plugin'), { recursive: true });
-      await mkdir(join(sourceRootPath, 'src'), { recursive: true });
-      await mkdir(join(sourceRootPath, 'node_modules', 'fixture-dependency'), { recursive: true });
-      await writeFile(join(sourceRootPath, '.happier-plugin', 'plugin.json'), '{}', 'utf8');
-      await writeFile(join(sourceRootPath, 'src', 'index.ts'), "export const sentinel = 'g';\n", 'utf8');
-      await writeFile(
-        join(sourceRootPath, 'node_modules', 'fixture-dependency', 'index.js'),
-        "export const dependency = 'retained';\n",
-        'utf8',
-      );
-
-      const priorRecord = await createImmutablePluginGenerationRecordFromSource({
-        pluginId: 'acme.development-generation',
-        sourceRootPath,
-        manifestRelativePath: '.happier-plugin/plugin.json',
-        distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'reviewEveryUpdate',
-        createdAtMs: 1,
-        immutableGenerationId: 'generation-development-g',
-      });
-      const prior = await prepareImmutablePluginGeneration({
-        paths,
-        sourceRootPath,
-        record: priorRecord,
-      });
-
-      // Development dependency preparation owns dependency changes. A source-only
-      // edit must retain the already-admitted dependency closure even when it is
-      // absent from the author root used for the fast edit.
-      await rm(join(sourceRootPath, 'node_modules'), { recursive: true, force: true });
-      const changedBytes = "export const sentinel = 'h';\n";
-      await writeFile(join(sourceRootPath, 'src', 'index.ts'), changedBytes, 'utf8');
-
-      const nextDraft = await prepareOwnedPluginDevelopmentGenerationFromEdit({
-        paths,
-        sourceRootPath,
-        changedPaths: ['src\\index.ts'],
-        priorReference: prior.reference,
-        generatedManifestRelativePath: '.happier-plugin/plugin.json',
-      });
-      const next = await nextDraft.finalize({
-        pluginId: 'acme.development-generation',
-        manifestRelativePath: '.happier-plugin/plugin.json',
-        generatedManifestContents: '{}',
-        distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'reviewEveryUpdate',
-        createdAtMs: 2,
-      });
-
-      expect(next.reference).toEqual({ immutableGenerationId: nextDraft.immutableGenerationId });
-      await expect(readFile(join(prior.rootPath, 'src', 'index.ts'), 'utf8'))
-        .resolves.toContain("'g'");
-      await expect(readFile(join(next.rootPath, 'src', 'index.ts'), 'utf8'))
-        .resolves.toContain("'h'");
-      await expect(readFile(
-        join(next.rootPath, 'node_modules', 'fixture-dependency', 'index.js'),
-        'utf8',
-      )).resolves.toContain("'retained'");
-
-      await writeFile(
-        join(next.rootPath, 'node_modules', 'fixture-dependency', 'index.js'),
-        "export const dependency = 'mutated!';\n",
-        'utf8',
-      );
-      await expect(readFile(
-        join(next.rootPath, 'node_modules', 'fixture-dependency', 'index.js'),
-        'utf8',
-      )).resolves.toContain("'mutated!'");
-      await expect(readFile(
-        join(prior.rootPath, 'node_modules', 'fixture-dependency', 'index.js'),
-        'utf8',
-      )).resolves.toContain("'retained'");
-
-      await writeFile(join(sourceRootPath, 'src', 'index.ts'), "export const sentinel = 'later';\n", 'utf8');
-      await expect(readFile(join(prior.rootPath, 'src', 'index.ts'), 'utf8'))
-        .resolves.toContain("'g'");
-      await expect(readFile(join(next.rootPath, 'src', 'index.ts'), 'utf8'))
-        .resolves.toContain("'h'");
-      await next.cleanup();
-    } finally {
-      await rm(happyHomeDir, { recursive: true, force: true });
       await rm(sourceRootPath, { recursive: true, force: true });
     }
   });
@@ -826,7 +774,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
       });
 
@@ -867,12 +815,17 @@ describe('immutable plugin generation store', () => {
           kind: 'localPath',
           canonicalPath: sourceRootPath,
         },
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         createdAtMs: 1,
       });
       const record = {
         ...generated,
         immutableGenerationId: 'generation-runner-factory',
+        sourceCustody: {
+          kind: 'managed' as const,
+          immutableGenerationId: 'generation-runner-factory',
+          installSource: 'localPath' as const,
+        },
       };
       const prepared = await prepareImmutablePluginGeneration({
         paths,
@@ -929,795 +882,6 @@ describe('immutable plugin generation store', () => {
     } finally {
       await rm(happyHomeDir, { recursive: true, force: true });
       await rm(sourceRootPath, { recursive: true, force: true });
-    }
-  });
-
-  it('adopts bundled structural facts into immutable daemon custody without recurring source scans', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-'));
-    const packageRoot = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-package-'));
-    const paths = resolvePluginStorePaths({ happyHomeDir });
-    const packageEntryPath = join(packageRoot, 'dist', 'index.js');
-    const manifestPath = join(packageRoot, 'package.json');
-    const record = {
-      t: 'happier_plugin_generation_v1' as const,
-      schemaVersion: 1 as const,
-      pluginId: 'happier.review.fixture',
-      immutableGenerationId: 'bundled-generation-a',
-      createdAtMs: 0,
-      manifestRelativePath: 'package.json',
-      files: [
-        { relativePath: 'dist/index.js', byteLength: Buffer.byteLength('export default 1') },
-        { relativePath: 'package.json', byteLength: 2 },
-      ],
-    };
-    try {
-      await mkdir(join(packageRoot, 'dist'), { recursive: true });
-      await writeFile(packageEntryPath, 'export default 1', 'utf8');
-      await writeFile(manifestPath, '{}', 'utf8');
-      const options = {
-        bundledArtifacts: [{
-          packageName: '@happier-dev/plugins-review-fixture',
-          packageEntryRelativePath: 'dist/index.js',
-          record,
-        }],
-        resolveBundledPackageEntry: async () => packageEntryPath,
-      };
-      const current = await readCurrentCommittedPluginGenerations(paths, options);
-      expect(current?.generations.get(record.pluginId)).toMatchObject({
-        immutableGenerationId: record.immutableGenerationId,
-        rootPath: join(paths.generationsDir, record.immutableGenerationId),
-      });
-      await expect(readFile(join(
-        paths.generationsDir,
-        record.immutableGenerationId,
-        'dist/index.js',
-      ), 'utf8')).resolves.toBe('export default 1');
-      await expect(current?.isCurrent()).resolves.toBe(true);
-
-      await writeFile(join(packageRoot, 'dist', 'unreviewed.mjs'), 'export default 2', 'utf8');
-      await writeFile(packageEntryPath, 'export default 2', 'utf8');
-      await expect(current?.isCurrent()).resolves.toBe(true);
-      await expect(readFile(join(
-        paths.generationsDir,
-        record.immutableGenerationId,
-        'dist/index.js',
-      ), 'utf8')).resolves.toBe('export default 1');
-
-      await rm(manifestPath);
-      // Ordinary serving currentness is desired/applied identity, not a
-      // recurring package-tree verifier. A fresh read reuses the exact private
-      // custody rather than making the mutable package tree authoritative.
-      await expect(current?.isCurrent()).resolves.toBe(true);
-      const missingManifest = await readCurrentCommittedPluginGenerations(paths, options);
-      expect(missingManifest?.generations.get(record.pluginId)?.rootPath)
-        .toBe(join(paths.generationsDir, record.immutableGenerationId));
-      expect([...missingManifest!.unavailableBundledPackageNames]).toEqual([]);
-
-      await writeFile(manifestPath, '{}', 'utf8');
-      await rm(packageEntryPath);
-      const missingEntry = await readCurrentCommittedPluginGenerations(paths, options);
-      expect(missingEntry?.generations.get(record.pluginId)?.rootPath)
-        .toBe(join(paths.generationsDir, record.immutableGenerationId));
-      expect([...missingEntry!.unavailableBundledPackageNames]).toEqual([]);
-    } finally {
-      await rm(happyHomeDir, { recursive: true, force: true });
-      await rm(packageRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('admits a bundled artifact from the runtime payload beside a self-contained daemon', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-runtime-root-'));
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'happier-daemon-runtime-root-'));
-    const packageRoot = join(
-      runtimeRoot,
-      'node_modules',
-      '@happier-dev',
-      'plugins-review-runtime-root-fixture',
-    );
-    const paths = resolvePluginStorePaths({ happyHomeDir });
-    const packageEntryPath = join(packageRoot, 'dist', 'index.js');
-    const daemonEntryPath = join(packageRoot, '.happier-plugin', 'daemon.js');
-    const daemonBytes = 'export const activate = () => undefined;';
-    const packageMetadataBytes = JSON.stringify({
-      name: '@happier-dev/plugins-review-runtime-root-fixture',
-      type: 'module',
-      // The immutable artifact identifies its physical entry itself. It must
-      // not depend on the package root export being resolvable by the host.
-      exports: { './daemon': './.happier-plugin/daemon.js' },
-    });
-    const record = {
-      t: 'happier_plugin_generation_v1' as const,
-      schemaVersion: 1 as const,
-      pluginId: 'happier.review.runtime-root-fixture',
-      immutableGenerationId: 'bundled-generation-runtime-root',
-      createdAtMs: 0,
-      manifestRelativePath: 'package.json',
-      files: [
-        { relativePath: '.happier-plugin/daemon.js', byteLength: Buffer.byteLength(daemonBytes) },
-        { relativePath: 'dist/index.js', byteLength: Buffer.byteLength('export default 1') },
-        { relativePath: 'package.json', byteLength: Buffer.byteLength(packageMetadataBytes) },
-      ],
-    };
-    try {
-      packagedRuntime.root = runtimeRoot;
-      await mkdir(join(packageRoot, 'dist'), { recursive: true });
-      await mkdir(join(packageRoot, '.happier-plugin'), { recursive: true });
-      await writeFile(packageEntryPath, 'export default 1', 'utf8');
-      await writeFile(daemonEntryPath, daemonBytes, 'utf8');
-      await writeFile(join(packageRoot, 'package.json'), packageMetadataBytes, 'utf8');
-
-      const current = await readCurrentCommittedPluginGenerations(paths, {
-        bundledArtifacts: [{
-          packageName: '@happier-dev/plugins-review-runtime-root-fixture',
-          packageEntryRelativePath: 'dist/index.js',
-          daemonEntryRelativePath: '.happier-plugin/daemon.js',
-          record,
-        }],
-      });
-
-      expect(current?.generations.get(record.pluginId)).toMatchObject({
-        immutableGenerationId: record.immutableGenerationId,
-        rootPath: join(paths.generationsDir, record.immutableGenerationId),
-      });
-      await expect(readFile(join(
-        paths.generationsDir,
-        record.immutableGenerationId,
-        '.happier-plugin',
-        'daemon.js',
-      ), 'utf8')).resolves.toBe(daemonBytes);
-    } finally {
-      packagedRuntime.root = '';
-      await rm(happyHomeDir, { recursive: true, force: true });
-      await rm(runtimeRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('rejects a runtime payload package whose manifest name does not match its bundled artifact', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-runtime-name-'));
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'happier-daemon-runtime-name-'));
-    const packageName = '@happier-dev/plugins-review-runtime-name-fixture';
-    const packageRoot = join(runtimeRoot, 'node_modules', ...packageName.split('/'));
-    const paths = resolvePluginStorePaths({ happyHomeDir });
-    const packageEntryPath = join(packageRoot, 'dist', 'index.js');
-    const record = {
-      t: 'happier_plugin_generation_v1' as const,
-      schemaVersion: 1 as const,
-      pluginId: 'happier.review.runtime-name-fixture',
-      immutableGenerationId: 'bundled-generation-runtime-name',
-      createdAtMs: 0,
-      manifestRelativePath: 'package.json',
-      files: [
-        { relativePath: 'dist/index.js', byteLength: Buffer.byteLength('export default 1') },
-        { relativePath: 'package.json', byteLength: 2 },
-      ],
-    };
-    try {
-      packagedRuntime.root = runtimeRoot;
-      await mkdir(join(packageRoot, 'dist'), { recursive: true });
-      await writeFile(packageEntryPath, 'export default 1', 'utf8');
-      await writeFile(join(packageRoot, 'package.json'), JSON.stringify({
-        name: '@happier-dev/plugins-review-runtime-name-impostor',
-        type: 'module',
-        exports: './dist/index.js',
-      }), 'utf8');
-
-      const current = await readCurrentCommittedPluginGenerations(paths, {
-        bundledArtifacts: [{
-          packageName,
-          packageEntryRelativePath: 'dist/index.js',
-          record,
-        }],
-      });
-
-      expect(current?.generations.has(record.pluginId)).toBe(false);
-      expect([...current!.unavailableBundledPackageNames]).toEqual([packageName]);
-    } finally {
-      packagedRuntime.root = '';
-      await rm(happyHomeDir, { recursive: true, force: true });
-      await rm(runtimeRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps an adopted bundled daemon entry in immutable daemon custody after the mutable package tree changes', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-daemon-'));
-    const packageRoot = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-daemon-package-'));
-    const paths = resolvePluginStorePaths({ happyHomeDir });
-    const packageEntryPath = join(packageRoot, 'dist', 'index.js');
-    const daemonEntryPath = join(packageRoot, '.happier-plugin', 'daemon.js');
-    const daemonBytes = 'export const activate = () => undefined;';
-    const record = {
-      t: 'happier_plugin_generation_v1' as const,
-      schemaVersion: 1 as const,
-      pluginId: 'happier.review.daemon-fixture',
-      immutableGenerationId: 'bundled-generation-daemon',
-      createdAtMs: 0,
-      manifestRelativePath: 'package.json',
-      files: [
-        { relativePath: '.happier-plugin/daemon.js', byteLength: Buffer.byteLength(daemonBytes) },
-        { relativePath: 'dist/index.js', byteLength: Buffer.byteLength('export default 1') },
-        { relativePath: 'package.json', byteLength: 2 },
-      ],
-    };
-    const artifact = {
-      packageName: '@happier-dev/plugins-review-daemon-fixture',
-      packageEntryRelativePath: 'dist/index.js',
-      daemonEntryRelativePath: '.happier-plugin/daemon.js',
-      record,
-    };
-    const options = {
-      bundledArtifacts: [artifact],
-      resolveBundledPackageEntry: async () => packageEntryPath,
-    };
-    try {
-      await mkdir(join(packageRoot, 'dist'), { recursive: true });
-      await mkdir(join(packageRoot, '.happier-plugin'), { recursive: true });
-      await writeFile(packageEntryPath, 'export default 1', 'utf8');
-      await writeFile(daemonEntryPath, daemonBytes, 'utf8');
-      await writeFile(join(packageRoot, 'package.json'), '{}', 'utf8');
-
-      const admitted = await readCurrentCommittedPluginGenerations(paths, options);
-      expect(admitted?.generations.get(record.pluginId)).toMatchObject({
-        immutableGenerationId: record.immutableGenerationId,
-        rootPath: join(paths.generationsDir, record.immutableGenerationId),
-      });
-      await expect(readFile(join(
-        paths.generationsDir,
-        record.immutableGenerationId,
-        '.happier-plugin',
-        'daemon.js',
-      ), 'utf8')).resolves.toBe(daemonBytes);
-
-      await rm(daemonEntryPath);
-      const missingDaemon = await readCurrentCommittedPluginGenerations(paths, options);
-      expect(missingDaemon?.generations.get(record.pluginId)).toMatchObject({
-        immutableGenerationId: record.immutableGenerationId,
-        rootPath: join(paths.generationsDir, record.immutableGenerationId),
-      });
-      expect([...missingDaemon!.unavailableBundledPackageNames]).toEqual([]);
-      await expect(readFile(join(
-        paths.generationsDir,
-        record.immutableGenerationId,
-        '.happier-plugin',
-        'daemon.js',
-      ), 'utf8')).resolves.toBe(daemonBytes);
-    } finally {
-      await rm(happyHomeDir, { recursive: true, force: true });
-      await rm(packageRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('fails closed when a fresh home has not yet adopted the published bundled daemon entry', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-daemon-fresh-'));
-    const packageRoot = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-daemon-fresh-package-'));
-    const paths = resolvePluginStorePaths({ happyHomeDir });
-    const packageEntryPath = join(packageRoot, 'dist', 'index.js');
-    const daemonBytes = 'export const activate = () => undefined;';
-    const record = {
-      t: 'happier_plugin_generation_v1' as const,
-      schemaVersion: 1 as const,
-      pluginId: 'happier.review.daemon-fixture',
-      immutableGenerationId: 'bundled-generation-daemon',
-      createdAtMs: 0,
-      manifestRelativePath: 'package.json',
-      files: [
-        { relativePath: '.happier-plugin/daemon.js', byteLength: Buffer.byteLength(daemonBytes) },
-        { relativePath: 'dist/index.js', byteLength: Buffer.byteLength('export default 1') },
-        { relativePath: 'package.json', byteLength: 2 },
-      ],
-    };
-    try {
-      await mkdir(join(packageRoot, 'dist'), { recursive: true });
-      await writeFile(packageEntryPath, 'export default 1', 'utf8');
-      await writeFile(join(packageRoot, 'package.json'), '{}', 'utf8');
-
-      const missingDaemon = await readCurrentCommittedPluginGenerations(paths, {
-        bundledArtifacts: [{
-          packageName: '@happier-dev/plugins-review-daemon-fixture',
-          packageEntryRelativePath: 'dist/index.js',
-          daemonEntryRelativePath: '.happier-plugin/daemon.js',
-          record,
-        }],
-        resolveBundledPackageEntry: async () => packageEntryPath,
-      });
-      expect(missingDaemon?.generations.size).toBe(0);
-      expect([...missingDaemon!.unavailableBundledPackageNames])
-        .toEqual(['@happier-dev/plugins-review-daemon-fixture']);
-    } finally {
-      await rm(happyHomeDir, { recursive: true, force: true });
-      await rm(packageRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('isolates an unavailable bundled package without discarding an unrelated admitted generation', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-isolation-'));
-    const packageRoot = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-valid-'));
-    const paths = resolvePluginStorePaths({ happyHomeDir });
-    await mkdir(join(packageRoot, 'dist'), { recursive: true });
-    await writeFile(join(packageRoot, 'dist/index.js'), 'export default 1', 'utf8');
-    await writeFile(join(packageRoot, 'package.json'), '{}', 'utf8');
-    const createRecord = (pluginId: string, generationId: string) => ({
-      t: 'happier_plugin_generation_v1' as const,
-      schemaVersion: 1 as const,
-      pluginId,
-      immutableGenerationId: generationId,
-      createdAtMs: 0,
-      manifestRelativePath: 'package.json',
-      files: [
-        { relativePath: 'dist/index.js', byteLength: 16 },
-        { relativePath: 'package.json', byteLength: 2 },
-      ],
-    });
-
-    const current = await readCurrentCommittedPluginGenerations(paths, {
-      bundledArtifacts: [
-        {
-          packageName: '@happier-dev/plugins-valid',
-          packageEntryRelativePath: 'dist/index.js',
-          record: createRecord('happier.valid', 'bundled-valid'),
-        },
-        {
-          packageName: '@happier-dev/plugins-missing',
-          packageEntryRelativePath: 'dist/index.js',
-          record: createRecord('happier.missing', 'bundled-missing'),
-        },
-      ],
-      resolveBundledPackageEntry: async (packageName) => packageName.endsWith('valid')
-        ? join(packageRoot, 'dist/index.js')
-        : join(packageRoot, 'missing/index.js'),
-    });
-
-    expect([...current!.generations.keys()]).toEqual(['happier.valid']);
-    expect([...current!.unavailableBundledPackageNames]).toEqual(['@happier-dev/plugins-missing']);
-    await expect(current!.isCurrent()).resolves.toBe(true);
-  });
-
-  it('keeps exact bundled currentness independent from an unrelated installed-plugin commit change and tamper', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-unrelated-'));
-    const packageRoot = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-unrelated-package-'));
-    const unrelatedSourceRoot = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-unrelated-installed-'));
-    try {
-      const paths = resolvePluginStorePaths({ happyHomeDir });
-      const bundledBytes = 'export default "bundled"';
-      await mkdir(join(packageRoot, 'dist'), { recursive: true });
-      await writeFile(join(packageRoot, 'dist/index.js'), bundledBytes, 'utf8');
-      await writeFile(join(packageRoot, 'package.json'), '{}', 'utf8');
-      const bundledRecord = {
-        t: 'happier_plugin_generation_v1' as const,
-        schemaVersion: 1 as const,
-        pluginId: 'happier.bundled.independent',
-        immutableGenerationId: 'bundled-independent-a',
-        createdAtMs: 0,
-        manifestRelativePath: 'package.json',
-        files: [
-          { relativePath: 'dist/index.js', byteLength: Buffer.byteLength(bundledBytes) },
-          { relativePath: 'package.json', byteLength: 2 },
-        ],
-      };
-
-      const unrelatedBytes = 'export default "installed"';
-      await writeFile(join(unrelatedSourceRoot, 'daemon.mjs'), unrelatedBytes, 'utf8');
-      const unrelatedRecord = {
-        sourceProvenance: 'registryCustodied' as const,
-        t: 'happier_plugin_generation_v1' as const,
-        schemaVersion: 1 as const,
-        pluginId: 'acme.plugin',
-        immutableGenerationId: 'generation-unrelated',
-        createdAtMs: 1,
-        manifestRelativePath: 'daemon.mjs',
-        files: [{
-          relativePath: 'daemon.mjs',
-          byteLength: Buffer.byteLength(unrelatedBytes),
-        }],
-      };
-      const unrelated = await prepareImmutablePluginGeneration({
-        paths,
-        sourceRootPath: unrelatedSourceRoot,
-        record: unrelatedRecord,
-      });
-      const initialState = await persistInstallationStateRevision({
-        paths,
-        state: {
-          ...stateRevision(unrelatedRecord.immutableGenerationId),
-          revisionId: 'state-unrelated-a',
-        },
-      });
-      const initialCommit: PluginRegistryCommitRecord = {
-        t: 'happier_plugin_registry_commit_v1',
-        schemaVersion: 1,
-        revision: 0,
-        transactionId: 'tx-unrelated-a',
-        baseRevision: null,
-        installationState: initialState,
-        pluginGenerations: { 'acme.plugin': unrelated.reference },
-        createdAtMs: 1,
-        creator: { pid: 42, instanceId: 'daemon-a' },
-      };
-      await mkdir(paths.stateDir, { recursive: true });
-      await writeFile(
-        paths.registryCurrentFilePath,
-        JSON.stringify(initialCommit),
-        'utf8',
-      );
-      await writeFile(
-        join(unrelated.rootPath, 'unreviewed-payload.mjs'),
-        'tampered',
-        'utf8',
-      );
-
-      const emptyState = await persistInstallationStateRevision({
-        paths,
-        state: {
-          ...stateRevision(),
-          revisionId: 'state-unrelated-b',
-          plugins: {},
-        },
-      });
-      const nextCommit: PluginRegistryCommitRecord = {
-        ...initialCommit,
-        revision: 1,
-        transactionId: 'tx-unrelated-b',
-        baseRevision: 0,
-        installationState: emptyState,
-        pluginGenerations: {},
-        createdAtMs: 2,
-      };
-      let changed = false;
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId: bundledRecord.pluginId,
-        immutableGenerationId: bundledRecord.immutableGenerationId,
-        bundledArtifacts: [{
-          packageName: '@happier-dev/plugins-bundled-independent',
-          packageEntryRelativePath: 'dist/index.js',
-          record: bundledRecord,
-        }],
-        resolveBundledPackageEntry: async () => {
-          if (!changed) {
-            changed = true;
-            await writeFile(
-              paths.registryCurrentFilePath,
-              JSON.stringify(nextCommit),
-              'utf8',
-            );
-          }
-          return join(packageRoot, 'dist/index.js');
-        },
-      })).resolves.toBe(true);
-      await expect(readPreparedImmutablePluginGeneration({
-        paths,
-        immutableGenerationId: bundledRecord.immutableGenerationId,
-      })).resolves.toMatchObject({
-        record: {
-          pluginId: bundledRecord.pluginId,
-          immutableGenerationId: bundledRecord.immutableGenerationId,
-        },
-      });
-    } finally {
-      await rm(happyHomeDir, { recursive: true, force: true });
-      await rm(packageRoot, { recursive: true, force: true });
-      await rm(unrelatedSourceRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('fails closed when a known bundled plugin id also has installed authority', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-installed-collision-'));
-    const bundledPackageRoot = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-collision-package-'));
-    const installedSourceRoot = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-collision-installed-'));
-    try {
-      const paths = resolvePluginStorePaths({ happyHomeDir });
-      const pluginId = 'happier.bundled.collision';
-      const bundledBytes = 'export default "bundled"';
-      await mkdir(join(bundledPackageRoot, 'dist'), { recursive: true });
-      await writeFile(join(bundledPackageRoot, 'dist/index.js'), bundledBytes, 'utf8');
-      await writeFile(join(bundledPackageRoot, 'package.json'), '{}', 'utf8');
-      const bundledRecord = {
-        t: 'happier_plugin_generation_v1' as const,
-        schemaVersion: 1 as const,
-        pluginId,
-        immutableGenerationId: 'bundled-collision-b',
-        createdAtMs: 0,
-        manifestRelativePath: 'package.json',
-        files: [
-          { relativePath: 'dist/index.js', byteLength: Buffer.byteLength(bundledBytes) },
-          { relativePath: 'package.json', byteLength: 2 },
-        ],
-      };
-
-      const installedBytes = 'export default "installed"';
-      await writeFile(join(installedSourceRoot, 'daemon.mjs'), installedBytes, 'utf8');
-      const installedRecord = {
-        sourceProvenance: 'registryCustodied' as const,
-        t: 'happier_plugin_generation_v1' as const,
-        schemaVersion: 1 as const,
-        pluginId,
-        immutableGenerationId: 'installed-collision-i',
-        createdAtMs: 1,
-        manifestRelativePath: 'daemon.mjs',
-        files: [{
-          relativePath: 'daemon.mjs',
-          byteLength: Buffer.byteLength(installedBytes),
-        }],
-      };
-      const installed = await prepareImmutablePluginGeneration({
-        paths,
-        sourceRootPath: installedSourceRoot,
-        record: installedRecord,
-      });
-      const baseState = stateRevision(installedRecord.immutableGenerationId);
-      const installedPluginState = baseState.plugins['acme.plugin']!;
-      const installationState = await persistInstallationStateRevision({
-        paths,
-        state: {
-          ...baseState,
-          revisionId: 'state-bundled-installed-collision',
-          plugins: {
-            [pluginId]: {
-              ...installedPluginState,
-              trust: {
-                ...installedPluginState.trust!,
-                pluginId,
-              },
-            },
-          },
-        },
-      });
-      const commit: PluginRegistryCommitRecord = {
-        t: 'happier_plugin_registry_commit_v1',
-        schemaVersion: 1,
-        revision: 0,
-        transactionId: 'tx-bundled-installed-collision',
-        baseRevision: null,
-        installationState,
-        pluginGenerations: { [pluginId]: installed.reference },
-        createdAtMs: 1,
-        creator: { pid: 42, instanceId: 'daemon-a' },
-      };
-      await mkdir(paths.stateDir, { recursive: true });
-      await writeFile(paths.registryCurrentFilePath, JSON.stringify(commit), 'utf8');
-      const bundledArtifact = {
-        packageName: '@happier-dev/plugins-bundled-collision',
-        packageEntryRelativePath: 'dist/index.js',
-        record: bundledRecord,
-      };
-
-      // A known bundle id with a different generation must not fall through to
-      // the otherwise-valid installed generation for the same plugin.
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: installedRecord.immutableGenerationId,
-        bundledArtifacts: [bundledArtifact],
-        resolveBundledPackageEntry: async () => join(bundledPackageRoot, 'dist/index.js'),
-      })).resolves.toBe(false);
-
-      // The installation state alone is installed authority, even if a corrupt
-      // or transitional commit omits the corresponding generation reference.
-      await writeFile(paths.registryCurrentFilePath, JSON.stringify({
-        ...commit,
-        revision: 1,
-        transactionId: 'tx-bundled-state-only-collision',
-        baseRevision: 0,
-        pluginGenerations: {},
-      }), 'utf8');
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: bundledRecord.immutableGenerationId,
-        bundledArtifacts: [bundledArtifact],
-        resolveBundledPackageEntry: async () => join(bundledPackageRoot, 'dist/index.js'),
-      })).resolves.toBe(false);
-    } finally {
-      await rm(happyHomeDir, { recursive: true, force: true });
-      await rm(bundledPackageRoot, { recursive: true, force: true });
-      await rm(installedSourceRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps a retained bundled Agent generation current through bundle replacement only with its durable factory admission fact', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-retained-'));
-    const generationGRoot = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-retained-g-'));
-    const generationHRoot = await mkdtemp(join(tmpdir(), 'happier-generation-bundled-retained-h-'));
-    try {
-      const paths = resolvePluginStorePaths({ happyHomeDir });
-      const pluginId = 'happier.bundled.retained-agent';
-      const createBundle = async (
-        rootPath: string,
-        immutableGenerationId: string,
-        runtimeBytes: string,
-      ) => {
-        await mkdir(join(rootPath, 'dist'), { recursive: true });
-        await writeFile(join(rootPath, 'dist/index.js'), runtimeBytes, 'utf8');
-        await writeFile(join(rootPath, 'package.json'), '{}', 'utf8');
-        const record = {
-          sourceProvenance: 'localSource' as const,
-          t: 'happier_plugin_generation_v1' as const,
-          schemaVersion: 1 as const,
-          pluginId,
-          immutableGenerationId,
-          createdAtMs: 0,
-          manifestRelativePath: 'package.json',
-          files: [
-            { relativePath: 'dist/index.js', byteLength: Buffer.byteLength(runtimeBytes) },
-            { relativePath: 'package.json', byteLength: 2 },
-          ],
-        };
-        return {
-          record,
-          artifact: {
-            packageName: `@happier-dev/plugins-${immutableGenerationId}`,
-            packageEntryRelativePath: 'dist/index.js',
-            record,
-          },
-        };
-      };
-      const generationG = await createBundle(
-        generationGRoot,
-        'bundled-retained-g',
-        'export default "generation-g"',
-      );
-      const generationH = await createBundle(
-        generationHRoot,
-        'bundled-retained-h',
-        'export default "generation-h"',
-      );
-      const resolveBundledPackageEntry = async (packageName: string) =>
-        packageName.endsWith('bundled-retained-g')
-          ? join(generationGRoot, 'dist/index.js')
-          : join(generationHRoot, 'dist/index.js');
-
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: generationG.record.immutableGenerationId,
-        bundledArtifacts: [generationG.artifact],
-        resolveBundledPackageEntry,
-      })).resolves.toBe(true);
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: generationG.record.immutableGenerationId,
-        bundledArtifacts: [generationG.artifact],
-        resolveBundledPackageEntry,
-        retainedManifestAuthority: 'external',
-      })).resolves.toBe(false);
-      await persistValidatedAgentSessionRunnerFactories({
-        paths,
-        record: generationG.record,
-        manifestAuthority: 'bundled_first_party',
-        factories: [{
-          localAgentId: 'fixture',
-          locator: {
-            module: './dist/index.js',
-            export: 'createFixtureAgentRuntime',
-            runtimeApiVersion: 1,
-          },
-          normalizedModulePath: 'dist/index.js',
-          loadMode: 'immutable-js',
-        }],
-      });
-
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: generationH.record.immutableGenerationId,
-        bundledArtifacts: [generationH.artifact],
-        resolveBundledPackageEntry,
-      })).resolves.toBe(true);
-      const [preparedGenerationG, preparedGenerationH] = await Promise.all([
-        readPreparedImmutablePluginGeneration({
-          paths,
-          immutableGenerationId: generationG.record.immutableGenerationId,
-        }),
-        readPreparedImmutablePluginGeneration({
-          paths,
-          immutableGenerationId: generationH.record.immutableGenerationId,
-        }),
-      ]);
-      expect(preparedGenerationG.rootPath).not.toBe(preparedGenerationH.rootPath);
-      await expect(readFile(join(preparedGenerationG.rootPath, 'dist/index.js'), 'utf8'))
-        .resolves.toBe('export default "generation-g"');
-      await expect(readFile(join(preparedGenerationH.rootPath, 'dist/index.js'), 'utf8'))
-        .resolves.toBe('export default "generation-h"');
-
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: generationG.record.immutableGenerationId,
-        bundledArtifacts: [generationH.artifact],
-        resolveBundledPackageEntry,
-        requiredAgentSessionRunnerFactoryLocalAgentId: 'fixture',
-      })).resolves.toBe(true);
-      await expect(readFile(join(preparedGenerationG.rootPath, 'dist/index.js'), 'utf8'))
-        .resolves.toBe('export default "generation-g"');
-      // An authenticated host-declarative ACP binding is itself the retained
-      // bundled source-class proof; it does not have a custom factory fact.
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: generationG.record.immutableGenerationId,
-        bundledArtifacts: [generationH.artifact],
-        resolveBundledPackageEntry,
-        retainedManifestAuthority: 'bundled_first_party',
-      })).resolves.toBe(true);
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: generationG.record.immutableGenerationId,
-        bundledArtifacts: [],
-        requiredAgentSessionRunnerFactoryLocalAgentId: 'fixture',
-      })).resolves.toBe(true);
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: generationG.record.immutableGenerationId,
-        bundledArtifacts: [generationH.artifact],
-        resolveBundledPackageEntry,
-        requiredAgentSessionRunnerFactoryLocalAgentId: 'another-agent',
-      })).resolves.toBe(false);
-
-      const neverAdmittedRecord = {
-        ...generationG.record,
-        immutableGenerationId: 'bundled-retained-never-admitted',
-      };
-      await prepareImmutablePluginGeneration({
-        paths,
-        sourceRootPath: generationGRoot,
-        record: neverAdmittedRecord,
-      });
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: neverAdmittedRecord.immutableGenerationId,
-        bundledArtifacts: [generationH.artifact],
-        resolveBundledPackageEntry,
-        requiredAgentSessionRunnerFactoryLocalAgentId: 'fixture',
-      })).resolves.toBe(false);
-
-      const externalRecord = {
-        ...generationG.record,
-        immutableGenerationId: 'bundled-retained-external',
-      };
-      await prepareImmutablePluginGeneration({
-        paths,
-        sourceRootPath: generationGRoot,
-        record: externalRecord,
-      });
-      await persistValidatedAgentSessionRunnerFactories({
-        paths,
-        record: externalRecord,
-        manifestAuthority: 'external',
-        factories: [{
-          localAgentId: 'fixture',
-          locator: {
-            module: './dist/index.js',
-            export: 'createFixtureAgentRuntime',
-            runtimeApiVersion: 1,
-          },
-          normalizedModulePath: 'dist/index.js',
-          loadMode: 'immutable-js',
-        }],
-      });
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: externalRecord.immutableGenerationId,
-        bundledArtifacts: [generationH.artifact],
-        resolveBundledPackageEntry,
-        requiredAgentSessionRunnerFactoryLocalAgentId: 'fixture',
-      })).resolves.toBe(false);
-      await expect(readCurrentPluginImmutableGenerationIntegrityCurrentness({
-        paths,
-        pluginId,
-        immutableGenerationId: externalRecord.immutableGenerationId,
-        bundledArtifacts: [generationH.artifact],
-        resolveBundledPackageEntry,
-        retainedManifestAuthority: 'external',
-      })).resolves.toBe(false);
-
-    } finally {
-      await rm(happyHomeDir, { recursive: true, force: true });
-      await rm(generationGRoot, { recursive: true, force: true });
-      await rm(generationHRoot, { recursive: true, force: true });
     }
   });
 
@@ -1800,7 +964,7 @@ describe('immutable plugin generation store', () => {
         transactionId: 'tx-external-retained',
         baseRevision: 0,
         installationState,
-        pluginGenerations: { [pluginId]: prepared.reference },
+        pluginOccurrenceIds: { [pluginId]: prepared.reference },
         createdAtMs: 1,
         creator: { pid: 42, instanceId: 'daemon-a' },
       };
@@ -1815,14 +979,6 @@ describe('immutable plugin generation store', () => {
         paths,
         pluginId,
         immutableGenerationId,
-        bundledArtifacts: [{
-          packageName: '@happier-dev/plugins-external-retained-successor',
-          packageEntryRelativePath: 'dist/index.js',
-          record: {
-            ...record,
-            immutableGenerationId: 'bundled-successor-generation-h',
-          },
-        }],
         requiredAgentSessionRunnerFactoryLocalAgentId: 'fixture',
       })).resolves.toBe(true);
     } finally {
@@ -1855,7 +1011,7 @@ describe('immutable plugin generation store', () => {
       t: 'happier_plugin_registry_commit_v1', schemaVersion: 1, revision: 0,
       transactionId: 'tx-current', baseRevision: null,
       installationState,
-      pluginGenerations: { 'acme.plugin': prepared.reference },
+      pluginOccurrenceIds: { 'acme.plugin': prepared.reference },
       createdAtMs: 1,
       creator: { pid: 42, instanceId: 'daemon-a' },
     };
@@ -1909,7 +1065,7 @@ describe('immutable plugin generation store', () => {
                 manifestPath: '/tmp/acme-plugin/.happier-plugin/plugin.json',
               },
               compatibility: { status: 'compatible', diagnostics: [] },
-              install: { mode: 'link', manifestVersion: '1.0.0', updatePolicy: 'reviewEveryUpdate' },
+              install: { mode: 'link', manifestVersion: '1.0.0', updatePolicy: 'allowed' },
               state: { enabled: false },
             },
           },
@@ -2002,7 +1158,7 @@ describe('immutable plugin generation store', () => {
       transactionId: 'tx-current-symlink',
       baseRevision: null,
       installationState,
-      pluginGenerations: { 'acme.plugin': prepared.reference },
+      pluginOccurrenceIds: { 'acme.plugin': prepared.reference },
       createdAtMs: 1,
       creator: { pid: 42, instanceId: 'daemon-a' },
     };
@@ -2095,7 +1251,7 @@ describe('immutable plugin generation store', () => {
       transactionId: 'orphan-current-generation',
       baseRevision: 0,
       installationState,
-      pluginGenerations: { 'acme.plugin': prepared.reference },
+      pluginOccurrenceIds: { 'acme.plugin': prepared.reference },
       createdAtMs: 2,
       creator: { pid: 42, instanceId: 'daemon-a' },
     };
@@ -2143,7 +1299,7 @@ describe('immutable plugin generation store', () => {
       transactionId: 'retained-publication',
       baseRevision: 0,
       installationState,
-      pluginGenerations: {},
+      pluginOccurrenceIds: {},
       createdAtMs: 2,
       creator: { pid: 42, instanceId: 'daemon-a' },
     };
@@ -2181,7 +1337,7 @@ describe('immutable plugin generation store', () => {
       transactionId: 'retiring-current',
       baseRevision: 0,
       installationState,
-      pluginGenerations: { 'acme.plugin': prepared.reference },
+      pluginOccurrenceIds: { 'acme.plugin': prepared.reference },
       createdAtMs: 2,
       creator: { pid: 42, instanceId: 'daemon-a' },
     };
@@ -2318,6 +1474,11 @@ describe('immutable plugin generation store', () => {
         byteLength: Buffer.byteLength(orphanBytes),
       }],
       manifestRelativePath: 'marker',
+      sourceCustody: {
+        kind: 'managed' as const,
+        immutableGenerationId: 'generation-orphan',
+        installSource: 'localPath' as const,
+      },
     }), 'utf8');
     const state = {
       ...stateRevision('generation-current'),
@@ -2331,7 +1492,7 @@ describe('immutable plugin generation store', () => {
     const commit: PluginRegistryCommitRecord = {
       t: 'happier_plugin_registry_commit_v1', schemaVersion: 1, revision: 0, transactionId: 'cleanup', baseRevision: null,
       installationState: stateReference,
-      pluginGenerations: { 'acme.plugin': { immutableGenerationId: 'generation-current' } },
+      pluginOccurrenceIds: { 'acme.plugin': { immutableGenerationId: 'generation-current' } },
       createdAtMs: 1, creator: { pid: 1, instanceId: 'daemon-a' },
     };
 
@@ -2369,7 +1530,7 @@ describe('immutable plugin generation store', () => {
       sourceRootPath,
       manifestRelativePath: 'plugin.js',
       distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-      updatePolicy: 'reviewEveryUpdate',
+      updatePolicy: 'allowed',
       createdAtMs: 1,
       immutableGenerationId: generationId,
     });
@@ -2391,7 +1552,7 @@ describe('immutable plugin generation store', () => {
       transactionId: 'cleanup-interrupted-draft',
       baseRevision: null,
       installationState: stateReference,
-      pluginGenerations: {
+      pluginOccurrenceIds: {
         'acme.plugin': { immutableGenerationId: 'generation-current' },
       },
       createdAtMs: 1,
@@ -2424,6 +1585,11 @@ describe('immutable plugin generation store', () => {
       createdAtMs: 1,
       files: [{ relativePath: 'marker', byteLength: 8 }],
       manifestRelativePath: 'marker',
+      sourceCustody: {
+        kind: 'managed' as const,
+        immutableGenerationId: orphanId,
+        installSource: 'localPath' as const,
+      },
     };
     await mkdir(orphanRoot, { recursive: true });
     await writeFile(join(orphanRoot, 'marker'), 'obsolete', 'utf8');
@@ -2433,7 +1599,7 @@ describe('immutable plugin generation store', () => {
     const commit: PluginRegistryCommitRecord = {
       t: 'happier_plugin_registry_commit_v1', schemaVersion: 1, revision: 0, transactionId: 'cleanup-retirement', baseRevision: null,
       installationState: stateReference,
-      pluginGenerations: { 'acme.plugin': { immutableGenerationId: 'generation-current' } },
+      pluginOccurrenceIds: { 'acme.plugin': { immutableGenerationId: 'generation-current' } },
       createdAtMs: 1, creator: { pid: 1, instanceId: 'daemon-a' },
     };
     const retireGeneration = vi.fn().mockRejectedValueOnce(new Error('response lost')).mockResolvedValueOnce(undefined);
@@ -2484,8 +1650,18 @@ describe('immutable plugin generation store', () => {
 
     const second = await reconcileAfterRestart();
     expect(second).toMatchObject({ status: 'reconciled', removed: [orphanId], failures: [] });
-    expect(retireGeneration).toHaveBeenNthCalledWith(1, { token: 'account-token', pluginId: 'acme.plugin', immutableGenerationId: orphanId });
-    expect(retireGeneration).toHaveBeenNthCalledWith(2, { token: 'account-token', pluginId: 'acme.plugin', immutableGenerationId: orphanId });
+    const retirement = {
+      token: 'account-token',
+      pluginId: 'acme.plugin',
+      immutableGenerationId: orphanId,
+      sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: orphanId,
+        installSource: 'localPath',
+      },
+    };
+    expect(retireGeneration).toHaveBeenNthCalledWith(1, retirement);
+    expect(retireGeneration).toHaveBeenNthCalledWith(2, retirement);
     expect(commitFenceEntered).toHaveBeenCalledTimes(3);
     await expect(access(orphanRoot)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(access(join(paths.generationsDir, `.retiring-${orphanId}`))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -2504,7 +1680,7 @@ describe('immutable plugin generation store', () => {
       revision: 1,
       transactionId: 'cleanup-retirement-reintroduced-current',
       baseRevision: 0,
-      pluginGenerations: {
+      pluginOccurrenceIds: {
         'acme.plugin': { immutableGenerationId: orphanId },
       },
     };
@@ -2539,7 +1715,14 @@ describe('immutable plugin generation store', () => {
     await expect(prepareImmutablePluginGeneration({
       paths,
       sourceRootPath: reinstallSourceRoot,
-      record: { ...orphanRecord, immutableGenerationId: 'generation-reinstalled' },
+      record: {
+        ...orphanRecord,
+        immutableGenerationId: 'generation-reinstalled',
+        sourceCustody: {
+          ...orphanRecord.sourceCustody,
+          immutableGenerationId: 'generation-reinstalled',
+        },
+      },
     })).resolves.toMatchObject({
       reference: { immutableGenerationId: 'generation-reinstalled' },
     });
@@ -2597,7 +1780,7 @@ describe('immutable plugin generation store', () => {
       transactionId: 'marker-plugin-mismatch',
       baseRevision: null,
       installationState,
-      pluginGenerations: { 'acme.plugin': { immutableGenerationId: 'generation-current' } },
+      pluginOccurrenceIds: { 'acme.plugin': { immutableGenerationId: 'generation-current' } },
       createdAtMs: 1,
       creator: { pid: 1, instanceId: 'daemon-a' },
     };
@@ -2645,7 +1828,7 @@ describe('immutable plugin generation store', () => {
     const staleCommit: PluginRegistryCommitRecord = {
       t: 'happier_plugin_registry_commit_v1', schemaVersion: 1, revision: 0, transactionId: 'cleanup-stale', baseRevision: null,
       installationState: stateReference,
-      pluginGenerations: { 'acme.plugin': { immutableGenerationId: 'generation-current' } },
+      pluginOccurrenceIds: { 'acme.plugin': { immutableGenerationId: 'generation-current' } },
       createdAtMs: 1, creator: { pid: 1, instanceId: 'daemon-a' },
     };
     const currentCommit: PluginRegistryCommitRecord = {
@@ -2689,7 +1872,7 @@ describe('immutable plugin generation store', () => {
 
     await expect(cleanupUnreferencedPluginGenerations({
       paths,
-      commit: { pluginGenerations: {} } as unknown as PluginRegistryCommitRecord,
+      commit: { pluginOccurrenceIds: {} } as unknown as PluginRegistryCommitRecord,
       state: stateRevision(),
     })).rejects.toThrow();
     await expect(access(join(paths.generationsDir, 'generation-live', 'marker'))).resolves.toBeUndefined();
@@ -2712,7 +1895,7 @@ describe('immutable plugin generation store', () => {
     const commit: PluginRegistryCommitRecord = {
       t: 'happier_plugin_registry_commit_v1', schemaVersion: 1, revision: 0, transactionId: 'cleanup', baseRevision: null,
       installationState: authoritativeReference,
-      pluginGenerations: { 'acme.plugin': { immutableGenerationId: 'generation-current' } },
+      pluginOccurrenceIds: { 'acme.plugin': { immutableGenerationId: 'generation-current' } },
       createdAtMs: 1, creator: { pid: 1, instanceId: 'daemon-a' },
     };
     const unrelatedState = { ...stateRevision('generation-current'), revisionId: 'state-unrelated' };

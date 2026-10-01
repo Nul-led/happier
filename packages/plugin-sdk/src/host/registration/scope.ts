@@ -110,7 +110,6 @@ export type PluginRegistrationRight = Readonly<{
         | Readonly<{
             realm: 'client';
             artifactId: string;
-            modulePath: string;
             exportName: string;
             platforms: readonly ('web' | 'ios' | 'android')[];
         }>;
@@ -134,7 +133,6 @@ export type PluginRegistrationScopeTarget =
     | Readonly<{
         realm: 'client';
         artifactId: string;
-        modulePath: string;
         exportName: string;
         platform: 'web' | 'ios' | 'android';
     }>;
@@ -426,7 +424,30 @@ function snapshotAgentProviderCliAttachDeclaration(
     value: AgentProviderCliAttachDeclarationV1,
 ): AgentProviderCliAttachDeclarationV1 {
     const receiver = readAgentRegistrationObject(value, 'Agent provider CLI attach declaration');
+    if ((value.commandToolIds === undefined) !== (value.resolveCommandToolId === undefined)) {
+        throw new TypeError(
+            'Agent provider CLI attach declaration must set commandToolIds and resolveCommandToolId together',
+        );
+    }
+    const commandToolIds = value.commandToolIds === undefined
+        ? undefined
+        : snapshotAgentPreflightSessionControlsArgs(
+            value.commandToolIds,
+            'Agent provider CLI attach declaration.commandToolIds',
+        );
     return Object.freeze({
+        ...(commandToolIds === undefined
+            ? {}
+            : {
+                commandToolIds,
+                resolveCommandToolId: bindAgentRegistrationCallback<
+                    NonNullable<AgentProviderCliAttachDeclarationV1['resolveCommandToolId']>
+                >(
+                    receiver,
+                    receiver.resolveCommandToolId,
+                    'Agent provider CLI attach declaration.resolveCommandToolId',
+                ),
+            }),
         resolveTarget: bindAgentRegistrationCallback<
             AgentProviderCliAttachDeclarationV1['resolveTarget']
         >(
@@ -448,6 +469,31 @@ function snapshotAgentProviderCliAttachDeclaration(
             receiver.resolveReachability,
             'Agent provider CLI attach declaration.resolveReachability',
         ),
+        ...(value.cliVersionArgs === undefined
+            ? {}
+            : { cliVersionArgs: Object.freeze([...value.cliVersionArgs]) }),
+        ...(value.managedServiceAccess === undefined
+            ? {}
+            : {
+                managedServiceAccess: Object.freeze({
+                    credentialEnvironmentKey:
+                        value.managedServiceAccess.credentialEnvironmentKey,
+                    ...(value.managedServiceAccess.credentialEnvironmentAliases === undefined
+                        ? {}
+                        : {
+                            credentialEnvironmentAliases: Object.freeze([
+                                ...value.managedServiceAccess.credentialEnvironmentAliases,
+                            ]),
+                        }),
+                    resolveTargetBaseUrl: bindAgentRegistrationCallback<
+                        NonNullable<AgentProviderCliAttachDeclarationV1['managedServiceAccess']>['resolveTargetBaseUrl']
+                    >(
+                        value.managedServiceAccess,
+                        value.managedServiceAccess.resolveTargetBaseUrl,
+                        'Agent provider CLI attach declaration.managedServiceAccess.resolveTargetBaseUrl',
+                    ),
+                }),
+            }),
     });
 }
 
@@ -895,6 +941,11 @@ function snapshotAgentPreflightSessionControlsCommand(
     return Object.freeze({
         toolId: snapshotAgentPreflightSessionControlsString(receiver.toolId, `${subject}.toolId`),
         args: snapshotAgentPreflightSessionControlsArgs(receiver.args, `${subject}.args`),
+        ...(receiver.prepareCommand === undefined ? {} : {
+            prepareCommand: bindAgentRegistrationCallback<NonNullable<AgentPreflightSessionControlsCommandV1['prepareCommand']>>(
+                receiver, receiver.prepareCommand, `${subject}.prepareCommand`,
+            ),
+        }),
         ...(receiver.environmentKeys === undefined
             ? {}
             : {
@@ -919,17 +970,51 @@ function snapshotAgentPreflightSessionControlsModels(
     value: AgentPreflightSessionControlsModelsV1,
 ): AgentPreflightSessionControlsModelsV1 {
     const receiver = readAgentRegistrationObject(value, 'Agent preflight models declaration');
+    if ((receiver.commandToolIds === undefined) !== (receiver.resolveCommandToolId === undefined)) {
+        throw new TypeError('Agent preflight models declaration must set commandToolIds and resolveCommandToolId together');
+    }
+    const commandToolIds = receiver.commandToolIds === undefined
+        ? undefined
+        : snapshotAgentPreflightSessionControlsArgs(
+            receiver.commandToolIds,
+            'Agent preflight models declaration.commandToolIds',
+        );
+    const command = snapshotAgentPreflightSessionControlsCommand(
+        receiver.command as AgentPreflightSessionControlsCommandV1,
+        'Agent preflight models declaration.command',
+    );
     const fallback = receiver.fallback === undefined
         ? undefined
         : readAgentRegistrationObject(
             receiver.fallback,
             'Agent preflight models declaration.fallback',
         );
+    const fallbackCommand = fallback === undefined
+        ? undefined
+        : snapshotAgentPreflightSessionControlsCommand(
+            fallback.command as AgentPreflightSessionControlsCommandV1,
+            'Agent preflight models declaration.fallback.command',
+        );
+    if (commandToolIds && (
+        !commandToolIds.includes(command.toolId)
+        || (fallbackCommand !== undefined && !commandToolIds.includes(fallbackCommand.toolId))
+    )) {
+        throw new TypeError('Agent preflight models command and fallback toolId must be declared in commandToolIds');
+    }
     return Object.freeze({
-        command: snapshotAgentPreflightSessionControlsCommand(
-            receiver.command as AgentPreflightSessionControlsCommandV1,
-            'Agent preflight models declaration.command',
-        ),
+        ...(commandToolIds === undefined
+            ? {}
+            : {
+                commandToolIds,
+                resolveCommandToolId: bindAgentRegistrationCallback<
+                    NonNullable<AgentPreflightSessionControlsModelsV1['resolveCommandToolId']>
+                >(
+                    receiver,
+                    receiver.resolveCommandToolId,
+                    'Agent preflight models declaration.resolveCommandToolId',
+                ),
+            }),
+        command,
         ...(receiver.parseOutput === undefined
             ? {}
             : {
@@ -945,10 +1030,7 @@ function snapshotAgentPreflightSessionControlsModels(
             ? {}
             : {
                 fallback: Object.freeze({
-                    command: snapshotAgentPreflightSessionControlsCommand(
-                        fallback.command as AgentPreflightSessionControlsCommandV1,
-                        'Agent preflight models declaration.fallback.command',
-                    ),
+                    command: fallbackCommand!,
                     ...(fallback.parseOutput === undefined
                         ? {}
                         : {
@@ -1429,7 +1511,6 @@ function voiceRegistrationCorrespondenceError(
         }
         if (right.target.realm !== 'client'
             || right.target.artifactId !== declaration.client.artifactId
-            || right.target.modulePath !== declaration.client.modulePath
             || right.target.exportName !== declaration.client.exportName
             || right.target.platforms.length !== declaration.platforms.length
             || right.target.platforms.some((platform, index) => (
@@ -1515,7 +1596,6 @@ export function createPluginRegistrationScope(
             ? right.target.realm === 'daemon'
             : right.target.realm === 'client'
                 && right.target.artifactId === params.target.artifactId
-                && right.target.modulePath === params.target.modulePath
                 && right.target.exportName === params.target.exportName
                 && right.target.platforms.includes(params.target.platform);
         if (!targetMatches) {

@@ -760,7 +760,8 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     const runtimeEvents: CodexAppServerEvent[] = [];
     appServerRuntime.events.subscribe((event) => runtimeEvents.push(event));
 
-    await startCodexAppServerRuntime(appServerRuntime);
+    await expect(startCodexAppServerRuntime(appServerRuntime)).resolves.toBe('thread-1');
+    await expect(startCodexAppServerRuntime(appServerRuntime)).resolves.toBe('thread-1');
 
     expect(appServerRuntime.identity.read()).toEqual({ providerSessionId: null });
     expect(runtimeEvents.filter((event) => event.kind === 'session-id-publish')).toEqual([]);
@@ -1147,6 +1148,40 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         source: 'agent_session_error',
       }),
     }));
+  });
+
+  it('reports the safe cause of a workspace routing 401 in the issue and daemon log', async () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const runtime = createRuntime({ ctx: { logger } });
+    const events: CodexAppServerEvent[] = [];
+    runtime.events.subscribe((event) => events.push(event));
+
+    await runtime.send({ v: 1, text: 'provider failure prompt' }, { turnId: 'codex-turn-401' });
+    const failure = failedCapacityTurn('turn-1', 'workspace routing discovery unauthorized (401)');
+    emitNotification('error', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      error: { message: 'workspace routing discovery unauthorized (401)', codex_error_info: 'other' },
+      willRetry: false,
+    });
+    emitNotification('turn/completed', failure);
+
+    await expect(waitForCodexAppServerRuntimeTurnCompletion(runtime))
+      .rejects.toThrow('Codex app-server turn failed.');
+    expect(events).toContainEqual(expect.objectContaining({
+      kind: 'turn-failed',
+      issue: expect.objectContaining({
+        source: 'auth_error',
+        sanitizedPreview: 'Codex authentication failed (HTTP 401).',
+      }),
+    }));
+    expect(logger.debug).toHaveBeenCalledWith(
+      'Codex app-server awaiting terminal notification after provider error',
+      expect.objectContaining({
+        runtimeIssueSource: 'auth_error',
+        providerErrorSummary: 'Codex workspace routing unauthorized (HTTP 401)',
+      }),
+    );
   });
 
   it('does not project provider-echoed transcript or startup content into failed-turn diagnostics', async () => {
@@ -2423,6 +2458,20 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     expect(clientState.requests.find((request) => request.method === 'turn/start')?.params)
       .not.toEqual(expect.objectContaining({ collaborationMode: expect.anything() }));
   });
+  it('refuses changing the workspace ceiling while an admitted turn still owns its sandbox', async () => {
+    const runtime = createRuntime();
+    await runtime.send({ v: 1, text: 'continue working' });
+    await expect(runtime.updateConfig?.({ workspaceWrites: 'deny' })).rejects.toMatchObject({ code: 'role_policy_restart_required' });
+  });
+  it('emits native automatic context compaction without ending the active turn', async () => {
+    const runtime = createCodexNativeAppServerSessionRuntime(createRuntime(), 'session-1');
+    const observed: AgentSessionRuntimeEvent[] = [];
+    runtime.watch((event) => observed.push(event));
+    await runtime.send({ inputIds: ['input-compaction'], input: { text: 'work' }, delivery: { kind: 'newTurn', turnId: 'host-turn-compaction' } });
+    emitNotification('item/completed', { threadId: 'thread-1', turnId: 'turn-1', item: { type: 'contextCompaction', id: 'compact-item-1' } });
+    expect(observed).toContainEqual(expect.objectContaining({ kind: 'context-compaction', compactionId: 'compact-item-1', phase: 'completed', trigger: 'unknown', turnId: 'host-turn-compaction' }));
+    expect(observed.filter((event) => event.kind === 'turn-complete')).toHaveLength(0);
+  });
 
   it('uses a model from the same config update without probing the model catalog', async () => {
     clientState.setCollaborationModesResult({
@@ -2534,7 +2583,7 @@ describe('Codex app-server temporary recoverable turn failures', () => {
       updateWhileAttached: { permissionMode: 'safe-yolo' },
       updateAfterStop: { permissionMode: 'yolo' },
     },
-  ])('keeps the exact empty thread attached across $label config changes until realtime stops', async ({
+  ])('retains the published empty thread across $label config changes after realtime stops', async ({
     initialUpdate,
     updateWhileAttached,
     updateAfterStop,
@@ -2551,7 +2600,27 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     await expect(realtimeHandle.stop()).resolves.toEqual({ status: 'stopped' });
     await runtime.updateConfig?.(updateAfterStop);
 
+    expect(runtime.identity.read()).toEqual({ providerSessionId: 'thread-1' });
+    await expect(runtime.prepareProviderCliAttach()).resolves.toBe('thread-1');
+    expect(clientState.requests.filter((request) => request.method === 'thread/start')).toHaveLength(1);
+    await runtime.dispose();
+  });
+
+  it.each([
+    { label: 'model', initialUpdate: null, update: { modelId: 'gpt-5.4' } },
+    { label: 'permission', initialUpdate: { permissionMode: 'read-only' }, update: { permissionMode: 'yolo' } },
+  ])('reinitializes an unpublished empty thread for a $label config change', async ({ initialUpdate, update }) => {
+    const runtime = createRuntime();
+    if (initialUpdate) await runtime.updateConfig?.(initialUpdate);
+    await startCodexAppServerRuntime(runtime);
     expect(runtime.identity.read()).toEqual({ providerSessionId: null });
+
+    await runtime.updateConfig?.(update);
+    expect(runtime.identity.read()).toEqual({ providerSessionId: null });
+    await expect(runtime.prepareProviderCliAttach()).resolves.toBe('thread-1');
+
+    expect(runtime.identity.read()).toEqual({ providerSessionId: 'thread-1' });
+    expect(clientState.requests.filter((request) => request.method === 'thread/start')).toHaveLength(2);
     await runtime.dispose();
   });
 

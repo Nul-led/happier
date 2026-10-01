@@ -123,6 +123,7 @@ export function resolveCodexExternalSessionLinkIdentity(params: Readonly<{
     runtimeDescriptor: buildCodexAgentRuntimeDescriptor({
       backendMode: codexBackendMode,
       providerSessionId: remoteSessionId,
+      appServerTransport: canonicalRuntimeDescriptor?.appServerTransport,
       home: canonicalRuntimeDescriptor?.home ?? sourceAffinity.home,
       connectedServiceId: canonicalRuntimeDescriptor?.connectedServiceId ?? sourceAffinity.connectedServiceId,
       connectedServiceProfileId:

@@ -28,6 +28,7 @@ import type { ResolvedNpmArtifact } from '@/plugins/distribution/npm/types';
 import { projectPluginFailureText } from '@/plugins/runtime/lifecycle/utils';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
+import { isNetworkConnectionErrorCode } from '@/api/client/classifyServerEndpointError';
 
 const CACHE_MAX_STALE_MS = 7 * 24 * 60 * 60 * 1000;
 /**
@@ -317,7 +318,7 @@ function parseCommunityNpmMetadataEntry(
     review: { status: 'unreviewed', reviewedAt: null },
     categories: [],
     media: [],
-    updatePolicy: 'reviewEveryUpdate',
+    updatePolicy: 'allowed',
     links: {},
   });
   if (!parsed.success) return { status: 'skipped', reason: 'unusable-metadata' };
@@ -394,7 +395,7 @@ async function readResponseBody(response: Response): Promise<unknown> {
 function isOfflineRefreshError(error: unknown): boolean {
   if (error instanceof TypeError) return true;
   const code = (error as NodeJS.ErrnoException | null)?.code;
-  if (typeof code === 'string' && /^(?:EAI_AGAIN|ECONN|ENET|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT)/u.test(code)) return true;
+  if (isNetworkConnectionErrorCode(code)) return true;
   return error instanceof Error && /\boffline\b|timed out|network connection/u.test(error.message);
 }
 

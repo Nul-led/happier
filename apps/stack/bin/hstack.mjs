@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { commandHelpArgs, renderhstackRootHelp, resolvehstackCommand } from '../scripts/utils/cli/cli_registry.mjs';
 import { expandHome, getCanonicalHomeEnvPathFromEnv } from '../scripts/utils/paths/canonical_home.mjs';
 import { resolveExplicitStackEnvFilePath, resolveStackEnvPath } from '../scripts/utils/paths/paths.mjs';
-import { SANDBOX_PRESERVE_KEYS, scrubHappierStackEnv } from '../scripts/utils/env/scrub_env.mjs';
+import { SANDBOX_PRESERVE_KEYS, STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS, scrubHappierStackEnv } from '../scripts/utils/env/scrub_env.mjs';
 import { resolveStackHappierPassthroughEntrypoint } from '../scripts/stack/stack_happier_passthrough_entrypoint.mjs';
 import { readExecutionHostProfile } from '../scripts/utils/execution_host/config.mjs';
 import { shouldDelegateToActiveExecutionHost } from '../scripts/utils/execution_host/controller.mjs';
@@ -196,7 +196,7 @@ function applySandboxDirIfRequested(argv) {
   }
   const scrubbed = scrubHappierStackEnv(process.env, {
     keepHappierStackKeys: Array.from(preserved.keys()),
-    clearUnprefixedKeys: ['HAPPIER_HOME_DIR', 'HAPPIER_SERVER_URL', 'HAPPIER_WEBAPP_URL'],
+    clearUnprefixedKeys: STACK_WRAPPER_CLEAR_UNPREFIXED_KEYS,
   });
   for (const k of Object.keys(process.env)) {
     if (!(k in scrubbed)) delete process.env[k];

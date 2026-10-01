@@ -1,7 +1,7 @@
 import { redactBugReportSensitiveText } from '@happier-dev/plugin-sdk';
 import { classifyProviderLimitEvidence } from '@happier-dev/plugin-sdk/first-party/connected-accounts';
 
-import { classifyCodexConnectedServiceAuthFailure } from '../../../auth/services/runtime/auth/failure.js';
+import { classifyCodexConnectedServiceAuthFailure, isCodexWorkspaceRoutingUnauthorizedFailure } from '../../../auth/services/runtime/auth/failure.js';
 import {
     readRecord,
     trimStringValue,
@@ -80,12 +80,14 @@ class CodexAppServerTurnFailure extends Error {
     readonly isContextWindowExhausted: boolean;
     readonly isTemporaryRecoverableTurnFailure: boolean;
     readonly runtimeAuthClassification: unknown | null;
+    readonly isWorkspaceRoutingUnauthorized: boolean;
 
     constructor(message: string, options: Readonly<{
         isAuthAccountChanged: boolean;
         isContextWindowExhausted: boolean;
         isTemporaryRecoverableTurnFailure: boolean;
         runtimeAuthClassification: unknown | null;
+        isWorkspaceRoutingUnauthorized: boolean;
     }>) {
         super(message);
         this.name = 'CodexAppServerTurnFailure';
@@ -93,6 +95,7 @@ class CodexAppServerTurnFailure extends Error {
         this.isContextWindowExhausted = options.isContextWindowExhausted;
         this.isTemporaryRecoverableTurnFailure = options.isTemporaryRecoverableTurnFailure;
         this.runtimeAuthClassification = options.runtimeAuthClassification;
+        this.isWorkspaceRoutingUnauthorized = options.isWorkspaceRoutingUnauthorized;
     }
 }
 
@@ -288,8 +291,13 @@ export function createCodexAppServerTurnFailure(params: Readonly<{
             isContextWindowExhausted: payload ? isCodexAppServerContextWindowExhaustedPayload(payload) : false,
             isTemporaryRecoverableTurnFailure: runtimeAuthClassification?.kind === 'capacity',
             runtimeAuthClassification: sanitizeCodexAppServerRuntimeAuthClassification(runtimeAuthClassification),
+            isWorkspaceRoutingUnauthorized: isCodexWorkspaceRoutingUnauthorizedFailure(params.value),
         },
     );
+}
+
+export function isCodexAppServerWorkspaceRoutingUnauthorizedError(error: unknown): boolean {
+    return error instanceof CodexAppServerTurnFailure && error.isWorkspaceRoutingUnauthorized;
 }
 
 export function formatCodexAppServerErrorForUi(error: Error): string {

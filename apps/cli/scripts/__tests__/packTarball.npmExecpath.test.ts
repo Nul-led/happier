@@ -345,6 +345,9 @@ describe('packTarball (npmExecpath)', () => {
     }), 'utf8');
     const spawn = vi.fn((_command: unknown, _args: unknown, options: { cwd: string }) => {
       expect(options.cwd).not.toBe(packageRoot);
+      expect(JSON.parse(readFileSync(join(options.cwd, '.project/tmp/bundled-plugin-publication/failures.json'), 'utf8'))).toEqual([]);
+      expect(JSON.parse(readFileSync(join(options.cwd, 'package.json'), 'utf8')).files)
+        .toContain('.project/tmp/bundled-plugin-publication/failures.json');
       writeFileSync(join(destDir, tarballName), '', 'utf8');
       return { status: 0, signal: null, stdout: `${tarballName}\n`, stderr: '' };
     });

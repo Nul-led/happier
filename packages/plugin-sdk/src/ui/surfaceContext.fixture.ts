@@ -53,7 +53,11 @@ export const SURFACE_CONTEXT_TARGETED_CONTRIBUTIONS_FIXTURE: NonNullable<
 > = {
     target: {
         pluginId: 'com.acme.fixture',
-        immutableGenerationId: 'target-generation-a',
+        occurrenceId: 'target-occurrence-a',
+        sourceCustody: {
+            kind: 'development',
+            registeredRootId: 'fixture-target-root',
+        },
     },
     points: [],
 };

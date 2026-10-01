@@ -80,7 +80,10 @@ import type { StablePluginConnectedAccountsHost } from './connectedAccounts';
 import type { StableTargetedContributionsOwner } from './targetedContributions';
 import type { StablePluginComposerContentOwner } from './composerContent';
 import type { StablePluginHttpHost } from '../../fetch/service';
-import { createPluginInteractionsService } from './interactions';
+import {
+    createInteractionTransientRequesterForInvocation,
+    createPluginInteractionsService,
+} from './interactions';
 import type { StablePluginApprovalQueueOwner } from './approvalQueue';
 import {
     createPluginInvocationActionsService,
@@ -236,7 +239,7 @@ export type PluginInvocationServicesFactoryParams = Readonly<{
     }>;
     managedProviderRuntime?: ManagedProviderRuntimeOperationBinding;
     providers?: PluginProviderOperationsSource;
-    notifications?: StablePluginNotificationsOwner;
+    notifications?: Pick<StablePluginNotificationsOwner, 'bind'>;
     mcp?: StablePluginMcpHost;
     sessions?: Readonly<{
         bind(
@@ -298,7 +301,7 @@ function createAvailablePluginFileSystemService(
         roots: filesystemRoots,
         scopes: binding.filesystemScopes,
         signal: seed.signal,
-        isGenerationCurrent: seed.isGenerationCurrent,
+        isOccurrenceCurrent: seed.isOccurrenceCurrent,
         recordDisclosureMismatch: (mismatch) => {
             logger.diagnostic({
                 code: 'plugin_host_access_disclosure_mismatch',
@@ -373,9 +376,9 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
                     ? { ephemeralScope: params.resolveEphemeralStorageScope(seed) }
                     : {}),
                 sessionId: seed.session?.id,
-                generation: seed.generation,
+                occurrenceId: seed.occurrenceId,
                 signal: seed.signal,
-                isGenerationCurrent: seed.isGenerationCurrent,
+                isOccurrenceCurrent: seed.isOccurrenceCurrent,
                 ...(params.daemonDatabase ? { daemonDatabase: params.daemonDatabase } : {}),
                 ...(binding.accountStorageCurrentness
                     ? { accountStorageCurrentness: binding.accountStorageCurrentness }
@@ -417,10 +420,10 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
             return params.secrets.bind({
                 pluginId: seed.plugin.id,
                 signal: seed.signal,
-                isGenerationCurrent: seed.isGenerationCurrent,
+                isOccurrenceCurrent: seed.isOccurrenceCurrent,
                 registerRawForRedaction: (value) => params.secretRedactor!.registerRaw({
                     pluginId: seed.plugin.id,
-                    generation: seed.generation,
+                    occurrenceId: seed.occurrenceId,
                     correlationId: seed.correlationId,
                 }, value),
             });
@@ -508,7 +511,7 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
         createAvailable({ seed, params }): PluginServices['providers'] | null {
             return params.providers?.bind({
                 signal: seed.signal,
-                isCurrent: seed.isGenerationCurrent,
+                isCurrent: seed.isOccurrenceCurrent,
             }) ?? null;
         },
     },
@@ -600,7 +603,7 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
             return params.resources.bind({
                 pluginId: seed.plugin.id,
                 signal: seed.signal,
-                isGenerationCurrent: seed.isGenerationCurrent,
+                isOccurrenceCurrent: seed.isOccurrenceCurrent,
             });
         },
     },
@@ -666,10 +669,13 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
                 seed: Object.freeze({
                     plugin: seed.plugin,
                     contribution: seed.contribution,
-                    generation: seed.generation,
-                    ...(seed.immutableGenerationId === undefined
+                    occurrenceId: seed.occurrenceId,
+                    ...(seed.occurrenceId === undefined
                         ? {}
-                        : { immutableGenerationId: seed.immutableGenerationId }),
+                        : { occurrenceId: seed.occurrenceId }),
+                    ...(seed.sourceCustody === undefined
+                        ? {}
+                        : { sourceCustody: seed.sourceCustody }),
                     correlationId: seed.correlationId,
                     surface: seed.surface,
                     ...(seed.caller ? { caller: seed.caller } : {}),
@@ -697,7 +703,7 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
                         ? { readActiveTurnAdmissionWitness: seed.readActiveTurnAdmissionWitness }
                         : {}),
                     signal: seed.signal,
-                    isGenerationCurrent: seed.isGenerationCurrent,
+                    isOccurrenceCurrent: seed.isOccurrenceCurrent,
                     ...(seed.bypassActionInterception === true
                         ? { bypassActionInterception: true as const }
                         : {}),
@@ -717,7 +723,7 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
             return params.targetedContributions?.bind({
                 pluginId: seed.plugin.id,
                 signal: seed.signal,
-                isCurrent: seed.isGenerationCurrent,
+                isCurrent: seed.isOccurrenceCurrent,
             }) ?? null;
         },
     },
@@ -748,7 +754,7 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
             return createPluginInteractionsService({
                 currentSession: null,
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
         },
         createAvailable({ interactions }): InteractionsService {
@@ -764,13 +770,13 @@ export const PLUGIN_SERVICE_IDS = Object.freeze(
 export type PluginServiceBindingAvailability = 'available' | 'unavailable' | 'denied';
 
 export function createPluginInvocationServiceBinding(
-    generation: string,
+    occurrenceId: string,
     id: string,
 ): PluginInvocationServiceBinding {
     return Object.freeze({
         kind: 'plugin_invocation_service_binding_v1',
         id,
-        generation,
+        occurrenceId,
         availability: Object.freeze(Object.fromEntries(
             PLUGIN_SERVICE_IDS.map((serviceId) => [
                 PLUGIN_SERVICE_DESCRIPTORS[serviceId].id,
@@ -863,8 +869,8 @@ export function createPluginInvocationServicesFromDescriptors(
     binding: PluginInvocationServiceBinding,
     params: PluginInvocationServicesFactoryParams,
 ): PluginServices {
-    if (binding.generation !== seed.generation) {
-        throw new Error('Plugin invocation service binding generation does not match the invocation context');
+    if (binding.occurrenceId !== seed.occurrenceId) {
+        throw new Error('Plugin invocation service binding occurrence does not match the invocation context');
     }
     const unavailable = createUnavailablePluginServices({
         deniedServiceIds: PLUGIN_SERVICE_IDS.filter((serviceId) => binding.availability[serviceId] === 'denied'),
@@ -889,14 +895,14 @@ export function createPluginInvocationServicesFromDescriptors(
                 ? Object.freeze({
                     ...configuredManagedProvider.requestAuth,
                     isCurrent: () => (
-                        seed.isGenerationCurrent()
+                        seed.isOccurrenceCurrent()
                         && configuredManagedProvider.isCurrent()
                         && configuredManagedProvider.requestAuth!.isCurrent()
                     ),
                 })
                 : null,
             isCurrent: () => (
-                seed.isGenerationCurrent()
+                seed.isOccurrenceCurrent()
                 && configuredManagedProvider.isCurrent()
             ),
         }) satisfies ManagedProviderRuntimeOperationBinding
@@ -908,7 +914,7 @@ export function createPluginInvocationServicesFromDescriptors(
             allowedEnvKeys: binding.processEnvKeys,
             allowedCwdScopes: binding.filesystemScopes,
             signal: seed.signal,
-            isGenerationCurrent: seed.isGenerationCurrent,
+            isOccurrenceCurrent: seed.isOccurrenceCurrent,
             resolveExecutable: (executable) => params.exec!.resolveExecutable(
                 executable,
                 seed.plugin.id,
@@ -920,7 +926,7 @@ export function createPluginInvocationServicesFromDescriptors(
                             managedProviderRuntime.providerLocalId,
                         contributionQualifiedId:
                             seed.contribution.qualifiedId,
-                        generation: seed.generation,
+                        occurrenceId: seed.occurrenceId,
                         isCurrent: managedProviderRuntime.isCurrent,
                     })
                     : undefined,
@@ -954,16 +960,13 @@ export function createPluginInvocationServicesFromDescriptors(
     const interactions = createPluginInteractionsService({
         currentSession: seed.currentSession ?? null,
         signal: seed.signal,
-        isGenerationCurrent: seed.isGenerationCurrent,
+        isOccurrenceCurrent: seed.isOccurrenceCurrent,
         ...(seed.readActiveTurnAdmissionWitness
             ? { readActiveTurnAdmissionWitness: seed.readActiveTurnAdmissionWitness }
             : {}),
-        requester: Object.freeze({
-            pluginId: seed.plugin.id,
-            contributionId: seed.contribution.id,
-            generationId: seed.generation,
-            invocationId: seed.correlationId,
-        }),
+        ...(seed.currentSession
+            ? { requester: createInteractionTransientRequesterForInvocation(seed) }
+            : {}),
         permissionOwner: Object.freeze({
             kind: 'plugin',
             pluginId: seed.plugin.id,

@@ -3,7 +3,7 @@ import { definePlugin } from '@happier-dev/plugin-sdk';
 import { OPENAI_CODEX_OAUTH_PROFILE } from './connectedAccounts/openAiCodexProfile.js';
 import type { HookHandler } from '@happier-dev/plugin-sdk/hooks';
 
-import { AGENT_DEFINITION } from './agent/definition.js';
+import { AGENT_DEFINITION, AGENT_STATE_SHARING_DESCRIPTOR } from './agent/definition.js';
 import {
   codexCliSessionCommandConfig,
   resolveCodexCliSessionExtraOptions,
@@ -23,7 +23,6 @@ import { shouldUseCodexDeferredBootstrap } from './agent/lifecycle/deferredStart
 import { readCodexMcpConfigServers } from './agent/mcp/configServers.js';
 import { CODEX_PROVIDER_BINDING_ADAPTER_V1 } from './agent/providerBinding/adapter.js';
 import { createCodexAgentRuntime } from './agent/runtime/engine.js';
-import { codexStateSharingDescriptor } from './agent/auth/services/state/sharing/descriptor.js';
 import {
   createCodexConnectedAccountNativeAuthCodec,
   createCodexConnectedServiceRuntimeAuthAdapter,
@@ -61,10 +60,6 @@ const {
   id: CODEX_AGENT_SETTINGS_CONTRIBUTION_ID,
   ...CODEX_AGENT_SETTINGS_DECLARATION
 } = CODEX_AGENT_SETTINGS_CONTRIBUTION;
-const {
-  providerId: _codexStateSharingProviderId,
-  ...CODEX_STATE_SHARING_DECLARATION
-} = codexStateSharingDescriptor;
 
 export const CODEX_PLUGIN = definePlugin({
   id: 'happier.agent.codex',
@@ -119,7 +114,8 @@ export const CODEX_PLUGIN = definePlugin({
   connectedAccountDescriptors: {
     'openai-codex': {
       declaration: {
-        title: 'Codex',
+        // The account people have is ChatGPT; "Codex" stays the agent's name.
+        title: 'ChatGPT',
         recoveryCredits: { supported: true },
         authentication: {
           defaultModeId: 'oauth',
@@ -209,6 +205,15 @@ export const CODEX_PLUGIN = definePlugin({
             recommendationOrder: 20,
             guideUrl: null,
             docsUrl: 'https://github.com/openai/codex',
+            npmPackageName: '@openai/codex',
+            // openai/codex `codex-rs/cli/src/main.rs` declares the `update` subcommand; the
+            // standalone installer (`scripts/install/install.sh`) keeps its payload in
+            // $CODEX_HOME/packages/standalone (default ~/.codex). A custom CODEX_HOME is not
+            // attributed and stays a manual update.
+            nativeUpdate: {
+              args: ['update'],
+              installPaths: ['.codex/packages/standalone'],
+            },
           },
           auth: {
             support: 'login_terminal',
@@ -237,6 +242,7 @@ export const CODEX_PLUGIN = definePlugin({
             delivery: ['newTurn', 'steer'],
             cancel: true,
             configuration: true,
+            workspaceWrites: 'deny',
             goals: {
               active: {
                 get: true,
@@ -285,7 +291,7 @@ export const CODEX_PLUGIN = definePlugin({
           supportsFreeformModelIds: true,
         },
         surfaces: { externalSession: {
-          externalLinkedTakeover: { writerSafety: 'unsupported' },
+          externalLinkedTakeover: { writerSafety: 'native_prevention' },
           sources: [{
             sourceKind: 'codexHome',
             schema: {
@@ -335,13 +341,7 @@ export const CODEX_PLUGIN = definePlugin({
             'same_connected_group',
           ],
         },
-        stateSharingDescriptor: {
-          ...CODEX_STATE_SHARING_DECLARATION,
-          nativeHome: {
-            environmentKey: 'CODEX_HOME',
-            defaultRelativePath: '.codex',
-          },
-        },
+        stateSharingDescriptor: AGENT_STATE_SHARING_DESCRIPTOR,
         continuity: {
           nativeAuthCodec: createCodexConnectedAccountNativeAuthCodec(),
           runtimeAuthAdapter: createCodexConnectedServiceRuntimeAuthAdapter(),
@@ -435,7 +435,6 @@ export const CODEX_PLUGIN = definePlugin({
         },
         client: {
           artifactId: 'voice-runtime-web',
-          modulePath: './ui/voice',
           exportName: 'activate',
         },
       },

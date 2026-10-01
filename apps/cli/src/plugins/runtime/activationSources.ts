@@ -1,5 +1,5 @@
 import type { PluginSourceTrustPolicyV1 } from '@happier-dev/protocol';
-import type { PluginDistributionIdentity, PluginTrustRecord } from '@/plugins/store/install/trustIdentity';
+import type { PluginRuntimeSourceAuthority } from './sourceAuthority';
 
 export type PluginRelativeModuleResolution<TModule> = Readonly<{
     module: TModule;
@@ -23,16 +23,19 @@ export type ValidatedAgentSessionRunnerFactoryFactV1 = Readonly<{
     loadMode: 'immutable-js' | 'source-ts';
 }>;
 
+/**
+ * The committed managed generation selected for this load. Trust and
+ * currentness were decided when the store committed the generation (apply
+ * time); loading does not re-verify them.
+ */
 export type CommittedPluginExecutionAuthorization = Readonly<{
     pluginId: string;
     immutableGenerationId: string;
-    distribution: PluginDistributionIdentity;
-    trust: PluginTrustRecord;
-    isCurrent: () => Promise<boolean>;
 }>;
 
 export type FileBackedPluginActivationSource = Readonly<{
     kind: 'file_backed';
+    sourceAuthority?: PluginRuntimeSourceAuthority;
     entryPath: string;
     devEntryPath?: string | null;
     useDevelopmentEntry?: boolean;
@@ -48,6 +51,7 @@ export type FileBackedPluginActivationSource = Readonly<{
 
 export type BundledPluginActivationSource<TModule> = Readonly<{
     kind: 'bundled';
+    sourceAuthority?: PluginRuntimeSourceAuthority;
     /**
      * Stable identity for caching/diagnostics. In PS-04 this should come from the
      * generated bundled entry map (for example a package subpath).
@@ -69,8 +73,9 @@ export type BundledPluginActivationSource<TModule> = Readonly<{
 
 export type PreparedPluginActivationSource<TModule> = Readonly<{
     kind: 'prepared';
+    sourceAuthority?: PluginRuntimeSourceAuthority;
     module: TModule;
-    committedAuthorization: CommittedPluginExecutionAuthorization;
+    committedAuthorization?: CommittedPluginExecutionAuthorization;
     resolveRelativeModule?: PluginRelativeModuleResolver<Record<string, unknown>>;
     persistValidatedAgentSessionRunnerFactories?: (
         facts: readonly ValidatedAgentSessionRunnerFactoryFactV1[],

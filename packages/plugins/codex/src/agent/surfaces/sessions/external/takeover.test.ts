@@ -37,6 +37,7 @@ describe('Codex External Sessions takeover launch derivation', () => {
         codexBackendMode: 'appServer',
       },
       linkedDirectory: '/repo/project',
+      transcriptStorage: 'persisted' as const,
     });
 
     const plan = resolveCodexExternalSessionTakeoverPlan(
@@ -97,6 +98,7 @@ describe('Codex External Sessions takeover launch derivation', () => {
         codexBackendMode: 'appServer',
       },
       linkedDirectory: ' /repo/project ',
+      transcriptStorage: 'persisted',
     });
 
     expect(plan).toMatchObject({
@@ -195,6 +197,7 @@ describe('Codex External Sessions takeover launch derivation', () => {
         },
         targetDirectory: '/local/selected/workspace',
         linkedDirectory: '/repo/project',
+        transcriptStorage: 'persisted',
       }),
     )).resolves.toMatchObject({
       ok: true,
@@ -209,6 +212,7 @@ describe('Codex External Sessions takeover launch derivation', () => {
         environmentVariables: {
           CODEX_HOME: '/home/user/.codex',
         },
+        applyConnectedAccountDefaults: true,
       },
     });
     expect(Object.keys(codexExternalSessionTakeoverContribution)).toEqual([
@@ -229,6 +233,7 @@ describe('Codex External Sessions takeover launch derivation', () => {
         homePath: '/home/user/.codex-current',
       },
       targetDirectory: '/local/selected/workspace',
+      transcriptStorage: 'persisted',
     } as const;
 
     await expect(Promise.resolve(
@@ -254,5 +259,83 @@ describe('Codex External Sessions takeover launch derivation', () => {
         },
       }),
     )).resolves.toEqual({ ok: false, code: 'unavailable' });
+  });
+
+  it('adopts daemon-loaded sessions independently of transcript storage and keeps native auth', async () => {
+    const base = {
+      signal: new AbortController().signal,
+      deadlineAtMs: Date.now() + 15_000,
+      maxSerializedBytes: 262_144,
+      linkedSessionId: 'happier-session-1',
+      remoteSessionId: 'thread-381',
+      source: { kind: 'codexHome', home: 'user', homePath: '/home/user/.codex' },
+      linkData: {
+        source: { kind: 'codexHome', home: 'user', homePath: '/home/user/.codex' },
+        codexBackendMode: 'appServer',
+        runtimeDescriptorV1: {
+          v: 1,
+          agentId: 'codex',
+          agent: {
+            backendMode: 'appServer',
+            providerSessionId: 'thread-381',
+            appServerTransport: 'daemonProxy',
+            home: 'user',
+            homePath: '/home/user/.codex',
+          },
+        },
+      },
+      targetDirectory: '/repo/project',
+      linkedDirectory: '/repo/project',
+    } as const;
+
+    await expect(Promise.resolve(
+      codexExternalSessionTakeoverContribution.resolveLaunch({
+        ...base,
+        transcriptStorage: 'direct',
+      }),
+    )).resolves.toMatchObject({
+      ok: true,
+      value: { runtimeDescriptorV1: { agent: { appServerTransport: 'daemonProxy' } } },
+    });
+    await expect(Promise.resolve(
+      codexExternalSessionTakeoverContribution.resolveLaunch({
+        ...base,
+        transcriptStorage: 'direct',
+      }),
+    )).resolves.not.toMatchObject({
+      value: { applyConnectedAccountDefaults: true },
+    });
+
+    const persisted = await Promise.resolve(
+      codexExternalSessionTakeoverContribution.resolveLaunch({
+        ...base,
+        transcriptStorage: 'persisted',
+      }),
+    );
+    expect(persisted).toMatchObject({ ok: true });
+    if (!persisted.ok) throw new Error('expected persisted takeover plan');
+    expect(persisted.value.runtimeDescriptorV1?.agent)
+      .toMatchObject({ appServerTransport: 'daemonProxy' });
+    expect(persisted.value).not.toHaveProperty('applyConnectedAccountDefaults');
+
+    await expect(Promise.resolve(
+      codexExternalSessionTakeoverContribution.resolveLaunch({
+        ...base,
+        transcriptStorage: 'direct',
+        linkData: {
+          ...base.linkData,
+          runtimeDescriptorV1: {
+            v: 1,
+            agentId: 'codex',
+            agent: {
+              backendMode: 'appServer',
+              providerSessionId: 'thread-381',
+              home: 'user',
+              homePath: '/home/user/.codex',
+            },
+          },
+        },
+      }),
+    )).resolves.toEqual({ ok: false, code: 'unsupported' });
   });
 });

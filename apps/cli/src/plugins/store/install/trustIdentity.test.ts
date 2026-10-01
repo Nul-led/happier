@@ -67,21 +67,19 @@ describe('whole-plugin installation trust identity', () => {
       }),
     })).toBe(false);
 
-    const automatic = { trust, updatePolicy: 'reviewSensitiveChanges' as const };
+    const automatic = { trust, updatePolicy: 'allowed' as const };
     const pinned = { trust, updatePolicy: 'pinned' as const };
     expect(automatic.trust).toEqual(pinned.trust);
   });
 
-  it('binds local trust to the canonical filesystem path and covers every executable realm once', async () => {
+  it('binds local trust to the canonical filesystem path', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'happier-plugin-trust-identity-'));
     temporaryDirectories.push(directory);
     const distribution = await createLocalPathPluginDistributionIdentity(directory);
     const trust = createPluginTrustRecord({ pluginId: 'acme.plugin', distribution, approvedAtMs: 23 });
 
     expect(distribution).toEqual({ kind: 'localPath', canonicalPath: await realpath(directory) });
-    for (const realm of ['daemon', 'reactNative', 'reactNativeWeb', 'hostedWeb', 'declarative'] as const) {
-      expect(isPluginTrustRecordAuthorized(trust, { pluginId: 'acme.plugin', distribution, realm })).toBe(true);
-    }
+    expect(isPluginTrustRecordAuthorized(trust, { pluginId: 'acme.plugin', distribution })).toBe(true);
   });
 
   it('uses the canonical home-expansion owner for both separator spellings', async () => {

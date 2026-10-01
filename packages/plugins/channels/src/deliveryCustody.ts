@@ -1,6 +1,7 @@
 import type {
   ConversationDeliveryArchiveRecoveryV1,
   ConversationDeliveryResultV1,
+  ConversationSessionLastDeliveryOutcomeV1,
 } from '@happier-dev/channels-protocol/v1';
 import { MAX_CONVERSATION_DELIVERY_ATTEMPTS } from '@happier-dev/channels-protocol/v1';
 
@@ -301,6 +302,29 @@ export function deriveConversationDeliveryAttention(
     partial: custody.state === 'partial',
     outcomeUnknown: custody.state === 'outcomeUnknown',
   };
+}
+
+/** Presentation of retained custody only; accepting ambiguous evidence does not prove delivery. */
+export function deriveConversationDeliveryLastOutcome(
+  custody: ConversationDeliveryCustody,
+): ConversationSessionLastDeliveryOutcomeV1 {
+  switch (custody.state) {
+    case 'ready':
+    case 'retryDue':
+    case 'attempting':
+      return 'pending';
+    case 'delivered':
+      return 'delivered';
+    case 'notDelivered':
+    case 'suppressed':
+    case 'connectionDeleted':
+      return 'notDelivered';
+    case 'partial':
+    case 'outcomeUnknown':
+    case 'resolvedAccepted':
+    case 'resolvedDiscarded':
+      return 'unknown';
+  }
 }
 
 export function deriveConversationDeliveryProjection(custody: ConversationDeliveryCustody): Readonly<{

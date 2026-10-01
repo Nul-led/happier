@@ -313,6 +313,18 @@
   },
   "id": "happier.agent.gemini",
   "runtime": {
+    "agentFactories": [
+      {
+        "loadMode": "immutable-js",
+        "localAgentId": "gemini",
+        "locator": {
+          "export": "createGeminiAgentRuntime",
+          "module": "./agent/runtime/factory",
+          "runtimeApiVersion": 1
+        },
+        "normalizedModulePath": ".happier-plugin/agent/runtime/factory.js"
+      }
+    ],
     "apiVersion": 1
   },
   "schemaVersion": 2,

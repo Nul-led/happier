@@ -1,4 +1,4 @@
-import { appendFile, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentExternalSessionsContribution } from '@happier-dev/plugin-sdk/sessions/external';
 
 import * as providerOps from './contribution.js';
+import { classifyClaudeNativeTranscriptRow } from '../../../transcripts/nativeSemanticProjection.js';
+import { projectClaudeTranscriptRowToProviderPayload } from '../../../runtime/terminal/unified/providerTranscript.js';
 
 const roots: string[] = [];
 
@@ -1058,6 +1060,150 @@ describe('Claude native External Sessions contribution', () => {
         expect(second.value.items[0]?.id).not.toBe(first.value.items[0]?.id);
     });
 
+    it.each([false, true])('preserves ordered native observations only for terminal reads (bounded: %s)', async (bounded) => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-terminal-observations-'));
+        roots.push(root);
+        const configDir = join(root, '.claude');
+        const remoteSessionId = 'terminal-observations';
+        const source = { kind: 'claudeConfig', configDir, projectId: 'terminal-project' };
+        const transcriptPath = await createTranscript({ configDir, projectId: source.projectId, remoteSessionId, title: 'existing' });
+        const contribution = createClaudeExternalSessionsContribution({ env: { HAPPIER_CLAUDE_CONFIG_DIR: configDir } });
+        const tail = await contribution.pageTranscript({ ...invocation(), source, remoteSessionId, direction: 'older', maxItems: 10 });
+        if (!tail.ok || !tail.value.tailCursor) throw new Error('expected tail cursor');
+        const timestamp = '2026-06-08T00:02:00.000Z';
+        const nativeRows = [
+            { type: 'assistant', uuid: 'answer', timestamp, message: { content: [{ type: 'text', text: 'answer' }] } },
+            { type: 'queue-operation', operation: 'enqueue', content: 'queued', timestamp },
+            { type: 'queue-operation', operation: 'remove', content: 'queued', timestamp },
+            { type: 'user', uuid: 'tool-result', timestamp, message: { content: [{ type: 'tool_result', tool_use_id: 'call', content: 'done' }] } },
+            { type: 'attachment', attachment: { type: 'queued_command', prompt: 'queued' }, timestamp },
+            { type: 'user', uuid: 'user', timestamp, promptSource: 'queued', message: { content: 'queued' } },
+            { type: 'user', uuid: 'slash', timestamp, message: { content: '<command-name>/help</command-name>' } },
+            { type: 'user', uuid: 'compact', timestamp, isCompactSummary: true, message: { content: 'compact summary' } },
+        ];
+        await appendFile(transcriptPath, nativeRows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+        const request = { ...invocation(), source, remoteSessionId, cursor: tail.value.tailCursor, maxItems: 50 };
+        const ordinary = await contribution.readAfterTranscript(request);
+        if (!ordinary.ok || ordinary.value.outcome !== 'advanced') throw new Error('expected ordinary items');
+        expect(ordinary.value.items.every((item) => item.raw.role === 'user' || item.raw.role === 'agent')).toBe(true);
+        expect(ordinary.value.items).toHaveLength(5);
+        const page = await contribution.pageTranscript({ ...invocation(), source, remoteSessionId, direction: 'older', maxItems: 50 });
+        if (!page.ok) throw new Error('expected browse items');
+        expect(page.value.items.every((item) => item.raw.role === 'user' || item.raw.role === 'agent')).toBe(true);
+        const reference = await contribution.readAfterTranscript({ ...request, projection: 'terminal', maxItems: 1 });
+        if (!reference.ok || reference.value.outcome !== 'advanced') throw new Error('expected first terminal item');
+        const maxSerializedBytes = bounded ? Buffer.byteLength(JSON.stringify(reference), 'utf8') + 180 : request.maxSerializedBytes;
+        const items = [];
+        let cursor = request.cursor;
+        for (let index = 0; index < nativeRows.length; index += 1) {
+            const result = await contribution.readAfterTranscript({ ...request, cursor, projection: 'terminal', maxSerializedBytes });
+            if (!result.ok || result.value.outcome !== 'advanced') throw new Error('expected terminal continuation');
+            expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThanOrEqual(maxSerializedBytes);
+            expect(result.value.items.length).toBeGreaterThan(0);
+            items.push(...result.value.items);
+            cursor = result.value.nextCursor;
+            if (!result.value.hasMore) break;
+        }
+        expect(items.map((item) => item.raw.role)).toEqual(['agent', 'source_observation', 'source_observation', 'agent', 'source_observation', 'source_observation', 'source_observation', 'source_observation']);
+        expect(items.filter((item) => item.raw.role === 'source_observation').map((item) => item.raw.content)).toEqual(nativeRows.filter((_, index) => index !== 0 && index !== 3));
+        expect(items[3]?.raw).toMatchObject({ role: 'agent', content: { data: { type: 'tool-result', callId: 'call', output: 'done' } } });
+        expect(items.every((item) => item.createdAtMs === Date.parse(timestamp))).toBe(true);
+        expect(new Set(items.map((item) => item.id)).size).toBe(nativeRows.length);
+        const fresh = await contribution.pageTranscript({ ...invocation(), source, remoteSessionId, direction: 'newer', projection: 'terminal', maxItems: 50 });
+        if (!fresh.ok) throw new Error('expected fresh terminal page');
+        expect(fresh.value.items.slice(2)).toEqual(items);
+        expect(fresh.value.items[0]?.raw.role).toBe('source_observation');
+        expect(await contribution.readAfterTranscript({ ...request, cursor, projection: 'terminal' })).toEqual({ ok: true, value: { outcome: 'already_current' } });
+    });
+
+    it('preserves terminal prompt evidence without carrying oversized inline image bytes', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-terminal-image-'));
+        roots.push(root);
+        const configDir = join(root, '.claude');
+        const remoteSessionId = 'terminal-image';
+        const source = { kind: 'claudeConfig', configDir, projectId: 'terminal-project' };
+        const transcriptPath = await createTranscript({ configDir, projectId: source.projectId, remoteSessionId, title: 'existing' });
+        const contribution = createClaudeExternalSessionsContribution({ env: { HAPPIER_CLAUDE_CONFIG_DIR: configDir } });
+        const maxSerializedBytes = 524_288; // Host external-session transcript invocation policy.
+        const tail = await contribution.pageTranscript({ ...invocation(maxSerializedBytes), source, remoteSessionId, direction: 'older', maxItems: 10 });
+        if (!tail.ok || !tail.value.tailCursor) throw new Error('expected tail cursor');
+        const imageData = 'A'.repeat(maxSerializedBytes + 1024);
+        const row = {
+            type: 'user' as const, uuid: 'image-prompt', timestamp: '2026-06-08T00:02:00.000Z',
+            promptSource: 'queued', parentUuid: 'parent', promptId: 'prompt-image',
+            message: { content: [
+                { type: 'text', text: 'Explain this image' },
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageData } },
+            ] },
+        };
+        await appendFile(transcriptPath, JSON.stringify(row) + '\n');
+        const request = { ...invocation(maxSerializedBytes), source, remoteSessionId, cursor: tail.value.tailCursor, maxItems: 10 };
+        const ordinary = await contribution.readAfterTranscript(request);
+        expect(ordinary.ok).toBe(true);
+        if (!ordinary.ok || ordinary.value.outcome !== 'advanced') throw new Error('expected ordinary image prompt');
+        expect(JSON.stringify(ordinary.value)).not.toContain(imageData);
+        const terminal = await contribution.readAfterTranscript({ ...request, projection: 'terminal' });
+        expect(terminal.ok).toBe(true);
+        if (!terminal.ok || terminal.value.outcome !== 'advanced') throw new Error('expected terminal image prompt');
+        expect(terminal.value.items).toHaveLength(1);
+        expect(terminal.value.items[0]?.raw).toMatchObject({ role: 'source_observation', content: {
+            type: 'user', uuid: row.uuid, timestamp: row.timestamp, promptSource: row.promptSource, parentUuid: row.parentUuid, promptId: row.promptId,
+            message: { content: [{ type: 'text', text: 'Explain this image' }, { type: 'image' }] },
+        } });
+        const classification = classifyClaudeNativeTranscriptRow(terminal.value.items[0]?.raw.content);
+        expect(classification.lifecycle).toEqual({ kind: 'text', text: 'Explain this image' });
+        expect(classification.semanticParts).toEqual([
+            { kind: 'text', text: 'Explain this image' }, { kind: 'unsupported', source: 'image' },
+        ]);
+        if (!classification.row) throw new Error('expected native prompt row');
+        expect(projectClaudeTranscriptRowToProviderPayload({
+            providerSessionId: remoteSessionId, row: classification.row, suppressPriorEraTurnClosure: false,
+        })).toMatchObject({
+            providerSessionId: remoteSessionId, turnId: row.uuid, kind: 'text', text: 'Explain this image',
+        });
+        expect(JSON.stringify(terminal)).not.toContain(imageData);
+        expect(Buffer.byteLength(JSON.stringify(terminal))).toBeLessThanOrEqual(maxSerializedBytes);
+        expect(await contribution.readAfterTranscript({ ...request, cursor: terminal.value.nextCursor, projection: 'terminal' })).toEqual({ ok: true, value: { outcome: 'already_current' } });
+    });
+
+    it('orders lifecycle observations after their visible row and preserves atomic item budgeting', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-terminal-lifecycle-'));
+        roots.push(root);
+        const configDir = join(root, '.claude');
+        const remoteSessionId = 'terminal-lifecycle';
+        const source = { kind: 'claudeConfig', configDir, projectId: 'terminal-project' };
+        const transcriptPath = await createTranscript({ configDir, projectId: source.projectId, remoteSessionId, title: 'existing' });
+        const contribution = createClaudeExternalSessionsContribution({ env: { HAPPIER_CLAUDE_CONFIG_DIR: configDir } });
+        const tail = await contribution.pageTranscript({ ...invocation(), source, remoteSessionId, direction: 'older', maxItems: 10 });
+        if (!tail.ok || !tail.value.tailCursor) throw new Error('expected tail cursor');
+        const timestamp = '2026-06-08T00:02:00.000Z';
+        const rows = [
+            { type: 'assistant', uuid: 'stop', timestamp, message: { content: [{ type: 'text', text: 'finished' }], stop_reason: 'end_turn' } },
+            { type: 'assistant', uuid: 'error', timestamp, isApiErrorMessage: true, message: { content: [{ type: 'text', text: 'failed' }] } },
+            { type: 'system', uuid: 'compact', timestamp, subtype: 'compact_boundary' },
+            { type: 'user', uuid: 'feedback', timestamp, isMeta: true, message: { content: 'Stop hook feedback:\ncontinue' } },
+            { type: 'user', uuid: 'interrupted', timestamp, message: { content: '[Request interrupted by user]' } },
+        ];
+        await appendFile(transcriptPath, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+        const request = { ...invocation(), source, remoteSessionId, cursor: tail.value.tailCursor, projection: 'terminal' as const };
+        const tooSmall = await contribution.readAfterTranscript({ ...request, maxItems: 1 });
+        expect(tooSmall.ok).toBe(false);
+        const first = await contribution.readAfterTranscript({ ...request, maxItems: 3 });
+        if (!first.ok || first.value.outcome !== 'advanced') throw new Error('expected first lifecycle page');
+        expect(first.value.items.map((item) => item.raw.role)).toEqual(['agent', 'source_observation']);
+        expect(first.value.items[1]?.raw.content).toEqual(rows[0]);
+        expect(first.value.hasMore).toBe(true);
+        const second = await contribution.readAfterTranscript({ ...request, cursor: first.value.nextCursor, maxItems: 2 });
+        if (!second.ok || second.value.outcome !== 'advanced') throw new Error('expected lifecycle continuation');
+        expect(second.value.items.map((item) => item.raw.role)).toEqual(['agent', 'source_observation']);
+        expect(second.value.items[1]?.raw.content).toEqual(rows[1]);
+        const rest = await contribution.readAfterTranscript({ ...request, cursor: second.value.nextCursor, maxItems: 10 });
+        if (!rest.ok || rest.value.outcome !== 'advanced') throw new Error('expected lifecycle remainder');
+        expect(rest.value.items.map((item) => item.raw.content)).toEqual(rows.slice(2));
+        const all = [...first.value.items, ...second.value.items, ...rest.value.items];
+        expect(new Set(all.map((item) => item.id)).size).toBe(all.length);
+    });
+
     it('keeps forward transcript reads within the host byte budget without losing the next item', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-claude-native-forward-budget-'));
         roots.push(root);
@@ -1220,6 +1366,38 @@ describe('Claude native External Sessions contribution', () => {
             code: 'candidate_not_found',
         });
     });
+    // POSIX permissions only: Windows and root ignore the mode bits this uses.
+    it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+        'reports an unreadable transcript as an Agent fault rather than an unavailable Agent',
+        async () => {
+            const root = await mkdtemp(join(tmpdir(), 'happier-claude-unreadable-'));
+            roots.push(root);
+            const configDir = join(root, '.claude');
+            const remoteSessionId = 'unreadable-session';
+            const transcriptPath = await createTranscript({
+                configDir,
+                projectId: 'unreadable',
+                remoteSessionId,
+                title: 'first prompt',
+            });
+            await chmod(transcriptPath, 0o000);
+            try {
+                const contribution = createClaudeExternalSessionsContribution({
+                    env: { HAPPIER_CLAUDE_CONFIG_DIR: configDir },
+                });
+                await expect(contribution.pageTranscript({
+                    ...invocation(),
+                    source: { kind: 'claudeConfig', configDir, projectId: 'unreadable' },
+                    remoteSessionId,
+                    direction: 'older',
+                    maxItems: 10,
+                })).resolves.toMatchObject({ ok: false, code: 'agent_error' });
+            } finally {
+                await chmod(transcriptPath, 0o600);
+            }
+        },
+    );
+
     it('fails an older page closed when it consumes an unsupported native record', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-claude-older-unsupported-'));
         roots.push(root);

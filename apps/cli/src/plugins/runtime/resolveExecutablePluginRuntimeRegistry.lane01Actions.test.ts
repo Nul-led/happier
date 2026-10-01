@@ -194,7 +194,7 @@ describe('installed external plugin Lane 01 Actions', () => {
                     compatibility: { status: 'compatible', diagnostics: [] },
                     install: {
                         mode: 'link', manifestVersion: '1.0.0', installedPath: null, trust,
-                        updatePolicy: 'reviewEveryUpdate', optionalAccess: [],
+                        updatePolicy: 'allowed', optionalAccess: [],
                     },
                     state: { enabled: true },
                 },
@@ -217,6 +217,7 @@ describe('installed external plugin Lane 01 Actions', () => {
                 await resolveExecutablePluginRuntimeRegistry({
                     happyHomeDir,
                     contributes,
+                    pluginIds: [PLUGIN_ID],
                     // The real daemon supplies the current Machine at this
                     // boundary. Keep this external-plugin journey on that
                     // host-stamped provenance path instead of bypassing the
@@ -253,6 +254,7 @@ describe('installed external plugin Lane 01 Actions', () => {
                 await resolveExecutablePluginRuntimeRegistry({
                     happyHomeDir,
                     contributes,
+                    pluginIds: [PLUGIN_ID],
                     resolveCurrentMachineId: () => 'machine-lane01-plugin',
                     scopedActionRuntime: {
                         credentials: { token: scopedToken, encryption: null },
@@ -321,6 +323,7 @@ describe('installed external plugin Lane 01 Actions', () => {
             registry = await resolveExecutablePluginRuntimeRegistry({
                 happyHomeDir,
                 contributes,
+                pluginIds: [PLUGIN_ID],
                 resolveCurrentMachineId: () => 'machine-lane01-plugin',
                 scopedActionRuntime: {
                     credentials: { token: scopedToken, encryption: null },

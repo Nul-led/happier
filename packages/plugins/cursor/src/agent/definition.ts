@@ -23,7 +23,7 @@ export const AGENT_DEFINITION = Object.freeze({
     },
     handoff: { vendorStateTransfer: 'unsupported' },
     localControl: { supported: true, topology: 'exclusive', attachStrategy: 'unsupported' },
-    tools: { delivery: 'shell_bridge', support: 'experimental' },
+    tools: { delivery: 'native_mcp', support: 'experimental' },
   },
   sessionModeDescriptor: { source: 'acp', semantics: 'agent-modes', runtimeSwitch: 'acp-setSessionMode' },
   sessionModesKind: 'acpAgentModes',

@@ -51,32 +51,11 @@ const DEFAULT_REQUIRED = new Set([
   'run_binary_smoke',
 ]);
 
-const WORKFLOW_CALL_ONLY = new Set([
-  'run_mobile_e2e_android',
-  'run_mobile_e2e_ios',
-  'run_e2e_core_slow',
-  'run_release_assets_docker',
-]);
-
-const DISPATCH_OR_CALL_ONLY = new Set([
-  'run_providers',
-  'run_self_host_systemd',
-  'run_self_host_launchd',
-  'run_self_host_schtasks',
-  'run_self_host_daemon',
-]);
-
-export function jobsForSelectedInputs({ inputs, eventName }) {
+export function jobsForSelectedInputs({ inputs }) {
   const explicitlySelected = inputs.select_jobs_explicitly === true;
   const jobs = new Set(['cliproxyapi-managed-runtime', 'trusted_ref_guard']);
   for (const [selector, selectedJobs] of Object.entries(SELECTOR_JOBS)) {
-    const eventAllows = !WORKFLOW_CALL_ONLY.has(selector) || eventName === 'workflow_call';
-    const dispatchAllows = !DISPATCH_OR_CALL_ONLY.has(selector)
-      || eventName === 'workflow_call'
-      || eventName === 'workflow_dispatch';
-    const selected = eventAllows
-      && dispatchAllows
-      && (inputs[selector] === true || (!explicitlySelected && DEFAULT_REQUIRED.has(selector)));
+    const selected = inputs[selector] === true || (!explicitlySelected && DEFAULT_REQUIRED.has(selector));
     if (selected) for (const job of selectedJobs) jobs.add(job);
   }
   return jobs;

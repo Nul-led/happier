@@ -72,6 +72,12 @@ function antigravityPinnedContribution(
                 kind: 'pinnedArchive',
                 installId: 'dep.antigravity.agy-acp-server',
                 version: facts.version,
+                archiveExtractionLimits: {
+                    maxArchiveBytes: 1024 * 1024 * 1024,
+                    maxFileBytes: 2 * 1024 * 1024 * 1024,
+                    maxExpandedBytes: 2 * 1024 * 1024 * 1024,
+                    timeoutMs: 10 * 60_000,
+                },
                 assetsByPlatform: {
                     'darwin-arm64': asset,
                     'linux-x64': asset,

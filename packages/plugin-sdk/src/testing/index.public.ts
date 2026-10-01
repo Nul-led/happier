@@ -49,6 +49,10 @@ export type { PluginUiTestkitTargetedSurfaceAdmission } from './uiHost.js';
 export type { PluginUiTestkitOpenSurfaceInput } from './uiHost.js';
 export type { PluginUiTestkitOpenNewSessionInput } from './uiHost.js';
 export type { PluginUiTestkitOpenConnectedAccountsInput } from './uiHost.js';
+export type {
+    PluginUiTestkitRespondToSessionPermissionInput,
+    PluginUiTestkitSessionInput,
+} from './uiHost.js';
 export type { PluginUiTestkitSelectActionInputInput } from './uiHost.js';
 export type { PluginUiTestkitSettleEphemeralInputInput } from './uiHost.js';
 export type { PluginUiTestkitOptions } from './uiHost.js';

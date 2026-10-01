@@ -26,13 +26,19 @@ async function switchFlavor(t, {
   const databaseUrlLine = databaseUrl === undefined ? '' : `DATABASE_URL=${databaseUrl}\n`;
   await writeFile(envPath, `HAPPIER_STACK_SERVER_COMPONENT=${initialComponent}\n${providerLine}${databaseUrlLine}`, 'utf8');
 
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.HAPPIER_DB_PROVIDER;
+  delete cleanEnv.HAPPY_DB_PROVIDER;
+  delete cleanEnv.DATABASE_URL;
   const result = await runNode([flavorScript, 'use', target, '--json'], {
     cwd: stackRootDir,
     env: {
-      ...process.env,
+      ...cleanEnv,
       HAPPIER_STACK_STACK: 'main',
       HAPPIER_STACK_STORAGE_DIR: storageDir,
       HAPPIER_STACK_ENV_FILE: envPath,
+      HAPPIER_STACK_SERVER_COMPONENT: initialComponent,
+      ...(initialProvider === undefined ? {} : { HAPPIER_DB_PROVIDER: initialProvider }),
       ...(databaseUrlInProcess === undefined ? {} : { DATABASE_URL: databaseUrlInProcess }),
     },
   });
@@ -40,12 +46,14 @@ async function switchFlavor(t, {
   return { contents: await readFile(envPath, 'utf8'), result };
 }
 
-test('server flavor writer changes only the behavior preset and preserves the effective provider', async (t) => {
-  for (const initialProvider of [undefined, 'sqlite']) {
-    const { contents } = await switchFlavor(t, { initialProvider, target: 'full' });
-    assert.match(contents, /HAPPIER_STACK_SERVER_COMPONENT=happier-server\n/);
-    assert.match(contents, /HAPPIER_DB_PROVIDER=sqlite\n/);
-  }
+test('server flavor writer applies the target default when metadata is absent and preserves explicit providers', async (t) => {
+  const { contents: defaulted } = await switchFlavor(t, { initialProvider: undefined, target: 'full' });
+  assert.match(defaulted, /HAPPIER_STACK_SERVER_COMPONENT=happier-server\n/);
+  assert.match(defaulted, /HAPPIER_DB_PROVIDER=postgres\n/);
+
+  const { contents: sqlite } = await switchFlavor(t, { initialProvider: 'sqlite', target: 'full' });
+  assert.match(sqlite, /HAPPIER_STACK_SERVER_COMPONENT=happier-server\n/);
+  assert.match(sqlite, /HAPPIER_DB_PROVIDER=sqlite\n/);
 
   const { contents: pglite } = await switchFlavor(t, { initialProvider: 'pglite', target: 'full' });
   assert.match(pglite, /HAPPIER_DB_PROVIDER=pglite\n/);

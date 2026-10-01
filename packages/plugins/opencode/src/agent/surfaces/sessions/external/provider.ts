@@ -47,6 +47,10 @@ async function resolveLaunch(
       runtimeDescriptorV1: buildOpenCodeAgentRuntimeDescriptorV1({
         backendMode: 'server',
         providerSessionId: request.remoteSessionId,
+        ...(source.baseUrl ? {
+          serverBaseUrl: source.baseUrl,
+          serverBaseUrlExplicit: true,
+        } : {}),
       }),
     },
   };

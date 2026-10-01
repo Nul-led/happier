@@ -1,9 +1,7 @@
 import {
     buildQualifiedPluginContributionKey,
-    DaemonPluginReactNativeBundleCacheIdentityV1Schema,
     type DaemonPluginUiComposerSurfaceCatalogEntryV1,
     type DaemonPluginUiTargetedSurfaceSelectedRendererV1,
-    type DaemonPluginReactNativeCrashMountV1,
     DaemonPluginUiTargetedSurfaceSelectedRendererV1Schema,
     type PluginMachineExecutionOriginV1,
     type PluginProjectionV2,
@@ -17,11 +15,6 @@ import {
 
 import { definePluginProjectionFamilyV2 } from '@/plugins/projection/families';
 import type { StablePluginDeclarativeModel } from '@/plugins/runtime/invocation/services/declarativeModel';
-import {
-    createReactNativeCrashStateBindingKey,
-    type ReactNativeCrashStateBinding,
-} from '@/plugins/runtime/ui/reactNativeCrashDisableState';
-
 import type {
     ResolvedComposerAttachmentContribution,
     ResolvedComposerControlContribution,
@@ -31,7 +24,6 @@ import type {
 } from './types';
 import {
     projectPluginUiRendererAvailability,
-    projectPluginUiRendererCrashState,
     projectPluginUiRendererRef,
     resolvePluginUiRendererProjectionEntry,
     type PluginUiProjectionHostRuntimeContext,
@@ -57,30 +49,30 @@ export type ComposerSurfaceDeclaration = Readonly<{
 
 function projectStaticComposerEntries<T extends StaticComposerContribution>(
     entries: readonly T[],
-    immutableGenerationIdsByPluginId: Readonly<Record<string, string>> | undefined,
+    occurrenceIdsByPluginId: ResolvedContributionRegistry['occurrenceIdsByPluginId'],
 ): Readonly<Record<string, Readonly<{
     id: string;
     pluginId: string;
     identity: T['identity'];
-    immutableGenerationId: string;
+    occurrenceId: string;
     definition: T['definition'];
 }>>> {
     const entriesById: Record<string, Readonly<{
         id: string;
         pluginId: string;
         identity: T['identity'];
-        immutableGenerationId: string;
+        occurrenceId: string;
         definition: T['definition'];
     }>> = {};
     for (const entry of entries) {
-        const immutableGenerationId = immutableGenerationIdsByPluginId?.[entry.pluginId]?.trim();
-        if (!immutableGenerationId) continue;
+        const occurrenceId = occurrenceIdsByPluginId?.[entry.pluginId];
+        if (!occurrenceId) continue;
         const id = buildQualifiedPluginContributionKey(entry.identity);
         entriesById[id] = Object.freeze({
             id,
             pluginId: entry.pluginId,
             identity: entry.identity,
-            immutableGenerationId,
+            occurrenceId,
             definition: entry.definition,
         });
     }
@@ -177,16 +169,15 @@ export function projectDaemonEmbeddedPluginUiRenderer(input: Readonly<{
     pluginUiHostRuntime: PluginUiProjectionHostRuntimeContext;
     modelsByRendererKey: Readonly<Record<string, StablePluginDeclarativeModel | undefined>>;
     contributor: Readonly<{ pluginId: string; localId: string }>;
-    immutableGenerationId: string;
+    occurrenceId: string;
     renderer: PluginUiRendererChainBindingV1;
-    crashMount?: DaemonPluginReactNativeCrashMountV1;
 }>): Readonly<{
     rendererChain: readonly Readonly<{ pluginId: string; localId: string }>[];
     selectedRenderer: DaemonPluginUiTargetedSurfaceSelectedRendererV1;
 }> | null {
     if (
-        input.registry.immutableGenerationIdsByPluginId?.[input.contributor.pluginId]?.trim()
-        !== input.immutableGenerationId
+        input.registry.occurrenceIdsByPluginId?.[input.contributor.pluginId]
+        !== input.occurrenceId
     ) return null;
     const renderersByKey = createComposerRenderersByQualifiedId(input.registry);
     const entriesById = input.projection.familiesById.pluginUi?.entriesById ?? {};
@@ -209,14 +200,6 @@ export function projectDaemonEmbeddedPluginUiRenderer(input: Readonly<{
             registryRendererRef: rendererProjection.registryRendererRef,
             entriesById,
         });
-        const crashStateProjection = input.crashMount
-            ? projectPluginUiRendererCrashState({
-                mount: input.crashMount,
-                renderer,
-                availability,
-                hostRuntime: input.pluginUiHostRuntime,
-            })
-            : Object.freeze({ availability });
         const artifactProjection = resolvePluginUiRendererProjectionEntry({
             pluginId: input.contributor.pluginId,
             renderer: rendererProjection.registryRendererRef,
@@ -225,11 +208,8 @@ export function projectDaemonEmbeddedPluginUiRenderer(input: Readonly<{
         return Object.freeze({
             renderer,
             rendererRef: rendererProjection.rendererRef,
-            availability: crashStateProjection.availability,
+            availability,
             ...(artifactProjection ? { artifactProjection } : {}),
-            ...('crashState' in crashStateProjection && crashStateProjection.crashState
-                ? { crashState: crashStateProjection.crashState }
-                : {}),
         });
     });
     const selectedIdentity = selectPluginUiRendererChainMemberV1(
@@ -250,7 +230,6 @@ export function projectDaemonEmbeddedPluginUiRenderer(input: Readonly<{
         renderer: selected.rendererRef,
         availability: selected.availability,
         ...(selected.artifactProjection ? { artifactProjection: selected.artifactProjection } : {}),
-        ...(selected.crashState ? { crashState: selected.crashState } : {}),
     });
     if (!parsed.success) return null;
     return Object.freeze({
@@ -266,146 +245,6 @@ function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
 }
 
 /**
- * Enumerates the current Composer-owned React Native crash bindings from the
- * same normalized declarations consumed by the catalog. This does not select
- * a renderer or retain a Composer scope: the crash owner keys only the static
- * contributor/generation/role fact that every live mount must later match.
- */
-export function readCurrentComposerReactNativeCrashStateBindings(input: Readonly<{
-    registry: ResolvedContributionRegistry;
-    projection: PluginProjectionV2;
-}>): readonly ReactNativeCrashStateBinding[] {
-    const renderersByKey = createComposerRenderersByQualifiedId(input.registry);
-    const entriesById = input.projection.familiesById.pluginUi?.entriesById ?? {};
-    const bindingsByKey = new Map<string, ReactNativeCrashStateBinding>();
-    for (const declaration of listComposerSurfaceDeclarations(input.registry)) {
-        const immutableGenerationId = input.registry.immutableGenerationIdsByPluginId?.[
-            declaration.contribution.pluginId
-        ]?.trim();
-        if (!immutableGenerationId) continue;
-
-        const rendererChainResolution = resolvePluginUiRendererChain({
-            binding: declaration.renderer,
-            contributorPluginId: declaration.contribution.pluginId,
-            renderersByQualifiedId: renderersByKey,
-        });
-        if (!rendererChainResolution.ok) continue;
-
-        for (const renderer of rendererChainResolution.rendererChain) {
-            if (renderer.definition.kind !== 'reactNative') continue;
-            const rendererProjection = projectPluginUiRendererRef(renderer, undefined);
-            const rendererEntry = resolvePluginUiRendererProjectionEntry({
-                pluginId: declaration.contribution.pluginId,
-                renderer: rendererProjection.registryRendererRef,
-                entriesById,
-            });
-            const rendererRuntime = readRecord(readRecord(rendererEntry)?.runtime);
-            const cacheIdentity = DaemonPluginReactNativeBundleCacheIdentityV1Schema.safeParse(
-                rendererRuntime?.cacheIdentity,
-            );
-            if (
-                !cacheIdentity.success
-                || cacheIdentity.data.pluginId !== declaration.contribution.pluginId
-                || cacheIdentity.data.contributionId !== renderer.definition.id
-                || renderer.identity.pluginId !== declaration.contribution.pluginId
-                || renderer.identity.localId !== renderer.definition.id
-            ) {
-                continue;
-            }
-
-            const binding: ReactNativeCrashStateBinding = Object.freeze({
-                mount: Object.freeze({
-                    kind: 'composer' as const,
-                    contribution: Object.freeze({ ...declaration.contribution.identity }),
-                    immutableGenerationId,
-                    role: declaration.role,
-                }),
-                renderer: Object.freeze({
-                    pluginId: cacheIdentity.data.pluginId,
-                    localId: cacheIdentity.data.contributionId,
-                }),
-                artifactDigest: cacheIdentity.data.artifactDigest,
-            });
-            const key = createReactNativeCrashStateBindingKey(binding);
-            const previous = bindingsByKey.get(key);
-            if (previous && previous.artifactDigest !== binding.artifactDigest) {
-                throw new Error('Projected Composer React Native binding has conflicting current artifact digests');
-            }
-            bindingsByKey.set(key, binding);
-        }
-    }
-    return Object.freeze([...bindingsByKey.values()]);
-}
-
-/**
- * Reads the Automation Event setup-surface RN bindings from the same cold
- * registry and projected artifact identities used by the embedded renderer
- * selector. Automation remains an embedded placement; it never impersonates
- * a destination merely to reuse crash containment.
- */
-export function readCurrentAutomationEventSetupReactNativeCrashStateBindings(input: Readonly<{
-    registry: ResolvedContributionRegistry;
-    projection: PluginProjectionV2;
-}>): readonly ReactNativeCrashStateBinding[] {
-    const renderersByKey = createComposerRenderersByQualifiedId(input.registry);
-    const entriesById = input.projection.familiesById.pluginUi?.entriesById ?? {};
-    const bindingsByKey = new Map<string, ReactNativeCrashStateBinding>();
-    for (const entry of input.registry.automationEligibleEvents ?? []) {
-        const declaration = entry.event.automation.source.setupSurface;
-        if (!declaration) continue;
-        const contribution = entry.event.identity;
-        const immutableGenerationId = entry.event.immutableGenerationId;
-        const rendererChainResolution = resolvePluginUiRendererChain({
-            binding: declaration,
-            contributorPluginId: contribution.pluginId,
-            renderersByQualifiedId: renderersByKey,
-        });
-        if (!rendererChainResolution.ok) continue;
-
-        for (const renderer of rendererChainResolution.rendererChain) {
-            if (renderer.definition.kind !== 'reactNative') continue;
-            const rendererProjection = projectPluginUiRendererRef(renderer, undefined);
-            const rendererEntry = resolvePluginUiRendererProjectionEntry({
-                pluginId: contribution.pluginId,
-                renderer: rendererProjection.registryRendererRef,
-                entriesById,
-            });
-            const rendererRuntime = readRecord(readRecord(rendererEntry)?.runtime);
-            const cacheIdentity = DaemonPluginReactNativeBundleCacheIdentityV1Schema.safeParse(
-                rendererRuntime?.cacheIdentity,
-            );
-            if (
-                !cacheIdentity.success
-                || cacheIdentity.data.pluginId !== contribution.pluginId
-                || cacheIdentity.data.contributionId !== renderer.definition.id
-                || renderer.identity.pluginId !== contribution.pluginId
-                || renderer.identity.localId !== renderer.definition.id
-            ) continue;
-
-            const binding: ReactNativeCrashStateBinding = Object.freeze({
-                mount: Object.freeze({
-                    kind: 'automationEventSetupSurface' as const,
-                    contribution: Object.freeze({ ...contribution }),
-                    immutableGenerationId,
-                }),
-                renderer: Object.freeze({
-                    pluginId: cacheIdentity.data.pluginId,
-                    localId: cacheIdentity.data.contributionId,
-                }),
-                artifactDigest: cacheIdentity.data.artifactDigest,
-            });
-            const key = createReactNativeCrashStateBindingKey(binding);
-            const previous = bindingsByKey.get(key);
-            if (previous && previous.artifactDigest !== binding.artifactDigest) {
-                throw new Error('Projected Automation Event setup React Native binding has conflicting current artifact digests');
-            }
-            bindingsByKey.set(key, binding);
-        }
-    }
-    return Object.freeze([...bindingsByKey.values()]);
-}
-
-/**
  * Builds the static half of Composer mounts. This does not create a Composer
  * scope, instance key, or launch input: those are host-private live UI facts.
  */
@@ -418,16 +257,16 @@ export function projectDaemonComposerSurfaceCatalog(input: Readonly<{
     resourceCapabilityForPlugin: (pluginId: string) => PluginUiResourceBindingCapabilityV1;
     readContributorTargetedContributions: (target: Readonly<{
         pluginId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     }>) => PluginUiTargetedContributionsV1;
 }>): readonly DaemonPluginUiComposerSurfaceCatalogEntryV1[] {
     const catalog: DaemonPluginUiComposerSurfaceCatalogEntryV1[] = [];
     for (const declaration of listComposerSurfaceDeclarations(input.registry)) {
-        const immutableGenerationId = input.registry.immutableGenerationIdsByPluginId?.[
+        const occurrenceId = input.registry.occurrenceIdsByPluginId?.[
             declaration.contribution.pluginId
-        ]?.trim();
+        ];
         const executionOrigin = input.pluginExecutionOriginsByPluginId[declaration.contribution.pluginId];
-        if (!immutableGenerationId || !executionOrigin) continue;
+        if (!occurrenceId || !executionOrigin) continue;
 
         const rendered = projectDaemonEmbeddedPluginUiRenderer({
             registry: input.registry,
@@ -435,14 +274,8 @@ export function projectDaemonComposerSurfaceCatalog(input: Readonly<{
             pluginUiHostRuntime: input.pluginUiHostRuntime,
             modelsByRendererKey: input.modelsByRendererKey,
             contributor: declaration.contribution.identity,
-            immutableGenerationId,
+            occurrenceId,
             renderer: declaration.renderer,
-            crashMount: Object.freeze({
-                kind: 'composer' as const,
-                contribution: Object.freeze({ ...declaration.contribution.identity }),
-                immutableGenerationId,
-                role: declaration.role,
-            }),
         });
         if (!rendered) continue;
 
@@ -451,7 +284,7 @@ export function projectDaemonComposerSurfaceCatalog(input: Readonly<{
         try {
             contributorTargetedContributions = input.readContributorTargetedContributions({
                 pluginId: declaration.contribution.pluginId,
-                immutableGenerationId,
+                occurrenceId,
             });
             resourceCapability = input.resourceCapabilityForPlugin(declaration.contribution.pluginId);
         } catch {
@@ -462,7 +295,7 @@ export function projectDaemonComposerSurfaceCatalog(input: Readonly<{
 
         catalog.push(Object.freeze({
             contribution: Object.freeze({ ...declaration.contribution.identity }),
-            immutableGenerationId,
+            occurrenceId,
             projectionGeneration: input.projection.generation,
             role: declaration.role,
             // The protocol parser owns the public array immutability boundary;
@@ -486,7 +319,7 @@ export const composerAttachmentsProjectionFamily = definePluginProjectionFamilyV
         family: 'composerAttachments',
         entriesById: projectStaticComposerEntries(
             registry.composerAttachments ?? [],
-            registry.immutableGenerationIdsByPluginId,
+            registry.occurrenceIdsByPluginId,
         ),
     }),
 });
@@ -497,7 +330,7 @@ export const composerControlsProjectionFamily = definePluginProjectionFamilyV2({
         family: 'composerControls',
         entriesById: projectStaticComposerEntries(
             registry.composerControls ?? [],
-            registry.immutableGenerationIdsByPluginId,
+            registry.occurrenceIdsByPluginId,
         ),
     }),
 });
@@ -508,7 +341,7 @@ export const composerRegionsProjectionFamily = definePluginProjectionFamilyV2({
         family: 'composerRegions',
         entriesById: projectStaticComposerEntries(
             registry.composerRegions ?? [],
-            registry.immutableGenerationIdsByPluginId,
+            registry.occurrenceIdsByPluginId,
         ),
     }),
 });

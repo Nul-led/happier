@@ -3726,6 +3726,876 @@
             "purpose": "gitlab-connected-account"
           }
         ],
+        "dangerLevel": "safe",
+        "description": "Reads checks, review, merge and branch facts when one merge request is expanded.",
+        "execution": {
+          "target": "daemon"
+        },
+        "hostAccess": [
+          "gitlab-cloud-api",
+          "gitlab-account-api",
+          "gitlab-connected-account"
+        ],
+        "id": "triage/read-gitlab-pull-request-status",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "instance": {
+              "additionalProperties": false,
+              "properties": {
+                "binding": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "account": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "accountId": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])",
+                          "type": "string"
+                        },
+                        "service": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "localId": {
+                              "maxLength": 256,
+                              "minLength": 1,
+                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
+                              "type": "string"
+                            },
+                            "pluginId": {
+                              "maxLength": 256,
+                              "minLength": 3,
+                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "pluginId",
+                            "localId"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "service",
+                        "accountId"
+                      ],
+                      "type": "object"
+                    },
+                    "purpose": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 128
+                    }
+                  },
+                  "required": [
+                    "purpose",
+                    "account"
+                  ],
+                  "type": "object"
+                },
+                "configuration": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "token": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 1024
+                    },
+                    "v": {
+                      "const": 1
+                    }
+                  },
+                  "required": [
+                    "v",
+                    "token"
+                  ],
+                  "type": "object"
+                },
+                "instance": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "localId": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])",
+                          "type": "string"
+                        },
+                        "pluginId": {
+                          "maxLength": 256,
+                          "minLength": 3,
+                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "pluginId",
+                        "localId"
+                      ],
+                      "type": "object"
+                    },
+                    "sourceInstanceId": {
+                      "maxLength": 36,
+                      "minLength": 36,
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "sourceInstanceId"
+                  ],
+                  "type": "object"
+                },
+                "localInstanceKey": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 128
+                },
+                "locator": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "displayLabel": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 512
+                    },
+                    "displayPath": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 512
+                    },
+                    "v": {
+                      "const": 1
+                    },
+                    "webUrl": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 384
+                    }
+                  },
+                  "required": [
+                    "v",
+                    "displayLabel"
+                  ],
+                  "type": "object"
+                },
+                "v": {
+                  "const": 1
+                }
+              },
+              "required": [
+                "v",
+                "instance",
+                "binding",
+                "localInstanceKey",
+                "configuration"
+              ],
+              "type": "object"
+            },
+            "lastKnownLocator": {
+              "additionalProperties": false,
+              "properties": {
+                "displayPath": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 512
+                },
+                "routingToken": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 192
+                },
+                "v": {
+                  "const": 1
+                },
+                "webUrl": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 384
+                }
+              },
+              "required": [
+                "v"
+              ],
+              "type": "object"
+            },
+            "localRef": {
+              "additionalProperties": false,
+              "properties": {
+                "collisionScope": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 192
+                },
+                "entryId": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 128
+                },
+                "kindId": {
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string",
+                  "x-happier-max-utf8-bytes": 128
+                }
+              },
+              "required": [
+                "kindId",
+                "collisionScope",
+                "entryId"
+              ],
+              "type": "object"
+            },
+            "v": {
+              "const": 1
+            }
+          },
+          "required": [
+            "v",
+            "instance",
+            "localRef"
+          ],
+          "type": "object"
+        },
+        "placementBindings": [
+          "commandPalette"
+        ],
+        "resultSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "branch": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "additions": {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "base": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 512
+                        },
+                        "deletions": {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "head": {
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string",
+                          "x-happier-max-utf8-bytes": 512
+                        }
+                      },
+                      "required": [
+                        "head",
+                        "base"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "const": null
+                    }
+                  ]
+                },
+                "checks": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "failed": {
+                          "anyOf": [
+                            {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        },
+                        "incomplete": {
+                          "anyOf": [
+                            {
+                              "const": true
+                            },
+                            {
+                              "const": false
+                            }
+                          ]
+                        },
+                        "passed": {
+                          "anyOf": [
+                            {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        },
+                        "pending": {
+                          "anyOf": [
+                            {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        },
+                        "rows": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "completedAtMs": {
+                                "maximum": 9007199254740991,
+                                "minimum": -9007199254740991,
+                                "type": "integer"
+                              },
+                              "id": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 128
+                              },
+                              "name": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 512
+                              },
+                              "startedAtMs": {
+                                "maximum": 9007199254740991,
+                                "minimum": -9007199254740991,
+                                "type": "integer"
+                              },
+                              "state": {
+                                "anyOf": [
+                                  {
+                                    "const": "passed"
+                                  },
+                                  {
+                                    "const": "failed"
+                                  },
+                                  {
+                                    "const": "pending"
+                                  },
+                                  {
+                                    "const": "neutral"
+                                  },
+                                  {
+                                    "const": "unknown"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "state"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "state": {
+                          "anyOf": [
+                            {
+                              "const": "none"
+                            },
+                            {
+                              "const": "unknown"
+                            },
+                            {
+                              "const": "incomplete"
+                            },
+                            {
+                              "const": "complete"
+                            }
+                          ]
+                        },
+                        "total": {
+                          "anyOf": [
+                            {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "passed",
+                        "failed",
+                        "pending",
+                        "total",
+                        "rows",
+                        "incomplete"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "const": null
+                    }
+                  ]
+                },
+                "facts": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                        "type": "string",
+                        "x-happier-max-utf8-bytes": 64
+                      },
+                      "importance": {
+                        "anyOf": [
+                          {
+                            "const": "primary"
+                          },
+                          {
+                            "const": "secondary"
+                          },
+                          {
+                            "const": "supplementary"
+                          }
+                        ]
+                      },
+                      "label": {
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                        "type": "string",
+                        "x-happier-max-utf8-bytes": 64
+                      },
+                      "value": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "text"
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 64
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "actor"
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 64
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "atMs": {
+                                "maximum": 9007199254740991,
+                                "minimum": -9007199254740991,
+                                "type": "integer"
+                              },
+                              "format": {
+                                "anyOf": [
+                                  {
+                                    "const": "relative"
+                                  },
+                                  {
+                                    "const": "absolute"
+                                  }
+                                ]
+                              },
+                              "kind": {
+                                "const": "timestamp"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "atMs",
+                              "format"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "approximate": {
+                                "const": true
+                              },
+                              "format": {
+                                "anyOf": [
+                                  {
+                                    "const": "compact"
+                                  },
+                                  {
+                                    "const": "plain"
+                                  }
+                                ]
+                              },
+                              "kind": {
+                                "const": "number"
+                              },
+                              "value": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "value",
+                              "format"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "status"
+                              },
+                              "tone": {
+                                "anyOf": [
+                                  {
+                                    "const": "success"
+                                  },
+                                  {
+                                    "const": "warning"
+                                  },
+                                  {
+                                    "const": "danger"
+                                  },
+                                  {
+                                    "const": "info"
+                                  },
+                                  {
+                                    "const": "neutral"
+                                  }
+                                ]
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 64
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "value",
+                              "tone"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "detailOnly"
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "importance",
+                      "value"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "const": "status"
+                },
+                "merge": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "blocker": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
+                              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                              "type": "string",
+                              "x-happier-max-utf8-bytes": 512
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        },
+                        "state": {
+                          "anyOf": [
+                            {
+                              "const": "mergeable"
+                            },
+                            {
+                              "const": "blocked"
+                            },
+                            {
+                              "const": "conflicts"
+                            },
+                            {
+                              "const": "unknown"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "blocker"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "const": null
+                    }
+                  ]
+                },
+                "observedAtMs": {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                "projectionTruncated": {
+                  "const": true
+                },
+                "review": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "decision": {
+                          "anyOf": [
+                            {
+                              "const": "approved"
+                            },
+                            {
+                              "const": "changesRequested"
+                            },
+                            {
+                              "const": "reviewRequired"
+                            },
+                            {
+                              "const": null
+                            }
+                          ]
+                        },
+                        "incomplete": {
+                          "anyOf": [
+                            {
+                              "const": true
+                            },
+                            {
+                              "const": false
+                            }
+                          ]
+                        },
+                        "reviewers": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                                "type": "string",
+                                "x-happier-max-utf8-bytes": 512
+                              },
+                              "verb": {
+                                "anyOf": [
+                                  {
+                                    "const": "approved"
+                                  },
+                                  {
+                                    "const": "changesRequested"
+                                  },
+                                  {
+                                    "const": "commented"
+                                  },
+                                  {
+                                    "const": "dismissed"
+                                  },
+                                  {
+                                    "const": "pending"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "verb"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "decision",
+                        "reviewers",
+                        "incomplete"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "const": null
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "observedAtMs",
+                "checks",
+                "review",
+                "merge",
+                "branch",
+                "facts"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "failure": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "class": {
+                      "anyOf": [
+                        {
+                          "const": "authentication"
+                        },
+                        {
+                          "const": "permission"
+                        },
+                        {
+                          "const": "rateLimit"
+                        },
+                        {
+                          "const": "transient"
+                        },
+                        {
+                          "const": "unsupportedContract"
+                        },
+                        {
+                          "const": "unknown"
+                        }
+                      ]
+                    },
+                    "code": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 128
+                    },
+                    "detail": {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 256
+                    },
+                    "retryNotBeforeMs": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "class",
+                    "code"
+                  ],
+                  "type": "object"
+                },
+                "kind": {
+                  "const": "unavailable"
+                }
+              },
+              "required": [
+                "kind",
+                "failure"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "scopes": [
+          "global"
+        ],
+        "surfaces": [
+          "plugin",
+          "ui"
+        ],
+        "title": "Read GitLab merge request status"
+      },
+      {
+        "connectedAccountPurposeBindings": [
+          {
+            "path": "instance.binding.account",
+            "purpose": "gitlab-connected-account"
+          }
+        ],
         "dangerLevel": "writesLocal",
         "description": "Reauthorizes and rereads one GitLab merge request before preparing its selected local workspace.",
         "execution": {
@@ -5168,7 +6038,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read a GitLab note page"
       },
@@ -6229,7 +7102,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Refresh a GitLab overview"
       },
@@ -6667,7 +7543,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read a GitLab activity event page"
       },
@@ -7133,7 +8012,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read a GitLab discussion page"
       },
@@ -7648,7 +8530,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read the GitLab approvals of a merge request"
       },
@@ -8079,7 +8964,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read a GitLab pipeline page"
       },
@@ -8524,7 +9412,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read a GitLab changed-file page"
       },
@@ -8862,7 +9753,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Read a GitLab raw diff"
       },
@@ -9739,7 +10633,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Merge a GitLab merge request"
       },
@@ -10525,7 +11422,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Mark a GitLab merge request ready for review"
       },
@@ -11304,7 +12204,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Close a GitLab merge request"
       },
@@ -12083,7 +12986,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Reopen a GitLab merge request"
       },
@@ -14268,7 +15174,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Change GitLab merge request reviewers"
       },
@@ -15097,7 +16006,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Resolve or reopen a GitLab discussion"
       },
@@ -19032,7 +19944,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Publish a GitLab merge request review"
       },
@@ -20718,7 +21633,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Publish a GitLab review comment"
       },
@@ -22404,7 +23322,10 @@
           "global"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent",
+          "mcp",
+          "cli"
         ],
         "title": "Reply to a GitLab review thread"
       },
@@ -24231,28 +25152,49 @@
     "sessionHeaderActions": [],
     "sessionInfoSections": [],
     "settings": [],
-    "systemTools": [
-      {
-        "description": "GitLab command line client used for authenticated merge-request operations.",
-        "executableNames": [
-          "glab"
-        ],
-        "id": "gitlab-cli",
-        "title": "GitLab CLI"
-      }
-    ],
+    "systemTools": [],
     "targetedPluginContributions": [
       {
         "descriptor": {
           "displayName": "GitLab",
           "kinds": [
             {
+              "detailActions": true,
+              "detailTabs": [
+                {
+                  "id": "overview",
+                  "kind": "shared"
+                },
+                {
+                  "id": "activity",
+                  "kind": "shared"
+                },
+                {
+                  "id": "files",
+                  "kind": "shared"
+                },
+                {
+                  "id": "checks",
+                  "kind": "shared"
+                }
+              ],
               "displayName": "Merge request",
               "id": "merge-request",
               "pluralDisplayName": "Merge requests",
               "workflowSubject": "pullRequest"
             },
             {
+              "detailActions": true,
+              "detailTabs": [
+                {
+                  "id": "overview",
+                  "kind": "shared"
+                },
+                {
+                  "id": "activity",
+                  "kind": "shared"
+                }
+              ],
               "displayName": "Issue",
               "id": "issue",
               "pluralDisplayName": "Issues",
@@ -24268,6 +25210,7 @@
           "get": "triage/get-gitlab-entry",
           "listInstances": "triage/list-gitlab-instances",
           "prepareReviewWorkspace": "triage/prepare-gitlab-review-workspace",
+          "readPullRequestStatus": "triage/read-gitlab-pull-request-status",
           "scan": "triage/scan-gitlab",
           "verifyReviewWorkspace": "triage/verify-gitlab-review-workspace"
         },
@@ -28381,19 +29324,6 @@
             {
               "kind": "connectedAccountOrigin",
               "service": "gitlab-account"
-            }
-          ]
-        }
-      },
-      {
-        "capability": "process",
-        "id": "gitlab-cli-process",
-        "reason": "Run the declared GitLab CLI for pull-request operations.",
-        "scope": {
-          "executables": [
-            {
-              "id": "gitlab-cli",
-              "kind": "systemTool"
             }
           ]
         }

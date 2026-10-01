@@ -28,6 +28,7 @@ import type { SessionTeamCredentialBindingIntentListV1 } from '@happier-dev/prot
 import type { AgentCliSessionCommandBuildInputV1 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { ProviderSessionRuntimePreferences } from '@/agent/catalog/types';
 import { normalizeAgentCliSessionCommandOptions } from '@/plugins/projection/registry/agentCatalogEntryHooks';
+import { runnerPinnedBundledCustodyCanSupersedeBootstrap } from '@/plugins/runtime/retainedPluginSourceAttestation';
 
 type Cleanup = () => void | Promise<void>;
 
@@ -507,10 +508,13 @@ export function createForegroundAgentRuntimeAdmissionOwner(dependencies: Readonl
             && retainedAgent.localAgentId
               !== descriptor.agentDeclaration.definition.id
           )
-          || !pluginSourceCustodyV1Equal(
+          || (!runnerPinnedBundledCustodyCanSupersedeBootstrap(
+            descriptor.sourceCustody,
+            retainedAgent.sourceCustody,
+          ) && !pluginSourceCustodyV1Equal(
             retainedAgent.sourceCustody,
             descriptor.sourceCustody,
-          )
+          ))
         ) {
           await releaseAdmission(admission);
           throw new Error(

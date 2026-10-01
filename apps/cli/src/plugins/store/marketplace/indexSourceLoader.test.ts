@@ -190,7 +190,7 @@ describe('loadMarketplaceIndexSource', () => {
     const client = communityNpmMetadataClient(communityHappierMetadata());
     const parsed = await parseCommunityNpmDiscovery(communityNpmSearchPayload(), communitySource, { client });
     expect(parsed.entries).toHaveLength(1);
-    expect(parsed.entries[0]).toMatchObject({ pluginId: 'acme.community', review: { status: 'unreviewed' }, updatePolicy: 'reviewEveryUpdate' });
+    expect(parsed.entries[0]).toMatchObject({ pluginId: 'acme.community', review: { status: 'unreviewed' }, updatePolicy: 'allowed' });
     expect(client.getJson).toHaveBeenCalledWith(expect.objectContaining({
       url: 'https://registry.npmjs.org/%40acme%2Fcommunity',
       headers: { accept: 'application/json' },

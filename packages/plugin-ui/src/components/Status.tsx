@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 
 import { HappierStatus } from '../presentation/status/Status.js';
 import {
@@ -32,6 +32,11 @@ export type StatusProps = Readonly<{
   pulsing?: boolean;
   /** Logical focus target transferred by the mounted host after author state changes. */
   focusTarget?: PluginUiFocusTarget;
+  /**
+   * The notice's next action, beside the sentence (a plain `Button`, e.g.
+   * Retry). The sentence wraps next to it and never truncates.
+   */
+  action?: ReactNode;
   testID?: string;
 }>;
 
@@ -41,7 +46,7 @@ export type StatusProps = Readonly<{
  * The shared status row owns its live-region semantics, tone mapping and
  * decorative dot. This adapter resolves only plugin-local copy and theme facts.
  */
-export function Status({ tone, label, labelKey, pulsing, focusTarget, testID }: StatusProps): ReactElement {
+export function Status({ tone, label, labelKey, pulsing, focusTarget, action, testID }: StatusProps): ReactElement {
   const theme = usePluginTheme();
   const translate = usePluginTranslation();
   const resolvedLabel = resolveAuthorText(translate, label, labelKey) ?? label;
@@ -57,6 +62,7 @@ export function Status({ tone, label, labelKey, pulsing, focusTarget, testID }: 
       isPulsing={pulsing}
       animationEnabled={surfaceActivity.active && (tabPanelActivity?.active ?? true)}
       controlRef={focusBinding}
+      action={action}
       testID={testID}
     />
   );

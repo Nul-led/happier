@@ -81,9 +81,14 @@ describe('Inspector public presentation contract', () => {
       handlers: { executeAction },
     });
     try {
+      await expect(fixture.getByRole('heading', { name: 'Plugin Inspector' })).resolves.toBeDefined();
+      await expect(fixture.getByText('Inspect installed plugins, diagnostics, and reload state.'))
+        .resolves.toBeDefined();
+      await expect(fixture.getAllByRole('button', { name: 'Execute Inspector self-check' }))
+        .resolves.toHaveLength(1);
       await fixture.press(await fixture.findByRole('button', { name: 'Execute Inspector self-check' }));
-      await expect(fixture.getByText('Inspector self-check: success')).resolves.toEqual({
-        content: 'Inspector self-check: success',
+      await expect(fixture.getByText('Self-check passed')).resolves.toEqual({
+        content: 'Self-check passed',
       });
     } finally {
       await fixture.dispose();
@@ -127,8 +132,7 @@ describe('Inspector public presentation contract', () => {
     });
 
     try {
-      const inspectorActions = await fixture.getAllByRole('button', { name: 'Inspector actions' });
-      await fixture.press(inspectorActions[0]!);
+      await fixture.press(await fixture.findByRole('button', { name: 'Open Inspector quick menu' }));
       await fixture.press(await fixture.findByRole('button', { name: 'Open inspector page' }));
 
       await vi.waitFor(() => {
@@ -170,8 +174,7 @@ describe('Inspector public presentation contract', () => {
 
     try {
       await expect(fixture.queryByRole('button', { name: 'Reload all' })).resolves.toBeUndefined();
-      const inspectorActionTriggers = await fixture.getAllByRole('button', { name: 'Inspector actions' });
-      await fixture.press(inspectorActionTriggers[0]!);
+      await fixture.press(await fixture.findByRole('button', { name: 'Open Inspector quick menu' }));
       await expect(fixture.queryByText('Reload all')).resolves.toBeUndefined();
 
       const plugin = await fixture.findByRole('option', {
@@ -230,6 +233,40 @@ describe('Inspector public presentation contract', () => {
       expect(listbox, 'the populated Inspector List must be the surface scroll owner').not.toBeNull();
       expect(listbox?.dataset.testid).toBe('inspector-surface');
       expect(verticalScrollAncestors(listbox!)).toEqual([]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('keeps an inventory failure visible with its host diagnostic and retries the exact read', async () => {
+    let listReadCount = 0;
+    const executeAction = vi.fn(async ({ action }: InspectorExecuteActionRequest) => {
+      if (action !== 'plugins.list') return { ok: true };
+      listReadCount += 1;
+      if (listReadCount === 1) throw new Error('plugin_action_unavailable');
+      return { plugins: [] };
+    });
+    const fixture = await createPluginUiTestkit({
+      identity: { instanceId: 'fixture-instance-155-error', mountNonce: 'fixture-mount-155-error' },
+      authorPlugin: { id: 'happier.inspector', version: '0.0.0' },
+      surface: renderSurface,
+      surfaceContext: createInspectorSurfaceContext(),
+      adapter: createPluginUiRnwSemanticSurfaceAdapter(),
+      handlers: { executeAction },
+    });
+
+    try {
+      await expect(fixture.getByRole('alert')).resolves.toBeDefined();
+      await expect(fixture.getByText('Plugin inventory unavailable')).resolves.toBeDefined();
+      await expect(fixture.getByText('A plugin UI test host handler failed.')).resolves.toBeDefined();
+
+      await fixture.press(await fixture.findByRole('button', { name: 'Try inventory again' }));
+
+      await vi.waitFor(() => {
+        expect(listReadCount).toBe(2);
+      });
+      await expect(fixture.queryByRole('alert')).resolves.toBeUndefined();
+      await expect(fixture.getByText('No plugins installed.')).resolves.toBeDefined();
     } finally {
       await fixture.dispose();
     }
@@ -301,11 +338,8 @@ describe('Inspector public presentation contract', () => {
       const settledRenderItem = flatListRenderItems.at(-1);
       expect(settledRenderItem).toBeTypeOf('function');
 
-      const refreshActions = await fixture.getAllByRole('button', {
-        name: 'Refresh plugin inventory',
-      });
       await React.act(async () => {
-        await fixture.press(refreshActions[0]!);
+        await fixture.press(await fixture.findByRole('button', { name: 'Refresh with icon button' }));
       });
 
       await vi.waitFor(() => {
@@ -448,8 +482,7 @@ describe('Inspector public presentation contract', () => {
       });
       await expect(fixture.queryByRole('button', { name: 'Reload Review Assistant' })).resolves.toBeUndefined();
 
-      const refreshActions = await fixture.getAllByRole('button', { name: 'Refresh plugin inventory' });
-      await fixture.press(refreshActions[0]!);
+      await fixture.press(await fixture.findByRole('button', { name: 'Refresh with icon button' }));
 
       await expect(fixture.findByRole('option', {
         name: 'Review Assistant',

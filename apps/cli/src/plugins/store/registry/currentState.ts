@@ -1,27 +1,29 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { readFile, realpath } from 'node:fs/promises';
-import { join, relative, sep } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 
-import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
 
 import {
   normalizePluginReleaseFactsV1,
   type PluginAvailabilityReleasePublishActionInputV1,
   PluginInstallReviewPrincipalDigestSchema,
   PluginInstallReviewPrincipalPresentationV1Schema,
+  PluginManifestV2Schema,
   type PluginMachineMaterializationV1,
   type PluginInstallReviewPrincipalDigest,
   type PluginInstallReviewPrincipalPresentationV1,
   type PluginUpdatePolicyV1,
 } from '@happier-dev/protocol';
-import { createCanonicalJsonSigningInput } from '@happier-dev/protocol/crypto/canonicalJson';
-import { PluginUiArtifactsManifestV1Schema } from '@happier-dev/protocol/plugins/ui';
 import { pluginInstallReviewPrincipalPresentationMatchesDigest } from '../../daemon/installReviewPrincipal';
-import { resolvePluginUiArtifactAvailabilityPlatform } from '../../availability/releaseFacts';
 
 import type { PluginAccessSelection } from '../install/accessScopeRegistry';
 import { projectPluginFailureText } from '../../runtime/lifecycle/utils';
 import type { PreparedPluginActivationGraph } from '../../runtime/types';
+import type { PreparedPluginDevelopmentActivationGraph } from '../../authoring/sourceModule';
+import type { CanonicalPluginManifest } from '../../manifest/types';
+import type {
+  DevelopmentPluginSourceCustody,
+  PluginRuntimeSourceAuthority,
+} from '../../runtime/sourceAuthority';
 import {
   AlgorithmQualifiedIntegritySchema,
   pluginDistributionIdentitiesEqual,
@@ -44,12 +46,9 @@ import {
   createDefaultPluginInstallationAvailabilityProjection,
   persistInstallationStateRevision,
   readPreparedImmutablePluginGeneration,
-  readCurrentCommittedPluginGenerations,
   readInstallationStateRevision,
   readPluginRegistryCommitInstallationAuthority,
   type OwnedPreparedImmutablePluginGeneration,
-  type BundledImmutablePluginArtifact,
-  type BundledMaterializationEpochRecord,
   type PluginInstallationAvailabilityProjection,
   type PluginInstallationStateRevision,
   PluginInstallationAvailabilityProjectionSchema,
@@ -81,53 +80,15 @@ function createPluginMaterializationId(): string {
   return `materialization-${randomUUID()}`;
 }
 
-function digestAvailabilitySemanticMaterialization(
-  materialization: Omit<PluginMachineMaterializationV1, 'serverIdentityId' | 'machineId' | 'materializationId' | 'observedAt'>,
-): string {
-  return createHash('sha256')
-    .update(createCanonicalJsonSigningInput(materialization), 'utf8')
-    .digest('base64url');
-}
-
-function reconcileBundledMaterializationEpochs(params: Readonly<{
-  prior?: Record<string, BundledMaterializationEpochRecord>;
-  semanticMaterializations: readonly Omit<
-    PluginMachineMaterializationV1,
-    'serverIdentityId' | 'machineId' | 'materializationId' | 'observedAt'
-  >[];
-  observedAt: number;
-}>): Record<string, BundledMaterializationEpochRecord> {
-  return Object.fromEntries(params.semanticMaterializations.map((materialization) => {
-    const semanticKey = digestAvailabilitySemanticMaterialization(materialization);
-    const prior = params.prior?.[materialization.pluginId];
-    return [materialization.pluginId, Object.freeze({
-      materializationId: prior?.materializationId ?? createPluginMaterializationId(),
-      semanticKey,
-      observedAt: prior?.semanticKey === semanticKey
-        ? prior.observedAt
-        : params.observedAt,
-    })];
-  }));
-}
-
-function bundledMaterializationEpochsEqual(
-  left: Record<string, BundledMaterializationEpochRecord> | undefined,
-  right: Record<string, BundledMaterializationEpochRecord>,
-): boolean {
-  return createCanonicalJsonSigningInput(left ?? {}) === createCanonicalJsonSigningInput(right);
-}
-
 function createRevision(params: Readonly<{
   revisionId: string;
   createdAtMs: number;
   runtimeCatalog: PluginStateFileV1;
   prior?: PluginInstallationStateRevision;
-  bundledMaterializationEpochs?: Record<string, BundledMaterializationEpochRecord>;
 }>): PluginInstallationStateRevision {
   const runtimeCatalog = PluginStateFileV1Schema.parse(params.runtimeCatalog);
   const prior = params.prior;
   const priorPlugins = prior?.plugins ?? {};
-  const bundledMaterializationEpochs = params.bundledMaterializationEpochs ?? prior?.bundledMaterializationEpochs;
   const plugins = Object.fromEntries(Object.entries(runtimeCatalog.plugins).map(([pluginId, record]) => {
     const installation = priorPlugins[pluginId];
     if (!installation) {
@@ -150,9 +111,6 @@ function createRevision(params: Readonly<{
     rollbackRetention: prior?.rollbackRetention ?? [],
     ...(prior?.hardRevocationRevisions
       ? { hardRevocationRevisions: prior.hardRevocationRevisions }
-      : {}),
-    ...(bundledMaterializationEpochs
-      ? { bundledMaterializationEpochs }
       : {}),
     runtimeCatalog,
     retainedRuntimeCatalog: prior?.retainedRuntimeCatalog ?? {},
@@ -177,14 +135,7 @@ export type CommitPluginRegistryInstallationInput = Readonly<{
   admittedIntegrity?: string;
   installReviewPrincipalDigest?: PluginInstallReviewPrincipalDigest;
   installReviewPrincipalPresentation?: PluginInstallReviewPrincipalPresentationV1;
-  developmentChangedPaths?: readonly string[];
-  /**
-   * Exact current immutable generation whose bytes a source-only development
-   * candidate cloned. This is transient candidate currentness, never a new
-   * persisted registry field.
-   */
-  developmentBaseGenerationId?: string;
-  preparedActivationGraph?: PreparedPluginActivationGraph;
+  approvedAuthorityManifest: CanonicalPluginManifest;
   /**
    * The sole daemon-custodied immutable candidate reviewed before installation.
    * Its creator owns cleanup; this store adopts it only once the non-conflict
@@ -217,7 +168,7 @@ export type PluginRegistryRuntimeCandidate = Readonly<{
   changedPluginIds: readonly string[];
   runtimeCatalog: PluginStateFileV1;
   installationState: PluginInstallationStateRevision;
-  pluginGenerations: PluginRegistryCommitRecord['pluginGenerations'];
+  pluginOccurrenceIds: PluginRegistryCommitRecord['pluginOccurrenceIds'];
   preparedActivationGraphsByPluginId?: ReadonlyMap<string, PreparedPluginActivationGraph>;
 }>;
 
@@ -232,8 +183,28 @@ export type PreparedPluginRegistryRuntime = Readonly<{
   rebase?: (candidate: PluginRegistryRuntimeCandidate) => Promise<PreparedPluginRegistryRuntime>;
 }>;
 
+export type PluginDevelopmentRuntimeCandidate = Readonly<{
+    pluginId: string;
+    manifest: CanonicalPluginManifest;
+    sourceAuthority: Extract<PluginRuntimeSourceAuthority, DevelopmentPluginSourceCustody>;
+    preparedActivationGraph: PreparedPluginDevelopmentActivationGraph;
+}>;
+
+export type PluginDevelopmentRuntimeRemoval = Readonly<{
+  pluginId: string;
+  registeredRootId: string;
+}>;
+
 export type PluginRegistryRuntimeLifecycle = Readonly<{
   prepare: (candidate: PluginRegistryRuntimeCandidate) => Promise<PreparedPluginRegistryRuntime>;
+  prepareDevelopment?: (candidate: PluginDevelopmentRuntimeCandidate) => Promise<Readonly<{
+    abort: () => Promise<void>;
+    adopt: () => Promise<void>;
+  }>>;
+  prepareDevelopmentRemoval?: (removal: PluginDevelopmentRuntimeRemoval) => Promise<Readonly<{
+    abort: () => Promise<void>;
+    adopt: () => Promise<void>;
+  }> | null>;
 }>;
 
 export type PluginRegistryStateMutationResult = Readonly<{
@@ -264,12 +235,9 @@ export type PluginRegistryAvailabilityInventory = Readonly<{
  * One rule, read by both the durable mutation below and the daemon change
  * boundary that reports it: a bundled entry ships with the host and has no
  * user-owned update channel, a record with no host trust left has no channel to
- * govern, and `reviewSensitiveChanges` means something only on the trusted npm
- * channel — it is the sole policy that can admit an update *without* a new
- * present-user review, and only npm supplies the origin/package/version facts
- * that decision compares. Storing it on an archive or local-path record would
- * name a guarantee that record can never honour, so it is refused rather than
- * silently kept as a misleading fact.
+ * govern. `allowed` makes an explicit update eligible on that trusted channel;
+ * it does not itself decide review. Authority review is derived from the
+ * staged candidate and incumbent grants by the daemon classifier.
  */
 export function resolvePluginUpdatePolicyChangeRejection(
   record: PluginStateRecord | undefined,
@@ -289,12 +257,6 @@ export function resolvePluginUpdatePolicyChangeRejection(
     return {
       code: 'plugin_update_trust_unavailable',
       message: 'This plugin has no current trusted update channel to govern',
-    };
-  }
-  if (updatePolicy === 'reviewSensitiveChanges' && trust.distribution.kind !== 'npm') {
-    return {
-      code: 'plugin_update_policy_unsupported',
-      message: 'Only an npm installation can skip review for a non-sensitive update',
     };
   }
   return null;
@@ -317,11 +279,6 @@ export function createPluginRegistryStateStore(params?: Readonly<{
   reconciliationSurfaces?: readonly PluginRegistryReconcileSurface[];
   generationCustodyRetirement?: PluginGenerationCustodyRetirementRemoteDependencies;
   retainedCurrentHostGenerationIds?: readonly string[];
-  bundledArtifacts?: readonly BundledImmutablePluginArtifact[];
-  resolveBundledPackageEntry?: (
-    packageName: string,
-    packageEntryRelativePath: string,
-  ) => Promise<string>;
   runtimeLifecycle?: PluginRegistryRuntimeLifecycle;
   /**
    * Explicit operator recovery start. An unreadable durable current record is
@@ -351,7 +308,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
   readSnapshot: () => Promise<Readonly<{
     revision: number;
     state: PluginStateFileV1;
-    pluginGenerations: PluginRegistryCommitRecord['pluginGenerations'];
+    pluginOccurrenceIds: PluginRegistryCommitRecord['pluginOccurrenceIds'];
     /** Exact persisted installation epoch for each current plugin in this commit. */
     materializationIdsByPluginId: Readonly<Record<string, string>>;
     rollbackAvailabilityByPluginId: Readonly<Record<string, 'available' | 'unavailable'>>;
@@ -362,6 +319,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
     installReviewPrincipalPresentationsByPluginId: Readonly<
       Record<string, PluginInstallReviewPrincipalPresentationV1>
     >;
+    approvedAuthorityManifestsByPluginId: Readonly<Record<string, CanonicalPluginManifest>>;
   }>>;
   readAvailabilityInventory: () => Promise<PluginRegistryAvailabilityInventory>;
   readAvailabilityInventoryForCommit: (
@@ -384,6 +342,17 @@ export function createPluginRegistryStateStore(params?: Readonly<{
   uninstallWithResult: (
     pluginId: string,
   ) => Promise<PluginRegistryStateMutationResult | null>;
+  approveDevelopmentAuthorityWithResult: (input: Readonly<{
+    pluginId: string;
+    expectedRevision: number;
+    approvedAuthorityManifest: CanonicalPluginManifest;
+    catalogRecord: PluginStateRecord;
+    trust: PluginTrustRecord;
+    updatePolicy: PluginUpdatePolicyV1;
+    optionalAccess: readonly PluginAccessSelection[];
+    installReviewPrincipalDigest?: PluginInstallReviewPrincipalDigest;
+    installReviewPrincipalPresentation?: PluginInstallReviewPrincipalPresentationV1;
+  }>) => Promise<PluginRegistryStateMutationResult | null>;
   hardRevokeRunningSessionsForGenerationIntegrityFailure: (
     input: Readonly<{
       pluginId: string;
@@ -568,7 +537,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
             transactionId,
             baseRevision: null,
             installationState,
-            pluginGenerations: {},
+            pluginOccurrenceIds: {},
             createdAtMs,
             creator: owner,
           });
@@ -616,92 +585,6 @@ export function createPluginRegistryStateStore(params?: Readonly<{
     return await readCommittedState(commit);
   }
 
-  async function projectBundledAvailabilitySemanticMaterializations(): Promise<readonly Omit<
-    PluginMachineMaterializationV1,
-    'serverIdentityId' | 'machineId' | 'materializationId' | 'observedAt'
-  >[]> {
-    const bundledArtifacts = params?.bundledArtifacts ?? [];
-    if (bundledArtifacts.length === 0) return Object.freeze([]);
-    const admitted = await readCurrentCommittedPluginGenerations(paths, {
-      bundledArtifacts,
-      isolateInvalidInstalledGenerations: true,
-      ...(params?.resolveBundledPackageEntry
-        ? { resolveBundledPackageEntry: params.resolveBundledPackageEntry }
-        : {}),
-    });
-    if (!admitted) return Object.freeze([]);
-    const materializations = (await Promise.all(bundledArtifacts.map(async (artifact) => {
-      const generation = admitted.generations.get(artifact.record.pluginId);
-      if (
-        !generation
-        || generation.immutableGenerationId !== artifact.record.immutableGenerationId
-      ) {
-        return null;
-      }
-      const packageMetadata = JSON.parse(
-        await readFile(join(generation.rootPath, 'package.json'), 'utf8'),
-      ) as unknown;
-      if (
-        typeof packageMetadata !== 'object'
-        || packageMetadata === null
-        || Array.isArray(packageMetadata)
-        || !('name' in packageMetadata)
-        || packageMetadata.name !== artifact.packageName
-        || !('version' in packageMetadata)
-        || typeof packageMetadata.version !== 'string'
-      ) {
-        throw new Error(
-          `Bundled plugin '${artifact.record.pluginId}' has invalid admitted package metadata`,
-        );
-      }
-      const uiManifestRelativePath = 'dist/happier-plugin-ui/ui-artifacts.json';
-      const uiArtifacts = artifact.record.files.some(
-        (file) => file.relativePath === uiManifestRelativePath,
-      )
-        ? PluginUiArtifactsManifestV1Schema.parse(JSON.parse(
-            await readFile(join(generation.rootPath, uiManifestRelativePath), 'utf8'),
-          ) as unknown).entries.map((entry) => Object.freeze({
-            contributionId: entry.contributionId,
-            tier: entry.tier,
-            platform: resolvePluginUiArtifactAvailabilityPlatform(entry),
-            artifactDigest: entry.digest,
-          }))
-        : [];
-      return Object.freeze({
-        pluginId: artifact.record.pluginId,
-        version: packageMetadata.version,
-        sourceClass: 'bundledFirstParty' as const,
-        portableRelease: false,
-        uiArtifacts: Object.freeze(uiArtifacts),
-        enabled: true,
-        trustState: 'trusted' as const,
-      });
-    }))).filter((materialization): materialization is NonNullable<typeof materialization> => materialization !== null);
-    return Object.freeze(materializations);
-  }
-
-  async function projectBundledAvailabilityMaterializations(
-    revision: PluginInstallationStateRevision,
-  ): Promise<readonly Omit<
-    PluginMachineMaterializationV1,
-    'serverIdentityId' | 'machineId'
-  >[]> {
-    const semanticMaterializations = await projectBundledAvailabilitySemanticMaterializations();
-    return Object.freeze(semanticMaterializations.map((materialization) => {
-      const epoch = revision.bundledMaterializationEpochs?.[materialization.pluginId];
-      if (!epoch || epoch.semanticKey !== digestAvailabilitySemanticMaterialization(materialization)) {
-        throw new Error(
-          `Bundled plugin '${materialization.pluginId}' availability projection requires migrated materialization facts`,
-        );
-      }
-      return Object.freeze({
-        materializationId: epoch.materializationId,
-        ...materialization,
-        observedAt: epoch.observedAt,
-      });
-    }));
-  }
-
   async function projectAvailabilityInventory(
     current: Awaited<ReturnType<typeof readCommittedState>>,
   ): Promise<PluginRegistryAvailabilityInventory> {
@@ -739,9 +622,11 @@ export function createPluginRegistryStateStore(params?: Readonly<{
       const uiArtifacts = Object.freeze((release?.uiSlots ?? []).map((slot) => (
         Object.freeze({
           contributionId: slot.contributionId,
+          artifactId: slot.artifactId,
           tier: slot.tier,
           platform: slot.platform,
           artifactDigest: slot.artifactDigest,
+          hostUiApiRange: slot.hostUiApiRange,
         })
       )));
       const trustState = isPluginTrustRecordAuthorized(installation.trust, {
@@ -776,7 +661,6 @@ export function createPluginRegistryStateStore(params?: Readonly<{
       ))),
       materializations: Object.freeze([
         ...installedMaterializations,
-        ...await projectBundledAvailabilityMaterializations(current.revision),
       ].sort((left, right) => (
         left.materializationId.localeCompare(right.materializationId)
       ))),
@@ -827,7 +711,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
           changedPluginIds: resolveChangedPluginIds(current.catalog, nextCatalog),
           runtimeCatalog: nextCatalog,
           installationState: revision,
-          pluginGenerations: current.commit.pluginGenerations,
+          pluginOccurrenceIds: current.commit.pluginOccurrenceIds,
         }),
         persist: async () => PluginRegistryCommitRecordSchema.parse({
             ...current.commit,
@@ -864,20 +748,10 @@ export function createPluginRegistryStateStore(params?: Readonly<{
   async function initialize(): Promise<PluginStateFileV1> {
     while (true) {
       const current = await readCurrent();
-      const bundledSemanticMaterializations = await projectBundledAvailabilitySemanticMaterializations();
-      const nextBundledMaterializationEpochs = reconcileBundledMaterializationEpochs({
-        prior: current.revision.bundledMaterializationEpochs,
-        semanticMaterializations: bundledSemanticMaterializations,
-        observedAt: nowMs(),
-      });
-      const requiresBundledAvailabilityMigration = !bundledMaterializationEpochsEqual(
-        current.revision.bundledMaterializationEpochs,
-        nextBundledMaterializationEpochs,
-      );
       const requiresAvailabilityMigration = Object.values(current.revision.plugins).some((installation) => (
         !installation.materializationId || !installation.availability
       ));
-      if (!requiresAvailabilityMigration && !requiresBundledAvailabilityMigration) return current.catalog;
+      if (!requiresAvailabilityMigration) return current.catalog;
       if (requiresAvailabilityMigration && !runtimeLifecycle) {
         // Read-only callers must not manufacture runtime adoption just to add
         // outbound-report facts. The daemon lifecycle performs this migration
@@ -896,7 +770,6 @@ export function createPluginRegistryStateStore(params?: Readonly<{
         createdAtMs,
         runtimeCatalog: current.catalog,
         prior: current.revision,
-        bundledMaterializationEpochs: nextBundledMaterializationEpochs,
       });
       const installationState = await persistInstallationStateRevision({ paths, state: revision });
       const result = await coordinator.commit({
@@ -924,7 +797,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
   async function commitRevision(params: Readonly<{
     current: Awaited<ReturnType<typeof readCurrent>>;
     revision: PluginInstallationStateRevision;
-    pluginGenerations: PluginRegistryCommitRecord['pluginGenerations'];
+    pluginOccurrenceIds: PluginRegistryCommitRecord['pluginOccurrenceIds'];
     transactionId: string;
     createdAtMs: number;
     mutationKind: PluginRegistryRuntimeCandidate['mutationKind'];
@@ -997,7 +870,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
           changedPluginIds: params.changedPluginIds,
           runtimeCatalog: revision.runtimeCatalog ?? emptyState(),
           installationState: revision,
-          pluginGenerations: params.pluginGenerations,
+          pluginOccurrenceIds: params.pluginOccurrenceIds,
           ...(params.preparedActivationGraphsByPluginId
             ? { preparedActivationGraphsByPluginId: params.preparedActivationGraphsByPluginId }
             : {}),
@@ -1020,7 +893,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
           transactionId: params.transactionId,
           baseRevision: params.current.commit.revision,
           installationState,
-          pluginGenerations: params.pluginGenerations,
+          pluginOccurrenceIds: params.pluginOccurrenceIds,
           createdAtMs: params.createdAtMs,
           creator: owner,
         }),
@@ -1070,7 +943,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
           );
         }
         const currentReference =
-          current.commit.pluginGenerations[input.pluginId];
+          current.commit.pluginOccurrenceIds[input.pluginId];
         const isCurrentGeneration =
           currentReference?.immutableGenerationId
             === input.immutableGenerationId;
@@ -1123,7 +996,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
         const committed = await commitRevision({
           current,
           revision,
-          pluginGenerations: current.commit.pluginGenerations,
+          pluginOccurrenceIds: current.commit.pluginOccurrenceIds,
           transactionId: `integrity-${randomUUID()}`,
           createdAtMs,
           mutationKind: 'state',
@@ -1214,6 +1087,10 @@ export function createPluginRegistryStateStore(params?: Readonly<{
       : PluginInstallReviewPrincipalPresentationV1Schema.parse(
           input.installReviewPrincipalPresentation,
         );
+    const approvedAuthorityManifest = PluginManifestV2Schema.parse(input.approvedAuthorityManifest);
+    if (approvedAuthorityManifest.id !== input.pluginId) {
+      throw new Error('Approved authority manifest identity differs from the installed plugin');
+    }
     if (reviewedPrincipalPresentation && !reviewedPrincipal) {
       throw new Error('Plugin install-review principal presentation requires its digest');
     }
@@ -1233,71 +1110,18 @@ export function createPluginRegistryStateStore(params?: Readonly<{
     }
     await ensurePluginStoreDirectories({ happyHomeDir: paths.happyHomeDir });
     const preparedGeneration = input.preparedGeneration;
-    const immutableGenerationId = preparedGeneration.reference.immutableGenerationId;
     const verifiedGeneration = await readExactPreparedCandidate(input);
     const generationRecord = verifiedGeneration.record;
-    if (input.preparedActivationGraph) {
-      const [verifiedRootPath, graphRootPath, graphEntryPath] = await Promise.all([
-        realpath(verifiedGeneration.rootPath),
-        realpath(input.preparedActivationGraph.rootPath),
-        realpath(input.preparedActivationGraph.entryPath),
-      ]);
-      const entryRelativePath = relative(verifiedRootPath, graphEntryPath);
-      const portableEntryPath = entryRelativePath.split(sep).join('/');
-      if (
-        input.preparedActivationGraph.immutableGenerationId !== immutableGenerationId
-        || graphRootPath !== verifiedRootPath
-        || graphEntryPath === verifiedRootPath
-        || !isCanonicalAbsolutePathInsideRoot(verifiedRootPath, graphEntryPath)
-        || !generationRecord.files.some((file) => file.relativePath === portableEntryPath)
-      ) {
-        throw new PluginRegistryCandidateConflictError(
-          `Plugin '${input.pluginId}' prepared activation graph is not bound to its exact immutable generation`,
-        );
-      }
-    }
-    // A source-only candidate must name the generation it cloned before the
-    // candidate was built. Reading a base only at apply time would allow a
-    // concurrent successor to become the apparent base while this candidate's
-    // untouched files still derive from an older generation.
-    const developmentBaseGenerationId = input.developmentBaseGenerationId
-      ?? (input.developmentChangedPaths
-        ? (await readPersistedCurrent())?.commit.pluginGenerations[input.pluginId]?.immutableGenerationId
-        : undefined);
-    if (
-      (input.developmentChangedPaths || input.developmentBaseGenerationId !== undefined)
-      && !developmentBaseGenerationId
-    ) {
-      throw new PluginRegistryCandidateConflictError(
-        `Plugin '${input.pluginId}' has no current immutable generation for a development edit`,
-      );
-    }
     let retryRuntime: PreparedPluginRegistryRuntime | undefined;
     try {
       while (true) {
         const current = await readCurrent();
-        if (
-          developmentBaseGenerationId
-          && current.commit.pluginGenerations[input.pluginId]?.immutableGenerationId
-            !== developmentBaseGenerationId
-        ) {
-          throw new PluginRegistryCandidateConflictError(
-            `Plugin '${input.pluginId}' current generation changed during development preparation`,
-          );
-        }
         const createdAtMs = nowMs();
         const priorInstallation = current.revision.plugins[input.pluginId];
         const availability = suppliedAvailability
-          ?? (input.developmentChangedPaths ? priorInstallation?.availability : undefined)
           ?? createDefaultPluginInstallationAvailabilityProjection(input.trust.distribution);
-        const installReviewPrincipalDigest = reviewedPrincipal
-          ?? (input.developmentChangedPaths
-            ? priorInstallation?.installReviewPrincipalDigest
-            : undefined);
-        const installReviewPrincipalPresentation = reviewedPrincipalPresentation
-          ?? (input.developmentChangedPaths
-            ? priorInstallation?.installReviewPrincipalPresentation
-            : undefined);
+        const installReviewPrincipalDigest = reviewedPrincipal;
+        const installReviewPrincipalPresentation = reviewedPrincipalPresentation;
         const priorCatalogRecord = current.catalog.plugins[input.pluginId];
         const catalogRecord = PluginStateRecordSchema.parse({
         ...catalogRecordInput,
@@ -1321,7 +1145,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
             : catalogRecordInput.state.enabled,
         },
         });
-        const priorReference = current.commit.pluginGenerations[input.pluginId];
+        const priorReference = current.commit.pluginOccurrenceIds[input.pluginId];
         const retainsPriorLineage = priorInstallation !== undefined
           && pluginDistributionRollbackLineagesEqual(priorInstallation.source.distribution, input.trust.distribution);
         const retainedForOtherPlugins = current.revision.rollbackRetention.filter((entry) => entry.pluginId !== input.pluginId);
@@ -1355,6 +1179,9 @@ export function createPluginRegistryStateStore(params?: Readonly<{
           ...(priorInstallation.installReviewPrincipalPresentation
             ? { installReviewPrincipalPresentation: priorInstallation.installReviewPrincipalPresentation }
             : {}),
+          ...(priorInstallation.approvedAuthorityManifest
+            ? { approvedAuthorityManifest: priorInstallation.approvedAuthorityManifest }
+            : {}),
         });
         retainedRuntimeCatalog[priorReference.immutableGenerationId] = priorCatalog;
         }
@@ -1386,21 +1213,22 @@ export function createPluginRegistryStateStore(params?: Readonly<{
             ...(installReviewPrincipalPresentation
               ? { installReviewPrincipalPresentation }
               : {}),
+            approvedAuthorityManifest,
           },
         },
         rollbackRetention,
         runtimeCatalog,
         retainedRuntimeCatalog,
         };
-        const pluginGenerations = {
-        ...current.commit.pluginGenerations,
+        const pluginOccurrenceIds = {
+        ...current.commit.pluginOccurrenceIds,
         [input.pluginId]: verifiedGeneration.reference,
         };
         await readExactPreparedCandidate(input);
         const committed = await commitRevision({
         current,
         revision,
-        pluginGenerations,
+        pluginOccurrenceIds,
         transactionId: `install-${randomUUID()}`,
         createdAtMs,
         mutationKind: 'install',
@@ -1408,13 +1236,6 @@ export function createPluginRegistryStateStore(params?: Readonly<{
         changedPluginIds: Object.freeze([input.pluginId]),
         ...(retryRuntime ? { retryRuntime } : {}),
         retainRuntimeOnConflict: true,
-        ...(input.preparedActivationGraph
-          ? {
-              preparedActivationGraphsByPluginId: new Map([
-                [input.pluginId, input.preparedActivationGraph],
-              ]),
-            }
-          : {}),
         });
         retryRuntime = undefined;
         if (committed.status === 'conflict') {
@@ -1439,7 +1260,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
     requireRuntimeLifecycle();
     while (true) {
       const current = await readCurrent();
-      const currentReference = current.commit.pluginGenerations[pluginId];
+      const currentReference = current.commit.pluginOccurrenceIds[pluginId];
       const currentCatalog = current.catalog.plugins[pluginId];
       const installation = current.revision.plugins[pluginId];
       const targetRetention = current.revision.rollbackRetention.find((entry) => (
@@ -1483,6 +1304,9 @@ export function createPluginRegistryStateStore(params?: Readonly<{
         ...(installation.installReviewPrincipalPresentation
           ? { installReviewPrincipalPresentation: installation.installReviewPrincipalPresentation }
           : {}),
+        ...(installation.approvedAuthorityManifest
+          ? { approvedAuthorityManifest: installation.approvedAuthorityManifest }
+          : {}),
       });
       const rolledBackCatalog = PluginStateRecordSchema.parse({
         ...retainedCatalog,
@@ -1496,6 +1320,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
       const {
         installReviewPrincipalDigest: _currentInstallReviewPrincipalDigest,
         installReviewPrincipalPresentation: _currentInstallReviewPrincipalPresentation,
+        approvedAuthorityManifest: _currentApprovedAuthorityManifest,
         ...installationWithoutInstallReviewPrincipalDigest
       } = installation;
       const runtimeCatalog = PluginStateFileV1Schema.parse({
@@ -1529,17 +1354,20 @@ export function createPluginRegistryStateStore(params?: Readonly<{
             ...(targetRetention.installReviewPrincipalPresentation
               ? { installReviewPrincipalPresentation: targetRetention.installReviewPrincipalPresentation }
               : {}),
+            ...(targetRetention.approvedAuthorityManifest
+              ? { approvedAuthorityManifest: targetRetention.approvedAuthorityManifest }
+              : {}),
           },
         },
         rollbackRetention,
         runtimeCatalog,
         retainedRuntimeCatalog,
       };
-      const pluginGenerations = { ...current.commit.pluginGenerations, [pluginId]: targetGeneration.reference };
+      const pluginOccurrenceIds = { ...current.commit.pluginOccurrenceIds, [pluginId]: targetGeneration.reference };
       const committed = await commitRevision({
         current,
         revision,
-        pluginGenerations,
+        pluginOccurrenceIds,
         transactionId: `rollback-${randomUUID()}`,
         createdAtMs,
         mutationKind: 'rollback',
@@ -1558,6 +1386,112 @@ export function createPluginRegistryStateStore(params?: Readonly<{
     return (await rollbackWithResult(pluginId)).catalog;
   }
 
+  async function approveDevelopmentAuthorityWithResult(input: Readonly<{
+    pluginId: string;
+    expectedRevision: number;
+    approvedAuthorityManifest: CanonicalPluginManifest;
+    catalogRecord: PluginStateRecord;
+    trust: PluginTrustRecord;
+    updatePolicy: PluginUpdatePolicyV1;
+    optionalAccess: readonly PluginAccessSelection[];
+    installReviewPrincipalDigest?: PluginInstallReviewPrincipalDigest;
+    installReviewPrincipalPresentation?: PluginInstallReviewPrincipalPresentationV1;
+  }>): Promise<PluginRegistryStateMutationResult | null> {
+    requireRuntimeLifecycle();
+    while (true) {
+      const current = await readCurrent();
+      if (current.commit.revision !== input.expectedRevision) return null;
+      const installation = current.revision.plugins[input.pluginId];
+      const catalogRecord = current.catalog.plugins[input.pluginId];
+      if (Boolean(installation) !== Boolean(catalogRecord)) {
+        throw new Error(`Plugin '${input.pluginId}' has incomplete development installation state`);
+      }
+      const approvedAuthorityManifest = PluginManifestV2Schema.parse(input.approvedAuthorityManifest);
+      if (approvedAuthorityManifest.id !== input.pluginId) {
+        throw new Error('Approved development authority manifest identity mismatch');
+      }
+      const reviewedPrincipal = input.installReviewPrincipalDigest === undefined
+        ? undefined
+        : PluginInstallReviewPrincipalDigestSchema.parse(input.installReviewPrincipalDigest);
+      const reviewedPresentation = input.installReviewPrincipalPresentation === undefined
+        ? undefined
+        : PluginInstallReviewPrincipalPresentationV1Schema.parse(input.installReviewPrincipalPresentation);
+      if (reviewedPresentation && (!reviewedPrincipal || !pluginInstallReviewPrincipalPresentationMatchesDigest(
+        reviewedPrincipal,
+        reviewedPresentation,
+      ))) {
+        throw new Error('Plugin development install-review principal presentation mismatch');
+      }
+      if (!isPluginTrustRecordAuthorized(input.trust, {
+        pluginId: input.pluginId,
+        distribution: input.trust.distribution,
+      })) {
+        throw new Error('Plugin development trust identity mismatch');
+      }
+      const createdAtMs = nowMs();
+      const nextCatalogRecord = PluginStateRecordSchema.parse({
+        ...input.catalogRecord,
+        install: {
+          ...input.catalogRecord.install,
+          trust: input.trust,
+          updatePolicy: input.updatePolicy,
+          optionalAccess: [...input.optionalAccess],
+        },
+        state: {
+          ...input.catalogRecord.state,
+          enabled: catalogRecord?.state.enabled ?? input.catalogRecord.state.enabled,
+        },
+      });
+      const runtimeCatalog = PluginStateFileV1Schema.parse({
+        ...current.catalog,
+        plugins: {
+          ...current.catalog.plugins,
+          [input.pluginId]: nextCatalogRecord,
+        },
+      });
+      const revision: PluginInstallationStateRevision = {
+        ...current.revision,
+        revisionId: `state-${randomUUID()}`,
+        createdAtMs,
+        plugins: {
+          ...current.revision.plugins,
+          [input.pluginId]: {
+            ...(installation ?? {
+              enabled: nextCatalogRecord.state.enabled,
+              materializationId: createPluginMaterializationId(),
+              source: { distribution: input.trust.distribution },
+              availability: createDefaultPluginInstallationAvailabilityProjection(input.trust.distribution),
+            }),
+            enabled: nextCatalogRecord.state.enabled,
+            trust: input.trust,
+            source: { distribution: input.trust.distribution },
+            updatePolicy: input.updatePolicy,
+            optionalAccess: [...input.optionalAccess],
+            approvedAuthorityManifest,
+            ...(reviewedPrincipal ? { installReviewPrincipalDigest: reviewedPrincipal } : {}),
+            ...(reviewedPresentation ? { installReviewPrincipalPresentation: reviewedPresentation } : {}),
+          },
+        },
+        runtimeCatalog,
+      };
+      const committed = await commitRevision({
+        current,
+        revision,
+        pluginOccurrenceIds: current.commit.pluginOccurrenceIds,
+        transactionId: `development-authority-${randomUUID()}`,
+        createdAtMs,
+        mutationKind: 'state',
+        runningSessionDisposition: 'retainRunningSessions',
+        changedPluginIds: Object.freeze([]),
+      });
+      if (committed.status === 'conflict') continue;
+      if (committed.status === 'aborted' || committed.status === 'precommit_failed') {
+        throwPrecommitFailure(committed);
+      }
+      return Object.freeze({ catalog: runtimeCatalog, transaction: committed });
+    }
+  }
+
   async function setEnabledWithResult(
     pluginId: string,
     enabled: boolean,
@@ -1565,10 +1499,12 @@ export function createPluginRegistryStateStore(params?: Readonly<{
     requireRuntimeLifecycle();
     while (true) {
       const current = await readCurrent();
-      const reference = current.commit.pluginGenerations[pluginId];
       const catalogRecord = current.catalog.plugins[pluginId];
       const installation = current.revision.plugins[pluginId];
-      if (!reference || !catalogRecord || !installation) {
+      const reference = current.commit.pluginOccurrenceIds[pluginId];
+      const isSourceInPlaceDevelopment = catalogRecord?.source.kind === 'path'
+        && catalogRecord.source.devWatch === true;
+      if (!catalogRecord || !installation || (!reference && !isSourceInPlaceDevelopment)) {
         throw new Error(`Unknown plugin id: ${pluginId}`);
       }
       if (
@@ -1609,7 +1545,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
       const committed = await commitRevision({
         current,
         revision,
-        pluginGenerations: current.commit.pluginGenerations,
+        pluginOccurrenceIds: current.commit.pluginOccurrenceIds,
         transactionId: `state-${randomUUID()}`,
         createdAtMs,
         mutationKind: 'state',
@@ -1643,10 +1579,12 @@ export function createPluginRegistryStateStore(params?: Readonly<{
     requireRuntimeLifecycle();
     while (true) {
       const current = await readCurrent();
-      const reference = current.commit.pluginGenerations[pluginId];
       const catalogRecord = current.catalog.plugins[pluginId];
       const installation = current.revision.plugins[pluginId];
-      if (!reference || !catalogRecord || !installation) {
+      const reference = current.commit.pluginOccurrenceIds[pluginId];
+      const isSourceInPlaceDevelopment = catalogRecord?.source.kind === 'path'
+        && catalogRecord.source.devWatch === true;
+      if (!catalogRecord || !installation || (!reference && !isSourceInPlaceDevelopment)) {
         throw new Error(`Unknown plugin id: ${pluginId}`);
       }
       const rejection = resolvePluginUpdatePolicyChangeRejection(catalogRecord, updatePolicy);
@@ -1684,7 +1622,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
       const committed = await commitRevision({
         current,
         revision,
-        pluginGenerations: current.commit.pluginGenerations,
+        pluginOccurrenceIds: current.commit.pluginOccurrenceIds,
         transactionId: `update-policy-${randomUUID()}`,
         createdAtMs,
         mutationKind: 'state',
@@ -1714,10 +1652,12 @@ export function createPluginRegistryStateStore(params?: Readonly<{
     requireRuntimeLifecycle();
     while (true) {
       const current = await readCurrent();
-      const reference = current.commit.pluginGenerations[pluginId];
       const catalogRecord = current.catalog.plugins[pluginId];
       const installation = current.revision.plugins[pluginId];
-      if (!reference || !catalogRecord || !installation) {
+      const reference = current.commit.pluginOccurrenceIds[pluginId];
+      const isSourceInPlaceDevelopment = catalogRecord?.source.kind === 'path'
+        && catalogRecord.source.devWatch === true;
+      if (!catalogRecord || !installation || (!reference && !isSourceInPlaceDevelopment)) {
         throw new Error(`Unknown plugin id: ${pluginId}`);
       }
       if (
@@ -1771,7 +1711,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
       const committed = await commitRevision({
         current,
         revision,
-        pluginGenerations: current.commit.pluginGenerations,
+        pluginOccurrenceIds: current.commit.pluginOccurrenceIds,
         transactionId: `forget-trust-${randomUUID()}`,
         createdAtMs,
         mutationKind: 'state',
@@ -1797,7 +1737,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
       }
       const { [pluginId]: _catalog, ...catalogPlugins } = current.catalog.plugins;
       const { [pluginId]: _installation, ...plugins } = current.revision.plugins;
-      const { [pluginId]: _generation, ...pluginGenerations } = current.commit.pluginGenerations;
+      const { [pluginId]: _generation, ...pluginOccurrenceIds } = current.commit.pluginOccurrenceIds;
       const rollbackRetention = current.revision.rollbackRetention.filter((entry) => entry.pluginId !== pluginId);
       const retainedIds = new Set(rollbackRetention.map((entry) => entry.immutableGenerationId));
       const retainedRuntimeCatalog = Object.fromEntries(Object.entries(current.revision.retainedRuntimeCatalog ?? {})
@@ -1816,7 +1756,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
       const committed = await commitRevision({
         current,
         revision,
-        pluginGenerations,
+        pluginOccurrenceIds,
         transactionId: `uninstall-${randomUUID()}`,
         createdAtMs,
         mutationKind: 'uninstall',
@@ -1891,18 +1831,19 @@ export function createPluginRegistryStateStore(params?: Readonly<{
         return Object.freeze({
           revision: -1,
           state: emptyState(),
-          pluginGenerations: Object.freeze({}),
+          pluginOccurrenceIds: Object.freeze({}),
           materializationIdsByPluginId: Object.freeze({}),
           rollbackAvailabilityByPluginId: Object.freeze({}),
           admittedIntegrityByPluginId: Object.freeze({}),
           installReviewPrincipalDigestsByPluginId: Object.freeze({}),
           installReviewPrincipalPresentationsByPluginId: Object.freeze({}),
+          approvedAuthorityManifestsByPluginId: Object.freeze({}),
         });
       }
       return Object.freeze({
         revision: current.commit.revision,
         state: current.catalog,
-        pluginGenerations: current.commit.pluginGenerations,
+        pluginOccurrenceIds: current.commit.pluginOccurrenceIds,
         materializationIdsByPluginId: Object.freeze(Object.fromEntries(
           Object.entries(current.revision.plugins).flatMap(([pluginId, installation]) => (
             installation.materializationId
@@ -1933,6 +1874,13 @@ export function createPluginRegistryStateStore(params?: Readonly<{
               : []
           )),
         )),
+        approvedAuthorityManifestsByPluginId: Object.freeze(Object.fromEntries(
+          Object.entries(current.revision.plugins).flatMap(([pluginId, installation]) => (
+            installation.approvedAuthorityManifest
+              ? [[pluginId, installation.approvedAuthorityManifest] as const]
+              : []
+          )),
+        )),
       });
     },
     write: async (next) => { await update(() => next); },
@@ -1947,6 +1895,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
     forgetTrustWithResult,
     uninstall,
     uninstallWithResult,
+    approveDevelopmentAuthorityWithResult,
     hardRevokeRunningSessionsForGenerationIntegrityFailure,
   });
 }

@@ -4,6 +4,7 @@ import type {
     AgentExternalSessionLinkDataValue,
     AgentExternalSessionSource,
     AgentExternalSessionTranscriptItem,
+    AgentExternalSessionTerminalObservation,
     AgentExternalSessionsContribution,
     AgentExternalSessionsFailureCode,
     AgentExternalSessionsInvocation,
@@ -154,14 +155,17 @@ function isLinkData(value: unknown): value is AgentExternalSessionLinkData {
 
 function mapTranscriptItem(
     item: Awaited<ReturnType<typeof pageClaudeJsonlExternalSessionTranscript>>['items'][number],
-): AgentExternalSessionTranscriptItem | null {
+): AgentExternalSessionTranscriptItem | AgentExternalSessionTerminalObservation | null {
     if (!isLinkData(item.raw)) return null;
+    if (item.raw.role === 'source_observation') {
+        return { id: item.id, createdAtMs: item.createdAtMs, raw: item.raw };
+    }
     return {
         id: item.id,
         createdAtMs: item.createdAtMs,
-        ...(item.localId !== undefined ? { localId: item.localId } : {}),
-        ...(item.messageRole !== undefined ? { messageRole: item.messageRole } : {}),
-        ...(item.userProjection !== undefined ? { userProjection: item.userProjection } : {}),
+        ...('localId' in item && item.localId !== undefined ? { localId: item.localId } : {}),
+        ...('messageRole' in item && item.messageRole !== undefined ? { messageRole: item.messageRole } : {}),
+        ...('userProjection' in item && item.userProjection !== undefined ? { userProjection: item.userProjection } : {}),
         raw: item.raw,
     };
 }
@@ -180,7 +184,7 @@ function mapTranscriptPage(
         return failed('agent_error', 'Claude produced a transcript item outside the public JSON contract.');
     }
     return ok({
-        items: items.filter((item): item is AgentExternalSessionTranscriptItem => item !== null),
+        items: items.filter((item): item is AgentExternalSessionTranscriptItem | AgentExternalSessionTerminalObservation => item !== null),
         nextCursor: page.nextCursor,
         ...(page.tailCursor !== undefined ? { tailCursor: page.tailCursor } : {}),
         ...(page.hasMore !== undefined ? { hasMore: page.hasMore } : {}),
@@ -332,7 +336,7 @@ export function createClaudeExternalSessionsContribution(params: Readonly<{
                     return failed('source_invalid', error.message, true);
                 }
                 return failed(
-                    'agent_unavailable',
+                    'agent_error',
                     error instanceof Error ? error.message : 'Claude external-session listing failed.',
                     true,
                 );
@@ -379,7 +383,7 @@ export function createClaudeExternalSessionsContribution(params: Readonly<{
                 const after = invocationFailure(request);
                 if (after) return after;
                 return failed(
-                    'agent_unavailable',
+                    'agent_error',
                     error instanceof Error ? error.message : 'Claude external-session identity resolution failed.',
                     true,
                 );
@@ -422,6 +426,7 @@ export function createClaudeExternalSessionsContribution(params: Readonly<{
                     providerSessionId: request.remoteSessionId,
                     direction: request.direction,
                     cursor: request.cursor,
+                    projection: request.projection,
                     maxBytes: request.maxSerializedBytes,
                     maxItems: request.maxItems,
                     signal: request.signal,
@@ -451,7 +456,7 @@ export function createClaudeExternalSessionsContribution(params: Readonly<{
                     return createAgentExternalSessionsProducerOverflowFailure(error.message);
                 }
                 return failed(
-                    'agent_unavailable',
+                    'agent_error',
                     error instanceof Error ? error.message : 'Claude external-session transcript operation failed.',
                     true,
                 );
@@ -473,6 +478,7 @@ export function createClaudeExternalSessionsContribution(params: Readonly<{
                     env,
                     providerSessionId: request.remoteSessionId,
                     cursor: request.cursor,
+                    projection: request.projection,
                     maxBytes: request.maxSerializedBytes,
                     maxItems: request.maxItems,
                     signal: request.signal,

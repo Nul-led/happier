@@ -3,7 +3,7 @@ import {
   EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
   isExternalActionResultWithinResponseEnvelopeLimitV1,
 } from '@happier-dev/plugin-sdk/actions';
-import type { TriageConfiguredSourceInstanceV1 } from '@happier-dev/triage-protocol/v1';
+import { MAX_TRIAGE_TEXT_UTF8_BYTES_V1, type TriageConfiguredSourceInstanceV1 } from '@happier-dev/triage-protocol/v1';
 import { createTriageSourceV1Fixture } from '@happier-dev/triage-protocol/testing/v1';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -42,6 +42,7 @@ import {
   readGithubFeedback,
   listGithubTimeline,
   readGithubChecks,
+  readGithubPullRequestStatus,
 } from './detailOperations.js';
 import {
   createStubGithubTransport,
@@ -928,6 +929,115 @@ describe('GitHub checks plane', () => {
     expect(result).toEqual({
       kind: 'unavailable',
       failure: { class: 'unsupportedContract', code: 'github_detail_response_invalid' },
+    });
+  });
+});
+
+describe('GitHub pull-request status operation', () => {
+  function statusInput(localRef: Readonly<{ kindId: string; collisionScope: string; entryId: string }> = PULL_REQUEST_REF) {
+    return {
+      v: 1, instance: configuredInstance(), localRef,
+      lastKnownLocator: { v: 1, routingToken: REPOSITORY_KEY, displayPath: '#1284' },
+    };
+  }
+
+  function statusTransport(checkRuns?: StubHttpResponse) {
+    return createStubGithubTransport({ respond: (request) => {
+      const path = new URL(request.url).pathname;
+      if (path.endsWith('/pulls/1284')) return jsonResponse({
+        ...GITHUB_PULL_REQUEST_RESPONSE, mergeable: true, mergeable_state: 'blocked',
+        additions: 18, deletions: 3,
+      });
+      if (path.includes('/check-runs')) return checkRuns ?? jsonResponse(githubCheckRunsResponse({ runs: [
+        githubCheckRun({ id: 9001, name: 'build', status: 'completed', conclusion: 'failure' }),
+        githubCheckRun({ id: 9002, name: 'test', status: 'in_progress' }),
+      ] }));
+      if (path.endsWith('/status')) return jsonResponse(githubCombinedStatusResponse({
+        state: 'success', statuses: [githubCommitStatus({ id: 7701, context: 'legacy/ci', state: 'success' })],
+      }));
+      if (path !== '/graphql') return undefined;
+      const body = readRecordedJsonBody(request) as { query: string };
+      return jsonResponse({ data: { repository: { databaseId: 4210, pullRequest: body.query.includes('GithubFeedbackReviews')
+        ? { reviewDecision: 'CHANGES_REQUESTED', reviews: {
+          nodes: [
+            { id: 'PRR_1', state: 'APPROVED', body: '', author: { login: 'alice' }, submittedAt: '2026-08-11T12:00:00Z' },
+            { id: 'PRR_2', state: 'CHANGES_REQUESTED', body: '', author: { login: 'alice' }, submittedAt: '2026-08-12T12:00:00Z' },
+            { id: 'PRR_3', state: 'COMMENTED', body: '', author: { login: 'alice' }, submittedAt: null },
+          ], pageInfo: { hasPreviousPage: true, startCursor: 'older-reviews' },
+        } }
+        : { reviewRequests: { nodes: [{ requestedReviewer: { __typename: 'User', login: 'bob' } }],
+          pageInfo: { hasNextPage: false, endCursor: null } } },
+      } } });
+    } });
+  }
+
+  it('reads detail status at the current head and fills the canonical review/check facts', async () => {
+    const stub = statusTransport(jsonResponse(githubCheckRunsResponse({ runs: [
+      githubCheckRun({ id: 9001, name: 'x'.repeat(MAX_TRIAGE_TEXT_UTF8_BYTES_V1 + 1), status: 'completed', conclusion: 'failure' }),
+      githubCheckRun({ id: 9002, name: 'test', status: 'in_progress' }),
+    ] })));
+    const result = await readGithubPullRequestStatus(statusInput(), stub.context);
+    expect(result).toMatchObject({
+      kind: 'status',
+      projectionTruncated: true,
+      checks: { state: 'complete', passed: 1, failed: 1, pending: 1, total: 3, incomplete: false,
+        rows: [{ id: 'github-check-run:9001', name: 'x'.repeat(MAX_TRIAGE_TEXT_UTF8_BYTES_V1), state: 'failed' }, { id: 'github-check-run:9002', state: 'pending' },
+          { id: 'github-commit-status:7701', state: 'passed' }] },
+      review: { decision: 'changesRequested', reviewers: [{ name: 'alice', verb: 'changesRequested' },
+        { name: 'bob', verb: 'pending' }], incomplete: true },
+      merge: { state: 'blocked', blocker: 'blocked' },
+      branch: { head: 'frame-pump', base: 'main', additions: 18, deletions: 3 },
+      facts: [
+        { id: 'github/review-decision', value: { kind: 'status', value: 'Changes requested', tone: 'danger' } },
+        { id: 'github/checks', value: { kind: 'status', value: '1 failing', tone: 'danger' } },
+      ],
+    });
+    expect(isExternalActionResultWithinResponseEnvelopeLimitV1(result)).toBe(true);
+    expect(stub.requests.filter((request) => new URL(request.url).pathname.endsWith('/pulls/1284'))).toHaveLength(1);
+    expect(stub.requests.filter((request) => request.url.includes(HEAD_SHA))).toHaveLength(2);
+  });
+
+  it('preserves successful rows while keeping an unreadable check breakdown unknown', async () => {
+    const stub = statusTransport({ status: 500, headers: {}, body: { message: 'failed' } });
+    const result = await readGithubPullRequestStatus(statusInput(), stub.context);
+    expect(result).toMatchObject({ kind: 'status', checks: {
+      state: 'unknown', passed: null, failed: null, pending: null, total: null, incomplete: true,
+      rows: [{ id: 'github-commit-status:7701', state: 'passed' }],
+    } });
+    if (result.kind !== 'status') throw new Error('partial status must keep the observed detail');
+    expect(result.facts.some((fact) => fact.id === 'github/checks')).toBe(false);
+  });
+
+  it('reports omitted normalized-empty names without discarding the known provider counts', async () => {
+    const stub = statusTransport(jsonResponse(githubCheckRunsResponse({ runs: [
+      githubCheckRun({ id: 9001, name: '\u0000', status: 'completed', conclusion: 'failure' }),
+    ] })));
+    const result = await readGithubPullRequestStatus(statusInput(), stub.context);
+    expect(result).toMatchObject({ kind: 'status', projectionTruncated: true, checks: {
+      state: 'complete', passed: 1, failed: 1, pending: 0, total: 2, incomplete: true,
+      rows: [{ id: 'github-commit-status:7701', state: 'passed' }],
+    } });
+  });
+
+  it('refuses an issue before making provider requests', async () => {
+    const stub = statusTransport();
+    expect(await readGithubPullRequestStatus(statusInput(ISSUE_REF), stub.context)).toEqual({
+      kind: 'unavailable', failure: { class: 'unsupportedContract', code: 'github_detail_kind_unsupported' },
+    });
+    expect(stub.requests).toEqual([]);
+  });
+
+  it('propagates cancellation while a provider detail connection is pending', async () => {
+    const caller = new AbortController();
+    const stub = createStubGithubTransport({
+      signal: caller.signal,
+      respond: (request) => new URL(request.url).pathname.endsWith('/pulls/1284')
+        ? new Promise<StubHttpResponse>(() => {}) : undefined,
+    });
+    const pending = readGithubPullRequestStatus(statusInput(), stub.context);
+    caller.abort(new DOMException('The host invocation reached its deadline.', 'TimeoutError'));
+    await expect(pending).resolves.toEqual({
+      kind: 'unavailable', failure: { class: 'transient', code: 'github_request_timed_out' },
     });
   });
 });

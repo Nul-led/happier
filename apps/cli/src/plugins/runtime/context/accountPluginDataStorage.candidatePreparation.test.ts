@@ -184,7 +184,7 @@ function createCandidate(params: Readonly<{
             }],
         },
         signal: params.signal ?? new AbortController().signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
     });
 }
 
@@ -250,7 +250,7 @@ describe('Account Data Collection candidate preparation', () => {
                     }],
                 },
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             });
 
             setActiveAccountSettingsSnapshot({
@@ -648,7 +648,7 @@ describe('Account Data Collection candidate preparation', () => {
                 }],
             },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         });
 
         await expect(candidate.prepare()).resolves.toBeUndefined();

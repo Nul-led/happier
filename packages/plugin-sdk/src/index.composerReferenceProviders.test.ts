@@ -5,9 +5,15 @@ import * as protocol from '@happier-dev/protocol';
 import * as protocolUiClient from '@happier-dev/protocol/plugins/ui/client';
 
 import { ComposerReferenceCandidateIdV1Schema as sourceCandidateIdSchema } from './composerReferenceProviders.js';
+import {
+    normalizePluginAccountCollectionMigrationRuntimeProjection as sourceNormalizePluginAccountCollectionMigrationRuntimeProjection,
+    normalizePluginDaemonDatabaseRuntimeProjection as sourceNormalizePluginDaemonDatabaseRuntimeProjection,
+    projectPluginAccountCollectionDeclaration as sourceProjectPluginAccountCollectionDeclaration,
+} from './definePlugin.js';
 import { selectCurrentTargetedContribution as sourceSelectCurrentTargetedContribution } from './services/targetedContributions.js';
 import * as rootSdk from './index.js';
 import * as browserRootSdk from './index.browser.js';
+import * as hostRegistrationSdk from './host/registration/index.js';
 import * as manifestSdk from './manifest.js';
 import type {
     ComposerAttachmentAuthorDeclaration as SourceComposerAttachmentAuthorDeclaration,
@@ -153,7 +159,7 @@ describe('root composer runtime projection', () => {
             .toBe(sourceSelectCurrentTargetedContribution);
     });
 
-    it('publishes the canonical UI surface shorthand through the root and build public specs', () => {
+    it('publishes the canonical UI surface shorthand through the author specs without reviving build configuration', () => {
         const rootSource = readFileSync(new URL('./index.public.ts', import.meta.url), 'utf8');
         const uiSource = readFileSync(new URL('./ui/index.public.ts', import.meta.url), 'utf8');
         const buildSource = readFileSync(new URL('./ui/build/index.public.ts', import.meta.url), 'utf8');
@@ -166,8 +172,9 @@ describe('root composer runtime projection', () => {
             expect(uiSource).toContain(symbol);
         }
         expect(uiSource).toContain("from '../ui.js'");
-        expect(buildSource).toContain('buildUiSurfaceTargets');
-        expect(buildSource).toContain("from '../surface.js'");
+        expect(buildSource).toContain('PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1');
+        expect(buildSource).not.toContain('buildUiSurfaceTargets');
+        expect(buildSource).not.toContain('defineBuildConfig');
         expect(rootSource).not.toContain('definePluginUiSurface');
         expect(uiSource).not.toContain('definePluginUiSurface');
         expect(buildSource).not.toContain('definePluginUiSurface');
@@ -180,8 +187,6 @@ describe('root composer runtime projection', () => {
             .toBe(protocol.ComposerReferenceCandidateIdV1Schema);
         expect(browserRootSdk.ComposerReferenceCandidateIdV1Schema)
             .toBe(protocol.ComposerReferenceCandidateIdV1Schema);
-        expect(rootSdk.normalizePluginDaemonDatabaseRuntimeProjection)
-            .toBeTypeOf('function');
         expect(rootSdk).not.toHaveProperty('PluginContributionIdentityV1Schema');
         expect(manifestSdk.PluginContributionIdentityV1Schema)
             .toBe(protocol.PluginContributionIdentityV1Schema);
@@ -245,5 +250,30 @@ describe('root composer runtime projection', () => {
             .toBe(protocolUiClient.ComposerDecorationResultV1Schema);
         expect(sourceUiHostApi.ComposerInputLockRequestV1Schema)
             .toBe(protocolUiClient.ComposerInputLockRequestV1Schema);
+    });
+
+    it('keeps host ingestion projections out of root entry points and on host registration', () => {
+        const hostOnlyProjections = [
+            [
+                'normalizePluginAccountCollectionMigrationRuntimeProjection',
+                sourceNormalizePluginAccountCollectionMigrationRuntimeProjection,
+            ],
+            [
+                'normalizePluginDaemonDatabaseRuntimeProjection',
+                sourceNormalizePluginDaemonDatabaseRuntimeProjection,
+            ],
+            [
+                'projectPluginAccountCollectionDeclaration',
+                sourceProjectPluginAccountCollectionDeclaration,
+            ],
+        ] as const;
+        const hostRegistrationExports = hostRegistrationSdk as Record<string, unknown>;
+
+        for (const [symbol, implementation] of hostOnlyProjections) {
+            expect(rootSdk).not.toHaveProperty(symbol);
+            expect(browserRootSdk).not.toHaveProperty(symbol);
+            expect(hostRegistrationSdk).toHaveProperty(symbol);
+            expect(hostRegistrationExports[symbol]).toBe(implementation);
+        }
     });
 });

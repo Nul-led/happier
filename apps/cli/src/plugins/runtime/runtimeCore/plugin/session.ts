@@ -44,6 +44,7 @@ import {
     SessionModelSelectionV1Schema,
     resolveSessionModelSelectionInputRefV1,
     type SessionModelSelectionV1,
+    type AgentSessionStartupInstructionsV1,
 } from '@happier-dev/protocol';
 import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import { resolveBackendTargetFromSessionMetadata } from '@/session/backendTargets/resolveBackendTargetFromSessionMetadata';
@@ -77,12 +78,13 @@ import {
 } from './sessionLaunch';
 
 type NativeAgentSessionOpenIntent =
-    | Readonly<{ kind: 'create' }>
+    | Readonly<{ kind: 'create'; startupInstructions?: AgentSessionStartupInstructionsV1 | null }>
     | Readonly<{
         kind: 'resume';
         providerSessionId: string;
         importHistory: boolean;
         strictNativeResumeIdentity?: boolean;
+        startupInstructions?: AgentSessionStartupInstructionsV1 | null;
     }>
     | Readonly<{ kind: 'fork'; source: NativeForkSource }>;
 
@@ -163,6 +165,8 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
         currentOperations.interruptPendingInputAndRun !== undefined;
     const hasPrepareRunTeamCredentialProviderBinding =
         currentOperations.prepareRunTeamCredentialProviderBinding !== undefined;
+    const hasPrepareProviderCliAttach =
+        currentOperations.prepareProviderCliAttach !== undefined;
     let runtimeClosed = false;
     let runtimeBindingEpoch = 0;
     let stableRuntimeOperations: PluginRuntimeHookOperations | null = null;
@@ -503,9 +507,21 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
         async cancelTurn() {
             await currentOperations.cancelTurn();
         },
+        ...(hasPrepareProviderCliAttach
+            ? {
+                async prepareProviderCliAttach() {
+                    const prepare = currentOperations.prepareProviderCliAttach;
+                    if (!prepare) {
+                        throw new Error('Provider CLI attach is unavailable for the active runtime');
+                    }
+                    return await prepare();
+                },
+            }
+            : {}),
         readSessionIdentity() {
             return currentOperations.readSessionIdentity();
         },
+        readSessionStartupInstructions: () => currentOperations.readSessionStartupInstructions?.() ?? null,
         async updateSessionRuntimeConfig(update: RuntimeTurnConfigUpdate) {
             return await currentOperations.updateSessionRuntimeConfig(update);
         },
@@ -942,8 +958,11 @@ export async function createNativeAgentHostSessionRuntimePlan(params: Readonly<{
                                             kind: 'resume',
                                             providerSessionId: intent.providerSessionId,
                                             importHistory: intent.importHistory,
+                                            ...(intent.startupInstructions !== undefined ? { startupInstructions: intent.startupInstructions } : {}),
                                         })
-                                        : Object.freeze({ kind: 'create' }),
+                                        : Object.freeze({ kind: 'create',
+                                            ...(intent.startupInstructions !== undefined ? { startupInstructions: intent.startupInstructions } : {}),
+                                        }),
                                     runtimeParams,
                                 ),
                             );

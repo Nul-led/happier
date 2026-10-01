@@ -280,15 +280,25 @@ describe('Channels core manifest', () => {
         renderer: 'channels-renderer',
       }, {
         id: 'session-conversations-widget',
-        container: 'sessionWidget',
+        container: 'widget',
         target: { kind: 'session' },
         renderer: 'channels-renderer',
+      }, {
+        id: 'conversations',
+        container: 'appPage',
+      }, {
+        id: 'conversations-widget',
+        container: 'widget',
       }],
       renderers: [{
         id: 'channels-renderer',
         kind: 'reactNative',
         artifact: 'channels-app-native',
         requiredHostMethods: [],
+      }, {
+        id: 'channels-glance',
+        kind: 'reactNative',
+        artifact: 'channels-glance-native',
       }],
       settingsGroups: [{
         id: 'channels',
@@ -339,12 +349,16 @@ describe('Channels core manifest', () => {
     ]);
     expect(collections?.find(({ id }) => id === CHANNEL_STATE_COLLECTION_ID)).toMatchObject({
       id: CHANNEL_STATE_COLLECTION_ID,
-      schemaVersion: 2,
-      readableSchemaVersions: [1],
+      schemaVersion: 3,
+      readableSchemaVersions: [1, 2],
       migrations: [{
         id: 'channel-state-v1-to-v2',
         fromSchemaVersion: 1,
         toSchemaVersion: 2,
+      }, {
+        id: 'channel-state-v2-to-v3',
+        fromSchemaVersion: 2,
+        toSchemaVersion: 3,
       }],
       rowIdField: CHANNEL_STATE_FIELD.id,
       serverReadable: [
@@ -714,7 +728,7 @@ describe('Channels core manifest', () => {
         title: 'Update conversation binding',
         description: 'Saves an edited external conversation binding policy to the Account.',
         scopes: ['global'],
-        surfaces: ['cli', 'ui'],
+        surfaces: ['cli', 'ui', 'agent', 'mcp'],
         placementBindings: ['primary'],
         dangerLevel: 'writesLocal',
         execution: { target: 'daemon' },
@@ -731,7 +745,7 @@ describe('Channels core manifest', () => {
         title: 'Set conversation binding enabled state',
         description: 'Changes whether a conversation binding may route eligible messages.',
         scopes: ['global'],
-        surfaces: ['cli', 'ui'],
+        surfaces: ['cli', 'ui', 'agent', 'mcp'],
         placementBindings: ['primary'],
         dangerLevel: 'writesLocal',
         execution: { target: 'daemon' },
@@ -989,7 +1003,6 @@ describe('Channels core manifest', () => {
       providerPluginId: 'happier.channel.telegram',
       providerContributionSelection: {
         contributionId: 'telegram-schema-provider',
-        immutableGenerationId: 'telegram-schema-generation',
       },
       providerSetupInput: { source: 'manifest-schema' },
       credentialRef: null,
@@ -1724,7 +1737,6 @@ describe('Channels core manifest', () => {
       providerPluginId: 'happier.channel.github',
       providerContributionSelection: {
         contributionId: 'github-schema-provider',
-        immutableGenerationId: 'github-schema-generation',
       },
       providerSetupInput: { source: 'manifest-schema' },
       credentialRef: null,
@@ -2079,6 +2091,46 @@ describe('Channels Session-facing surfaces (CU-03)', () => {
     });
   });
 
+  it('is an app destination: a rail page with its own column, and a Home widget offered in Customize', () => {
+    const ui = PLUGIN_MANIFEST.contributes?.ui;
+    const views = ui?.views ?? [];
+
+    // The page is the one owner of conversation bindings. Its location is the
+    // open binding, so its local id is persisted routing identity.
+    expect(views.find((view) => view.id === 'conversations')).toEqual({
+      id: 'conversations',
+      container: 'appPage',
+      target: { kind: 'app' },
+      renderer: 'channels-renderer',
+      title: { key: 'plugins.channels.page.title', fallback: 'Channels' },
+      icon: 'conversations',
+      placement: { kind: 'rail' },
+      column: { renderer: 'channels-glance' },
+    });
+    // Channels is bundled: a card on every Home would be empty for people who
+    // never connect a bot, so the widget is only offered.
+    expect(views.find((view) => view.id === 'conversations-widget')).toEqual({
+      id: 'conversations-widget',
+      container: 'widget',
+      target: { kind: 'app' },
+      renderer: 'channels-glance',
+      title: { key: 'plugins.channels.widget.title', fallback: 'Channels' },
+      icon: 'conversations',
+      home: { default: 'available' },
+    });
+    // The column and the widget share one small artifact; both only navigate.
+    expect(ui?.renderers?.find((renderer) => renderer.id === 'channels-glance')).toEqual({
+      id: 'channels-glance',
+      kind: 'reactNative',
+      artifact: 'channels-glance-native',
+      requiredHostMethods: ['openSurface'],
+    });
+    expect(ui?.translations?.[0]?.messages).toMatchObject({
+      'plugins.channels.page.title': 'Channels',
+      'plugins.channels.widget.title': 'Channels',
+    });
+  });
+
   it('mounts one Session destination, one Session-header entry, and the Composer chips through the generic families', () => {
     const ui = PLUGIN_MANIFEST.contributes?.ui;
 
@@ -2094,14 +2146,14 @@ describe('Channels Session-facing surfaces (CU-03)', () => {
       icon: 'globe',
     }, {
       id: 'session-conversations-widget',
-      container: 'sessionWidget',
+      container: 'widget',
       target: { kind: 'session' },
       renderer: 'channels-renderer',
       title: {
         key: 'plugins.channels.session.title',
         fallback: 'External conversations',
       },
-    }]);
+    }, expect.objectContaining({ id: 'conversations' }), expect.objectContaining({ id: 'conversations-widget' })]);
 
     expect(PLUGIN_MANIFEST.contributes?.sessionHeaderActions).toEqual([{
       id: 'open-session-conversations',

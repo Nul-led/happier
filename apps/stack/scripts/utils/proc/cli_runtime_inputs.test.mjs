@@ -51,3 +51,26 @@ test('readHappyCliRuntimeInputFreshness still fingerprints a resolvable CLI dire
     assert.ok(typeof freshness?.newestMtimeNs === 'bigint');
   });
 });
+
+test('CLI runtime identity includes a workspace dependency build script', async () => {
+  await withTempRepo(async (root) => {
+    const cliDir = join(root, 'apps', 'cli');
+    const protocolDir = join(root, 'packages', 'protocol');
+    await mkdir(join(cliDir, 'src'), { recursive: true });
+    await mkdir(join(protocolDir, 'scripts'), { recursive: true });
+    await writeFile(join(cliDir, 'package.json'), JSON.stringify({
+      name: '@happier-dev/cli',
+      bundledDependencies: ['@happier-dev/protocol'],
+      dependencies: { '@happier-dev/protocol': '0.0.0' },
+    }), 'utf-8');
+    await writeFile(join(protocolDir, 'package.json'), JSON.stringify({
+      name: '@happier-dev/protocol',
+    }), 'utf-8');
+    const scriptPath = join(protocolDir, 'scripts', 'generate.mjs');
+    await writeFile(scriptPath, 'export const policy = 1;\n', 'utf-8');
+    const before = await readHappyCliRuntimeInputFreshness(cliDir);
+    await writeFile(scriptPath, 'export const policy = 2;\n', 'utf-8');
+    const after = await readHappyCliRuntimeInputFreshness(cliDir);
+    assert.notEqual(after.fingerprint, before.fingerprint);
+  });
+});

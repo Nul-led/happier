@@ -31,11 +31,9 @@ export const POSTHOG_DETAIL_RENDERER_ID = 'posthog-issue-detail';
 export const POSTHOG_EVIDENCE_REFERENCE_ID = 'posthog-evidence';
 
 /**
- * The React Native artifact the native renderer mounts.
- *
- * It must equal `POSTHOG_DETAIL_UI_ARTIFACT_ID` in `uiBuildIdentity.mjs`: the manifest's
- * `renderers[].artifact` is what the host looks up in the staged UI graph, and
- * `src/uiBuildConfig.test.ts` is what keeps the two from drifting apart.
+ * The React Native artifact the native renderer mounts. The SDK UI build
+ * resolves it through the package's exact `./happier-plugin-ui/<artifactId>`
+ * export and fails the build when that export is missing.
  */
 export const POSTHOG_DETAIL_ARTIFACT_ID = 'posthog-issue-detail-native';
 

@@ -6,7 +6,9 @@ import {
   resolveBackendCommandMaxOutputBytes as resolveScmBackendCommandMaxOutputBytes,
   runBackendCommand as runScmBackendCommand } from '@happier-dev/plugin-sdk/scm/backend';
 import {
+  SCM_OPERATION_ERROR_CODES,
   ScmSelectedMutationPathSchema,
+  type ScmOperationErrorCode,
 } from '@happier-dev/plugin-sdk/scm';
 import { isCanonicalAbsolutePathInsideRoot } from '@happier-dev/plugin-sdk/fs';
 
@@ -23,6 +25,13 @@ export type ScmExecResult = {
   timedOut?: boolean;
   outputLimitExceeded?: boolean;
 };
+
+export function getScmCommandIndeterminateErrorCode(result: ScmExecResult): ScmOperationErrorCode | null {
+  if (result.timedOut) return SCM_OPERATION_ERROR_CODES.COMMAND_TIMEOUT;
+  if (result.outputLimitExceeded) return SCM_OPERATION_ERROR_CODES.COMMAND_OUTPUT_LIMIT_EXCEEDED;
+  if (result.exitCode < 0) return SCM_OPERATION_ERROR_CODES.COMMAND_OUTCOME_UNKNOWN;
+  return null;
+}
 
 function resolveScmMaxOutputBytes(inputMaxOutputBytes: number | undefined): number {
   return resolveScmBackendCommandMaxOutputBytes({

@@ -42,7 +42,7 @@ export type AgentCompositionToolSelection = Readonly<{
   /**
    * Immutable executable descriptors admitted with this turn. These are a
    * turn-local selection snapshot, not another current catalog: MCP uses the
-   * descriptor for listing and carries its immutable generation to the daemon
+   * descriptor for listing and carries its process-local occurrence to the daemon
    * action owner for execution currentness.
    */
   selectedToolBindings: readonly AgentCompositionSelectedToolBinding[];
@@ -50,7 +50,7 @@ export type AgentCompositionToolSelection = Readonly<{
 
 export type AgentCompositionSelectedToolBinding = Readonly<{
   tool: ProjectedPluginToolCatalogEntry;
-  expectedContributorImmutableGenerationId: string;
+  expectedContributorOccurrenceId: string;
 }>;
 
 export type AgentCompositionResolution = AgentCompositionToolSelection & Readonly<{
@@ -64,7 +64,7 @@ export type AgentCompositionResolution = AgentCompositionToolSelection & Readonl
 
 type AgentCompositionRuntimeRegistry = HookRuntimeRegistry & Pick<
   ResolvedExecutablePluginRuntimeRegistry,
-  'contributes' | 'targetActionInvocations' | 'resolvePromptAssetBlocks'
+  'contributes' | 'targetActionInvocations' | 'resolvePromptAssetBlocks' | 'readPluginOccurrenceId'
 >;
 
 const AGENT_TRANSFORM_HOOK_TIMEOUT_MS = 2_000;
@@ -642,14 +642,13 @@ export async function resolveAgentCompositionThroughRuntimeRegistry(
     const pluginId = tool.toolId.slice(0, separatorIndex);
     const localId = tool.toolId.slice(separatorIndex + 1);
     if (!selectedToolKeys.has(qualifiedContributionKey(pluginId, localId))) return [];
-    const immutableGenerationId = runtimeRegistry.contributes
-      .immutableGenerationIdsByPluginId?.[pluginId]?.trim();
+    const occurrenceId = runtimeRegistry.readPluginOccurrenceId?.(pluginId)?.trim();
     // A partial registry must never turn an unbound local id into a live MCP
     // tool. The canonical executable registry always stamps this fact.
-    if (!immutableGenerationId) return [];
+    if (!occurrenceId) return [];
     return [Object.freeze({
       tool: snapshotSelectedTool(tool),
-      expectedContributorImmutableGenerationId: immutableGenerationId,
+      expectedContributorOccurrenceId: occurrenceId,
     })];
   }));
   const promptContributionsByKey = new Map(

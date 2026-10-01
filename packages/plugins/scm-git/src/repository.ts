@@ -55,29 +55,23 @@ export async function detectGitRepo(input: { cwd: string }): Promise<ScmRepoDete
         cwd: input.cwd,
         args: ['rev-parse', '--is-inside-work-tree'],
         timeoutMs: 5000,
+        env: { LC_ALL: 'C', LANGUAGE: 'C' },
     });
     if (!gitRepoCheck.success || gitRepoCheck.exitCode !== 0) {
         if (commandProducedNoAnswer(gitRepoCheck)) {
             throw detectionUnavailable(gitRepoCheck.stderr.trim() || 'the repository probe did not complete');
         }
 
-        // `git` ran and refused. That covers the real "not a repository" answer (exit 128,
-        // `fatal: not a git repository`) *and* every other git fatal, including an installed but
-        // broken git — the exit code cannot separate them. Ask the binary the one question that
-        // succeeds for any working git; `GIT_INSTALLABLE_DESCRIPTOR` already declares `--version`
-        // as its version/liveness probe.
-        const liveness = await runScmCommand({
-            bin: 'git',
-            cwd: input.cwd,
-            args: ['--version'],
-            timeoutMs: 5000,
-        });
-        if (!liveness.success || liveness.exitCode !== 0) {
-            throw detectionUnavailable(
-                (liveness.stderr.trim() || gitRepoCheck.stderr.trim()) || 'git is not usable on this machine',
-            );
+        // Git's setup.c distinguishes exhausted discovery from ownership, access and format
+        // refusals. A working `git --version` cannot turn those refusals into repository absence.
+        const diagnostic = gitRepoCheck.stderr.trim();
+        if (
+            /^fatal: not a git repository \(or any of the parent directories\): \.git$/.test(diagnostic)
+            || /^fatal: not a git repository \(or any parent up to mount point [^\r\n]+\)\r?\nStopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.$/.test(diagnostic)
+        ) {
+            return NOT_A_REPOSITORY;
         }
-        return NOT_A_REPOSITORY;
+        throw detectionUnavailable(diagnostic || 'the repository probe was refused');
     }
 
     const rootResult = await runScmCommand({
@@ -96,7 +90,7 @@ export async function detectGitRepo(input: { cwd: string }): Promise<ScmRepoDete
 
 export async function getGitSnapshot(input: {
     context: ScmBackendContext;
-    request?: Pick<ScmStatusSnapshotRequest, 'includeWorktreeStatus'>;
+    request?: Pick<ScmStatusSnapshotRequest, 'includeWorktreeStatus' | 'operationStateVersion'>;
 }): Promise<ScmStatusSnapshotResponse> {
     const { context, request } = input;
     const repoRoot = context.detection.rootPath ?? context.cwd;
@@ -169,7 +163,8 @@ export async function getGitSnapshot(input: {
         worktreesOutput: worktreesResult.success ? (worktreesResult.stdout ?? '') : '',
         remotesOutput: remotesResult.success ? (remotesResult.stdout ?? '') : '',
         remoteHeadRefsOutput: remoteHeadRefsResult.success ? (remoteHeadRefsResult.stdout ?? '') : '',
-        operationState,
+        operationState: request?.operationStateVersion === 1 ? operationState : operationState && (operationState.kind === 'merge' || operationState.kind === 'rebase') ? { kind: operationState.kind, sourceRef: operationState.sourceRef, canContinue: operationState.canContinue, canAbort: operationState.canAbort } : null,
+        ...(request?.operationStateVersion === 1 ? { operationStateVersion: 1 as const } : {}),
         hostingProviderRegistry,
     });
 

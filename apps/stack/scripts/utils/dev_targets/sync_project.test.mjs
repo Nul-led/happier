@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import test from 'node:test';
 
+import { withJsonOwnerFileLock } from '../proc/jsonOwnerFileLock.mjs';
 import {
   INDEPENDENT_DEV_TARGET_SYNC_OWNER,
   ensureDevTargetSyncProject,
@@ -27,6 +28,7 @@ async function writeCriticalScopeStubs(root) {
   await mkdir(binDir, { recursive: true });
   await writeFile(join(binDir, 'systemctl'), [
     '#!/bin/sh',
+    'if [ "$1" = "--user" ] && [ "$2" = "show-environment" ]; then exit 0; fi',
     'if [ "$1" = "--user" ] && [ "$2" = "show" ] && [ "$3" = "happier-critical.slice" ]; then',
     "  printf '%s\\n' 'LoadState=loaded' 'MemoryLow=4294967296'",
     '  exit 0',
@@ -42,10 +44,11 @@ async function writeCriticalScopeStubs(root) {
     'exec "$@"',
     '',
   ].join('\n'));
+  await writeFile(join(binDir, 'ps'), '#!/bin/sh\nprintf "0\\n"\n');
   for (const command of ['mutagen', 'ssh']) {
     await writeFile(join(binDir, command), '#!/bin/sh\nexit 0\n');
   }
-  await Promise.all(['systemctl', 'systemd-run', 'mutagen', 'ssh'].map((command) => (
+  await Promise.all(['systemctl', 'systemd-run', 'ps', 'mutagen', 'ssh'].map((command) => (
     chmod(join(binDir, command), 0o755)
   )));
   return { binDir, systemdRunLog };
@@ -134,7 +137,7 @@ async function writeMutagenStatusStub(root) {
     "  const sessionName = args[2];",
     "  process.stderr.write(`status warning for ${sessionName}\\n`);",
     "  if (sessionName === process.env.FAKE_MUTAGEN_FAIL_SESSION) process.exit(7);",
-    "  process.stdout.write(`${JSON.stringify([{ name: sessionName, status: 'watching', successfulCycles: 1 }])}\\n`);",
+    "  process.stdout.write(`${JSON.stringify([{ name: sessionName, paused: false, status: 'watching', successfulCycles: 1, alpha: { connected: true, scanned: true }, beta: { connected: true, scanned: true } }])}\\n`);",
     "}",
   ].join('\n'));
   const executablePath = join(binDir, 'mutagen');
@@ -200,7 +203,7 @@ test('equivalent project keeps reconnecting sessions when project resume reports
       if (args[0] === 'sync' && args[1] === 'list') {
         return {
           code: 0,
-          out: JSON.stringify([{ name: 'happier-mac', status: 'connecting-beta', successfulCycles: 0 }]),
+          out: JSON.stringify([{ name: 'happier-mac', paused: false, status: 'connecting-beta', successfulCycles: 0 }]),
         };
       }
       return { code: 0 };
@@ -241,7 +244,7 @@ test('equivalent project restarts its isolated Mutagen daemon once when custom S
       if (args[0] === 'sync' && args[1] === 'list') {
         return {
           code: 0,
-          out: JSON.stringify([{ name: 'happier-mac', status: 'connecting-beta', successfulCycles: 0 }]),
+          out: JSON.stringify([{ name: 'happier-mac', paused: false, status: 'connecting-beta', successfulCycles: 0 }]),
         };
       }
       return { code: 0 };
@@ -286,7 +289,7 @@ test('Stack borrows an equivalent independent project without changing its lifec
       return {
         code: 0,
         ...(args[0] === 'sync'
-          ? { out: JSON.stringify([{ name: 'happier-mac', status: 'watching', successfulCycles: 1 }]) }
+          ? { out: JSON.stringify([{ name: 'happier-mac', paused: false, status: 'watching', successfulCycles: 1, alpha: { connected: true, scanned: true }, beta: { connected: true, scanned: true } }]) }
           : {}),
       };
     },
@@ -325,8 +328,12 @@ test('Stack reports unhealthy borrowed sessions without rejecting the whole inde
         ? {
             out: JSON.stringify([{
               name: args[2],
+              paused: false,
               status: args[2] === 'happier-mac2' ? 'disconnected' : 'watching',
               successfulCycles: args[2] === 'happier-mac2' ? 0 : 1,
+              ...(args[2] === 'happier-mac2'
+                ? { alpha: { connected: false }, beta: { connected: false } }
+                : { alpha: { connected: true, scanned: true }, beta: { connected: true, scanned: true } }),
             }]),
           }
         : {}),
@@ -337,43 +344,234 @@ test('Stack reports unhealthy borrowed sessions without rejecting the whole inde
   assert.deepEqual(result.unhealthyTargets, new Map([['mac2', 'unhealthy']]));
 });
 
-test('Stack refuses to replace a changed independent project owned by the sync service', async () => {
+test('Stack reconciles a stale independent project owned by the sync service and leaves it borrowable after the old project stopped', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-sync-project-refresh-independent-'));
   const projectFile = join(root, 'mutagen', 'mutagen.yml');
   await mkdir(join(root, 'mutagen'), { recursive: true });
-  await writeFile(projectFile, renderMutagenProject({
+  const desiredProject = renderMutagenProject({
     sourceDir: '/source/happier',
     targets: [target],
     ownerId: INDEPENDENT_DEV_TARGET_SYNC_OWNER,
-  }));
+  });
+  const staleProject = desiredProject.replace(
+    '        - "packages/plugins/*/.happier-plugin"\n',
+    '',
+  );
+  assert.notEqual(staleProject, desiredProject);
+  await writeFile(projectFile, staleProject);
   const calls = [];
-  const refreshedTarget = { ...target, repoDir: '/remote/happier-refreshed' };
+  let projectPaused = false;
+
+  const result = await ensureDevTargetSyncProject({
+    stackBaseDir: root,
+    sourceDir: '/source/happier',
+    targets: [target],
+    ownerId: 123,
+    allowIndependentBorrow: true,
+    env: {},
+  }, {
+    runProcess: async ({ command, args }) => {
+      calls.push({ command, args });
+      if (args[0] === 'project' && args[1] === 'start') {
+        assert.equal(args.includes('--paused'), true);
+        projectPaused = true;
+      }
+      if (args[0] === 'project' && args[1] === 'resume') {
+        assert.equal(projectPaused, true);
+        projectPaused = false;
+      }
+      return {
+        code: args[0] === 'project' && args[1] === 'terminate' ? 1 : 0,
+        ...(args[0] === 'sync' && args[1] === 'list'
+          ? {
+              out: JSON.stringify([{
+                name: 'happier-mac',
+                paused: projectPaused,
+                status: 'watching',
+                successfulCycles: 1,
+                ...(projectPaused
+                  ? { alpha: { connected: false }, beta: { connected: false } }
+                  : { alpha: { connected: true, scanned: true }, beta: { connected: true, scanned: true } }),
+              }]),
+            }
+          : {}),
+      };
+    },
+  });
+
+  assert.equal(result.ownership, 'independent');
+  assert.deepEqual(result.unhealthyTargets, new Map());
+  const reconciledProject = await readFile(projectFile, 'utf8');
+  assert.equal(reconciledProject, desiredProject);
+  assert.match(reconciledProject, new RegExp(
+    `^# hstack-owner: ${JSON.stringify(INDEPENDENT_DEV_TARGET_SYNC_OWNER)}`,
+  ));
+  assert.deepEqual(
+    calls.map((call) => [call.command, ...call.args.slice(0, 2)]),
+    [
+      ['mutagen', 'version'],
+      ['mutagen', 'project', 'terminate'],
+      ['mutagen', 'project', 'start'],
+      ['mutagen', 'project', 'resume'],
+      ['mutagen', 'project', 'list'],
+      ['mutagen', 'sync', 'list'],
+    ],
+  );
+  const callsBeforeRelease = calls.length;
+  await result.release('pause');
+  assert.equal(calls.length, callsBeforeRelease);
+});
+
+test('sync-service release waits for stale independent reconciliation before changing project ownership', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-sync-project-lifecycle-lock-'));
+  const projectFile = join(root, 'mutagen', 'mutagen.yml');
+  await mkdir(join(root, 'mutagen'), { recursive: true });
+  const desiredProject = renderMutagenProject({
+    sourceDir: '/source/happier',
+    targets: [target],
+    ownerId: INDEPENDENT_DEV_TARGET_SYNC_OWNER,
+  });
+  const staleProject = desiredProject.replace(
+    '        - "packages/plugins/*/.happier-plugin"\n',
+    '',
+  );
+  assert.notEqual(staleProject, desiredProject);
+  await writeFile(projectFile, staleProject);
+
+  let allowTermination;
+  const terminationAllowed = new Promise((resolve) => { allowTermination = resolve; });
+  let terminationStartedResolve;
+  const terminationStarted = new Promise((resolve) => { terminationStartedResolve = resolve; });
+  let releaseWaitResolve;
+  const releaseWait = new Promise((resolve) => { releaseWaitResolve = resolve; });
+  let pauseStartedResolve;
+  const pauseStarted = new Promise((resolve) => { pauseStartedResolve = resolve; });
+  const reconciliationCalls = [];
+  const releaseCalls = [];
+  let reconciliation;
+  let release;
+  try {
+    reconciliation = ensureDevTargetSyncProject({
+      stackBaseDir: root,
+      sourceDir: '/source/happier',
+      targets: [target],
+      ownerId: 123,
+      allowIndependentBorrow: true,
+      env: {},
+    }, {
+      runProcess: async ({ command, args }) => {
+        reconciliationCalls.push({ command, args });
+        if (args[0] === 'project' && args[1] === 'terminate') {
+          terminationStartedResolve();
+          await terminationAllowed;
+        }
+        return {
+          code: 0,
+          ...(args[0] === 'sync' && args[1] === 'list'
+            ? { out: JSON.stringify([{ name: 'happier-mac', paused: false, status: 'watching', successfulCycles: 1, alpha: { connected: true, scanned: true }, beta: { connected: true, scanned: true } }]) }
+            : {}),
+        };
+      },
+    });
+    await terminationStarted;
+
+    release = releaseIndependentDevTargetSyncProject({ stackBaseDir: root, env: {} }, {
+      runProcess: async ({ command, args }) => {
+        releaseCalls.push({ command, args });
+        pauseStartedResolve();
+        return { code: 0 };
+      },
+      withProjectLifecycleLock: async (scope, fn) => await withJsonOwnerFileLock(fn, {
+        lockPath: `${join(scope.stackBaseDir, 'mutagen', 'mutagen.yml')}.hstack-lifecycle.lock`,
+        timeoutMs: 1_000,
+        pollIntervalMs: 1,
+        staleAfterMs: 60_000,
+        errorLabel: 'test dev-target synchronization project lifecycle lock',
+        onWait: releaseWaitResolve,
+      }),
+    });
+
+    assert.equal(await Promise.race([
+      releaseWait.then(() => 'waited'),
+      pauseStarted.then(() => 'paused'),
+    ]), 'waited');
+    assert.deepEqual(releaseCalls, []);
+    assert.equal(await readFile(projectFile, 'utf8'), staleProject);
+
+    allowTermination();
+    await reconciliation;
+    await release;
+    assert.deepEqual(
+      reconciliationCalls.map((call) => [call.command, ...call.args.slice(0, 2)]),
+      [
+        ['mutagen', 'version'],
+        ['mutagen', 'project', 'terminate'],
+        ['mutagen', 'project', 'start'],
+        ['mutagen', 'project', 'resume'],
+        ['mutagen', 'project', 'list'],
+        ['mutagen', 'sync', 'list'],
+      ],
+    );
+    assert.deepEqual(
+      releaseCalls.map((call) => [call.command, ...call.args.slice(0, 2)]),
+      [['mutagen', 'project', 'pause']],
+    );
+  } finally {
+    allowTermination?.();
+    await Promise.allSettled([reconciliation, release].filter(Boolean));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Stack fails closed when independent ownership changes while reconciling a stale project', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-sync-project-refresh-race-'));
+  const projectFile = join(root, 'mutagen', 'mutagen.yml');
+  await mkdir(join(root, 'mutagen'), { recursive: true });
+  const desiredProject = renderMutagenProject({
+    sourceDir: '/source/happier',
+    targets: [target],
+    ownerId: INDEPENDENT_DEV_TARGET_SYNC_OWNER,
+  });
+  const staleProject = desiredProject.replace(
+    '        - "packages/plugins/*/.happier-plugin"\n',
+    '',
+  );
+  assert.notEqual(staleProject, desiredProject);
+  await writeFile(projectFile, staleProject);
+  const replacementProject = renderMutagenProject({
+    sourceDir: '/source/happier',
+    targets: [target],
+    ownerId: 123,
+  });
+  const calls = [];
 
   await assert.rejects(
     ensureDevTargetSyncProject({
       stackBaseDir: root,
       sourceDir: '/source/happier',
-      targets: [refreshedTarget],
+      targets: [target],
       ownerId: 123,
       allowIndependentBorrow: true,
       env: {},
     }, {
       runProcess: async ({ command, args }) => {
         calls.push({ command, args });
+        if (args[0] === 'project' && args[1] === 'terminate') {
+          await writeFile(projectFile, replacementProject);
+        }
         return { code: 0 };
       },
     }),
-    /independent synchronization project configuration differs/,
+    /independent synchronization ownership changed during Stack startup/,
   );
 
-  assert.match(
-    await readFile(projectFile, 'utf8'),
-    new RegExp(`^# hstack-owner: ${JSON.stringify(INDEPENDENT_DEV_TARGET_SYNC_OWNER)}`),
-  );
-  assert.doesNotMatch(await readFile(projectFile, 'utf8'), /happier-refreshed/);
+  assert.equal(await readFile(projectFile, 'utf8'), replacementProject);
   assert.deepEqual(
-    calls.filter((call) => call.command === 'mutagen').map((call) => call.args[1] ?? call.args[0]),
-    ['version'],
+    calls.map((call) => [call.command, ...call.args.slice(0, 2)]),
+    [
+      ['mutagen', 'version'],
+      ['mutagen', 'project', 'terminate'],
+    ],
   );
 });
 

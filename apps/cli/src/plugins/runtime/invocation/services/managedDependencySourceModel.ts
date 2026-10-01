@@ -138,7 +138,7 @@ export function createV2ManagedDependencySourceModel(params: Readonly<{
         candidates.push(candidate as ResolvedV2ManagedDependencyContribution);
     }
     if (candidates.length > MAX_V2_MANAGED_DEPENDENCIES_PER_GENERATION) {
-        return fail('plugin_managed_dependency_capacity_exceeded', 'Managed dependency generation exceeds its capacity');
+        return fail('plugin_managed_dependency_capacity_exceeded', 'Managed dependency occurrenceId exceeds its capacity');
     }
 
     const dependencies: ManagedDependencySourceModelDependency[] = [];
@@ -216,7 +216,7 @@ export function createV2ManagedDependencySourceModel(params: Readonly<{
 
     function assertCurrent(): void {
         if (retired) {
-            fail('plugin_managed_dependency_generation_retired', 'Managed dependency generation has retired');
+            fail('plugin_managed_dependency_generation_retired', 'Managed dependency occurrenceId has retired');
         }
     }
 

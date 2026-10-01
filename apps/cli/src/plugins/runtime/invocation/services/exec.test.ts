@@ -21,7 +21,7 @@ function createService(options?: Readonly<{ current?: () => boolean; controller?
         allowedExecutables: [executable],
         allowedEnvKeys: ['FIXTURE_VALUE'],
         signal: options?.controller?.signal ?? new AbortController().signal,
-        isGenerationCurrent: options?.current ?? (() => true),
+        isOccurrenceCurrent: options?.current ?? (() => true),
         async resolveExecutable(ref) {
             expect(ref).toEqual(executable);
             return { command: process.execPath, args: [], env: {} };
@@ -48,7 +48,7 @@ describe('createStablePluginExecService', () => {
                 UNDECLARED_VALUE: 'hidden',
             },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             async resolveExecutable() {
                 return {
                     command: '/resolved/tool',
@@ -109,7 +109,7 @@ describe('createStablePluginExecService', () => {
         }));
         const service = createStableRunnerPluginExecService({
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             agentCli: {
                 async checkReadiness(request) {
                     return {
@@ -165,7 +165,7 @@ describe('createStablePluginExecService', () => {
         );
         const service = createStableRunnerPluginExecService({
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             agentCli: {
                 async checkReadiness(request) {
                     return {
@@ -246,7 +246,7 @@ describe('createStablePluginExecService', () => {
         const release = vi.fn();
         const service = createStableRunnerPluginExecService({
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             agentCli: {
                 async checkReadiness(request) {
                     return {
@@ -290,7 +290,7 @@ describe('createStablePluginExecService', () => {
         const service = createStablePluginExecService({
             allowedExecutables: [executable],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable: async () => {
                 throw new Error('host resolution must preserve the invocation-local grant');
             },
@@ -334,7 +334,7 @@ describe('createStablePluginExecService', () => {
         const service = createStablePluginExecService({
             allowedExecutables: [managedDependency],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable: async (ref) => {
                 if (
                     ref.kind !== 'managedDependency'
@@ -374,7 +374,7 @@ describe('createStablePluginExecService', () => {
         )).rejects.toMatchObject({ code: 'plugin_managed_dependency_undeclared' });
     });
 
-    it('releases a managed-dependency host grant when its generation retires during resolution', async () => {
+    it('releases a managed-dependency host grant when its occurrenceId retires during resolution', async () => {
         const managedDependency = Object.freeze({
             kind: 'managedDependency',
             id: 'fixture.adapter',
@@ -394,7 +394,7 @@ describe('createStablePluginExecService', () => {
         const service = createStablePluginExecService({
             allowedExecutables: [managedDependency],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => current,
+            isOccurrenceCurrent: () => current,
             resolveExecutable: async () => await resolution,
             resolvePath: async () => { throw new Error('unexpected path'); },
         });
@@ -430,7 +430,7 @@ describe('createStablePluginExecService', () => {
         const service = createStablePluginExecService({
             allowedExecutables: [managedDependency],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable: async () => await resolution,
             resolvePath: async () => { throw new Error('unexpected path'); },
         });
@@ -560,7 +560,7 @@ describe('createStablePluginExecService', () => {
             }],
             environment: { DECLARED_VALUE: 'default', HIDDEN_VALUE: 'hidden' },
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             async resolveExecutable(ref) {
                 if (ref.kind === 'systemTool' && ref.id === 'missing') {
                     throw new PluginError({
@@ -618,7 +618,7 @@ describe('createStablePluginExecService', () => {
         const service = createStablePluginExecService({
             allowedExecutables: [executable],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable: async () => ({
                 command: process.execPath,
                 allowedArguments: ['--version'],
@@ -636,7 +636,7 @@ describe('createStablePluginExecService', () => {
         const service = createStablePluginExecService({
             allowedExecutables: [executable],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable: async () => {
                 throw new Error('pre-resolved system tool must preserve its launch');
             },
@@ -670,7 +670,7 @@ describe('createStablePluginExecService', () => {
         })).rejects.toMatchObject({ code: 'plugin_exec_argument_denied' });
     });
 
-    it('rejects every operation after its plugin generation becomes stale', async () => {
+    it('rejects every operation after its plugin occurrenceId becomes stale', async () => {
         let current = true;
         const service = createService({ current: () => current });
         current = false;
@@ -694,7 +694,7 @@ describe('createStablePluginExecService', () => {
         })).rejects.toMatchObject({ code: 'plugin_exec_spawn_failed' });
     });
 
-    it('attributes generation retirement separately from caller disposal', async () => {
+    it('attributes occurrenceId retirement separately from caller disposal', async () => {
         const controller = new AbortController();
         const service = createService({ controller });
         const handle = await service.spawn({
@@ -713,7 +713,7 @@ describe('createStablePluginExecService', () => {
         const service = createStablePluginExecService({
             allowedExecutables: [executable],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable: async () => { throw new Error('ambient resolver detail'); },
             resolvePath: async () => { throw new Error('unexpected path'); },
         });
@@ -729,7 +729,7 @@ describe('createStablePluginExecService', () => {
         const service = createStablePluginExecService({
             allowedExecutables: [executable],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable: async () => ({ command: process.execPath, release }),
             resolvePath: async () => { throw new Error('unexpected path'); },
         });
@@ -748,7 +748,7 @@ describe('createStablePluginExecService', () => {
         const service = createStablePluginExecService({
             allowedExecutables: [executable],
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             resolveExecutable: async () => ({ command: process.execPath, release }),
             resolvePath: async () => { throw new Error('unexpected path'); },
         });

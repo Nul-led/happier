@@ -33,6 +33,7 @@ import {
   MAX_TRIAGE_TEXT_UTF8_BYTES_V1,
   normalizeTriageSingleLineV1,
   projectTriageDisplayTextV1,
+  type TriagePullRequestStatusV1,
 } from '@happier-dev/triage-protocol/v1';
 
 import { readGitlabDiscussionResolution } from '../mapping/discussionResolution.js';
@@ -492,9 +493,46 @@ export type GitlabPipelineRollupV1 = Readonly<{
   passingCount: number;
 }>;
 
-const RUNNING_JOB_STATUSES = new Set(['created', 'pending', 'running', 'waiting_for_resource']);
+const RUNNING_JOB_STATUSES = new Set([
+  'created', 'pending', 'running', 'waiting_for_resource', 'preparing',
+  'scheduled', 'waiting_for_callback', 'canceling',
+]);
 const FAILING_JOB_STATUSES = new Set(['failed']);
 const PASSING_JOB_STATUSES = new Set(['success']);
+
+type GitlabJobRowV1 = NonNullable<TriagePullRequestStatusV1['checks']>['rows'][number];
+
+export function projectGitlabPipelineJobs(body: unknown): Readonly<{
+  rows: readonly GitlabJobRowV1[];
+  incomplete: boolean;
+  projectionTruncated: boolean;
+}> {
+  if (!Array.isArray(body)) return { rows: [], incomplete: true, projectionTruncated: false };
+  const rows: GitlabJobRowV1[] = [];
+  let incomplete = false;
+  let projectionTruncated = false;
+  for (const candidate of body) {
+    const id = isRecord(candidate) ? readNativeId(candidate.id, MAX_TRIAGE_IDENTIFIER_UTF8_BYTES_V1) : null;
+    const name = isRecord(candidate) ? boundedOrNull(candidate.name, MAX_TRIAGE_TEXT_UTF8_BYTES_V1) : null;
+    if (!isRecord(candidate) || id === null || name === null) {
+      incomplete = true;
+      continue;
+    }
+    const status = readString(candidate.status)?.trim();
+    const state = PASSING_JOB_STATUSES.has(status ?? '') ? 'passed'
+      : FAILING_JOB_STATUSES.has(status ?? '') ? 'failed'
+        : RUNNING_JOB_STATUSES.has(status ?? '') ? 'pending'
+          : status === 'canceled' || status === 'skipped' || status === 'manual' ? 'neutral' : 'unknown';
+    const startedAtMs = readTimestampMs(candidate.started_at);
+    const completedAtMs = readTimestampMs(candidate.finished_at);
+    projectionTruncated ||= name.truncated;
+    rows.push({ id, name: name.value, state,
+      ...(startedAtMs === null ? {} : { startedAtMs }),
+      ...(completedAtMs === null ? {} : { completedAtMs }),
+    });
+  }
+  return { rows, incomplete, projectionTruncated };
+}
 
 /**
  * Rolls one pipeline's jobs up into three counts, or returns `null`.

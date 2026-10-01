@@ -69,7 +69,7 @@ export type ResolveTargetActionHostBinding = (
 
 export type PluginInvocationHostAccessTarget = Readonly<{
     pluginId: string;
-    generation: string;
+    occurrenceId: string;
     qualifiedId: string;
 }>;
 
@@ -86,10 +86,10 @@ export type ResolvePluginInvocationHostPolicy = (
 export type ResolvePluginResourceAccountStorage = (input: Readonly<{
     pluginId: string;
     resourceId: string;
-    generation: string;
+    occurrenceId: string;
     hostAccessRequests: readonly TargetActionHostAccessRequest[];
     signal: AbortSignal;
-    isGenerationCurrent(): boolean | Promise<boolean>;
+    isOccurrenceCurrent(): boolean | Promise<boolean>;
 }>) => PluginAccountStorageScope | undefined;
 
 export function createPluginResourceAccountStorageResolver(params: Readonly<{
@@ -98,20 +98,20 @@ export function createPluginResourceAccountStorageResolver(params: Readonly<{
 }>): ResolvePluginResourceAccountStorage {
     const resolvePolicy = createPluginInvocationHostPolicyResolver({
         ...(params.resolveOptionalAccess ? { resolveOptionalAccess: params.resolveOptionalAccess } : {}),
-        createServiceBinding: (generation, id) => withPluginInvocationAccountStorageAvailability(
-            createUnavailablePluginInvocationServiceBinding(generation, id),
+        createServiceBinding: (occurrenceId, id) => withPluginInvocationAccountStorageAvailability(
+            createUnavailablePluginInvocationServiceBinding(occurrenceId, id),
             params.accountStorage ? 'available' : 'unavailable',
         ),
     });
     return (input) => {
-        const currentness = input.isGenerationCurrent();
+        const currentness = input.isOccurrenceCurrent();
         if (input.signal.aborted || currentness === false) {
             throw new PluginError({
                 code: 'plugin_generation_stale',
-                message: 'Plugin generation is stale',
+                message: 'Plugin occurrenceId is stale',
             });
         }
-        // Resource observation is synchronous, while committed-generation
+        // Resource observation is synchronous, while committed-occurrenceId
         // authority can be asynchronous. The canonical Account host awaits
         // the same stamped callback at every Account operation; observe the
         // speculative resolver check here solely to avoid an unhandled
@@ -128,7 +128,7 @@ export function createPluginResourceAccountStorageResolver(params: Readonly<{
         const qualifiedId = `${input.pluginId}/resources/${input.resourceId}`;
         const policy = resolvePolicy({
             pluginId: input.pluginId,
-            generation: input.generation,
+            occurrenceId: input.occurrenceId,
             qualifiedId,
         }, {
             hostAccessRequests: input.hostAccessRequests,
@@ -144,9 +144,9 @@ export function createPluginResourceAccountStorageResolver(params: Readonly<{
         if (!policy.hostAccess.some((decision) => decision.status === 'available')) return undefined;
         const accountStorage = params.accountStorage?.bind({
             pluginId: input.pluginId,
-            generation: input.generation,
+            occurrenceId: input.occurrenceId,
             signal: input.signal,
-            isGenerationCurrent: input.isGenerationCurrent,
+            isOccurrenceCurrent: input.isOccurrenceCurrent,
         }) ?? null;
         if (accountStorage) return accountStorage;
         if (input.hostAccessRequests.some((request) => request.required)) {
@@ -281,7 +281,7 @@ export function createPluginInvocationHostPolicyResolver(params?: Readonly<{
         ?? createUnavailablePluginInvocationServiceBinding;
     return (action, context) => {
         const serviceBinding = createServiceBinding(
-            action.generation,
+            action.occurrenceId,
             `${action.qualifiedId}:binding`,
             context.hostAccessRequests,
             action.qualifiedId,
@@ -618,7 +618,7 @@ export function createTargetActionHostBindingResolver(params?: Readonly<{
     createServiceBinding?: CreatePluginInvocationServiceBinding;
     resolveOptionalAccess?: (pluginId: string) => readonly PluginAccessSelection[];
     sessionServiceAvailable?: boolean;
-    isGenerationCurrent?: (action: ResolvedTargetAction) => boolean | Promise<boolean>;
+    isOccurrenceCurrent?: (action: ResolvedTargetAction) => boolean | Promise<boolean>;
 }>): ResolveTargetActionHostBinding {
     const resolvePolicy = createTargetActionHostPolicyResolver({
         ...(params?.createServiceBinding ? { createServiceBinding: params.createServiceBinding } : {}),
@@ -628,10 +628,10 @@ export function createTargetActionHostBindingResolver(params?: Readonly<{
             : { sessionServiceAvailable: params.sessionServiceAvailable }),
     });
     return async (action, context) => {
-        if (params?.isGenerationCurrent && !await params.isGenerationCurrent(action)) {
+        if (params?.isOccurrenceCurrent && !await params.isOccurrenceCurrent(action)) {
             throw new PluginError({
                 code: 'plugin_generation_stale',
-                message: 'Plugin generation is stale',
+                message: 'Plugin occurrenceId is stale',
             });
         }
         return resolvePolicy(action, context);

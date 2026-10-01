@@ -74,7 +74,7 @@ describe('plugin invocation filesystem service', () => {
       roots: { pluginData: root, workspace: root, projects: new Map() },
       scopes: [{ root: 'workspace', pathPrefix: 'allowed', access: ['read', 'write', 'delete'] }],
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     });
     const bytes = new Uint8Array([0, 255, 1, 2]);
     await service.writeFile({ root: 'workspace', relativePath: 'allowed/data.bin' }, bytes);
@@ -82,7 +82,7 @@ describe('plugin invocation filesystem service', () => {
     expect(new Uint8Array(await readFile(join(root, 'allowed/data.bin')))).toEqual(bytes);
   });
 
-  it('diagnoses a disclosure mismatch while preserving traversal, symlink, size, and generation fences', async () => {
+  it('diagnoses a disclosure mismatch while preserving traversal, symlink, size, and occurrenceId fences', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-svc07-root-'));
     const outside = await mkdtemp(join(tmpdir(), 'happier-svc07-outside-'));
     await mkdir(join(root, 'allowed'), { recursive: true });
@@ -93,7 +93,7 @@ describe('plugin invocation filesystem service', () => {
       roots: { pluginData: root, workspace: root, projects: new Map() },
       scopes: [{ root: 'workspace', pathPrefix: 'allowed', access: ['read', 'write'] }],
       signal: new AbortController().signal,
-      isGenerationCurrent: () => current,
+      isOccurrenceCurrent: () => current,
       recordDisclosureMismatch: (mismatch) => {
         disclosureMismatches.push(mismatch);
         throw new Error('diagnostic sink failed');
@@ -122,7 +122,7 @@ describe('plugin invocation filesystem service', () => {
       roots: { pluginData: root, workspace: root, projects: new Map() },
       scopes: [{ root: 'workspace', pathPrefix: 'allowed', access: ['write'] }],
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     });
 
     await expect(service.writeFile(
@@ -140,7 +140,7 @@ describe('plugin invocation filesystem service', () => {
       roots: { pluginData: root, workspace: root, projects: new Map() },
       scopes: [{ root: 'workspace', pathPrefix: 'allowed', access: ['read', 'write'] }],
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     });
 
     await expect(service.writeFile(
@@ -167,7 +167,7 @@ describe('plugin invocation filesystem service', () => {
       roots: { pluginData: root, workspace: root, projects: new Map() },
       scopes: [{ root: 'workspace', pathPrefix: 'allowed', access: ['read'] }],
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     });
 
     await expect(service.readFile({
@@ -184,7 +184,7 @@ describe('plugin invocation filesystem service', () => {
       roots: { pluginData: root, workspace: root, projects: new Map() },
       scopes: [{ root: 'workspace', access: ['read'] }],
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     });
 
     const firstPage = await service.list({ root: 'workspace', relativePath: '' }, { limit: 1 });
@@ -209,7 +209,7 @@ describe('plugin invocation filesystem service', () => {
       roots: { pluginData: root, workspace: root, projects: new Map() },
       scopes: [{ root: 'workspace', access: ['read'] }],
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     });
     await expect(service.list({ root: 'workspace', relativePath: '' }))
       .rejects.toMatchObject({ code: 'plugin_fs_path_denied' });
@@ -218,7 +218,7 @@ describe('plugin invocation filesystem service', () => {
       roots: { pluginData: join(root, 'missing-root'), workspace: join(root, 'missing-root'), projects: new Map() },
       scopes: [{ root: 'workspace', access: ['read'] }],
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     });
     await expect(unavailable.list({ root: 'workspace', relativePath: '' }))
       .rejects.toMatchObject({ code: 'plugin_fs_root_unavailable' });
@@ -233,7 +233,7 @@ describe('plugin invocation filesystem service', () => {
       roots: { pluginData: root, workspace: root, projects: new Map() },
       scopes: [{ root: 'workspace', access: ['read', 'write', 'delete'] }],
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     });
 
     await expect(service.list({ root: 'workspace', relativePath: 'file.txt' }))
@@ -257,7 +257,7 @@ describe('plugin invocation filesystem service', () => {
         { root: 'project', projectId: 'project-a', access: ['read', 'write'] },
       ],
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     });
 
     for (const relativePath of ['/absolute', '\\server\\share', 'C:\\device', 'safe//empty']) {
@@ -296,7 +296,7 @@ describe('plugin invocation filesystem service', () => {
       roots: { pluginData: root, workspace: root, projects: new Map() },
       scopes: [{ root: 'workspace', access: ['read', 'delete'] }],
       signal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     });
 
     const removal = service.remove(

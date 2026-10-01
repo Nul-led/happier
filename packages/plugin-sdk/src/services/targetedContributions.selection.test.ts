@@ -12,7 +12,8 @@ type FixtureContribution = Readonly<{
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginTargetedContributionSelectionV1['contributor']['sourceCustody'];
     }>;
     protocol: Readonly<{
         id: string;
@@ -32,7 +33,11 @@ const point: TargetedContributionPointRef<FixtureContribution> = Object.freeze({
 const selection = Object.freeze({
     target: Object.freeze({
         pluginId: point.targetPluginId,
-        immutableGenerationId: 'target-generation-a',
+        sourceCustody: Object.freeze({
+            kind: 'managed' as const,
+            immutableGenerationId: 'target-generation-a',
+            installSource: 'npm' as const,
+        }),
     }),
     point: Object.freeze({
         pointId: point.id,
@@ -41,7 +46,11 @@ const selection = Object.freeze({
     contributor: Object.freeze({
         pluginId: 'com.example.provider',
         contributionId: 'provider-a',
-        immutableGenerationId: 'provider-generation-a',
+        sourceCustody: Object.freeze({
+            kind: 'managed' as const,
+            immutableGenerationId: 'provider-generation-a',
+            installSource: 'npm' as const,
+        }),
     }),
 }) satisfies PluginTargetedContributionSelectionV1;
 
@@ -49,14 +58,23 @@ const admittedOperation = Object.freeze({
     identity: Object.freeze({
         target: Object.freeze({ pluginId: point.targetPluginId }),
         point: Object.freeze({ pointId: point.id, protocol: point.protocol }),
-        contributor: selection.contributor,
+        contributor: Object.freeze({
+            pluginId: selection.contributor.pluginId,
+            contributionId: selection.contributor.contributionId,
+            occurrenceId: 'provider-occurrence-a',
+        }),
         role: 'inspect' as const,
     }),
-}) as AdmittedTargetedOperationExecutionHandle<Readonly<{ id: string }>, Readonly<{ ok: true }>, 'inspect'>;
+}) as unknown as AdmittedTargetedOperationExecutionHandle<Readonly<{ id: string }>, Readonly<{ ok: true }>, 'inspect'>;
 
 function admittedContribution(overrides: Partial<FixtureContribution> = {}): FixtureContribution {
     return Object.freeze({
-        contributor: selection.contributor,
+        contributor: Object.freeze({
+            pluginId: selection.contributor.pluginId,
+            contributionId: selection.contributor.contributionId,
+            occurrenceId: 'provider-occurrence-a',
+            sourceCustody: selection.contributor.sourceCustody,
+        }),
         protocol: point.protocol,
         operations: Object.freeze({ inspect: admittedOperation }),
         ...overrides,
@@ -64,7 +82,8 @@ function admittedContribution(overrides: Partial<FixtureContribution> = {}): Fix
 }
 
 function serviceFor(input: Readonly<{
-    generation: string;
+    occurrenceId: string;
+    sourceCustody?: PluginTargetedContributionSelectionV1['target']['sourceCustody'];
     contributions: readonly FixtureContribution[];
 }>) {
     let observedPoint: TargetedContributionPointRef<unknown> | undefined;
@@ -83,7 +102,8 @@ function serviceFor(input: Readonly<{
                 async readCurrent(options) {
                     readSignal = options?.signal;
                     return {
-                        generation: input.generation,
+                        occurrenceId: input.occurrenceId,
+                        sourceCustody: input.sourceCustody ?? selection.target.sourceCustody,
                         contributions: input.contributions as readonly TContribution[],
                     };
                 },
@@ -101,7 +121,7 @@ function serviceFor(input: Readonly<{
 describe('selectCurrentTargetedContribution', () => {
     it('returns the host-issued typed admitted entry for exactly the selected point and current generation', async () => {
         const fixture = serviceFor({
-            generation: selection.target.immutableGenerationId,
+            occurrenceId: 'target-occurrence-a',
             contributions: [admittedContribution()],
         });
         const signal = new AbortController().signal;
@@ -115,7 +135,7 @@ describe('selectCurrentTargetedContribution', () => {
 
         expect(result).toEqual({
             kind: 'selected',
-            targetGeneration: selection.target.immutableGenerationId,
+            targetOccurrenceId: 'target-occurrence-a',
             contribution: admittedContribution(),
         });
         expect(fixture.observedPoint()).toBe(point);
@@ -128,9 +148,14 @@ describe('selectCurrentTargetedContribution', () => {
         }
     });
 
-    it('fails closed when the selected target generation is no longer current', async () => {
+    it('fails closed when the selected target source is no longer current', async () => {
         const fixture = serviceFor({
-            generation: 'target-generation-b',
+            occurrenceId: 'target-occurrence-b',
+            sourceCustody: Object.freeze({
+                kind: 'managed',
+                immutableGenerationId: 'target-generation-b',
+                installSource: 'npm',
+            }),
             contributions: [admittedContribution()],
         });
 
@@ -140,18 +165,22 @@ describe('selectCurrentTargetedContribution', () => {
             selection,
         })).resolves.toEqual({
             kind: 'unavailable',
-            reason: 'target_generation_stale',
+            reason: 'target_source_stale',
         });
         expect(fixture.disposed()).toBe(1);
     });
 
-    it('fails closed when the selected contributor generation has been replaced', async () => {
+    it('fails closed when the selected contributor source has been replaced', async () => {
         const fixture = serviceFor({
-            generation: selection.target.immutableGenerationId,
+            occurrenceId: 'target-occurrence-a',
             contributions: [admittedContribution({
                 contributor: Object.freeze({
-                    ...selection.contributor,
-                    immutableGenerationId: 'provider-generation-b',
+                    ...admittedContribution().contributor,
+                    sourceCustody: Object.freeze({
+                        kind: 'managed',
+                        immutableGenerationId: 'provider-generation-b',
+                        installSource: 'npm',
+                    }),
                 }),
             })],
         });
@@ -168,7 +197,7 @@ describe('selectCurrentTargetedContribution', () => {
 
     it('rejects a selection for another point before opening an observation', async () => {
         const fixture = serviceFor({
-            generation: selection.target.immutableGenerationId,
+            occurrenceId: 'target-occurrence-a',
             contributions: [admittedContribution()],
         });
 

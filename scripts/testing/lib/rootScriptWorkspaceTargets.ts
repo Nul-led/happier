@@ -4,9 +4,11 @@
  * The repository used to keep several hand-maintained copies of "which workspaces run in the root
  * unit lane" (the root script body, the CI job body, the parity table, and the lane classifier).
  * They drifted. This module is the single reader: every consumer resolves the workspace set from
- * the root script body itself, so a workspace added to (or removed from) the executor is picked up
+ * the script body or its delegated runner's command inventory, so executor changes are picked up
  * everywhere without editing a second list.
  */
+import { ROOT_TEST_COMMANDS } from '../runRootTests.ts';
+
 export interface WorkspaceScriptTarget {
   /** Yarn workspace package name for `yarn workspace <name> <script>` invocations. */
   packageName: string | null;
@@ -46,6 +48,18 @@ export function scanYarnInvocations(commandText: string): YarnInvocationScan {
 
   const tokens = tokenize(commandText);
   for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index] === 'scripts/testing/runRootTests.ts') {
+      const lane = tokens[index + 1];
+      if (lane !== 'unit' && lane !== 'integration') {
+        throw new Error(`Unsupported root test lane: ${lane ?? '<missing>'}`);
+      }
+      for (const command of ROOT_TEST_COMMANDS[lane]) {
+        const scan = scanYarnInvocations(['yarn', ...command.args].join(' '));
+        workspaceTargets.push(...scan.workspaceTargets);
+        rootScriptRefs.push(...scan.rootScriptRefs);
+      }
+      continue;
+    }
     // `$npm_execpath run <script>` is the package-manager-agnostic delegation form several
     // workspaces use in place of `yarn <script>` (`apps/cli`'s `test:local` is exactly this).
     // Skipping it makes the whole lane behind the wrapper invisible.

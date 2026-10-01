@@ -223,10 +223,7 @@ function createDiscordPlugin() {
     [DISCORD_GATEWAY_WORKER_ATTEMPT_ACTION_ID]: {
       title: 'Run Discord Gateway worker attempt',
       description: 'Runs one Discord Gateway worker attempt.',
-      execution: { target: 'daemon' },
-      scopes: ['global'],
       surfaces: ['plugin'],
-      dangerLevel: 'safe',
       inputSchema: DISCORD_GATEWAY_WORKER_ATTEMPT_INPUT_SCHEMA,
       hostAccess: ['discord-rest', 'discord-gateway', DISCORD_BOT_CREDENTIAL_PURPOSE],
       connectedAccountPurposeBindings: [{
@@ -238,10 +235,7 @@ function createDiscordPlugin() {
     [DISCORD_AUTOMATION_MESSAGE_SETUP_ACTION_ID]: {
       title: 'Watch a Discord channel for Automations',
       description: 'Resolves a Discord channel to immutable source facts for an Automation Event.',
-      execution: { target: 'daemon' },
-      scopes: ['global'],
       surfaces: ['plugin'],
-      dangerLevel: 'safe',
       inputSchema: DISCORD_AUTOMATION_MESSAGE_SETUP_INPUT_SCHEMA,
       inputHints: DISCORD_AUTOMATION_MESSAGE_SETUP_INPUT_HINTS,
       resultSchema: DISCORD_AUTOMATION_MESSAGE_SETUP_RESULT_SCHEMA,
@@ -255,8 +249,6 @@ function createDiscordPlugin() {
     [DISCORD_AUTOMATION_MESSAGE_ADMIT_ACTION_ID]: {
       title: 'Admit Discord Automation Event',
       description: 'Admits one frozen Discord Automation Event obligation through the current source definitions.',
-      execution: { target: 'daemon' },
-      scopes: ['global'],
       surfaces: automationEventAdmitOperation.declaration.surfaces,
       dangerLevel: automationEventAdmitOperation.declaration.dangerLevel,
       inputSchema: automationEventAdmitOperation.declaration.input.schema.jsonSchema,
@@ -266,8 +258,6 @@ function createDiscordPlugin() {
     [DISCORD_CHANNEL_ACTION_IDS.setup]: {
       title: 'Set up Discord Channels',
       description: 'Verifies the selected Discord bot for Channels setup.',
-      execution: { target: 'daemon' },
-      scopes: ['global'],
       surfaces: discordProviderOperations.setup.declaration.surfaces,
       dangerLevel: discordProviderOperations.setup.declaration.dangerLevel,
       inputSchema: DISCORD_SETUP_INPUT_SCHEMA,
@@ -301,8 +291,6 @@ function createDiscordPlugin() {
     [DISCORD_CHANNEL_ACTION_IDS.connectionTest]: {
       title: 'Test Discord connection',
       description: 'Tests the selected Discord Channel connection.',
-      execution: { target: 'daemon' },
-      scopes: ['global'],
       surfaces: connectionTestOperation.declaration.surfaces,
       dangerLevel: connectionTestOperation.declaration.dangerLevel,
       inputSchema: connectionTestOperation.declaration.input.schema.jsonSchema,
@@ -317,8 +305,6 @@ function createDiscordPlugin() {
     [DISCORD_CHANNEL_ACTION_IDS.endpointResolve]: {
       title: 'Resolve Discord destination',
       description: 'Resolves a Discord channel destination for delivery.',
-      execution: { target: 'daemon' },
-      scopes: ['global'],
       surfaces: endpointResolveOperation.declaration.surfaces,
       dangerLevel: endpointResolveOperation.declaration.dangerLevel,
       inputSchema: endpointResolveOperation.declaration.input.schema.jsonSchema,
@@ -333,8 +319,6 @@ function createDiscordPlugin() {
     [DISCORD_CHANNEL_ACTION_IDS.messageDeliver]: {
       title: 'Deliver Discord message',
       description: 'Delivers a message to the selected Discord destination.',
-      execution: { target: 'daemon' },
-      scopes: ['global'],
       surfaces: messageDeliverOperation.declaration.surfaces,
       dangerLevel: messageDeliverOperation.declaration.dangerLevel,
       inputSchema: messageDeliverOperation.declaration.input.schema.jsonSchema,
@@ -349,8 +333,6 @@ function createDiscordPlugin() {
     [DISCORD_CHANNEL_ACTION_IDS.connectionStop]: {
       title: 'Stop Discord Gateway connection',
       description: 'Stops the selected Discord Gateway connection.',
-      execution: { target: 'daemon' },
-      scopes: ['global'],
       surfaces: connectionStopOperation.declaration.surfaces,
       dangerLevel: connectionStopOperation.declaration.dangerLevel,
       inputSchema: connectionStopOperation.declaration.input.schema.jsonSchema,

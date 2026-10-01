@@ -1,3 +1,11 @@
+import { piConnectedServiceStateSharingDescriptor } from './connectedServices/stateSharingDescriptor.js';
+
+const { providerId: _providerId, ...stateSharing } = piConnectedServiceStateSharingDescriptor;
+export const AGENT_STATE_SHARING_DESCRIPTOR = {
+  ...stateSharing,
+  nativeHome: { environmentKey: 'PI_CODING_AGENT_DIR', defaultRelativePath: '.pi/agent' },
+} as const;
+
 const PI_AGENT_ID = 'pi';
 
 // IMPORTANT: this must stay JSON-serializable (data-only).

@@ -218,14 +218,12 @@ export const BITBUCKET_PLUGIN = definePlugin({
     [BITBUCKET_TRIAGE_ACTION_IDS.listInstances]: {
       title: 'Discover Bitbucket Cloud workspaces',
       description: 'Enumerates the workspaces reachable by each authorized Bitbucket Cloud account.',
-      scopes: ['global'],
       surfaces: sources.operations.listInstances.declaration.surfaces,
       // Mounted-only placement. `plugin` stays because the Triage daemon
       // consumes it and `ui` because this source's own mounted surfaces hold
       // present-user authority; the explicit empty list only withdraws the
       // Action from global placement discovery — it disables no invocation.
       placementBindings: [],
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.listInstances.declaration.dangerLevel,
       inputSchema: sources.operations.listInstances.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.listInstances.declaration.resultSchema.jsonSchema,
@@ -235,9 +233,7 @@ export const BITBUCKET_PLUGIN = definePlugin({
     [BITBUCKET_TRIAGE_ACTION_IDS.scan]: {
       title: 'Scan Bitbucket Cloud pull requests',
       description: 'Reads one bounded page of pull requests for one configured Bitbucket Cloud workspace.',
-      scopes: ['global'],
       surfaces: sources.operations.scan.declaration.surfaces,
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.scan.declaration.dangerLevel,
       inputSchema: sources.operations.scan.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.scan.declaration.resultSchema.jsonSchema,
@@ -248,14 +244,12 @@ export const BITBUCKET_PLUGIN = definePlugin({
     [BITBUCKET_TRIAGE_ACTION_IDS.get]: {
       title: 'Read one Bitbucket Cloud pull request',
       description: 'Reads one pull request authoritatively through one exact configured Bitbucket Cloud instance.',
-      scopes: ['global'],
       surfaces: sources.operations.get.declaration.surfaces,
       // Mounted-only placement. `plugin` stays because the Triage daemon
       // consumes it and `ui` because this source's own mounted surfaces hold
       // present-user authority; the explicit empty list only withdraws the
       // Action from global placement discovery — it disables no invocation.
       placementBindings: [],
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.get.declaration.dangerLevel,
       inputSchema: sources.operations.get.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.get.declaration.resultSchema.jsonSchema,
@@ -266,9 +260,7 @@ export const BITBUCKET_PLUGIN = definePlugin({
     [BITBUCKET_TRIAGE_ACTION_IDS.prepareReviewWorkspace]: {
       title: 'Prepare a Bitbucket Cloud pull-request review workspace',
       description: 'Reauthorizes and rereads one Bitbucket Cloud pull request before preparing its selected local workspace.',
-      scopes: ['global'],
       surfaces: sources.operations.prepareReviewWorkspace.declaration.surfaces,
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.prepareReviewWorkspace.declaration.dangerLevel,
       inputSchema: sources.operations.prepareReviewWorkspace.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.prepareReviewWorkspace.declaration.resultSchema.jsonSchema,
@@ -279,9 +271,7 @@ export const BITBUCKET_PLUGIN = definePlugin({
     [BITBUCKET_TRIAGE_ACTION_IDS.verifyReviewWorkspace]: {
       title: 'Verify a Bitbucket Cloud pull-request review workspace',
       description: 'Rereads one Bitbucket Cloud pull request and verifies the already prepared local workspace before review starts.',
-      scopes: ['global'],
       surfaces: sources.operations.verifyReviewWorkspace.declaration.surfaces,
-      execution: { target: 'daemon' },
       dangerLevel: sources.operations.verifyReviewWorkspace.declaration.dangerLevel,
       inputSchema: sources.operations.verifyReviewWorkspace.declaration.input.schema.jsonSchema,
       resultSchema: sources.operations.verifyReviewWorkspace.declaration.resultSchema.jsonSchema,
@@ -296,11 +286,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
       title: 'Read a Bitbucket activity page',
       description: 'Reads one bounded page of the combined approval, update and comment activity'
         + ' of one pull request.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: BitbucketActivityInputV1Schema.jsonSchema,
       resultSchema: BitbucketActivityResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -310,11 +297,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
     [BITBUCKET_TRIAGE_DETAIL_ACTION_IDS.readOverview]: {
       title: 'Refresh a Bitbucket pull-request overview',
       description: 'Reads the pull request authoritatively from Bitbucket for the mounted Overview.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: BitbucketOverviewInputV1Schema.jsonSchema,
       resultSchema: BitbucketOverviewResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -324,11 +308,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
     [BITBUCKET_TRIAGE_DETAIL_ACTION_IDS.readDiff]: {
       title: 'Read a Bitbucket pull-request diff',
       description: 'Reads the raw diff and its bounded diffstat projection without dropping the pull request.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: BitbucketDiffInputV1Schema.jsonSchema,
       resultSchema: BitbucketDiffResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -339,11 +320,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
       title: 'Read a Bitbucket build-status page',
       description: 'Reads one bounded page of the build statuses reported against one pull'
         + ' request, with a rollup only when that page is the whole collection.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: BitbucketBuildsInputV1Schema.jsonSchema,
       resultSchema: BitbucketBuildsResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -354,11 +332,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
       title: 'Read a Bitbucket comment page',
       description: 'Reads one bounded page of the comments on one pull request, in provider'
         + ' order, with their real resolution tri-state.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: [],
-      execution: { target: 'daemon' },
-      dangerLevel: 'safe',
       inputSchema: BitbucketCommentsInputV1Schema.jsonSchema,
       resultSchema: BitbucketCommentsResultV1Schema.jsonSchema,
       hostAccess: READ_HOST_ACCESS,
@@ -383,10 +358,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
       title: 'Merge a Bitbucket pull request',
       description: 'Merges one pull request with the exact strategy and source-branch decision the'
         + ' user chose, only while its head is still the commit they saw.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       // Irreversible on the forge, and it may delete the source branch.
       dangerLevel: 'destructive',
       // The host-owned confirmation a `destructive` UI Action must declare. The body names the two
@@ -417,10 +390,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
       title: 'Decline a Bitbucket pull request',
       description: 'Declines one open pull request. Bitbucket has no reopen, so this cannot be'
         + ' undone through its API.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'writesRemote',
       // Bitbucket has no reopen: the state enum is OPEN | MERGED | DECLINED | SUPERSEDED and no
       // `/reopen` path exists. The confirmation says exactly that, because a user who expects the
@@ -449,10 +420,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
       title: 'Resolve a Bitbucket comment thread',
       description: 'Marks one comment thread on this pull request resolved, and confirms it from'
         + ' the comment itself.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'writesRemote',
       confirmation: {
         title: {
@@ -483,10 +452,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
       title: 'Reopen a Bitbucket comment thread',
       description: 'Reopens one resolved comment thread on this pull request, and confirms it from'
         + ' the comment itself.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'writesRemote',
       confirmation: {
         title: {
@@ -511,10 +478,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
     [BITBUCKET_TRIAGE_MUTATION_ACTION_IDS.submitReview]: {
       title: 'Submit this Bitbucket pull-request review',
       description: 'Publishes the selected canonical Happier review comments in order, then applies the requested Bitbucket verdict against the exact base and head revisions shown.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'externalSideEffect',
       confirmation: {
         title: {
@@ -539,10 +504,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
     [BITBUCKET_TRIAGE_MUTATION_ACTION_IDS.createReviewComment]: {
       title: 'Publish this Bitbucket review comment',
       description: 'Publishes one canonical Happier proposal at its exact pinned Bitbucket diff anchor.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'externalSideEffect',
       confirmation: {
         title: { key: 'plugins.bitbucket.ui.mutations.reviewComment.confirmation.title', fallback: 'Publish this review comment?' },
@@ -558,10 +521,8 @@ export const BITBUCKET_PLUGIN = definePlugin({
     [BITBUCKET_TRIAGE_MUTATION_ACTION_IDS.replyToReviewComment]: {
       title: 'Reply to this Bitbucket review comment',
       description: 'Publishes one canonical Happier proposal beneath one exact Bitbucket pull-request comment.',
-      scopes: ['global'],
       surfaces: ['ui'],
       placementBindings: ['detailsPanel'],
-      execution: { target: 'daemon' },
       dangerLevel: 'writesRemote',
       confirmation: {
         title: { key: 'plugins.bitbucket.ui.mutations.reviewReply.confirmation.title', fallback: 'Post this reply?' },

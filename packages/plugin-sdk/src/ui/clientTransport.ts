@@ -26,6 +26,11 @@ import {
     PluginUiReplacePageLocationResultV1Schema,
     PluginUiSetComposerDecorationsRequestV1Schema,
     PluginUiWatchComposerRequestV1Schema,
+    PluginUiReadSessionRequestV1Schema,
+    PluginUiReadSessionResultV1Schema,
+    PluginUiRespondToSessionPermissionRequestV1Schema,
+    PluginUiRespondToSessionPermissionResultV1Schema,
+    PluginUiWatchSessionRequestV1Schema,
     PluginUiExecuteActionRequestV1Schema,
     PluginUiHostApiSurfaceContextV1Schema,
     PluginUiHostApiRenderContextSnapshotV1Schema,
@@ -76,6 +81,8 @@ import type {
     OpenableContentStatResult,
     ResourceContent,
     ResourceSubscriptionEvent,
+    SessionPermissionResponseV1,
+    SessionStateV1,
     SurfaceContext,
     SurfaceHostMethod,
 } from './hostApi.js';
@@ -202,7 +209,7 @@ type EstablishedSubscription = Readonly<{
 }>;
 type SubscriptionHostMethod = Extract<
     CanonicalHostMethod,
-    'watchContext' | 'watchResource' | 'watchComposer' | 'acquireComposerInputLock'
+    'watchContext' | 'watchResource' | 'watchComposer' | 'acquireComposerInputLock' | 'watchSession'
 >;
 
 /**
@@ -345,6 +352,25 @@ function readActiveComposerResult(value: JsonValue | undefined) {
         throw new PluginUiHostApiClientError(
             'invalid_payload',
             'Host returned an invalid active Composer result.',
+        );
+    }
+    return parsed.data;
+}
+
+function readSessionReadResult(value: JsonValue | undefined): SessionStateV1 | null {
+    const parsed = PluginUiReadSessionResultV1Schema.safeParse(value);
+    if (!parsed.success) {
+        throw new PluginUiHostApiClientError('invalid_payload', 'Host returned an invalid Session state.');
+    }
+    return parsed.data;
+}
+
+function readSessionPermissionResponse(value: JsonValue | undefined): SessionPermissionResponseV1 {
+    const parsed = PluginUiRespondToSessionPermissionResultV1Schema.safeParse(value);
+    if (!parsed.success) {
+        throw new PluginUiHostApiClientError(
+            'invalid_payload',
+            'Host returned an invalid Session permission response.',
         );
     }
     return parsed.data;
@@ -995,6 +1021,40 @@ export async function createPluginUiHostApiClientFromTransport(
                 dispose: subscription.dispose,
                 ...(admittedDigest === undefined ? {} : { admittedDigest }),
             });
+        },
+        readSession: async (sessionId, requestOptions) => {
+            const payload = PluginUiReadSessionRequestV1Schema.safeParse({ sessionId });
+            if (!payload.success) {
+                throw new PluginUiHostApiClientError('invalid_payload', 'readSession request is invalid.');
+            }
+            return readSessionReadResult(await request('readSession', payload.data, requestOptions?.signal));
+        },
+        watchSession: async (sessionId, listener, requestOptions) => {
+            const payload = PluginUiWatchSessionRequestV1Schema.safeParse({ sessionId });
+            if (!payload.success) {
+                throw new PluginUiHostApiClientError('invalid_payload', 'watchSession request is invalid.');
+            }
+            const subscription = await subscribe(
+                'watchSession',
+                payload.data,
+                (value, subscriptionId) => listener(readResourceSubscriptionEvent(value, subscriptionId)),
+                requestOptions?.signal,
+            );
+            return Object.freeze({ dispose: subscription.dispose });
+        },
+        respondToSessionPermission: async (responseRequest, requestOptions) => {
+            const payload = PluginUiRespondToSessionPermissionRequestV1Schema.safeParse(responseRequest);
+            if (!payload.success) {
+                throw new PluginUiHostApiClientError(
+                    'invalid_payload',
+                    'respondToSessionPermission request is invalid.',
+                );
+            }
+            return readSessionPermissionResponse(await request(
+                'respondToSessionPermission',
+                payload.data,
+                requestOptions?.signal,
+            ));
         },
         activeComposer: async (requestOptions) => (
             readActiveComposerResult(await request(

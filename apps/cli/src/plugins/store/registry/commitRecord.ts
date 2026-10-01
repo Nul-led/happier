@@ -55,7 +55,7 @@ export const PluginRegistryCommitRecordSchema = z.object({
   installationState: z.object({
     revisionId: PortableStorageIdSchema,
   }).strict(),
-  pluginGenerations: CanonicalPluginGenerationMapSchema,
+  pluginOccurrenceIds: CanonicalPluginGenerationMapSchema,
   createdAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   creator: z.object({
     pid: z.number().int().positive().max(0x7fffffff),
@@ -201,7 +201,7 @@ export function createEmptyPluginRegistryCommitRecord(input: Readonly<{
     installationState: {
       revisionId: 'state-0',
     },
-    pluginGenerations: {},
+    pluginOccurrenceIds: {},
     createdAtMs: input.createdAtMs,
     creator: { pid: input.creatorPid, instanceId: input.creatorInstanceId },
   });

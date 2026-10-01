@@ -179,6 +179,13 @@ export function acquireTriageListWindow(
         });
         return Object.freeze({
           value,
+          // Kept by the host while no surface shows it, so Home ↔ page
+          // cycling draws the last rows at once and revalidates them. Idle
+          // holds no live work: the store has no timer or subscription of its
+          // own, every artifact unregisters its client on release, and a read
+          // still in flight settles without a client and cannot page further.
+          // The host retires the value with its Account or plugin occurrence.
+          retainWhenIdle: true,
           onExecutionOriginChange() {
             executionOriginEpoch += 1;
             store.replaceReadTransport();

@@ -1,7 +1,9 @@
 import {
-  PLUGIN_CONTRIBUTION_CATALOG_V2,
+  DEFAULT_PLUGIN_UPDATE_REVIEW_MODE_V1,
   PluginHostAccessRequestV2Schema,
+  PluginUpdateReviewModeV1Schema,
   type PluginHostAccessRequestV2,
+  type PluginUpdateReviewModeV1,
 } from '@happier-dev/protocol';
 import type {
   PluginInstallationReview,
@@ -9,6 +11,7 @@ import type {
 } from '@happier-dev/protocol/marketplace/internal';
 
 import type { CanonicalPluginManifest } from '@/plugins/manifest/types';
+import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import {
   projectConnectedAccountPurposeDeclarationsToHostAccess,
   qualifyHostAccessContributionReference,
@@ -17,7 +20,6 @@ import {
   projectPluginInstallationReviewRequestInterceptor,
 } from './changeContract';
 import {
-  projectPluginInstallationReviewExecutableRealms,
   projectPluginInstallationReviewRawCredentialAccess,
 } from './installationReview';
 
@@ -31,8 +33,8 @@ const accessScopeRegistry = createDefaultPluginAccessScopeRegistry();
 type RawCredentialAccessFact = PluginInstallationReview['rawCredentialAccess'][number];
 
 /**
- * A `reviewSensitiveChanges` update reopens human review only when the
- * candidate can reach further than the incumbent grant. `exact` and `narrower`
+ * An update expands authority only when the candidate can reach further than
+ * the incumbent grant. `exact` and `narrower`
  * are both admissible; every other relation — including a scope whose
  * direction the canonical registry cannot rank — reopens review.
  */
@@ -43,15 +45,6 @@ function isWithinGrantedScope(
 ): boolean {
   const relation = accessScopeRegistry.compare(capability, candidateScope, grantedScope).relation;
   return relation === 'exact' || relation === 'narrower';
-}
-
-function hasExecutableRealmExpansion(
-  previous: CanonicalPluginManifest,
-  candidate: CanonicalPluginManifest,
-): boolean {
-  const granted = new Set(projectPluginInstallationReviewExecutableRealms(previous));
-  return projectPluginInstallationReviewExecutableRealms(candidate)
-    .some((realm) => !granted.has(realm));
 }
 
 function qualifyNetworkTargetReference(
@@ -163,7 +156,7 @@ function readValidSelectionsByAccessId(
  * Required host access is unconditional authority, so every candidate
  * declaration must stay inside the request of the same id the user already
  * approved. Removed declarations and reworded reasons disclose no new reach
- * and are therefore not review-sensitive.
+ * and therefore do not expand authority.
  */
 function hasRequiredHostAccessExpansion(
   previous: CanonicalPluginManifest,
@@ -233,42 +226,6 @@ function hasConnectedAccountPurposeAccessExpansion(
   for (const [key, request] of connectedAccountPurposeRequestsByKey(candidate)) {
     const prior = granted.get(key);
     if (!prior || !isWithinGrantedScope(request.capability, request.scope, prior.scope)) return true;
-  }
-  return false;
-}
-
-function contributionKeys(
-  manifest: CanonicalPluginManifest,
-): ReadonlyMap<string, ReadonlySet<string>> | null {
-  try {
-    const keysByFamily = new Map<string, ReadonlySet<string>>();
-    for (const entry of PLUGIN_CONTRIBUTION_CATALOG_V2) {
-      const keys = new Set<string>();
-      for (const raw of entry.readEntries(manifest.contributes)) {
-        const canonical = entry.canonicalize(raw);
-        if (!canonical || typeof canonical !== 'object' || Array.isArray(canonical)) return null;
-        const key = entry.conflictKey(canonical as Readonly<Record<string, unknown>>);
-        if (!key) return null;
-        keys.add(key);
-      }
-      keysByFamily.set(entry.manifestKey, keys);
-    }
-    return keysByFamily;
-  } catch {
-    return null;
-  }
-}
-
-function hasDeclaredIntegrationExpansion(
-  previous: CanonicalPluginManifest,
-  candidate: CanonicalPluginManifest,
-): boolean {
-  const previousKeys = contributionKeys(previous);
-  const candidateKeys = contributionKeys(candidate);
-  if (!previousKeys || !candidateKeys) return true;
-  for (const [family, keys] of candidateKeys) {
-    const prior = previousKeys.get(family);
-    if (!prior || [...keys].some((key) => !prior.has(key))) return true;
   }
   return false;
 }
@@ -387,32 +344,148 @@ function hasRawCredentialAccessExpansion(
 }
 
 /**
- * Whether an explicit `reviewSensitiveChanges` update must reopen the present-
- * user installation review. The question is directional: review reopens when
- * the candidate can reach somewhere the approved grant could not — a new
- * executable realm, new or widened required host access, a selected optional
- * grant that no longer contains its declaration, new or widened Connected
- * Account purpose authority, a new declared integration, wider request
- * interceptor reach, or wider raw-credential disclosure. Reworded reasons and
- * other disclosure copy, removed declarations, unselected optional
- * declarations, and provably narrowed authority reach no further than what the
- * user already approved and are admitted without review.
+ * Whether an explicit update expands the reach the present user granted. The
+ * question is directional: a decision is required when the candidate can
+ * reach somewhere the approved grant could not — new or widened required host
+ * access, a selected optional grant that no longer contains its declaration,
+ * new or widened Connected Account purpose authority, wider request
+ * interceptor reach, or wider raw-credential disclosure. Plugins are trusted
+ * code, so new contributions and new executable realms change bytes, not
+ * granted authority, and never reopen review. Reworded reasons and other
+ * disclosure copy, removed declarations, unselected optional declarations,
+ * and provably narrowed authority reach no further than what the user already
+ * approved and are admitted without review.
  *
  * `selectedOptionalAccess` is the installed record's persisted
  * `install.optionalAccess`, which both preparers read before deciding.
  */
-export function hasReviewSensitivePluginUpdate(
+export type PluginAuthorityExpansionCategory =
+  | 'requiredHostAccess'
+  | 'selectedOptionalHostAccess'
+  | 'connectedAccountPurpose'
+  | 'requestInterceptor'
+  | 'rawCredentialAccess';
+
+/**
+ * Projects authority requested by a first development admission whose code
+ * trust was settled by the owning project/root decision. The empty baseline
+ * grants no host, interception, or credential reach. Executable realms and
+ * contribution identity are part of the code trust that the project decision
+ * already settled; optional declarations remain requests until selected.
+ */
+export function listInitialPluginAuthorityExpansions(
+  candidate: CanonicalPluginManifest,
+): readonly PluginAuthorityExpansionCategory[] {
+  return Object.freeze([
+    ...(candidate.hostAccess.required.length > 0 ? ['requiredHostAccess' as const] : []),
+    ...(connectedAccountPurposeRequestsByKey(candidate).size > 0
+      ? ['connectedAccountPurpose' as const]
+      : []),
+    ...(candidate.contributes.requestInterceptors.length > 0 ? ['requestInterceptor' as const] : []),
+    ...(projectPluginInstallationReviewRawCredentialAccess(candidate).length > 0
+      ? ['rawCredentialAccess' as const]
+      : []),
+  ]);
+}
+
+export function listPluginAuthorityExpansions(
+  previous: CanonicalPluginManifest,
+  candidate: CanonicalPluginManifest,
+  selectedOptionalAccess: readonly PluginAccessSelection[],
+): readonly PluginAuthorityExpansionCategory[] {
+  return Object.freeze([
+    ...(hasRequiredHostAccessExpansion(previous, candidate) ? ['requiredHostAccess' as const] : []),
+    ...(hasSelectedOptionalHostAccessExpansion(candidate, selectedOptionalAccess) ? ['selectedOptionalHostAccess' as const] : []),
+    ...(hasConnectedAccountPurposeAccessExpansion(previous, candidate) ? ['connectedAccountPurpose' as const] : []),
+    ...(hasRequestInterceptorExpansion(previous, candidate) ? ['requestInterceptor' as const] : []),
+    ...(hasRawCredentialAccessExpansion(previous, candidate) ? ['rawCredentialAccess' as const] : []),
+  ]);
+}
+
+export function hasPluginAuthorityExpansion(
   previous: CanonicalPluginManifest,
   candidate: CanonicalPluginManifest,
   selectedOptionalAccess: readonly PluginAccessSelection[],
 ): boolean {
-  return hasExecutableRealmExpansion(previous, candidate)
-    || hasRequiredHostAccessExpansion(previous, candidate)
-    || hasSelectedOptionalHostAccessExpansion(candidate, selectedOptionalAccess)
-    || hasConnectedAccountPurposeAccessExpansion(previous, candidate)
-    || hasDeclaredIntegrationExpansion(previous, candidate)
-    || hasRequestInterceptorExpansion(previous, candidate)
-    || hasRawCredentialAccessExpansion(previous, candidate);
+  return listPluginAuthorityExpansions(previous, candidate, selectedOptionalAccess).length > 0;
+}
+
+export type PluginAuthorityReviewEvaluation = Readonly<{
+  requiresReview: boolean;
+  authorityExpansion: readonly PluginAuthorityExpansionCategory[];
+  preservedOptionalAccess: readonly PluginAccessSelection[] | null;
+}>;
+
+/**
+ * One authority-delta decision for every update preparer. Invalid or stale
+ * optional selections reopen review here rather than surfacing as a late
+ * apply-time trust failure in only some source representations.
+ */
+export function evaluatePluginAuthorityReview(params: Readonly<{
+  previous: CanonicalPluginManifest;
+  candidate: CanonicalPluginManifest;
+  selectedOptionalAccess: readonly PluginAccessSelection[];
+  /** A change to a trusted development source never asks, in either review mode. */
+  development?: boolean;
+  /** Test seam over the active Account settings snapshot. */
+  readAccountSettings?: () => Readonly<{ pluginUpdateReviewModeV1?: unknown }> | null;
+}>): PluginAuthorityReviewEvaluation {
+  const projected = listPluginAuthorityExpansions(
+    params.previous,
+    params.candidate,
+    params.selectedOptionalAccess,
+  );
+  const preservedOptionalAccess = preserveValidPluginOptionalSelections(
+    params.candidate.id,
+    params.candidate,
+    params.selectedOptionalAccess,
+  );
+  if (params.development === true || readPluginUpdateReviewMode(params.readAccountSettings) === 'autoApply') {
+    // Applying without review keeps every optional grant that still fits its
+    // declaration; a grant the candidate widened beyond is dropped, not widened.
+    return Object.freeze({
+      requiresReview: false,
+      authorityExpansion: Object.freeze([]),
+      preservedOptionalAccess: preservedOptionalAccess
+        ?? narrowPluginOptionalSelections(params.candidate, params.selectedOptionalAccess),
+    });
+  }
+  const authorityExpansion = preservedOptionalAccess === null
+    && !projected.includes('selectedOptionalHostAccess')
+    ? Object.freeze([...projected, 'selectedOptionalHostAccess' as const])
+    : projected;
+  return Object.freeze({
+    requiresReview: authorityExpansion.length > 0,
+    authorityExpansion,
+    preservedOptionalAccess,
+  });
+}
+
+/**
+ * The user's Account-wide update review preference. A missing or malformed
+ * value, or no active Account snapshot, means the safe default: confirm.
+ */
+function readPluginUpdateReviewMode(
+  readAccountSettings: (() => Readonly<{ pluginUpdateReviewModeV1?: unknown }> | null) | undefined,
+): PluginUpdateReviewModeV1 {
+  const settings = readAccountSettings
+    ? readAccountSettings()
+    : getActiveAccountSettingsSnapshot()?.settings ?? null;
+  const parsed = PluginUpdateReviewModeV1Schema.safeParse(settings?.pluginUpdateReviewModeV1);
+  return parsed.success ? parsed.data : DEFAULT_PLUGIN_UPDATE_REVIEW_MODE_V1;
+}
+
+/** Keeps each selection individually carried forward; drops ones that cannot be. */
+function narrowPluginOptionalSelections(
+  candidate: CanonicalPluginManifest,
+  selections: readonly PluginAccessSelection[],
+): readonly PluginAccessSelection[] {
+  const kept: PluginAccessSelection[] = [];
+  for (const selection of selections) {
+    const preserved = preserveValidPluginOptionalSelections(candidate.id, candidate, [selection]);
+    if (preserved) kept.push(...preserved);
+  }
+  return Object.freeze(kept);
 }
 
 /**

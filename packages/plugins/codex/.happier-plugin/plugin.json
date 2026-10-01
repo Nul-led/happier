@@ -95,7 +95,8 @@
                   "goal"
                 ]
               }
-            ]
+            ],
+            "workspaceWrites": "deny"
           },
           "surfaces": [
             "externalSessions"
@@ -207,6 +208,15 @@
             "manual": {
               "kind": "command"
             },
+            "nativeUpdate": {
+              "args": [
+                "update"
+              ],
+              "installPaths": [
+                ".codex/packages/standalone"
+              ]
+            },
+            "npmPackageName": "@openai/codex",
             "recommendationOrder": 20
           }
         },
@@ -270,7 +280,7 @@
         "surfaces": {
           "externalSession": {
             "externalLinkedTakeover": {
-              "writerSafety": "unsupported"
+              "writerSafety": "native_prevention"
             },
             "sources": [
               {
@@ -439,7 +449,7 @@
         "recoveryCredits": {
           "supported": true
         },
-        "title": "Codex"
+        "title": "ChatGPT"
       }
     ],
     "daemonDatabases": [],
@@ -737,8 +747,7 @@
         },
         "client": {
           "artifactId": "voice-runtime-web",
-          "exportName": "activate",
-          "modulePath": "./ui/voice"
+          "exportName": "activate"
         },
         "execution": {
           "agent": "codex",
@@ -871,6 +880,19 @@
   },
   "id": "happier.agent.codex",
   "runtime": {
+    "agentFactories": [
+      {
+        "loadMode": "immutable-js",
+        "localAgentId": "codex",
+        "locator": {
+          "export": "createCodexAgentRuntime",
+          "externalSessionsExport": "codexExternalSessionsContribution",
+          "module": "./agent/runtime/engine",
+          "runtimeApiVersion": 1
+        },
+        "normalizedModulePath": ".happier-plugin/agent/runtime/engine.js"
+      }
+    ],
     "apiVersion": 1
   },
   "schemaVersion": 2,

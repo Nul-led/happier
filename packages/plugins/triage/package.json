@@ -18,7 +18,13 @@
       "types": "./dist/targetedContributions.d.ts",
       "default": "./dist/targetedContributions.js"
     },
-    "./happier-plugin-ui/*": "./dist/happier-plugin-ui/*"
+    "./happier-plugin-ui/triage-list-page-native": "./src/ui/surface.tsx",
+    "./happier-plugin-ui/triage-views-column-native": "./src/ui/column/viewsColumn.tsx",
+    "./happier-plugin-ui/triage-latest-widget-native": "./src/ui/widget/latestWidget.tsx",
+    "./happier-plugin-ui/triage-entry-picker-native": "./src/composer/entryPicker.tsx",
+    "./happier-plugin-ui/triage-entries-compact-native": "./src/composer/controlCompact.tsx",
+    "./happier-plugin-ui/triage-session-entries-native": "./src/sessions/cockpit/sessionLinkedEntriesSurface.tsx",
+    "./happier-plugin-ui/triage-search-action-native": "./src/actions/searchEntries.ts"
   },
   "files": [
     "dist",
@@ -44,18 +50,11 @@
   },
   "devDependencies": {
     "@happier-dev/protocol": "0.0.0",
-    "@callstack/repack": "5.2.5",
-    "@react-native-community/cli": "20.1.2",
-    "@react-native/metro-config": "0.83.5",
-    "@rspack/core": "2.1.3",
-    "@swc/helpers": "0.5.23",
     "@types/node": "^22.15.3",
     "@types/react": "19.2.0",
     "react": "19.2.0",
     "react-native": "0.83.5",
-    "react-native-web": "^0.21.0",
     "typescript": "^5.9.2",
-    "vite": "7.3.1",
     "vitest": "^3.2.4"
   }
 }

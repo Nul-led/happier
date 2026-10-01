@@ -10,14 +10,12 @@ import { readInstalledPluginCatalog } from '@/plugins/projection/catalog/install
 import { readInstalledPluginCatalogEntry } from '@/plugins/projection/catalog/installed';
 import { uninstallPluginFromCatalog } from '@/plugins/projection/catalog/installed';
 import { scaffoldLocalPlugin } from '@/plugins/scaffold/scaffold';
-import { readDaemonPluginCatalog } from '@/daemon/controlClient';
+import { controlDaemonPluginDevelopment, readDaemonPluginCatalog } from '@/daemon/controlClient';
 import {
   readUserPluginChangeStatus,
   requestUserPluginChange,
 } from '@/plugins/daemon/changeClient';
 import { projectPluginCatalogEntrySnapshot } from '@/plugins/projection/introspection/catalogSnapshot';
-import { runPluginDevelopmentCycle } from '@/plugins/authoring/developmentCycle';
-import { inspectPluginDevelopmentSource } from '@/plugins/authoring/sourceObserver';
 import { runPluginAuthorToolchain, type PluginAuthorToolchainOperation } from '@/plugins/authoring/toolchain';
 import { runPluginAuthorDoctor } from '@/plugins/authoring/doctor';
 import { packLocalPlugin } from '@/plugins/packaging/pack';
@@ -30,8 +28,8 @@ export type PluginDevLoopActionServices = Readonly<{
   runPluginAuthorDoctor?: typeof runPluginAuthorDoctor;
   packLocalPlugin?: typeof packLocalPlugin;
   readUserPluginChangeStatus?: typeof readUserPluginChangeStatus;
-  inspectPluginDevelopmentSource?: typeof inspectPluginDevelopmentSource;
   requestUserPluginChange?: typeof requestUserPluginChange;
+  controlPluginDevelopment?: typeof controlDaemonPluginDevelopment;
 }>;
 
 type PluginDevLoopActionInput = Readonly<Record<string, unknown>>;
@@ -98,13 +96,13 @@ function summarizePluginChangeFailure(result: Exclude<
 
 type PluginPendingReview = Extract<
   Awaited<ReturnType<typeof requestUserPluginChange>>,
-  Readonly<{ kind: 'sourceRootReviewRequired' | 'reviewRequired' }>
+  Readonly<{ kind: 'reviewRequired' }>
 >;
 
 function isPluginPendingReview(
   result: Awaited<ReturnType<typeof requestUserPluginChange>>,
 ): result is PluginPendingReview {
-  return result.kind === 'sourceRootReviewRequired' || result.kind === 'reviewRequired';
+  return result.kind === 'reviewRequired';
 }
 
 function projectPendingReview(
@@ -130,74 +128,31 @@ async function runPluginDevelopmentAction(params: Readonly<{
   signal?: AbortSignal;
   services: PluginDevLoopActionServices;
 }>): Promise<unknown> {
-  const inspect = params.services.inspectPluginDevelopmentSource ?? inspectPluginDevelopmentSource;
-  const sourceInspection = await inspect({
-    projectRoot: params.projectRoot,
-    ...(params.sdkRegistryOrigin ? { sdkRegistryOrigin: params.sdkRegistryOrigin } : {}),
-  });
-  if (!sourceInspection.ok) {
-    return {
-      ok: false,
-      kind: params.actionKind,
-      diagnostics: sourceInspection.diagnostics,
-    };
-  }
-
-  const submit = params.services.requestUserPluginChange ?? requestUserPluginChange;
-  const cycle = await runPluginDevelopmentCycle<Awaited<ReturnType<typeof requestUserPluginChange>>>({
-    observation: Object.freeze({
-      ...sourceInspection,
-      request: Object.freeze({
-        ...sourceInspection.request,
-        ...(params.pluginId ? { pluginId: params.pluginId } : {}),
-      }),
-    }),
-    submit: async (request, options) => await submit({
-      request: {
-        kind: 'development',
-        ...(request.pluginId ? { pluginId: request.pluginId } : {}),
-        sourceRootPath: request.projectRoot,
-        ...(request.changedPaths ? { changedPaths: request.changedPaths } : {}),
-        ...(request.sdkRegistryOrigin ? { sdkRegistryOrigin: request.sdkRegistryOrigin } : {}),
-      },
-      approval: 'none',
-      ...(options?.signal ? { signal: options.signal } : {}),
-    }),
-    ...(params.signal ? { signal: params.signal } : {}),
-  });
-  if (cycle.kind !== 'submitted') {
-    return {
-      ok: false,
-      kind: params.actionKind,
-      diagnostics: cycle.kind === 'cancelled'
-        ? [{
-            code: 'plugin_dev_cancelled',
-            message: 'Plugin development was cancelled before the candidate was applied.',
-          }]
-        : cycle.diagnostics,
-    };
-  }
-
-  const result = cycle.submission;
-  if (isPluginPendingReview(result)) return projectPendingReview(params.actionKind, result);
-  if (result.kind !== 'committed') return summarizePluginChangeFailure(result, params.actionKind);
-  return {
-    ok: result.desiredGeneration === result.appliedGeneration,
-    kind: params.actionKind,
-    desiredGeneration: result.desiredGeneration,
-    appliedGeneration: result.appliedGeneration,
-    pendingSurfaces: result.pendingSurfaces,
-    ...(result.desiredGeneration === result.appliedGeneration
-      ? {}
+  const control = params.services.controlPluginDevelopment ?? controlDaemonPluginDevelopment;
+  const result = await control(
+    params.actionKind === 'plugins_reload'
+      ? { kind: 'reload', rootPath: params.projectRoot }
       : {
-          diagnostics: [{
-            code: 'plugin_dev_adoption_pending',
-            message: 'The daemon committed the development generation but has not applied it yet.',
-          }],
-        }),
+          kind: 'registerExplicit',
+          rootPath: params.projectRoot,
+          ...(params.sdkRegistryOrigin ? { sdkRegistryOrigin: params.sdkRegistryOrigin } : {}),
+        },
+    params.signal ? { signal: params.signal } : {},
+  );
+  if (result.kind === 'failed') {
+    return {
+      ok: false,
+      kind: params.actionKind,
+      diagnostics: [{ code: result.code, message: result.message }],
+    };
+  }
+  return {
+    ok: true,
+    kind: params.actionKind,
+    status: result.status,
+    ...(params.pluginId ? { pluginId: params.pluginId } : {}),
   };
 }
-
 export async function executePluginDevLoopAction(
   params: ExecutePluginDevLoopActionParams,
   services: PluginDevLoopActionServices = {},
@@ -376,18 +331,27 @@ export async function executePluginDevLoopAction(
         ],
       };
     }
+    if (readBoolean(input, 'dev') && !readBoolean(input, 'dryRun')) {
+      return await runPluginDevelopmentAction({
+        actionKind: 'plugins_dev_submit',
+        projectRoot: locator,
+        ...(readString(input, 'sdkRegistryOrigin')
+          ? { sdkRegistryOrigin: readString(input, 'sdkRegistryOrigin') }
+          : {}),
+        ...(params.context?.signal ? { signal: params.context.signal } : {}),
+        services,
+      });
+    }
     const result = await installPluginFromLocator({
       locator,
       happyHomeDir: params.happyHomeDir,
       skipIfInstalled: !readBoolean(input, 'force'),
       dryRun: readBoolean(input, 'dryRun'),
-      dev: readBoolean(input, 'dev'),
       workspaceRoot: params.workspaceRoot,
     });
     if (!result.ok) {
       if (
-        result.change?.kind === 'sourceRootReviewRequired'
-        || result.change?.kind === 'reviewRequired'
+        result.change?.kind === 'reviewRequired'
       ) {
         return projectPendingReview('plugins_install', result.change);
       }
