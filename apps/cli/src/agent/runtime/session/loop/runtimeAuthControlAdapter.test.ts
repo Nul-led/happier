@@ -1,4 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+// Register the shared external app-server fixture before runtime imports.
+import { clientState, createRuntime, buildConnectedCodexCredential } from '../../../../../../../packages/plugins/codex/src/agent/runtime/appServer/runtime.test-support';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentSessionRuntimeAuthControl } from '@happier-dev/plugin-sdk/agents/runtime';
 import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
@@ -7,6 +12,12 @@ import { projectConnectedServiceRuntimeAuthTargetInput } from '@/daemon/connecte
 import { createResolvedSessionConnectedServiceAuthTransport } from '@/session/runtime/control/transport';
 import { normalizeCodexConnectedServiceAuthGenerationRequest } from '../../../../../../../packages/plugins/codex/src/agent/auth/services/runtime/auth/generationRequest';
 import { applyCodexConnectedServiceAuthGeneration } from '../../../../../../../packages/plugins/codex/src/agent/auth/services/runtime/auth/application';
+import { createCodexConnectedAccountNativeAuthCodec, createCodexConnectedServiceRuntimeAuthAdapter } from '../../../../../../../packages/plugins/codex/src/agent/auth/services/runtime/control/runtimeAuthAdapter';
+import { codexStateSharingDescriptor } from '../../../../../../../packages/plugins/codex/src/agent/auth/services/state/sharing/descriptor';
+import { projectAgentConnectedAccountLaunchCatalogEntry } from '@/plugins/projection/registry/agentCatalogEntryHooks';
+import { createSessionConnectedServiceAuthHotApply } from '@/daemon/connectedServices/sessionAuthSwitch/sessionConnectedServiceAuthHotApply';
+import { buildConnectedServiceAuthGroupCommittedGenerationFact } from '@/daemon/connectedServices/sessionAuthSwitch/connectedServiceAuthSwitchOutcome';
+import { mapCommittedGenerationApplyResult } from '@/daemon/connectedServices/accountGroups/generation/mapCommittedGenerationApplyResult';
 
 const { createUserScopedSocket } = vi.hoisted(() => ({ createUserScopedSocket: vi.fn() }));
 // The network socket is the genuine external boundary; the Session RPC codec and all
@@ -16,6 +27,108 @@ vi.mock('@/api/session/sockets', () => ({ createUserScopedSocket }));
 import { adaptAgentSessionRuntimeAuthControl } from './runtimeAuthControlAdapter';
 
 describe('adaptAgentSessionRuntimeAuthControl', () => {
+  beforeEach(() => clientState.reset());
+
+  it('retains the applied group proof through Session RPC and the committed host consumer', async () => {
+    const runtime = createRuntime();
+    const control = adaptAgentSessionRuntimeAuthControl(runtime.runtimeAuth);
+    const serviceId = 'happier.agent.codex/openai-codex';
+    const credentialRevision = 'csr_0123456789ABCDEFGHJKMNPQRS';
+    const root = await mkdtemp(join(tmpdir(), 'codex-runtime-proof-'));
+    try {
+      const socket = createApiSessionSocketStub({
+        emit: (event, [envelope, acknowledge]) => {
+          if (event !== SOCKET_RPC_EVENTS.CALL) return;
+          const request = (envelope as { params: Parameters<NonNullable<typeof control.applyConnectedServiceAuthGeneration>>[0] }).params;
+          void control.applyConnectedServiceAuthGeneration!(request).then((result) => {
+            (acknowledge as (response: unknown) => void)({ ok: true, result });
+          });
+        },
+      });
+      createUserScopedSocket.mockReturnValue(socket);
+      const transport = createResolvedSessionConnectedServiceAuthTransport({
+        token: 'synthetic-token', sessionId: 'selected-session', mode: 'plain', ctx: null,
+      });
+      const catalogEntry = projectAgentConnectedAccountLaunchCatalogEntry({
+        agentId: 'codex', isCurrent: () => true,
+        connectedAccountLaunch: {
+          stateSharingDescriptor: codexStateSharingDescriptor,
+          continuity: {
+            nativeAuthCodec: createCodexConnectedAccountNativeAuthCodec(),
+            runtimeAuthAdapter: createCodexConnectedServiceRuntimeAuthAdapter(),
+          },
+        },
+      });
+      const apply = createSessionConnectedServiceAuthHotApply({
+        resolveRuntimeAuthAdapter: async () => await catalogEntry.getConnectedServiceRuntimeAuthAdapter!(),
+        validateGroupMutationCurrentness: async () => ({ current: true }),
+      });
+      const binding = { source: 'connected', selection: 'group', groupId: 'team' } as const;
+      const outcome = await apply({
+        tracked: { startedBy: 'daemon', happySessionId: 'selected-session', pid: 123,
+          spawnOptions: { directory: root, backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' } } },
+        normalizedBindings: { v: 1, bindingsByServiceId: { [serviceId]: binding } },
+        runtimeAuthSelectionsByServiceId: new Map([[serviceId, {
+          serviceId, binding, profileId: 'target', activeProfileId: 'target', fallbackProfileId: 'backup',
+          groupId: 'team', generation: 12, credentialRevision, credential: buildConnectedCodexCredential(),
+          nativeHome: {
+            readFiles: async () => ({ 'auth.json': await readFile(join(root, 'auth.json')) }),
+            replaceFiles: async (files: Readonly<Record<string, Uint8Array>>) => {
+              for (const [fileId, bytes] of Object.entries(files)) await writeFile(join(root, fileId), bytes);
+            },
+          },
+          applyConnectedServiceAuthGeneration: async (request: Parameters<typeof transport.applyConnectedServiceAuthGeneration>[0]) => {
+            const result = await transport.applyConnectedServiceAuthGeneration(request);
+            return result.ok ? result.value : { ok: false, error: result.error, errorCode: result.code };
+          },
+        }]]),
+      });
+      expect(outcome).toMatchObject({ ok: true, verificationByServiceId: { [serviceId]: {
+        proofStrength: 'exact', providerAccountId: 'acct_target', generationApplication: {
+          serviceId, groupId: 'team', profileId: 'target', generation: 12, credentialRevision,
+        },
+      } } });
+      if (!outcome.ok) throw new Error('group application failed');
+      expect(mapCommittedGenerationApplyResult({
+        committedGeneration: buildConnectedServiceAuthGroupCommittedGenerationFact({
+          decisionId: 'decision-runtime-proof', provenance: 'reconciliation',
+          decisionCommittedTarget: { serviceId, groupId: 'team', profileId: 'target', generation: 12, credentialRevision },
+        }),
+        result: { status: 'switched', activeProfileId: 'target', generation: 12, mode: 'hot_apply',
+          providerApplication: 'applied', verificationByServiceId: outcome.verificationByServiceId },
+      })).toMatchObject({ reconciliationDisposition: 'converged', providerAdoptedTarget: { serviceId, credentialRevision } });
+    } finally {
+      await runtime.dispose();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { serviceId: 'happier.agent.codex/openai-codex', accepted: true },
+    { serviceId: 'openai-codex', accepted: true },
+    { serviceId: 'other.agent/openai-codex', accepted: false },
+  ])('reads only the owning runtime identity through Session control for $serviceId', async ({ serviceId, accepted }) => {
+    const runtime = createRuntime();
+    const control = adaptAgentSessionRuntimeAuthControl(runtime.runtimeAuth);
+    try {
+      await expect(control.applyConnectedServiceAuthGeneration!({
+        serviceId: 'openai-codex', reason: 'manual',
+        authGeneration: {
+          credential: buildConnectedCodexCredential(),
+          selection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'target' },
+        },
+      })).resolves.toMatchObject({ ok: true });
+      const requestCount = clientState.requests.length;
+      const identity = await control.readConnectedServiceRuntimeIdentity!({ serviceId, reason: 'diagnostic' });
+      expect(identity).toMatchObject(accepted
+        ? { ok: true, serviceId, identity: { proofStrength: 'exact', providerAccountId: 'acct_target' } }
+        : { ok: false, errorCode: 'runtime_identity_probe_unavailable' });
+      if (!accepted) expect(clientState.requests).toHaveLength(requestCount);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it.each([
     { selectionKind: 'profile', serviceKey: 'happier.agent.codex/openai-codex', accepted: true },
     { selectionKind: 'group', serviceKey: 'happier.agent.codex/openai-codex', accepted: true },
