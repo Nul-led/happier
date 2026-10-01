@@ -114,12 +114,12 @@ export class PierreDiffScrollAnchor extends React.Component<Props, Record<string
             scroll.scrollTop += line.getBoundingClientRect().top - scroll.getBoundingClientRect().top - top;
             return true;
         };
-        const requestFrame: (callback: FrameRequestCallback) => number = typeof globalThis.requestAnimationFrame === 'function'
-            ? globalThis.requestAnimationFrame.bind(globalThis)
-            : (callback) => globalThis.setTimeout(() => callback(Date.now()), 0);
-        const cancelFrame: (handle: number) => void = typeof globalThis.cancelAnimationFrame === 'function'
-            ? globalThis.cancelAnimationFrame.bind(globalThis)
-            : globalThis.clearTimeout.bind(globalThis);
+        const requestFrame: (callback: FrameRequestCallback) => number = typeof window.requestAnimationFrame === 'function'
+            ? window.requestAnimationFrame.bind(window)
+            : (callback) => window.setTimeout(() => callback(Date.now()), 0);
+        const cancelFrame: (handle: number) => void = typeof window.cancelAnimationFrame === 'function'
+            ? window.cancelAnimationFrame.bind(window)
+            : window.clearTimeout.bind(window);
         const approximateScrollTop = snapshot.initialScrollTop + snapshot.estimatedDelta;
         let frameHandle: number | null = null;
         let verificationFrames = 0;
