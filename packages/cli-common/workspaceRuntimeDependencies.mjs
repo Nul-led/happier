@@ -589,17 +589,35 @@ export function vendorRuntimeDependencyTree({
   activeSourcePackageDirs = new Set(),
   validateResolvedPackage,
   dereferenceRootDir,
+  excludeRootDependencies = [],
 }) {
   const packageJson = readJson(packageJsonPath);
   const dependencies = collectExternalRuntimeDependencies(packageJson);
+  let commonResolveFromPackageJsonPath;
+  // Transformers 3.8.1's Node ESM entrypoint imports Common without declaring
+  // it. Match its Node runtime's declared Common, not the incompatible Web copy.
+  if (packageJson.name === '@huggingface/transformers' && packageJson.version === '3.8.1'
+    && !dependencies.some((dependency) => dependency.name === 'onnxruntime-common')) {
+    const nodeRuntime = resolveInstalledRuntimePackage({
+      packageName: 'onnxruntime-node', resolveFromPackageJsonPath, dereferenceRootDir,
+    });
+    const commonDependency = collectExternalRuntimeDependencies(nodeRuntime.packageJson)
+      .find((dependency) => dependency.name === 'onnxruntime-common');
+    if (!commonDependency) throw new Error('Transformers Node runtime must declare onnxruntime-common');
+    dependencies.push(commonDependency);
+    commonResolveFromPackageJsonPath = nodeRuntime.packageJsonPath;
+  }
   mkdirSync(destNodeModulesDir, { recursive: true });
 
   for (const dependency of dependencies) {
+    if (excludeRootDependencies.includes(dependency.name)) continue;
     let resolvedPackage;
     try {
       resolvedPackage = resolveInstalledRuntimePackage({
         packageName: dependency.name,
-        resolveFromPackageJsonPath,
+        resolveFromPackageJsonPath: dependency.name === 'onnxruntime-common'
+          ? commonResolveFromPackageJsonPath ?? resolveFromPackageJsonPath
+          : resolveFromPackageJsonPath,
         dereferenceRootDir,
       });
     } catch (error) {

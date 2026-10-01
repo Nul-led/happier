@@ -59,6 +59,7 @@ export function publishStagedDirectoryMountedSync(params: Readonly<{
 }>): void;
 
 export function vendorRuntimeDependencyTree(params: Readonly<{
+  excludeRootDependencies?: readonly string[];
   packageJsonPath: string;
   resolveFromPackageJsonPath?: string;
   destNodeModulesDir: string;
