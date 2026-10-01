@@ -257,6 +257,21 @@ describe('happier daemon start output', () => {
     }
   }, 60_000);
 
+  it('marks the start step failed when the daemon cannot be spawned', async () => {
+    vi.useRealTimers();
+    spawnDetachedDaemonStartSyncMock.mockRejectedValue(new Error('spawn EACCES'));
+    vi.resetModules();
+    const output = captureConsoleText();
+    try {
+      const { handleDaemonCliCommand } = await import('./daemon');
+      await expect(handleDaemonCliCommand({ args: ['daemon', 'start'], rawArgv: [], terminalRuntime: null }))
+        .rejects.toThrow('spawn EACCES');
+      expect(output.text()).toContain('- [x] Starting daemon');
+    } finally {
+      output.restore();
+    }
+  }, 60_000);
+
   it('prints the daemon log path when startup does not succeed', async () => {
     vi.useRealTimers();
     checkIfDaemonRunningMock.mockResolvedValue(false);

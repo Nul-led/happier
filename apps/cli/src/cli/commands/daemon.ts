@@ -377,23 +377,30 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
     // Starting waits until the daemon answers; show that as a timed step (never in --json).
     const steps = createStepPrinter({ enabled: !jsonRequested });
     steps.start('Starting daemon');
-    const child = await spawnDetachedDaemonStartSync(takeoverRequested
-      ? {
-        env: {
-          ...process.env,
-          HAPPIER_DAEMON_TAKEOVER: '1',
-        },
-      }
-      : {});
-    child.unref();
+    let started = false;
+    let child: Awaited<ReturnType<typeof spawnDetachedDaemonStartSync>>;
+    try {
+      child = await spawnDetachedDaemonStartSync(takeoverRequested
+        ? {
+          env: {
+            ...process.env,
+            HAPPIER_DAEMON_TAKEOVER: '1',
+          },
+        }
+        : {});
+      child.unref();
 
-    const timeoutMs = readDaemonStartWaitTimeoutMs();
-    const pollMs = readDaemonStartWaitPollMs();
-    const started = await waitForDaemonRunningWithinBudget({
-      isRunning: () => checkIfDaemonRunningAndCleanupStaleState(),
-      timeoutMs,
-      pollMs,
-    });
+      const timeoutMs = readDaemonStartWaitTimeoutMs();
+      const pollMs = readDaemonStartWaitPollMs();
+      started = await waitForDaemonRunningWithinBudget({
+        isRunning: () => checkIfDaemonRunningAndCleanupStaleState(),
+        timeoutMs,
+        pollMs,
+      });
+    } catch (error) {
+      steps.stop('x', 'Starting daemon');
+      throw error;
+    }
     if (started) steps.stop('✓', 'Started daemon');
     else steps.pause();
 
@@ -629,16 +636,22 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
 
     const restartSteps = createStepPrinter({ enabled: !jsonRequested });
     restartSteps.start('Restarting daemon');
-    const restartResult = await restartDaemonAndWait({
-      stopSessions,
-      takeover: takeoverRequested,
-      ...(restartSessionRunners
-        ? {
-          restartSessionRunners: true,
-          restartSessionRunnersMode: 'force_current_cli' as const,
-        }
-        : {}),
-    });
+    let restartResult: Awaited<ReturnType<typeof restartDaemonAndWait>>;
+    try {
+      restartResult = await restartDaemonAndWait({
+        stopSessions,
+        takeover: takeoverRequested,
+        ...(restartSessionRunners
+          ? {
+            restartSessionRunners: true,
+            restartSessionRunnersMode: 'force_current_cli' as const,
+          }
+          : {}),
+      });
+    } catch (error) {
+      restartSteps.stop('x', 'Restarting daemon');
+      throw error;
+    }
     const started = typeof restartResult === 'boolean' ? restartResult : restartResult.ok;
     if (started && !(typeof restartResult !== 'boolean' && restartResult.status === 'starting')) restartSteps.stop('✓', 'Restarted daemon');
     else restartSteps.pause();

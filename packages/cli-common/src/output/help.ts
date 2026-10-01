@@ -70,11 +70,13 @@ export function createHelpFormatter(chalkLike: ChalkLike = chalk) {
     const indent = normalizeText(options.indent ?? '  ');
     const columns = resolveColumns(options);
     const labelWidth = resolveLabelWidth(rows, options.labelWidth, columns);
-    const column = ' '.repeat(indent.length + labelWidth + 2);
+    // A terminal too narrow for a 20-column description column stacks each description under its label.
+    const stacked = columns !== undefined && columns - (indent.length + labelWidth + 2) < 20;
+    const column = ' '.repeat(stacked ? indent.length + 2 : indent.length + labelWidth + 2);
     // Descriptions wrap under their own column so no row runs past the terminal edge.
     const describe = (text: string): string[] => (columns === undefined || !text
       ? [text]
-      : wrapWords(text, Math.max(20, columns - column.length)));
+      : wrapWords(text, Math.max(1, columns - column.length)));
     const blocks: string[] = [];
     for (const row of rows) {
       const label = normalizeText(row.label);
@@ -82,7 +84,7 @@ export function createHelpFormatter(chalkLike: ChalkLike = chalk) {
       const detail = normalizeText(row.detail ?? '');
       if (!label && !description && !detail) continue;
       const described = describe(description);
-      if (stripAnsi(label).length > labelWidth && columns !== undefined) {
+      if (stacked || (stripAnsi(label).length > labelWidth && columns !== undefined)) {
         blocks.push(`${indent}${styleLabel(label)}`);
         for (const line of described) if (line) blocks.push(`${column}${styleDesc(line)}`);
       } else {
