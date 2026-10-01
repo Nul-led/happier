@@ -24,6 +24,14 @@ export function createCoalescedScheduler(params: Readonly<{
             return activeRun;
         }
 
+        // Assign the completion barrier before invoking a drain that can synchronously trigger us.
+        let resolveCycle!: () => void;
+        let rejectCycle!: (error: unknown) => void;
+        const completion = new Promise<void>((resolve, reject) => {
+            resolveCycle = resolve;
+            rejectCycle = reject;
+        });
+        activeRun = completion.finally(() => { activeRun = null; });
         const cycle = (async () => {
             try {
                 do {
@@ -32,17 +40,17 @@ export function createCoalescedScheduler(params: Readonly<{
                 } while (queued && !disposed);
             } catch (error) {
                 params.onError?.(error);
+                throw error;
             }
         })();
-        activeRun = cycle.finally(() => {
-            activeRun = null;
-        });
+        void cycle.then(resolveCycle, rejectCycle);
         return activeRun;
     }
 
     return Object.freeze({
         trigger() {
-            void run();
+            // Diagnostics reach onError; an explicit flush receives the rejection.
+            void run().catch(() => {});
         },
         flush() {
             return run();
