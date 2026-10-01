@@ -41,6 +41,7 @@ const RPC_FORWARD_CALLER_LIFECYCLE_METHODS = new Set<string>([
     SESSION_RPC_METHODS.EXECUTION_RUN_ACTION,
     SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START,
     SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START_V2,
+    SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_READ,
     SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_CANCEL,
     SESSION_RPC_METHODS.EXECUTION_RUN_STOP,
     SESSION_RPC_METHODS.EXECUTION_RUN_WAIT,
@@ -62,8 +63,13 @@ function resolveRpcDefaultForwardTimeoutMs(method: string): number {
 }
 
 export function resolveRpcForwardTimeoutMs(method: string, requestedTimeoutMs?: unknown): number {
-    const baseTimeoutMs = resolveRpcDefaultForwardTimeoutMs(method);
     const parsedRequestedTimeoutMs = parsePositiveInt(requestedTimeoutMs);
+    // Waiting reads omit an acknowledgement deadline. Finite stream callers
+    // retain their explicit transport budget through the existing generic floor.
+    const isFiniteStreamRead = parsedRequestedTimeoutMs !== null
+        && (method === SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_READ
+            || method.endsWith(`:${SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_READ}`));
+    const baseTimeoutMs = isFiniteStreamRead ? RPC_FORWARD_TIMEOUT_MS : resolveRpcDefaultForwardTimeoutMs(method);
     if (parsedRequestedTimeoutMs === null) {
         return baseTimeoutMs;
     }

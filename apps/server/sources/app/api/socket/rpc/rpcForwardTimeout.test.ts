@@ -29,6 +29,13 @@ describe('resolveRpcForwardTimeoutMs', () => {
         }
     });
 
+    it('holds waiting stream reads under caller lifetime while preserving finite-read request budgets', () => {
+        const method = `session-one:${SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_READ}`;
+        expect(resolveRpcForwardTimeoutMs(method)).toBe(2_147_483_647);
+        expect(resolveRpcForwardTimeoutMs(method, 20_000)).toBe(30_000);
+        expect(resolveRpcForwardTimeoutMs(method, 30_001)).toBe(30_001);
+    });
+
     it('keeps server-origin external Actions under caller and lifecycle cancellation', () => {
         for (const requestedTimeoutMs of [1, 30_001, 300_000]) {
             expect(resolveRpcForwardTimeoutMs(
@@ -41,6 +48,5 @@ describe('resolveRpcForwardTimeoutMs', () => {
     it('keeps unrelated RPC calls on the generic forward timeout', () => {
         expect(resolveRpcForwardTimeoutMs('machine-one:unrelated.method')).toBe(30_000);
         expect(resolveRpcForwardTimeoutMs('machine-one:unrelated.method', 30_001)).toBe(30_001);
-        expect(resolveRpcForwardTimeoutMs(`session-one:${SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_READ}`)).toBe(30_000);
     });
 });
