@@ -4,6 +4,8 @@ import type {
 } from '@happier-dev/protocol/sessions/board';
 
 import type { ItemAction } from '@/components/ui/lists/itemActions';
+import type { WidgetFrameStyle } from '@/components/widgets/frame/WidgetFrame';
+import { buildWidgetFrameStyleActions } from '@/components/widgets/frame/widgetFrameMenu';
 import { t } from '@/text';
 
 import type { SessionWidgetDensity } from './SessionWidgetHost';
@@ -52,6 +54,15 @@ export type SessionBoardItemMenuInput = Readonly<{
     onUnpin?: (() => void) | undefined;
     /** Deletes the shared record and every placement, through the shared Action. */
     onRemove?: (() => void) | undefined;
+    /**
+     * This placement's frame override, shared with everyone (stored with the Board layout, like
+     * width): Show/Hide frame and the way back to the Board's Appearance default. Editors only.
+     */
+    frame?: Readonly<{
+        surfaceDefault: WidgetFrameStyle;
+        override: WidgetFrameStyle | null | undefined;
+        onSet: (style: WidgetFrameStyle | null) => void;
+    }> | undefined;
 }>;
 
 export function buildSessionBoardItemActions(input: SessionBoardItemMenuInput): ItemAction[] {
@@ -196,6 +207,9 @@ export function buildSessionBoardItemActions(input: SessionBoardItemMenuInput): 
                 onPress: () => input.onSetHeight?.({ mode: 'fixed', size }),
             });
         }
+    }
+    if (input.frame) {
+        actions.push(...buildWidgetFrameStyleActions({ placement: 'board', ...input.frame, group: geometryGroup }));
     }
     if (input.onUnpin) {
         actions.push({

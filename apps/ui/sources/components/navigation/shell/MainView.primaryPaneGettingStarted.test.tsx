@@ -134,6 +134,11 @@ vi.mock('@/sync/domains/features/featureBuildPolicy', () => ({
     getFeatureBuildPolicyDecision: () => buildPolicyState.decision,
 }));
 
+// The home hub owns the empty pane (and its getting-started fallback); its own suite covers it.
+vi.mock('@/components/hub/HomeHub', () => ({
+    HomeHub: 'HomeHub',
+}));
+
 vi.mock('@/components/sessions/guidance/SessionGettingStartedGuidance', () => ({
     SessionGettingStartedGuidance: 'SessionGettingStartedGuidance',
 }));
@@ -152,10 +157,6 @@ vi.mock('@/components/sessions/shell/SessionsListPaneContent', () => ({
 
 vi.mock('@/components/sessions/shell/ExternalSessionsEmptyState', () => ({
     ExternalSessionsEmptyState: 'ExternalSessionsEmptyState',
-}));
-
-vi.mock('@/components/ui/buttons/FABWide', () => ({
-    FABWide: 'FABWide',
 }));
 
 vi.mock('@/components/ui/navigation/TabBar', () => ({
@@ -219,13 +220,13 @@ describe('MainView (tablet primary pane)', () => {
         setSessionsListStorageFilterSpy.mockReset();
     });
 
-    it('shows getting started guidance instead of a blank view', async () => {
+    it('shows the home hub instead of a blank view', async () => {
         const { MainView } = await import('./MainView');
 
         let tree: renderer.ReactTestRenderer | null = null;
         tree = (await renderScreen(<MainView variant="phone" />)).tree;
 
-        expect(() => tree!.findByType('SessionGettingStartedGuidance')).not.toThrow();
+        expect(() => tree!.findByType('HomeHub' as never)).not.toThrow();
     });
 
     it('shows a fallback view when getting started guidance is denied by build policy', async () => {

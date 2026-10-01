@@ -39,6 +39,7 @@ const appSidebarBinding = rightSidebarBinding(APP_PLUGIN_ID, 'app-panel', 'app')
 const reviewSidebarPlacement = {
     id: `surfacePlacement:${REVIEW_PLUGIN_ID}:review-panel`,
     pluginId: REVIEW_PLUGIN_ID,
+    occurrenceId: 'acme-review-occurrence',
     contributionKind: 'surfacePlacement',
     descriptorId: 'review-panel',
     binding: reviewSidebarBinding,
@@ -65,6 +66,7 @@ const disabledReviewSidebarPlacement = {
 const appSidebarPlacement = {
     id: `surfacePlacement:${APP_PLUGIN_ID}:app-panel`,
     pluginId: APP_PLUGIN_ID,
+    occurrenceId: 'acme-app-occurrence',
     contributionKind: 'surfacePlacement',
     descriptorId: 'app-panel',
     binding: appSidebarBinding,
@@ -335,6 +337,33 @@ describe('rightSidebarTabRegistry', () => {
 
         expect(tabs.find((tab) => tab.id === `plugin:${REVIEW_PLUGIN_ID}:blocked-review`)).toBeUndefined();
         expect(resolveRightSidebarActiveTab(`plugin:${REVIEW_PLUGIN_ID}:blocked-review`, tabs)).toBe('git');
+    });
+
+    it("lists the App's tabs after a Session's and a Project's own tabs, never in the phone cockpit", () => {
+        const sessionTabs = resolveRightSidebarTabs({
+            scope: 'session',
+            pluginPlacements: [reviewSidebarPlacement],
+            appPluginPlacements: [appSidebarPlacement],
+        });
+        const ids = sessionTabs.map((tab) => tab.id);
+        expect(ids.slice(-2)).toEqual([`plugin:${REVIEW_PLUGIN_ID}:review-panel`, `plugin:${APP_PLUGIN_ID}:app-panel`]);
+        const appTab = sessionTabs.find((tab) => tab.id === `plugin:${APP_PLUGIN_ID}:app-panel`);
+        expect(appTab).toMatchObject({ owner: 'plugin', scopes: ['app'] });
+        // An App panel is not a Session surface: the phone opens it from the launcher instead.
+        expect(appTab ? resolveRightSidebarMobileSurface(appTab, 'session') : 'missing').toBeNull();
+
+        const projectTabs = resolveRightSidebarTabs({
+            scope: 'project',
+            pluginPlacements: [],
+            appPluginPlacements: [appSidebarPlacement],
+        });
+        expect(projectTabs.at(-1)?.id).toBe(`plugin:${APP_PLUGIN_ID}:app-panel`);
+        // The App's own sidebar does not list them twice.
+        expect(resolveRightSidebarTabs({
+            scope: 'app',
+            pluginPlacements: [appSidebarPlacement],
+            appPluginPlacements: [appSidebarPlacement],
+        }).map((tab) => tab.id)).toEqual([`plugin:${APP_PLUGIN_ID}:app-panel`]);
     });
 
     it('resolves app-scope plugin right-sidebar tabs through the shared registry', () => {

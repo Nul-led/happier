@@ -17,9 +17,8 @@ describe('authenticatedAccountEntryRoute', () => {
         });
 
         expect(href).toEqual({
-            pathname: '/setup/wizard',
+            pathname: '/homes/sign-in',
             params: {
-                mode: 'account-entry',
                 accountServiceEndpoint: 'https://accounts.example.test',
                 accountServiceIdentity: 'srv_accounts',
                 accountIntent: JSON.stringify({ kind: 'enter', target: { kind: 'automatic' } }),
@@ -85,7 +84,6 @@ describe('authenticatedAccountEntryRoute', () => {
 
     it('rejects malformed, secret-bearing, ambiguous, or unsupported route inputs', () => {
         const valid = {
-            mode: 'account-entry',
             accountServiceEndpoint: 'https://accounts.example.test',
             accountServiceIdentity: 'srv_accounts',
             accountIntent: JSON.stringify({ kind: 'enter', target: { kind: 'automatic' } }),
@@ -99,6 +97,8 @@ describe('authenticatedAccountEntryRoute', () => {
         expect(parseAuthenticatedAccountEntryRoute({ ...valid, accountIntent: JSON.stringify({ kind: 'enroll' }) })).toBeNull();
         expect(parseAuthenticatedAccountEntryRoute({ ...valid, accountIntent: JSON.stringify({ kind: 'refresh', target: {} }) })).toBeNull();
         expect(parseAuthenticatedAccountEntryRoute({ ...valid, accountIntent: JSON.stringify({ kind: 'enter', target: { kind: 'explicit' } }) })).toBeNull();
+        // The sign-in route has no mode; the legacy `/setup/wizard` redirect strips `mode=account-entry`.
+        expect(parseAuthenticatedAccountEntryRoute({ ...valid, mode: 'account-entry' })).toBeNull();
         expect(parseAuthenticatedAccountEntryRoute({ ...valid, mode: 'machine' })).toBeNull();
     });
 });

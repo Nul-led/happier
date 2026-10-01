@@ -2,39 +2,43 @@ import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-    renderHook,
+    renderHook as renderTestHook,
     renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import { FocusReturnProvider } from '@/keyboard/focusReturn';
+import { DestinationInstanceHost } from '@/components/appShell/workspace/DestinationInstanceHost';
 
 const navigationState = vi.hoisted(() => ({
-    focusEffect: null as null | (() => void | (() => void)),
+    setFocused: null as null | React.Dispatch<React.SetStateAction<boolean>>,
 }));
 
 vi.mock('@react-navigation/native', async () => {
-    const ReactModule = await import('react');
     const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
-    return {
-        ...createReactNavigationNativeMock(),
-        useFocusEffect: (effect: () => void | (() => void)) => {
-            ReactModule.useEffect(() => {
-                navigationState.focusEffect = effect;
-                const cleanup = effect();
-                return () => {
-                    navigationState.focusEffect = null;
-                    if (typeof cleanup === 'function') cleanup();
-                };
-            }, [effect]);
-        },
-    };
+    return createReactNavigationNativeMock();
 });
+
+/** Drive the real destination owner rather than a retired native useFocusEffect mock. */
+function DestinationFocusScope(props: React.PropsWithChildren) {
+    const [focused, setFocused] = React.useState(true);
+    navigationState.setFocused = setFocused;
+    return <DestinationInstanceHost tabId="focus-test" ref={{ kind: 'settings', params: {} }} pathname="/settings" focused={focused} visible>{props.children}</DestinationInstanceHost>;
+}
+
+function renderHook<T>(hook: () => T) {
+    return renderTestHook(hook, { wrapper: DestinationFocusScope });
+}
+
+async function returnToScreen() {
+    await React.act(async () => { navigationState.setFocused?.(false); });
+    await React.act(async () => { navigationState.setFocused?.(true); });
+}
 
 describe('useNavigationFocusReturn', () => {
     afterEach(() => {
         standardCleanup();
         vi.unstubAllGlobals();
-        navigationState.focusEffect = null;
+        navigationState.setFocused = null;
     });
 
     it('keeps navigation unchanged when the platform has no document focus owner', async () => {
@@ -45,8 +49,8 @@ describe('useNavigationFocusReturn', () => {
 
         React.act(() => {
             hook.getCurrent()(navigate);
-            navigationState.focusEffect?.();
         });
+        await returnToScreen();
 
         expect(navigate).toHaveBeenCalledOnce();
     });
@@ -66,9 +70,7 @@ describe('useNavigationFocusReturn', () => {
         expect(navigate).toHaveBeenCalledOnce();
         expect(focus).not.toHaveBeenCalled();
 
-        React.act(() => {
-            navigationState.focusEffect?.();
-        });
+        await returnToScreen();
 
         expect(focus).toHaveBeenCalledOnce();
     });
@@ -99,16 +101,35 @@ describe('useNavigationFocusReturn', () => {
         expect(navigate).toHaveBeenCalledOnce();
         expect(focus).not.toHaveBeenCalled();
 
-        React.act(() => {
-            navigationState.focusEffect?.();
-        });
+        await returnToScreen();
 
         expect(focus).toHaveBeenCalledOnce();
 
-        React.act(() => {
-            navigationState.focusEffect?.();
-        });
+        await returnToScreen();
         expect(focus).toHaveBeenCalledOnce();
+    });
+
+    it('returns focus to the row that opened an in-place picker once the row is back', async () => {
+        const rowFocus = vi.fn();
+        const row = { focus: rowFocus, isConnected: true, getAttribute: (name: string) => name === 'data-testid' ? 'settings-row' : null };
+        const pickerDone = { focus: vi.fn(), isConnected: true, getAttribute: (name: string) => name === 'data-testid' ? 'picker-done' : null };
+        const documentState = { activeElement: row as typeof row | typeof pickerDone, body: {}, documentElement: {}, querySelectorAll: () => [] as unknown[] };
+        vi.stubGlobal('document', documentState);
+        const { useInPlaceFocusReturn } = await import('./useNavigationFocusReturn');
+        const hook = await renderHook(() => useInPlaceFocusReturn());
+
+        hook.getCurrent().capture();
+        // The picker replaces the settings; its own control takes focus, the row is gone.
+        documentState.activeElement = pickerDone;
+        // The settings are back with a new host for the same row.
+        const remountedRow = { ...row, focus: vi.fn() };
+        documentState.querySelectorAll = () => [remountedRow, pickerDone];
+
+        expect(hook.getCurrent().restore()).toBe(true);
+        expect(remountedRow.focus).toHaveBeenCalledOnce();
+        expect(pickerDone.focus).not.toHaveBeenCalled();
+        // One return per capture.
+        expect(hook.getCurrent().restore()).toBe(false);
     });
 
     it('retains the original trigger when focus moves before deferred navigation commits', async () => {
@@ -139,8 +160,8 @@ describe('useNavigationFocusReturn', () => {
         documentState.activeElement = movedTarget;
         React.act(() => {
             capture.navigate(navigate);
-            navigationState.focusEffect?.();
         });
+        await returnToScreen();
 
         expect(navigate).toHaveBeenCalledOnce();
         expect(originalFocus).toHaveBeenCalledOnce();
@@ -168,11 +189,7 @@ describe('useNavigationFocusReturn', () => {
         });
         target.isConnected = false;
 
-        expect(() => {
-            React.act(() => {
-                navigationState.focusEffect?.();
-            });
-        }).not.toThrow();
+        await returnToScreen();
         expect(focus).not.toHaveBeenCalled();
     });
 
@@ -218,9 +235,7 @@ describe('useNavigationFocusReturn', () => {
         });
         originalHidden = true;
 
-        React.act(() => {
-            navigationState.focusEffect?.();
-        });
+        await returnToScreen();
 
         expect(originalFocus).not.toHaveBeenCalled();
         expect(disabledFocus).not.toHaveBeenCalled();
@@ -256,17 +271,15 @@ describe('useNavigationFocusReturn', () => {
 
         React.act(() => {
             hook.getCurrent()(() => undefined);
-            navigationState.focusEffect?.();
         });
+        await returnToScreen();
 
         expect(originalFocus).not.toHaveBeenCalled();
         expect(firstVisibleFocus).not.toHaveBeenCalled();
         expect(secondVisibleFocus).not.toHaveBeenCalled();
 
         candidates = [firstVisible];
-        React.act(() => {
-            navigationState.focusEffect?.();
-        });
+        await returnToScreen();
         expect(firstVisibleFocus).not.toHaveBeenCalled();
     });
 
@@ -292,9 +305,7 @@ describe('useNavigationFocusReturn', () => {
             });
         }).toThrow('navigation failed');
 
-        React.act(() => {
-            navigationState.focusEffect?.();
-        });
+        await returnToScreen();
         expect(focus).not.toHaveBeenCalled();
     });
 

@@ -53,6 +53,24 @@ function input(overrides: Partial<SessionBoardProjectionInput> = {}): SessionBoa
 }
 
 describe('projectSessionBoard', () => {
+    it('projects frame overrides and invalidates only the placement whose override changed or cleared', () => {
+        const initialInput = input();
+        const initial = projectSessionBoard(initialInput);
+        const styledLayout = { ...TWO_VIEW_LAYOUT, tabs: TWO_VIEW_LAYOUT.tabs.map((tab, index) => ({ ...tab,
+            items: tab.items.map((placement, itemIndex) => index === 0 && itemIndex === 0
+                ? { ...placement, frameStyle: 'plain' as const } : placement),
+        })) };
+        const styled = projectSessionBoard({ ...initialInput, layout: layoutRecord(styledLayout, 'layout-2') }, initial);
+        expect(styled.views[0]?.placements[0]).toMatchObject({ frameStyle: 'plain' });
+        expect(styled.views[0]?.placements[0]?.item).toBe(initial.views[0]?.placements[0]?.item);
+        expect(styled.views[0]?.placements[1]).toBe(initial.views[0]?.placements[1]);
+        expect(styled.views[1]).toBe(initial.views[1]);
+        const echoed = projectSessionBoard({ ...initialInput, layout: layoutRecord(styledLayout, 'layout-2') }, styled);
+        expect(echoed.views).toBe(styled.views);
+        const cleared = projectSessionBoard(initialInput, styled);
+        expect(cleared.views[0]?.placements[0]).not.toHaveProperty('frameStyle');
+        expect(cleared.views[0]?.placements[0]).not.toBe(styled.views[0]?.placements[0]);
+    });
     it('joins the shared layout and item records into ordered Board views without copying content', () => {
         const snapshot = projectSessionBoard(input());
 

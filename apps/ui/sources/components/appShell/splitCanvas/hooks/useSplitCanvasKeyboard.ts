@@ -44,12 +44,6 @@ function resolveArrowDirection(key: string): SplitCanvasDirection | null {
     return null;
 }
 
-function resolveSplitDirection(key: string): SplitCanvasDirection | null {
-    if (key === 'Enter' || key === 'ArrowRight') return 'right';
-    if (key === 'ArrowDown') return 'down';
-    return null;
-}
-
 function splitCanvasFocusCommandFromDirection(direction: SplitCanvasDirection): SplitCanvasKeyboardCommand {
     if (direction === 'down') return 'focusDown';
     if (direction === 'left') return 'focusLeft';
@@ -118,34 +112,34 @@ export function useSplitCanvasKeyboard<TLeafPayload>(input: SplitCanvasKeyboardI
 
         const handlers: KeyboardShortcutHandlers = {};
         if (input.state.maximizedLeafId) {
-            handlers['splitCanvas.restoreMaximize'] = () => {
+            handlers['workspace.restoreMaximize'] = () => {
                 runSplitCanvasKeyboardCommand(latestInputRef.current, 'restoreMaximize');
             };
         }
         if (input.state.focusedLeafId) {
-            handlers['splitCanvas.closeLeaf'] = () => {
+            handlers['workspace.closePane'] = () => {
                 runSplitCanvasKeyboardCommand(latestInputRef.current, 'closeLeaf');
             };
-            handlers['splitCanvas.focusDown'] = () => {
+            handlers['workspace.focusDown'] = () => {
                 runSplitCanvasKeyboardCommand(latestInputRef.current, 'focusDown');
             };
-            handlers['splitCanvas.focusLeft'] = () => {
+            handlers['workspace.focusLeft'] = () => {
                 runSplitCanvasKeyboardCommand(latestInputRef.current, 'focusLeft');
             };
-            handlers['splitCanvas.focusRight'] = () => {
+            handlers['workspace.focusRight'] = () => {
                 runSplitCanvasKeyboardCommand(latestInputRef.current, 'focusRight');
             };
-            handlers['splitCanvas.focusUp'] = () => {
+            handlers['workspace.focusUp'] = () => {
                 runSplitCanvasKeyboardCommand(latestInputRef.current, 'focusUp');
             };
-            handlers['splitCanvas.toggleMaximize'] = () => {
+            handlers['workspace.toggleMaximize'] = () => {
                 runSplitCanvasKeyboardCommand(latestInputRef.current, 'toggleMaximize');
             };
             if (input.onSplit) {
-                handlers['splitCanvas.splitDown'] = () => {
+                handlers['workspace.splitDown'] = () => {
                     runSplitCanvasKeyboardCommand(latestInputRef.current, 'splitDown');
                 };
-                handlers['splitCanvas.splitRight'] = () => {
+                handlers['workspace.splitRight'] = () => {
                     runSplitCanvasKeyboardCommand(latestInputRef.current, 'splitRight');
                 };
             }
@@ -166,7 +160,7 @@ export function useSplitCanvasKeyboard<TLeafPayload>(input: SplitCanvasKeyboardI
             const currentInput = latestInputRef.current;
             if (event.defaultPrevented) return;
             if (isTextEditingTarget(event.target)) return;
-            if (event.metaKey || event.ctrlKey) return;
+            if (event.metaKey) return;
 
             if (event.key === 'Escape' && currentInput.state.maximizedLeafId) {
                 runSplitCanvasKeyboardCommand(currentInput, 'restoreMaximize');
@@ -179,15 +173,15 @@ export function useSplitCanvasKeyboard<TLeafPayload>(input: SplitCanvasKeyboardI
             if (!focusedLeafId) return;
 
             const arrowDirection = resolveArrowDirection(event.key);
-            if (event.altKey && !event.shiftKey && arrowDirection) {
+            if (event.altKey && event.ctrlKey && !event.shiftKey && arrowDirection) {
                 runSplitCanvasKeyboardCommand(currentInput, splitCanvasFocusCommandFromDirection(arrowDirection));
                 event.preventDefault();
                 event.stopPropagation();
                 return;
             }
 
-            const splitDirection = event.altKey && event.shiftKey
-                ? resolveSplitDirection(event.key)
+            const splitDirection = event.altKey && !event.ctrlKey && event.key === 'Backslash'
+                ? (event.shiftKey ? 'down' : 'right')
                 : null;
             if (splitDirection) {
                 if (runSplitCanvasKeyboardCommand(currentInput, splitDirection === 'down' ? 'splitDown' : 'splitRight')) {
@@ -197,14 +191,14 @@ export function useSplitCanvasKeyboard<TLeafPayload>(input: SplitCanvasKeyboardI
                 return;
             }
 
-            if (event.altKey && !event.shiftKey && event.key.toLowerCase() === 'm') {
+            if (event.altKey && !event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'm') {
                 runSplitCanvasKeyboardCommand(currentInput, 'toggleMaximize');
                 event.preventDefault();
                 event.stopPropagation();
                 return;
             }
 
-            if (event.altKey && !event.shiftKey && event.key === 'Backspace') {
+            if (event.altKey && !event.ctrlKey && !event.shiftKey && event.key === 'Backspace') {
                 runSplitCanvasKeyboardCommand(currentInput, 'closeLeaf');
                 event.preventDefault();
                 event.stopPropagation();

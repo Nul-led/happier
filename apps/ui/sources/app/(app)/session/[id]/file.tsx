@@ -1,5 +1,6 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { Platform, View, useWindowDimensions } from 'react-native';
 import { decodeSessionFilePathParam } from '@/scm/utils/filePathParam';
 import { parseSessionFileDeepLinkAnchor } from '@/utils/url/sessionFileDeepLink';
@@ -17,8 +18,9 @@ import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForR
 import { isSessionRouteHydrationAvailable, isSessionRouteHydrationMissing } from '@/sync/domains/session/sessionRouteHydrationState';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
 
-export default function FileScreen() {
+export function FileScreen() {
     const router = useRouter();
     const params = useLocalSearchParams<{ id: string; serverId?: string; path: string }>();
     const routeScope = React.useMemo(() => createSessionRouteServerScope(params), [params]);
@@ -46,7 +48,7 @@ export default function FileScreen() {
         && sessionHydrated
         && shouldRedirectDetailsRouteToPanes({ containerWidthPx, deviceType, multiPaneEnabled });
 
-    const scopeId = createSessionPaneScopeId(sessionId, routeScope.serverId);
+    const scopeId = useDestinationPaneScopeId(createSessionPaneScopeId(sessionId, routeScope.serverId));
     const pane = useAppPaneScope(scopeId);
 
     const shouldUseDetailsScreen = Platform.OS !== 'web';
@@ -117,3 +119,7 @@ export default function FileScreen() {
     if (shouldUseDetailsScreen) return null;
     return <SessionFileDetailsView sessionId={sessionId} serverId={routeScope.serverId} scopeId={scopeId} filePath={filePath} deepLinkAnchor={deepLinkAnchor} />;
 }
+
+export { FileScreen as WorkspaceRouteBody };
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={FileScreen} />; }

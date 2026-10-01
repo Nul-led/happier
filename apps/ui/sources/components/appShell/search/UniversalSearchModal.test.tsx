@@ -38,6 +38,8 @@ describe('UniversalSearchModal', () => {
         );
 
         expect(capturedChrome.value).toEqual(expect.objectContaining({
+            header: 'none',
+            title: 'Search',
             scrollHost: 'body',
             bodyScroll: 'none',
             dimensions: { width: 800, maxHeightRatio: 0.7, size: 'lg' },

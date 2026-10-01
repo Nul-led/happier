@@ -1,4 +1,3 @@
-export const SIDEBAR_COLLAPSED_WIDTH_PX = 72;
 export const SIDEBAR_DOCK_MIN_WIDTH_PX = 250;
 
 const SIDEBAR_BASE_MAX_PX = 480;

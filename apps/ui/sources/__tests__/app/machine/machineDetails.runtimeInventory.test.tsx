@@ -83,7 +83,6 @@ vi.mock('@/sync/ops/machines', () => ({
     machineCollectBugReportDiagnostics: machineCollectBugReportDiagnosticsMock,
 }));
 
-vi.mock('@/components/machines/DetectedClisList', () => ({ DetectedClisList: () => null }));
 vi.mock('@/components/machines/MachineTransferExposureSection', () => ({ MachineTransferExposureSection: () => null }));
 vi.mock('@/components/machines/InstallableDepInstaller', () => ({ InstallableDepInstaller: () => null }));
 vi.mock('@/components/ui/forms/Switch', () => ({ Switch: () => null }));
@@ -95,7 +94,8 @@ vi.mock('@/hooks/server/useMachineCapabilitiesCache', () => ({ useMachineCapabil
 vi.mock('@/hooks/session/useNavigateToSession', () => ({ useNavigateToSession: () => () => {} }));
 vi.mock('@/hooks/ui/useMountedShouldContinue', () => ({ useMountedShouldContinue: () => () => true }));
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({ setActiveServerAndSwitch: setActiveServerAndSwitchMock }));
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '').trim() === String(right ?? '').trim(),
     getActiveServerId: () => activeServerIdRef.current,
 }));
@@ -106,8 +106,7 @@ vi.mock('@/utils/errors/daemonUnavailableAlert', () => ({
 }));
 vi.mock('@/utils/path/pathUtils', () => ({ resolveAbsolutePath: () => '' }));
 vi.mock('@/utils/sessions/machineUtils', () => ({ isMachineOnline: () => true }));
-vi.mock('@/utils/sessions/sessionUtils', () => ({ formatPathRelativeToHome: () => '', getSessionName: () => '', getSessionSubtitle: () => '' }));
-vi.mock('@/sync/domains/settings/terminalSettings', () => ({ resolveTerminalSpawnOptions: () => ({}) }));
+vi.mock('@/utils/sessions/sessionUtils', () => ({ formatOSPlatform: (platform?: string) => platform ?? '', formatPathRelativeToHome: () => '', getSessionName: () => '', getSessionSubtitle: () => '' }));
 vi.mock('@/sync/domains/session/spawn/windowsRemoteSessionConsole', () => ({ resolveWindowsRemoteSessionConsoleFromMachineMetadata: () => 'visible' }));
 vi.mock('@/sync/domains/session/spawn/windowsRemoteSessionLaunchMode', () => ({
     readMachineWindowsRemoteSessionLaunchMode: () => undefined,

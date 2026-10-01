@@ -15,7 +15,10 @@ import { resolveAuthenticatedWebServerUrlOverrideAction } from '@/sync/domains/s
 import {
     commitWebServerUrlOverride,
 } from '@/sync/domains/server/url/bootstrapActiveServerFromWebLocation';
-import { upsertActivateAndSwitchServer } from '@/sync/domains/server/activeServerSwitch';
+import { resolveUniqueServerProfileByUrl } from '@/sync/domains/server/serverProfiles';
+import { setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
+import { connectHomeAtAddress } from '@/sync/ops/home/connectHomeAtAddress';
+import { confirmCanonicalHomeUrl, confirmInsecureHomeHttp, homeConnectFailureMessage } from '@/components/homes/add/homeConnectPresentation';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -25,6 +28,8 @@ import {
     doesOnboardingJourneyOwnTransientDemoServer,
     useOnboardingJourneySessionActive,
 } from '@/components/onboarding/tour/state/journeySession';
+
+class HomeConnectRequiresDraft extends Error {}
 
 /**
  * Single navigation-subscribing render owner for the app root layout.
@@ -108,18 +113,36 @@ export function RootLayoutRedirectGate({ children }: { children: React.ReactNode
         // Same-server refresh/URL cleanup must not unmount a still-live journey after
         // its demo act tears down. Only a real cross-server switch owns a root hold.
         setIsApplyingWebServerOverride(overrideAction.kind === 'switch_server');
+        const suppliedNewHome = overrideAction.kind === 'switch_server'
+            && !resolveUniqueServerProfileByUrl(overrideAction.serverUrl);
         fireAndForget((async () => {
+            const openUnsavedHomeDraft = () => {
+                if (!suppliedNewHome || overrideAction.kind !== 'switch_server') return;
+                router.replace(`/settings/server/add?address=${encodeURIComponent(overrideAction.serverUrl)}&source=url` as never);
+            };
             while (true) {
                 try {
                     await commitWebServerUrlOverride({
                         action: overrideAction,
                         switchServer: async ({ serverUrl, refreshAuth: refreshAfterSwitch }) => {
-                            await upsertActivateAndSwitchServer({
-                                serverUrl,
-                                source: 'url',
+                            const saved = resolveUniqueServerProfileByUrl(serverUrl);
+                            const profile = saved ?? await (async () => {
+                                const connected = await connectHomeAtAddress({
+                                    serverUrl,
+                                    source: 'url',
+                                    confirmInsecureHttp: confirmInsecureHomeHttp,
+                                    confirmCanonicalUrl: confirmCanonicalHomeUrl,
+                                });
+                                if (connected.kind === 'connected') return connected.profile;
+                                if (connected.kind === 'declined') throw new HomeConnectRequiresDraft();
+                                throw new Error(homeConnectFailureMessage(connected) ?? t('common.error'));
+                            })();
+                            const switched = await setActiveServerAndSwitch({
+                                serverId: profile.id,
                                 scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
                                 refreshAuth: refreshAfterSwitch,
                             });
+                            if (switched === 'blocked') throw new Error(t('common.error'));
                         },
                         refreshAuth,
                         replaceRelativeUrl: (nextRelativeUrl) => {
@@ -131,6 +154,12 @@ export function RootLayoutRedirectGate({ children }: { children: React.ReactNode
                     setIsApplyingWebServerOverride(false);
                     return;
                 } catch (error) {
+                    if (error instanceof HomeConnectRequiresDraft) {
+                        webServerOverrideHandledRef.current = true;
+                        openUnsavedHomeDraft();
+                        setIsApplyingWebServerOverride(false);
+                        return;
+                    }
                     const shouldRetry = await Modal.confirm(
                         t('common.error'),
                         error instanceof Error ? error.message : t('common.error'),
@@ -141,6 +170,7 @@ export function RootLayoutRedirectGate({ children }: { children: React.ReactNode
                     );
                     if (shouldRetry) continue;
                     webServerOverrideHandledRef.current = true;
+                    openUnsavedHomeDraft();
                     setIsApplyingWebServerOverride(false);
                     return;
                 }

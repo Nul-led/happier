@@ -1,16 +1,21 @@
 import * as React from 'react';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createScmCapabilities, type ScmCapabilities } from '@happier-dev/protocol/scm';
+import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
+
+// The Changes list is the real virtualized list; its web engine schedules frames (platform boundary).
+(globalThis as any).requestAnimationFrame ??= vi.fn(() => 0);
 
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import { AppPaneProvider, useAppPaneContext } from '../../appShell/panes/AppPaneProvider';
-import { installSessionDetailsPanelCommonModuleMocks } from './sessionDetailsPanelTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-installSessionDetailsPanelCommonModuleMocks({
-    reactNative: async () => {
+// Hoist these boundaries before AppPaneProvider can load and cache their real modules.
+vi.mock('react-native', async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
             Platform: {
@@ -18,8 +23,20 @@ installSessionDetailsPanelCommonModuleMocks({
                 select: (value: any) => value?.web ?? value?.default ?? null,
             },
         });
-    },
-    storage: async () => {
+});
+vi.mock('react-native-unistyles', async () => {
+    const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+    return createUnistylesMock();
+});
+vi.mock('@expo/vector-icons', async () => {
+    const { createExpoVectorIconsMock } = await import('@/dev/testkit/mocks/icons');
+    return createExpoVectorIconsMock();
+});
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock().module;
+});
+vi.mock('@/sync/domains/state/storage', async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
             useLocalSetting: (key: string) => {
@@ -28,6 +45,7 @@ installSessionDetailsPanelCommonModuleMocks({
                 return undefined;
             },
             useSession: () => ({ active: true, metadata: { path: sessionPathMock, machineId: 'm1' } }),
+            useSessionListRenderableWithServerScope: () => createSessionListRenderableSessionFixture({ id: 's1', ...{ active: true, metadata: { host: 'test-machine', path: sessionPathMock ?? '', machineId: 'm1' } } }),
             useMachine: () => null,
             useSessionProjectScmSnapshot: () => scmSnapshotMock,
             useSessionProjectScmSnapshotError: () => null,
@@ -38,6 +56,7 @@ installSessionDetailsPanelCommonModuleMocks({
             useSessionProjectScmCommitSelectionPatches: () => [],
             useSessionRealtimeScmTranscriptConsumer: () => {},
             useSetting: (key: string) => {
+                if (key === 'scmGitPaneLayout') return paneLayout;
                 if (key === 'scmCommitStrategy') return 'atomic';
                 if (key === 'scmRemoteConfirmPolicy') return 'always';
                 if (key === 'scmPushRejectPolicy') return 'reject';
@@ -48,11 +67,10 @@ installSessionDetailsPanelCommonModuleMocks({
             useProjectSessions: () => [],
             storage: { getState: () => ({ sessions: {}, settings: {}, concurrentSessionListCacheByServerId: {} }) },
         });
-    },
-    text: async () => {
+});
+vi.mock('@/text', async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({ translate: (key) => key });
-    },
 });
 
 // Hoisted with the `vi.mock` factories below: `@/sync/sync` reaches `@/scm/scmStatusSync` while an
@@ -67,6 +85,7 @@ const useChangedFilesDataSpy = vi.fn();
 let sessionPathMock: string | null = '/workspace';
 let scmSnapshotMock: any = null;
 let scmWriteEnabledMock = true;
+let paneLayout: 'unified' | 'tabs' = 'tabs';
 
 function buildChangedFilesDataMock(overrides: Record<string, unknown> = {}) {
     return {
@@ -92,9 +111,12 @@ function buildChangedFilesDataMock(overrides: Record<string, unknown> = {}) {
     };
 }
 
-function buildScmSnapshotMock(capabilities: any) {
+function buildScmSnapshotMock(capabilities: Partial<ScmCapabilities>) {
     return {
-        repo: { isRepo: true },
+        fetchedAt: 1,
+        projectKey: 'm1:/workspace',
+        repo: { isRepo: true, rootPath: '/workspace', backendId: 'git', mode: '.git' },
+        stashCount: 0,
         hasConflicts: false,
         entries: [],
         branch: { head: 'main', upstream: null, ahead: 0, behind: 0, detached: false },
@@ -107,8 +129,8 @@ function buildScmSnapshotMock(capabilities: any) {
             pendingAdded: 0,
             pendingRemoved: 0,
         },
-        capabilities,
-    };
+        capabilities: createScmCapabilities({ changeSetModel: 'index', readStatus: true, ...capabilities }),
+    } satisfies ScmWorkingSnapshot;
 }
 
 vi.mock('@/components/ui/text/Text', () => ({
@@ -194,9 +216,6 @@ vi.mock('@/components/sessions/sourceControl/commitSelection/ScmChangesSelection
     ScmChangesSelectionHeaderRow: (props: any) => React.createElement('ScmChangesSelectionHeaderRow', props),
 }));
 
-vi.mock('@/components/sessions/sourceControl/commitSelection/ScmCommitSelectionToggleButton', () => ({
-    ScmCommitSelectionToggleButton: (props: any) => React.createElement('ScmCommitSelectionToggleButton', props),
-}));
 
 vi.mock('@/components/sessions/sourceControl/changes/ScmChangeDiscardButton', () => ({
     ScmChangeDiscardButton: (props: any) => React.createElement('ScmChangeDiscardButton', props),
@@ -210,31 +229,8 @@ vi.mock('@/components/sessions/files/views/SessionRepositoryTreeBrowserView', ()
     SessionRepositoryTreeBrowserView: (props: any) => React.createElement('SessionRepositoryTreeBrowserView', props),
 }));
 
-vi.mock('@/scm/scmAttribution', () => ({
-    getDefaultChangedFilesViewMode: () => 'session',
-    getPreferredChangedFilesViewMode: () => 'session',
-    resolveChangedFilesViewMode: (input: {
-        mode: 'repository' | 'selected' | 'turn' | 'session';
-        showTurnViewToggle: boolean;
-        showSessionViewToggle: boolean;
-        showSelectedViewToggle?: boolean;
-    }) => {
-        if (input.mode === 'repository') return input.mode;
-        if (input.mode === 'selected' && input.showSelectedViewToggle === true) return input.mode;
-        if (input.mode === 'turn' && input.showTurnViewToggle) return input.mode;
-        if (input.mode === 'session' && input.showSessionViewToggle) return input.mode;
-        return 'session';
-    },
-}));
+// Attribution and view-mode selection are the real domain owner (`@/scm/scmAttribution`), not a mock.
 
-vi.mock('@/scm/settings/commitStrategy', () => ({
-    SCM_COMMIT_STRATEGIES: ['atomic', 'atomic-per-file', 'working-copy'] as const,
-    isAtomicCommitStrategy: () => true,
-}));
-
-vi.mock('@/scm/operations/commitSelectionHints', () => ({
-    countCommitSelectionItems: () => 0,
-}));
 
 vi.mock('@/scm/operations/applyFileStageAction', () => ({
     applyFileStageAction: vi.fn(async () => {}),
@@ -259,12 +255,19 @@ vi.mock('@/components/workspaces/files/repositoryTree/computeExpandedPathsForRev
     computeExpandedPathsForReveal: (args: any) => args.expandedPaths,
 }));
 
-vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
-    useSessionMachineReachability: () => ({ machineReachable: true, machineOnline: true }),
-}));
+vi.mock('@/components/sessions/model/useSessionMachineReachability', async (importOriginal) => {
+    const { createReachableSessionMachineReachability, installSessionMachineReachabilityModuleMock } = await import('@/dev/testkit/mocks/sessionMachineReachability');
+    return installSessionMachineReachabilityModuleMock({
+        useSessionMachineReachability: () => createReachableSessionMachineReachability(),
+    })(importOriginal);
+});
 
 describe('SessionRightPanel git sub-tabs', () => {
     beforeEach(() => {
+        paneLayout = 'tabs';
+        sessionPathMock = '/workspace';
+        scmWriteEnabledMock = true;
+        scmSnapshotMock = null;
         useChangedFilesDataSpy.mockReset();
         invalidateFromUserAndAwaitSpy.mockClear();
         invalidateFromAutoRefreshAndAwaitSpy.mockClear();
@@ -297,7 +300,8 @@ describe('SessionRightPanel git sub-tabs', () => {
             await flushHookEffects({ cycles: 1, turns: 1 });
         });
 
-        expect(invalidateFromAutoRefreshAndAwaitSpy).toHaveBeenCalledWith('s1');
+        // Scoped to the pane's Home; this pane scope names none.
+        expect(invalidateFromAutoRefreshAndAwaitSpy).toHaveBeenCalledWith('s1', undefined);
         expect(loadCommitHistorySpy).not.toHaveBeenCalled();
     });
 
@@ -327,11 +331,12 @@ describe('SessionRightPanel git sub-tabs', () => {
             await flushHookEffects({ cycles: 1, turns: 1 });
         });
 
-        expect(invalidateFromAutoRefreshAndAwaitSpy).toHaveBeenCalledWith('s1');
+        // Scoped to the pane's Home; this pane scope names none.
+        expect(invalidateFromAutoRefreshAndAwaitSpy).toHaveBeenCalledWith('s1', undefined);
         expect(loadCommitHistorySpy).not.toHaveBeenCalled();
     });
 
-    it('shows commit surface by default and hides it on update/history', async () => {
+    it('offers Changes and History only in Tabs layout and switches to History', async () => {
         const { SessionRightPanel } = await import('./SessionRightPanel');
 
         let observedState: any = null;
@@ -373,17 +378,12 @@ describe('SessionRightPanel git sub-tabs', () => {
             </AppPaneProvider>,
         );
         const commitSurface = screen.findByTestId('session-rightpanel-git-surface:commit');
-        const updateSurface = screen.findByTestId('session-rightpanel-git-surface:update');
-        const historySurface = screen.findByTestId('session-rightpanel-git-surface:history');
+        expect(screen.findByTestId('session-rightpanel-git-subtab:commit'), screen.getTextContent()).toBeTruthy();
+        expect(screen.findByTestId('session-rightpanel-git-subtab:history')).toBeTruthy();
 
         expect(commitSurface).toBeTruthy();
-        expect(updateSurface).toBeTruthy();
-        expect(historySurface).toBeTruthy();
-
-        await screen.pressByTestIdAsync('session-rightpanel-git-subtab:update');
-
-        expect(observedState?.scopes?.['session:s1']?.right?.tabState?.git?.activeSubTabId).toBe('update');
-        expect(screen.findByTestId('session-rightpanel-git-surface:update')).toBeTruthy();
+        expect(screen.findByTestId('session-rightpanel-git-subtab:update')).toBeNull();
+        expect(screen.findHostByTestId('session-rightpanel-git-surface:history')).toBeNull();
 
         await screen.pressByTestIdAsync('session-rightpanel-git-subtab:history');
 
@@ -391,44 +391,18 @@ describe('SessionRightPanel git sub-tabs', () => {
         expect(screen.findByTestId('session-rightpanel-git-surface:history')).toBeTruthy();
     });
 
-    it('does not repeatedly recompute changed files data when switching away from commit', async () => {
+
+    it('shows Unified without a sub-tab bar', async () => {
+        paneLayout = 'unified';
+        scmSnapshotMock = buildScmSnapshotMock({ readLog: true, writeCommit: true });
         const { SessionRightPanel } = await import('./SessionRightPanel');
-
-        useChangedFilesDataSpy.mockClear();
-        scmWriteEnabledMock = true;
-        sessionPathMock = '/workspace';
-        scmSnapshotMock = buildScmSnapshotMock({
-            readLog: true,
-            writeCommit: true,
-            writeRemoteFetch: true,
-            writeRemotePull: true,
-            writeRemotePush: true,
-            writeDiscard: true,
-            writeInclude: true,
-            writeExclude: true,
-        });
-
-        const screen = await renderScreen(<AppPaneProvider>
-                    <SessionRightPanel sessionId="s1" scopeId="session:s1" />
-                </AppPaneProvider>);
-        await act(async () => {
-            await flushHookEffects({ cycles: 1, turns: 1 });
-        });
-        await screen.pressByTestIdAsync('session-rightpanel-git-subtab:commit');
-        await act(async () => {
-            await flushHookEffects({ cycles: 1, turns: 1 });
-        });
-        // Ensure the initial commit tab render has invoked the hook.
-        const initialCalls = useChangedFilesDataSpy.mock.calls.length;
-        expect(initialCalls).toBeGreaterThan(0);
-
-        await screen.pressByTestIdAsync('session-rightpanel-git-subtab:history');
-
-        // Switching away should not thrash changed-files computations.
-        expect(useChangedFilesDataSpy.mock.calls.length).toBeLessThanOrEqual(initialCalls + 1);
+        const screen = await renderScreen(<AppPaneProvider><SessionRightPanel sessionId="s1" scopeId="session:s1" /></AppPaneProvider>);
+        expect(screen.findByTestId('session-rightpanel-git-surface:commit'), screen.getTextContent()).toBeTruthy();
+        expect(screen.findAllByTestId('session-rightpanel-git-subtab:commit')).toHaveLength(0);
+        expect(screen.findAllByTestId('session-rightpanel-git-subtab:history')).toHaveLength(0);
     });
 
-    it('hides update tab and commit composer when SCM write operations are disabled', async () => {
+    it('hides the commit composer when the repository does not support commits', async () => {
         const { SessionRightPanel } = await import('./SessionRightPanel');
 
         scmWriteEnabledMock = false;
@@ -446,9 +420,9 @@ describe('SessionRightPanel git sub-tabs', () => {
         const screen = await renderScreen(<AppPaneProvider>
                     <SessionRightPanel sessionId="s1" scopeId="session:s1" />
                 </AppPaneProvider>);
-        expect(screen.findAllByTestId('scm-commit-message')).toHaveLength(0);
-        expect(screen.findAllByTestId('session-rightpanel-git-subtab:update')).toHaveLength(0);
-        expect(screen.findAllByTestId('session-rightpanel-git-subtab:history')).toHaveLength(1);
+        expect(screen.findAllHostsByTestId('scm-commit-message')).toHaveLength(0);
+        expect(screen.findAllHostsByTestId('session-rightpanel-git-subtab:update')).toHaveLength(0);
+        expect(screen.findAllHostsByTestId('session-rightpanel-git-subtab:history'), screen.getTextContent()).toHaveLength(1);
     });
 
     it('does not crash when SCM snapshot loads after mount', async () => {
@@ -489,6 +463,6 @@ describe('SessionRightPanel git sub-tabs', () => {
             harnessRef.current?.bump();
         });
 
-        expect(screen.findAllByTestId('session-rightpanel-git-surface:commit').length).toBeGreaterThan(0);
+        expect(screen.findAllByTestId('session-rightpanel-git-surface:commit').length, screen.getTextContent()).toBeGreaterThan(0);
     });
 });

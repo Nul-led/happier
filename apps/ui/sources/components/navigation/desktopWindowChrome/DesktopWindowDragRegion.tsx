@@ -49,6 +49,9 @@ const NON_DRAGGABLE_TARGET_SELECTOR = [
     'textarea',
     'select',
     '[role="button"]',
+    // Tabs in the title strip (the workspace bar) activate, reorder and open their menu; the gaps
+    // between them stay part of the drag region.
+    '[role="tab"]',
     '[contenteditable="true"]',
     '[data-desktop-window-no-drag="true"]',
 ].join(',');

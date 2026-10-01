@@ -5,8 +5,11 @@ import {
     type SessionAwarenessPresentationV1,
 } from '@/utils/sessions/sessionUtils';
 
-import type { ScmStatusSummary } from '@/components/sessions/sourceControl/status/statusSummary';
+import type { SessionScmSummary } from '@/components/sessions/sourceControl/status/statusSummary';
+import type { SessionPendingPermission } from '@/sync/ops/sessionPendingPermissions';
+import type { SessionAgentPlan } from '../plan/sessionAgentPlan';
 import type { SessionCompanionDensity } from '../state/sessionCompanionPreference';
+import type { SessionRecap } from './sessionRecap';
 
 /**
  * The pure card composer for the first-party Session Summary.
@@ -25,9 +28,10 @@ export type SessionSummaryDestination =
     | 'sessionInfo'
     | 'approvals'
     | 'work'
-    | 'workflow'
     | 'git'
-    | 'usage';
+    | 'usage'
+    /** The Session's Work tab: everything it leads (ORC §3.8). */
+    | 'workTab';
 
 export type SessionSummaryRow =
     | Readonly<{ kind: 'approvals'; count: number; destination: 'approvals' }>
@@ -37,15 +41,16 @@ export type SessionSummaryRow =
         totalCount: number;
         title: string | null;
         statusLabel: string | null;
-        destination: 'workflow';
+        destination: 'workTab';
     }>
+    | Readonly<{ kind: 'recap'; text: string; source: SessionRecap['source']; destination: 'workTab' }>
     | Readonly<{
         kind: 'work';
         label: string;
         status: NonNullable<SessionAwarenessProjectionV1['currentWork']>['status'] | null;
         destination: 'work';
     }>
-    | Readonly<{ kind: 'workflow'; runCount: number; destination: 'workflow' }>
+    | Readonly<{ kind: 'workflow'; runCount: number; destination: 'workTab' }>
     | Readonly<{
         kind: 'workspace';
         label: string;
@@ -77,19 +82,42 @@ export type SessionSummaryInput = Readonly<{
     awareness: SessionAwarenessProjectionV1;
     /** From the existing Agent catalog presentation; never inferred from metadata here. */
     agentLabel: string | null;
+    /** The presentation Agent id, for its mark on the status line. */
+    agentId?: string | null;
     /** The canonical Lane 05 count projection; this composer derives no roster. */
     activity: SessionSummaryActivityFacts | null;
     openApprovalCount: number;
-    /** `buildScmStatusSummaryFromSnapshot` output; `null` when there is no repository. */
-    scm: ScmStatusSummary | null;
+    /** `buildSessionScmSummary` output; `null` when there is no repository. */
+    scm: SessionScmSummary | null;
     usage: SessionSummaryUsageFacts | null;
+    /** `resolveSessionRecap` output: the latest synopsis, else the latest worker update headline. */
+    recap?: SessionRecap | null;
+    /** The shared pending-permission projection (`listSessionPendingPermissions`). */
+    pendingPermissions?: readonly SessionPendingPermission[];
+    /** The agent's Plan (`projectSessionAgentPlan`), for "step N of M". */
+    plan?: SessionAgentPlan | null;
+    /** When the running turn was observed to start; `null` when not known. */
+    turnStartedAtMs?: number | null;
 }>;
+
+/** The one ask the hero shows with its answers; the rest are counted. */
+export type SessionSummaryNeedsYou = Readonly<{
+    request: SessionPendingPermission;
+    moreCount: number;
+}>;
+
+/** The three glanceable facts (lab CA); each opens its existing owner. */
+export type SessionSummaryFact =
+    | Readonly<{ kind: 'subagents'; live: number; total: number; destination: 'workTab' }>
+    | Readonly<{ kind: 'changes'; count: number; destination: 'git' }>
+    | Readonly<{ kind: 'context'; percent: number; stale: boolean; destination: 'usage' }>;
 
 export type SessionSummaryCardModel = Readonly<{
     /** Exact Home + Session proof is required before any Session fact is exposed. */
     scope: 'exact' | 'realm_unavailable';
     title: string | null;
     agentLabel: string | null;
+    agentId: string | null;
     /**
      * The canonical presented awareness answer from `presentSessionAwarenessV1`. Reading
      * `operational.primary` alone here made the card label an offline Session "Online",
@@ -104,6 +132,14 @@ export type SessionSummaryCardModel = Readonly<{
     encryption: SessionAwarenessProjectionV1['encryption'];
     identityDestination: 'sessionInfo';
     rows: readonly SessionSummaryRow[];
+    needsYou: SessionSummaryNeedsYou | null;
+    /** What the status timer counts from: the ask, else the running turn. */
+    sinceMs: number | null;
+    /** The Plan step the agent is on (or about to take), as N of M. */
+    progress: Readonly<{ step: number; total: number }> | null;
+    /** The agent's Plan itself, for the separate built-in Plan item. */
+    plan: SessionAgentPlan | null;
+    facts: readonly SessionSummaryFact[];
 }>;
 
 /** §10.4: at most two compact detail rows before the full-surface affordance. */
@@ -114,7 +150,7 @@ const ROW_BUDGET: Readonly<Record<SessionCompanionDensity, number>> = {
 
 function workspaceLabel(
     awareness: SessionAwarenessProjectionV1,
-    scm: ScmStatusSummary | null,
+    scm: SessionScmSummary | null,
 ): string | null {
     const workspace = awareness.workspace;
     const label = workspace?.projectName ?? workspace?.worktreeName ?? workspace?.path ?? null;
@@ -141,7 +177,16 @@ export function projectSessionSummaryCard(input: SessionSummaryInput): SessionSu
             totalCount: input.activity.total,
             title: input.activity.headline?.title ?? null,
             statusLabel: input.activity.headline?.statusLabel ?? null,
-            destination: 'workflow',
+            destination: 'workTab',
+        }));
+    }
+
+    if (input.recap) {
+        rows.push(Object.freeze({
+            kind: 'recap',
+            text: input.recap.text,
+            source: input.recap.source,
+            destination: 'workTab',
         }));
     }
 
@@ -158,7 +203,7 @@ export function projectSessionSummaryCard(input: SessionSummaryInput): SessionSu
         rows.push(Object.freeze({
             kind: 'workflow',
             runCount: work.activeWorkflowRunCount,
-            destination: 'workflow',
+            destination: 'workTab',
         }));
     }
 
@@ -186,10 +231,19 @@ export function projectSessionSummaryCard(input: SessionSummaryInput): SessionSu
         }));
     }
 
+    const needsYou = resolveNeedsYou(input.pendingPermissions ?? []);
+    const plan = input.plan ?? null;
+    const step = plan ? (plan.currentStep ?? plan.nextStep) : null;
     return Object.freeze({
+        needsYou,
+        sinceMs: needsYou?.request.createdAtMs ?? input.turnStartedAtMs ?? null,
+        progress: plan && step !== null ? Object.freeze({ step, total: plan.total }) : null,
+        plan,
+        facts: resolveFacts(rows),
         scope: 'exact',
         title: input.awareness.title ?? null,
         agentLabel: input.agentLabel,
+        agentId: input.agentId ?? null,
         status: presentSessionAwarenessV1(input.awareness),
         stale: input.awareness.freshness !== 'live',
         availability: input.awareness.availability,
@@ -197,6 +251,56 @@ export function projectSessionSummaryCard(input: SessionSummaryInput): SessionSu
         identityDestination: 'sessionInfo',
         rows: Object.freeze(rows),
     });
+}
+
+function resolveNeedsYou(pending: readonly SessionPendingPermission[]): SessionSummaryNeedsYou | null {
+    if (pending.length === 0) return null;
+    // The oldest ask is the one the agent is blocked on; unknown times sort last.
+    const oldest = pending.reduce((first, candidate) => (
+        (candidate.createdAtMs ?? Number.POSITIVE_INFINITY) < (first.createdAtMs ?? Number.POSITIVE_INFINITY)
+            ? candidate
+            : first
+    ));
+    return Object.freeze({ request: oldest, moreCount: pending.length - 1 });
+}
+
+/** The fact cells are the compact form of the activity, workspace and usage rows. */
+function resolveFacts(rows: readonly SessionSummaryRow[]): readonly SessionSummaryFact[] {
+    const facts: SessionSummaryFact[] = [];
+    for (const row of rows) {
+        if (row.kind === 'activity' && row.totalCount > 0) {
+            facts.push(Object.freeze({ kind: 'subagents', live: row.liveCount, total: row.totalCount, destination: 'workTab' }));
+        }
+        if (row.kind === 'workspace' && row.changedFiles !== null && row.changedFiles > 0) {
+            facts.push(Object.freeze({ kind: 'changes', count: row.changedFiles, destination: 'git' }));
+        }
+        if (row.kind === 'usage' && row.contextPercent !== null) {
+            facts.push(Object.freeze({
+                kind: 'context',
+                percent: Math.round(row.contextPercent),
+                stale: row.stale,
+                destination: 'usage',
+            }));
+        }
+    }
+    return Object.freeze(facts);
+}
+
+/** Rows the hero already says in its own shape: facts, and the status line's "what". */
+const HERO_ROW_KINDS: ReadonlySet<SessionSummaryRow['kind']> = new Set(['activity', 'workspace', 'usage', 'work', 'recap']);
+
+/**
+ * The rows left under the hero (approval requests from Actions, workflows), with
+ * the same density budget and overflow affordance as before.
+ */
+export function resolveSessionSummaryDetailRows(
+    model: SessionSummaryCardModel,
+    presentation: SessionSummaryRowPresentation,
+): Readonly<{ rows: readonly SessionSummaryRow[]; hiddenCount: number }> {
+    return resolveSessionSummaryRows(
+        { ...model, rows: model.rows.filter((row) => !HERO_ROW_KINDS.has(row.kind)) },
+        presentation,
+    );
 }
 
 /**

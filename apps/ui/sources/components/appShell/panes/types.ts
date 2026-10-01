@@ -59,6 +59,7 @@ export type PaneBuiltinAdapter = Readonly<{
  * selected-destination resolver has already proved belongs to `rightSidebarTab`.
  */
 export type PaneRightSidebarAdapter = Readonly<{
+    renderActionRail?: (context: Readonly<{ scopeId: PaneScopeId }>) => React.ReactNode;
     render: (context: Readonly<{ scopeId: PaneScopeId }>) => React.ReactNode;
 }>;
 
@@ -70,6 +71,8 @@ export type PaneResource =
 
 export type PaneDriver = Readonly<{
     scopeId: PaneScopeId;
+    /** Reveal the reducer's accepted terminal selection on the mounted surface, if needed. */
+    onTerminalWorkspaceReveal?: (selection: Readonly<{ tabId: string; terminalId: string }>) => void;
     /** The registered scope owns exact target/projection facts for plugin panes. */
     surfaceScope?: PaneSurfaceScope;
     rightPaneBuiltinAdapter?: PaneBuiltinAdapter;

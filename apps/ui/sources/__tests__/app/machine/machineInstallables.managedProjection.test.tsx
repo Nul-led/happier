@@ -18,6 +18,7 @@ const testState = vi.hoisted(() => ({
     invoke: vi.fn(),
     online: true,
     projection: null as unknown,
+    language: 'en',
 }));
 
 vi.mock('react-native', async () => {
@@ -45,7 +46,11 @@ vi.mock('react-native-unistyles', async () => {
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-    return createTextModuleMock({ translate: (key) => key });
+    // English returns the key; another language prefixes it, so a label shows which language built it.
+    return createTextModuleMock({
+        translate: (key) => (testState.language === 'en' ? key : `${testState.language}:${key}`),
+        getPreferredLanguage: () => testState.language,
+    });
 });
 
 vi.mock('@/modal', async () => {
@@ -75,9 +80,18 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     });
 });
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    getActiveServerId: () => 'server-b',
-}));
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+    return {
+        ...actual,
+        getActiveServerId: () => 'server-b',
+        getActiveServerSnapshot: () => ({
+            serverId: 'server-b',
+            serverUrl: 'https://server-b.example.test',
+            generation: 1,
+        }),
+    };
+});
 
 vi.mock('@/utils/sessions/machineUtils', () => ({
     isMachineOnline: () => testState.online,
@@ -122,13 +136,7 @@ vi.mock('@/sync/ops/capabilities', () => ({
     machineCapabilitiesInvoke: testState.invoke,
 }));
 
-vi.mock('@/components/machines/DetectedClisList', () => ({
-    DetectedClisList: () => null,
-}));
 
-vi.mock('@/components/settings/agents/setup/AgentSetupFlow', () => ({
-    AgentSetupFlow: () => null,
-}));
 
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroup: ({ children }: { children?: React.ReactNode }) => React.createElement('ItemGroup', null, children),
@@ -156,7 +164,6 @@ describe('machine managed installables projection', () => {
             generation: 7,
             installedPackagesById: {},
             agentsById: {},
-            backendsById: {},
             actionsById: {},
             toolsById: {},
             commandsById: {},
@@ -228,6 +235,29 @@ describe('machine managed installables projection', () => {
         );
 
         await screen.unmount();
+    });
+
+    it('relabels the auto-update choices when the language changes', async () => {
+        testState.language = 'en';
+        const { default: MachineInstallablesScreen } = await import('@/app/(app)/machine/[id]/installables');
+        const screen = await renderSettingsView(<MachineInstallablesScreen />);
+        const optionLabels = () => screen.findAll((node) => (
+            typeof node.props?.testIDPrefix === 'string'
+            && node.props.testIDPrefix.startsWith('machine-installables-auto-update-')
+            && Array.isArray(node.props.options)
+        ))[0]?.props.options.map((option: { label: string }) => option.label) as string[] | undefined;
+
+        expect(optionLabels()?.length).toBeGreaterThan(0);
+        expect(optionLabels()!.every((label) => !label.startsWith('fr:'))).toBe(true);
+
+        try {
+            testState.language = 'fr';
+            await screen.update(<MachineInstallablesScreen />);
+            expect(optionLabels()!.every((label) => label.startsWith('fr:'))).toBe(true);
+        } finally {
+            testState.language = 'en';
+            await screen.unmount();
+        }
     });
 
     it('keeps cached projected metadata read-only while the machine is offline', async () => {

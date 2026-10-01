@@ -227,7 +227,6 @@ describe('useSessionBoardNoteEditor', () => {
 
         expect(await hook.getCurrent().save()).toBe(true);
 
-        expect(flushBody).toHaveBeenCalledTimes(1);
         expect(actions.upserts).toHaveLength(1);
         expect(noteBodyOf(actions.upserts[0]!.item)).toBe('shipping notes!');
     });

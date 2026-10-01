@@ -122,27 +122,27 @@ const pages = resolvePluginAppPages({
 const authority = createPluginSurfaceLaunchAuthority({
     serverId: 'server-1',
     machineId: 'machine-1',
-    generation: 9,
+    occurrenceId: 'plugin-occurrence-9',
 });
-const nextGeneration = createPluginSurfaceLaunchAuthority({
+const nextOccurrence = createPluginSurfaceLaunchAuthority({
     serverId: 'server-1',
     machineId: 'machine-1',
-    generation: 10,
+    occurrenceId: 'plugin-occurrence-10',
 });
 const otherServer = createPluginSurfaceLaunchAuthority({
     serverId: 'server-2',
     machineId: 'machine-1',
-    generation: 9,
+    occurrenceId: 'plugin-occurrence-9',
 });
 const otherMachine = createPluginSurfaceLaunchAuthority({
     serverId: 'server-1',
     machineId: 'machine-2',
-    generation: 9,
+    occurrenceId: 'plugin-occurrence-9',
 });
 const selectedNotesMaterialization = createPluginSurfaceLaunchAuthority({
     serverId: 'server-1',
     machineId: 'machine-1',
-    generation: 9,
+    occurrenceId: 'plugin-occurrence-9',
     executionOrigin: pageExecutionOrigin({
         pluginId: NOTES_PLUGIN_ID,
         machineId: 'machine-1',
@@ -152,7 +152,7 @@ const selectedNotesMaterialization = createPluginSurfaceLaunchAuthority({
 const replacementNotesMaterialization = createPluginSurfaceLaunchAuthority({
     serverId: 'server-1',
     machineId: 'machine-1',
-    generation: 9,
+    occurrenceId: 'plugin-occurrence-9',
     executionOrigin: pageExecutionOrigin({
         pluginId: NOTES_PLUGIN_ID,
         machineId: 'machine-1',
@@ -198,7 +198,7 @@ function authorityWithAccountLifetime(
     return createPluginSurfaceLaunchAuthority({
         serverId: 'server-1',
         machineId: 'machine-1',
-        generation: 9,
+        occurrenceId: 'plugin-occurrence-9',
         accountLifetime: lifetime,
     });
 }
@@ -424,7 +424,7 @@ describe('plugin app page launch-input handoff (EU-5b)', () => {
         expect(store.peek({ ...query, authority })?.input).toEqual({ noteId: 'a' });
         // A replaced generation, another server/account and another contributing
         // machine are each a different producer of the same qualified page.
-        expect(store.peek({ ...query, authority: nextGeneration })).toBeNull();
+        expect(store.peek({ ...query, authority: nextOccurrence })).toBeNull();
         expect(store.peek({ ...query, authority: otherServer })).toBeNull();
         expect(store.peek({ ...query, authority: otherMachine })).toBeNull();
     });
@@ -520,7 +520,7 @@ describe('plugin app page launch-input handoff (EU-5b)', () => {
         const store = createPluginAppPageLaunchInputStore();
         stageOpen(store);
 
-        store.retire(nextGeneration);
+        store.retire(nextOccurrence);
 
         // Not merely undeliverable: the bounded JSON is dropped, so it cannot
         // outlive the account/generation that produced it inside one process.
@@ -582,7 +582,7 @@ describe('plugin app page launch-input handoff (EU-5b)', () => {
         expect(listener).toHaveBeenCalledTimes(2);
 
         stageOpen(store);
-        store.retire(nextGeneration);
+        store.retire(nextOccurrence);
         expect(listener).toHaveBeenCalledTimes(4);
 
         unsubscribe();

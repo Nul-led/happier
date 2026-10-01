@@ -518,9 +518,29 @@ describe('ProjectsListView', () => {
         };
         const summary = {
             relationshipId: 'relationship-1',
-            alpha: { workspaceRefId: 'wr_source', machineId: 'm2' },
-            beta: { workspaceRefId: 'wr_target', machineId: 'm1' },
+            relationship: { v: 1, relationshipId: 'relationship-1', controllerMachineId: 'm2',
+                alphaWorkspaceRefId: 'wr_source', betaWorkspaceRefId: 'wr_target', mode: 'keep_synced',
+                contentPolicy: { v: 1, selection: 'all_files', extraIgnorePatterns: [], extraIncludePatterns: [], policyDigest: 'sha256:test' },
+                enabled: true, createdAtMs: 1, updatedAtMs: 1 },
+            alpha: { workspaceRefId: 'wr_source', machineId: 'm2', workspaceRef: { id: 'wr_source',
+                serverId: 'server-1', machineId: 'm2', rootPath: '/source', createdAtMs: 1 } },
+            beta: { workspaceRefId: 'wr_target', machineId: 'm1', workspaceRef },
+            status: null,
         };
+
+        it('reports unavailable sync status without inventing a conflict in a closed project row', async () => {
+            machinesMock = [createMachine({ id: 'm1', host: 'leeroy-mbp' })];
+            workspaceRefsV1Mock = [workspaceRef];
+            workspaceSyncRelationshipSummariesMock = [summary];
+            const { ProjectsListView } = await import('./ProjectsListView');
+            const screen = await renderScreen(<ProjectsListView />);
+            const subtitle = screen.findAllByTestId('projects-list-item-wr_target')
+                .map((node) => node.props.subtitle)
+                .find((value) => typeof value === 'string');
+            expect(typeof subtitle).toBe('string');
+            expect(subtitle).toContain('workspaceSync.attention.unavailableLinks');
+            expect(subtitle).not.toContain('workspaceSync.attention.conflictedLinks');
+        });
 
         async function invokeRemove() {
             machinesMock = [createMachine({ id: 'm1', host: 'leeroy-mbp' })];

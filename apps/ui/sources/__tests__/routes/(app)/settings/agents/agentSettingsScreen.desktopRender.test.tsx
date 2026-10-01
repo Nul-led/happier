@@ -130,8 +130,13 @@ vi.mock('@/auth/context/AuthContext', () => ({
 }));
 
 vi.mock('@/sync/domains/state/storage', async () => {
-    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    const { createLiveStorageStoreMock, createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    const { settingsParse } = await import('@/sync/domains/settings/settings');
+    // The app-shell providers (command palette) read the Account settings slice from the store itself.
+    const store = createLiveStorageStoreMock(() => ({ settings: { ...settingsParse({}), ...settingsState } as never }));
     return createStorageModuleStub({
+        storage: store,
+        getStorage: () => store,
         useSettings: (() => settingsState) as any,
         useAllMachines: (() => machinesState) as any,
         useMachineListByServerId: (() => machineListByServerIdState) as any,
@@ -191,9 +196,6 @@ vi.mock('@/sync/store/settingsWriters', () => ({
     useApplyLocalSettings: () => vi.fn(),
 }));
 
-vi.mock('@/hooks/auth/useCLIDetection', () => ({
-    useCLIDetection: () => cliDetectionState,
-}));
 
 vi.mock('@/hooks/machine/useCapabilityInstallability', () => ({
     useCapabilityInstallability: () => ({ kind: 'installable' }),
@@ -242,6 +244,7 @@ vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
         selectedTarget: administrationTargetState.selectedTarget,
         selectedTargetServerMatchesActiveAccount: true,
         resolveExecutionTarget: () => administrationTargetState.executionTarget,
+        pickerRows: [],
         candidates: [],
         selectTarget: vi.fn(),
         clearTarget: vi.fn(),
@@ -269,6 +272,9 @@ vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: () => false,
 }));
+vi.mock('@/hooks/server/useFeatureDecision', () => ({
+    useFeatureDecision: () => null,
+}));
 
 vi.mock('@/hooks/session/useNavigateToSession', () => ({
     useNavigateToSession: () => vi.fn(),
@@ -287,39 +293,31 @@ vi.mock('@/activity/adapters/desktop/runtime/isDesktopActivityOverlayWindowConte
     isDesktopActivityOverlayWindowContext: () => false,
 }));
 
-vi.mock('@/components/settings/agents/authentication/useAgentAuthenticationState', () => ({
-    useAgentAuthenticationState: () => ({
-        canLaunchLogin: true,
-        machineId: null,
-        machineHomeDir: null,
-        loginLaunch: null,
-        authStatus: null,
-        canCheckNow: true,
-        loginActionKind: 'login',
-        docsUrl: null,
-    }),
-}));
 
 vi.mock('@/components/settings/agents/authentication/scheduleAgentAuthenticationRefreshes', () => ({
     scheduleAgentAuthenticationRefreshes: () => () => {},
 }));
 
+/** The one active-server fixture both server modules answer from. */
+function subscribeActiveServerFixture(listener: (snapshot: typeof activeServerSnapshot) => void): () => void {
+    activeServerSubscriber = listener;
+    return () => {
+        if (activeServerSubscriber === listener) {
+            activeServerSubscriber = null;
+        }
+    };
+}
+
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => activeServerSnapshot,
-    subscribeActiveServer: (listener: (snapshot: typeof activeServerSnapshot) => void) => {
-        activeServerSubscriber = listener;
-        return () => {
-            if (activeServerSubscriber === listener) {
-                activeServerSubscriber = null;
-            }
-        };
-    },
+    subscribeActiveServer: subscribeActiveServerFixture,
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getServerProfilesGeneration: () => 0,
     subscribeServerProfiles: () => () => undefined,
     getActiveServerSnapshot: () => activeServerSnapshot,
+    subscribeActiveServer: subscribeActiveServerFixture,
     loadHomeViewState: () => null,
     subscribeHomeViewState: () => () => undefined,
     listServerProfiles: () => [{
@@ -339,6 +337,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
 
 vi.mock('@/utils/platform/desktopHost', () => ({
     isDesktopHost: () => true,
+    desktopHostKind: () => 'tauri',
 }));
 
 vi.mock('@/voice/session/VoiceSessionRuntime', () => ({
@@ -364,10 +363,6 @@ vi.mock('@/hooks/inbox/useInboxAvailable', () => ({
 
 vi.mock('@/hooks/server/useFriendsEnabled', () => ({
     useFriendsEnabled: () => false,
-}));
-
-vi.mock('@/sync/runtime/appVariant', () => ({
-    resolveVisibleAppEnvironmentBadge: () => null,
 }));
 
 vi.mock('@/config', () => ({
@@ -447,7 +442,7 @@ describe('PluginAgentSettingsScreen desktop render', () => {
             </AppPaneProvider>,
         );
 
-        expect(screen.findByTestId('settings-provider-target-machine')).toBeTruthy();
+        expect(screen.findByTestId('settings.agents.detail.header')).toBeTruthy();
         expect(screen.findByTestId('settings-provider-detected-cli')).toBeTruthy();
     });
 
@@ -461,13 +456,14 @@ describe('PluginAgentSettingsScreen desktop render', () => {
             </AppPaneProvider>,
         );
 
-        const permissionDropdown = screen.find((node) => (
-            node.props?.itemTrigger?.title === 'settingsSession.permissions.defaultPermissionModeTitle'
-            && typeof node.props?.onSelect === 'function'
+        const permissionChoice = screen.find((node) => (
+            node.props?.title === 'settingsSession.permissions.defaultPermissionModeTitle'
+            && Array.isArray(node.props?.options)
+            && typeof node.props?.onChange === 'function'
         ));
 
         await act(async () => {
-            permissionDropdown.props.onSelect('read-only');
+            permissionChoice.props.onChange('read-only');
         });
 
         expect(applySettingsMock).toHaveBeenCalledWith({
@@ -475,27 +471,6 @@ describe('PluginAgentSettingsScreen desktop render', () => {
                 'agent:happier.agent.codex/codex': 'read-only',
             },
         });
-    });
-
-    it('portals provider-scoped dropdowns to the body from the desktop settings shell', async () => {
-        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
-        const { SettingsShell } = await import('@/components/settings/shell/SettingsShell');
-        const { default: PluginAgentSettingsScreen } = await import('@/app/(app)/settings/agents/[agentId]');
-
-        const screen = await renderScreen(
-            <AppPaneProvider>
-                <SettingsShell>
-                    <PluginAgentSettingsScreen />
-                </SettingsShell>
-            </AppPaneProvider>,
-        );
-
-        const permissionDropdown = screen.find((node) => (
-            node.props?.itemTrigger?.title === 'settingsSession.permissions.defaultPermissionModeTitle'
-            && typeof node.props?.onSelect === 'function'
-        ));
-
-        expect(permissionDropdown.props.popoverPortalWebTarget).toBe('body');
     });
 
     it('renders the codex provider route inside the desktop settings shell without crashing', async () => {
@@ -512,7 +487,7 @@ describe('PluginAgentSettingsScreen desktop render', () => {
         );
 
         expect(screen.findByTestId('settings-shell.sidebarPane')).toBeTruthy();
-        expect(screen.findByTestId('settings-provider-target-machine')).toBeTruthy();
+        expect(screen.findByTestId('settings.agents.detail.header')).toBeTruthy();
     });
 
     it('renders the codex provider route inside the desktop app-shell provider stack without triggering crash recovery', async () => {
@@ -539,7 +514,7 @@ describe('PluginAgentSettingsScreen desktop render', () => {
 
         expect(screen.findAllByTestId('app-crash-restart')).toHaveLength(0);
         expect(screen.findByTestId('settings-shell.sidebarPane')).toBeTruthy();
-        expect(screen.findByTestId('settings-provider-target-machine')).toBeTruthy();
+        expect(screen.findByTestId('settings.agents.detail.header')).toBeTruthy();
     });
 
     it('renders the codex provider route alongside the authenticated desktop sidebar shell without triggering crash recovery', async () => {
@@ -570,6 +545,6 @@ describe('PluginAgentSettingsScreen desktop render', () => {
 
         expect(screen.findAllByTestId('app-crash-restart')).toHaveLength(0);
         expect(screen.findByTestId('main-view')).toBeTruthy();
-        expect(screen.findByTestId('settings-provider-target-machine')).toBeTruthy();
+        expect(screen.findByTestId('settings.agents.detail.header')).toBeTruthy();
     });
 });

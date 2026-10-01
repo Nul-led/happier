@@ -1,3 +1,4 @@
+import { type SessionMessageV1 } from '@happier-dev/protocol';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
@@ -11,22 +12,23 @@ import { decryptDataKeyFromPublicShare } from '@/sync/encryption/publicShareEncr
 import { AES256Encryption } from '@/sync/encryption/encryptor';
 import { EncryptionCache } from '@/sync/encryption/encryptionCache';
 import { SessionEncryption } from '@/sync/encryption/sessionEncryption';
-import type { ApiMessage } from '@/sync/api/types/apiTypes';
+
 import {
     normalizeRawMessages,
     type NormalizedMessage,
     type RawMessageNormalizationInput,
-} from '@/sync/typesRaw';
+} from "@happier-dev/session-core/raw";
 import { useAuth } from '@/auth/context/AuthContext';
-import { createReducer, reducer } from '@/sync/reducer/reducer';
+import { createReducer, reducer, type ReducerState } from "@happier-dev/session-core/reducer";
 import { TranscriptList } from '@/components/sessions/transcript/TranscriptList';
+import { createReadOnlySessionTranscriptSource } from '@/components/sessions/transcript/source/readOnlySessionTranscriptSource';
+import { SessionTranscriptSourceProvider } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import { ChatHeaderView } from '@/components/sessions/transcript/ChatHeaderView';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { serverFetch } from '@/sync/http/client';
-import type { TranscriptOlderPageLoadResult } from '@/sync/domains/messages/transcriptOlderPageLoad';
-import type { Metadata } from '@/sync/domains/state/storageTypes';
-import type { AgentState } from '@/sync/domains/state/storageTypes';
-import { deriveTranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
+import type { TranscriptOlderPageLoadResult } from "@happier-dev/session-core/messages";
+import type { Metadata } from '@happier-dev/session-core/state';
+import type { AgentState } from '@happier-dev/session-core/state';
 import { sortNormalizedMessagesOldestFirst } from '@/utils/sessions/sortNormalizedMessagesOldestFirst';
 import {
     parseDecryptedSessionMetadata,
@@ -34,7 +36,7 @@ import {
 } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import {
     readSharedMetadataPresentationCompletedRequests,
-} from '@/sync/domains/session/presentation/readSessionPresentationCompletedRequests';
+} from '@happier-dev/session-core/pending';
 import { readStoredSessionRawRecord } from '@/sync/runtime/readStoredSessionContent';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
@@ -81,7 +83,7 @@ type PublicShareConsentResponse = {
 };
 
 type PublicShareMessagesResponse = {
-    messages: ApiMessage[];
+    messages: SessionMessageV1[];
     hasMore?: boolean;
     nextBeforeSeq?: number | null;
 };
@@ -91,6 +93,8 @@ type PublicShareDataset = Readonly<{
     decryptedMetadata: Metadata | null;
     /** Presentation-reduced rows for every page loaded so far, oldest first. */
     messages: Message[];
+    /** The actual fold state owns tool-route and sidechain relationships for this dataset. */
+    reducerState: ReducerState;
     /**
      * Every normalized row this viewer has accepted. An older page is reduced TOGETHER
      * with the pages already on screen, so the transcript grows backwards instead of
@@ -169,7 +173,7 @@ function createPublicSharePresentationAgentState(
     } as AgentState;
 }
 
-async function normalizePlainPublicShareMessages(messages: ReadonlyArray<ApiMessage>): Promise<NormalizedMessage[]> {
+async function normalizePlainPublicShareMessages(messages: ReadonlyArray<SessionMessageV1>): Promise<NormalizedMessage[]> {
     const inputs: RawMessageNormalizationInput[] = [];
     for (const message of messages) {
         if (!message) continue;
@@ -196,7 +200,7 @@ async function normalizePlainPublicShareMessages(messages: ReadonlyArray<ApiMess
  */
 async function normalizeEncryptedPublicShareMessages(
     sessionEncryption: SessionEncryption,
-    messages: ReadonlyArray<ApiMessage>,
+    messages: ReadonlyArray<SessionMessageV1>,
 ): Promise<NormalizedMessage[] | null> {
     const decryptedMessages = await sessionEncryption.decryptMessages([...messages]);
     const inputs: RawMessageNormalizationInput[] = [];
@@ -231,12 +235,14 @@ function buildPublicShareMessagesPath(params: Readonly<{
 function reducePublicShareTranscript(
     normalized: readonly NormalizedMessage[],
     agentState: AgentState,
-): Message[] {
+): Pick<PublicShareDataset, 'messages' | 'reducerState'> {
     // Reduction is not incremental here: an older page lands BEFORE rows the reducer has
     // already folded, so the whole accepted set is reduced again from a fresh state.
     const ordered = [...normalized];
     sortNormalizedMessagesOldestFirst(ordered);
-    return reducer(createReducer(), ordered, agentState).messages;
+    const reducerState = createReducer();
+    const messages = reducer(reducerState, ordered, agentState).messages;
+    return { messages, reducerState };
 }
 
 function mergePublicShareNormalizedPages(
@@ -247,6 +253,53 @@ function mergePublicShareNormalizedPages(
     for (const message of existing) byId.set(message.id, message);
     for (const message of incoming) byId.set(message.id, message);
     return [...byId.values()];
+}
+
+function PublicShareTranscript(props: Readonly<{
+    dataset: PublicShareDataset;
+    datasetKey: string;
+    loadOlder: () => Promise<TranscriptOlderPageLoadResult>;
+}>) {
+    const snapshot = useMemo(() => ({
+        messages: props.dataset.messages,
+        reducerState: props.dataset.reducerState,
+        metadata: props.dataset.decryptedMetadata,
+        agentState: props.dataset.agentState,
+        metadataLayoutVersion: props.dataset.share.session.metadataLayoutVersion,
+        workspacePath: null,
+        authorship: { viewerScope: null, hasOtherNamedCollaborator: false } as const,
+        historyState: {
+            isLoaded: true,
+            hasOlder: props.dataset.hasMore && props.dataset.nextBeforeSeq !== null,
+            // The source's loadOlder wrapper owns the pending-page fact.
+            isLoadingOlder: false,
+        },
+    }), [props.dataset]);
+    const [source] = useState(() => createReadOnlySessionTranscriptSource({
+        sessionId: props.dataset.share.session.id,
+        loadOlder: props.loadOlder,
+        ...snapshot,
+    }));
+    const publishedSnapshot = useRef(snapshot);
+    React.useLayoutEffect(() => {
+        if (publishedSnapshot.current === snapshot) return;
+        publishedSnapshot.current = snapshot;
+        source.update(snapshot);
+    }, [snapshot, source]);
+
+    return (
+        <SessionTranscriptSourceProvider source={source}>
+            <TranscriptList
+                datasetKey={props.datasetKey}
+                metadata={props.dataset.decryptedMetadata}
+                messages={props.dataset.messages}
+                bottomNotice={{
+                    title: t('session.sharing.publicReadOnlyTitle'),
+                    body: t('session.sharing.publicReadOnlyBody'),
+                }}
+            />
+        </SessionTranscriptSourceProvider>
+    );
 }
 
 export default memo(function PublicShareViewerScreen() {
@@ -381,7 +434,7 @@ export default memo(function PublicShareViewerScreen() {
                 setDataset({
                     share: data,
                     decryptedMetadata: plainMetadata,
-                    messages: reducePublicShareTranscript(normalized, plainAgentState),
+                    ...reducePublicShareTranscript(normalized, plainAgentState),
                     normalized,
                     agentState: plainAgentState,
                     sessionEncryption: null,
@@ -444,7 +497,7 @@ export default memo(function PublicShareViewerScreen() {
                 setDataset({
                     share: data,
                     decryptedMetadata: e2eeMetadata,
-                    messages: reducePublicShareTranscript(normalized, e2eePresentationAgentState),
+                    ...reducePublicShareTranscript(normalized, e2eePresentationAgentState),
                     normalized,
                     agentState: e2eePresentationAgentState,
                     sessionEncryption,
@@ -537,7 +590,7 @@ export default memo(function PublicShareViewerScreen() {
             const loaded = mergedNormalized.length - current.normalized.length;
             setDataset({
                 ...current,
-                messages: reducePublicShareTranscript(mergedNormalized, current.agentState),
+                ...reducePublicShareTranscript(mergedNormalized, current.agentState),
                 normalized: mergedNormalized,
                 hasMore,
                 nextBeforeSeq,
@@ -622,10 +675,9 @@ export default memo(function PublicShareViewerScreen() {
         return null;
     }
 
-    const { share, decryptedMetadata, messages } = dataset;
+    const { share, decryptedMetadata } = dataset;
     const ownerName = getOwnerDisplayName(share.owner);
     const sessionName = decryptedMetadata?.name || decryptedMetadata?.path || t('session.sharing.session');
-    const interaction = deriveTranscriptInteraction({ kind: 'public', disableToolNavigation: true });
 
     return (
         <>
@@ -641,18 +693,10 @@ export default memo(function PublicShareViewerScreen() {
                     />
                 </View>
                 <View style={{ flex: 1, paddingTop: safeArea.top + headerHeight }}>
-                    <TranscriptList
+                    <PublicShareTranscript
                         key={publicDatasetKey}
-                        sessionId={share.session.id}
+                        dataset={dataset}
                         datasetKey={publicDatasetKey}
-                        metadata={decryptedMetadata}
-                        messages={messages}
-                        interaction={interaction}
-                        bottomNotice={{
-                            title: t('session.sharing.publicReadOnlyTitle'),
-                            body: t('session.sharing.publicReadOnlyBody'),
-                        }}
-                        isLoaded={!isLoading}
                         loadOlder={loadOlder}
                     />
                 </View>

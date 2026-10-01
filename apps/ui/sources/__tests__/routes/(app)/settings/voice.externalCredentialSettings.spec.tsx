@@ -208,7 +208,6 @@ const declaration = requireConversationDeclaration(PluginContributesV2Schema.par
     },
     client: {
       artifactId: 'voice-runtime-web',
-      modulePath: './voiceRuntime',
       exportName: 'activate',
     },
   }],
@@ -241,6 +240,7 @@ async function activateCredentialProvider() {
   const hostLease = createBundledConversationRuntimeHostLease();
   const scope = createExternalVoiceProviderActivationScope({
     pluginId: 'acme.voice',
+    occurrenceId: 'acme-voice-activation-occurrence',
     declarations: [declaration],
     hostPlatform: 'web',
     recipientContractsByLocalId: {
@@ -334,7 +334,8 @@ describe('VoiceSettingsScreen external provider credentials', () => {
     const VoiceSettingsScreen = (await import('@/voice/settings/screens/VoiceConversationsSettingsScreen')).VoiceConversationsSettingsScreen;
     const screen = await renderSettingsView(<VoiceSettingsScreen />);
     const providerRowTestId = `settings.voice.provider.${encodeURIComponent(providerId)}.default`;
-    expect(screen.findByTestId(providerRowTestId)?.props.detail)
+    // The credential state reads under the provider's name (the row's subtitle).
+    expect(screen.findByTestId(providerRowTestId)?.props.subtitle)
       .toBe('settingsVoice.externalCredentials.ready');
 
     setRouteSettings({
@@ -355,9 +356,9 @@ describe('VoiceSettingsScreen external provider credentials', () => {
       screen.tree.update(<VoiceSettingsScreen />);
     });
 
-    expect(screen.findByTestId(providerRowTestId)?.props.detail)
+    expect(screen.findByTestId(providerRowTestId)?.props.subtitle)
       .toContain('settingsVoice.externalCredentials.missing');
-    expect(screen.findByTestId(providerRowTestId)?.props.detail)
+    expect(screen.findByTestId(providerRowTestId)?.props.subtitle)
       .toContain('voice.readiness.credential_missing');
     expect(screen.tree.findByType('VoiceCredentialItem' as never).props)
       .not.toHaveProperty('machineId');

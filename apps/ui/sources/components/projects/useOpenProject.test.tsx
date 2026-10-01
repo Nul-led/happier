@@ -45,17 +45,8 @@ describe('useOpenProject', () => {
             activeRootPath: '/repo',
             initialResource: { kind: 'file', path: 'src/index.ts' },
         })).toBe(true);
-        expect(paneDispatch).toHaveBeenCalledWith({
-            type: 'openDetailsTab',
-            scopeId: 'project:wr_1',
-            openAs: 'pinned',
-            tab: {
-                key: 'file:src/index.ts',
-                kind: 'file',
-                title: 'index.ts',
-                resource: { kind: 'file', path: 'src/index.ts' },
-            },
-        });
-        expect(routerPush).toHaveBeenCalledWith('/projects/wr_1/details?worktreeId=%40root&sourceSurface=browse');
+        // The destination instance admits its own resource after it receives its scope.
+        expect(paneDispatch).not.toHaveBeenCalled();
+        expect(routerPush).toHaveBeenCalledWith('/projects/wr_1/details?worktreeId=%40root&sourceSurface=browse&initialFile=src%2Findex.ts');
     });
 });

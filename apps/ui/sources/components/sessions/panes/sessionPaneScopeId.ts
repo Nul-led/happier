@@ -1,5 +1,6 @@
 import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
+import { qualifyPaneScopeId, readResourcePaneScopeId } from '@/components/appShell/panes/paneScopeIdentity';
 
 const QUALIFIED_SESSION_SCOPE_PREFIX = 'session:address:';
 const LEGACY_SESSION_SCOPE_PREFIX = 'session:';
@@ -7,17 +8,22 @@ const LEGACY_SESSION_SCOPE_PREFIX = 'session:';
 export function createSessionPaneScopeId(
     sessionIdRaw: string,
     serverIdRaw?: string | null,
+    instanceKey?: string | null,
 ): string {
     const sessionId = normalizeSessionId(sessionIdRaw);
     const address = normalizeSessionAddress(serverIdRaw, sessionId);
-    if (!address) return `${LEGACY_SESSION_SCOPE_PREFIX}${sessionId}`;
-    return `${QUALIFIED_SESSION_SCOPE_PREFIX}${encodeURIComponent(address.serverId)}:${encodeURIComponent(address.sessionId)}`;
+    const scopeId = address
+        ? `${QUALIFIED_SESSION_SCOPE_PREFIX}${encodeURIComponent(address.serverId)}:${encodeURIComponent(address.sessionId)}`
+        : `${LEGACY_SESSION_SCOPE_PREFIX}${sessionId}`;
+    return qualifyPaneScopeId(scopeId, instanceKey);
 }
 
 export function parseSessionPaneScopeId(scopeId: string): Readonly<{
     sessionId: string;
     address: SessionAddress | null;
 }> | null {
+    const resourceScopeId = readResourcePaneScopeId(scopeId);
+    if (resourceScopeId !== scopeId) return parseSessionPaneScopeId(resourceScopeId);
     if (scopeId.startsWith(QUALIFIED_SESSION_SCOPE_PREFIX)) {
         const payload = scopeId.slice(QUALIFIED_SESSION_SCOPE_PREFIX.length);
         const separatorIndex = payload.indexOf(':');

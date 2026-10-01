@@ -33,6 +33,7 @@ function createMobilePluginPlacement(input: Readonly<{
     return {
         id: `surfacePlacement:${input.pluginId}:${input.destinationId}`,
         pluginId: input.pluginId,
+        occurrenceId: `${input.pluginId}-occurrence`,
         contributionKind: 'surfacePlacement',
         descriptorId: input.destinationId,
         binding,
@@ -100,6 +101,7 @@ describe('sessionCockpitMobileCatalog', () => {
             'git',
             'tabs',
             'companion',
+            'agents',
             'navigation',
             'board',
             'browser',

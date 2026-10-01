@@ -4,6 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 
+// Unrelated external Markdown package; fail if this Git path ever invokes it.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: () => { throw new Error('Unexpected streaming Markdown in Git'); },
+}));
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let snapshotMock: ScmWorkingSnapshot | null = null;
@@ -112,7 +117,7 @@ describe('WorkspaceRightPanelGitView (stale snapshot)', () => {
         // The failure is visible…
         expect(screen.findHostByTestId('workspace-rightpanel-git-stale')).not.toBeNull();
         // …and the cached content is still there rather than being replaced by an error card.
-        expect(screen.findByTestId('project-rightpanel-git-subtab:commit')).not.toBeNull();
+        expect(screen.findHostByTestId('project-rightpanel-git-surface:commit')).not.toBeNull();
         expect(screen.findHostByTestId('workspace-rightpanel-git-unavailable')).toBeNull();
 
         // The affordance is actionable, not just decorative.
@@ -128,7 +133,7 @@ describe('WorkspaceRightPanelGitView (stale snapshot)', () => {
         const screen = await render();
 
         expect(screen.findHostByTestId('workspace-rightpanel-git-stale')).not.toBeNull();
-        expect(screen.getTextContent()).toContain('files.notUnderSourceControl');
+        expect(screen.findHostByTestId('scm-not-repository')).not.toBeNull();
     });
 
     it('stays quiet when the snapshot is current', async () => {
@@ -139,6 +144,6 @@ describe('WorkspaceRightPanelGitView (stale snapshot)', () => {
         const screen = await render();
 
         expect(screen.findHostByTestId('workspace-rightpanel-git-stale')).toBeNull();
-        expect(screen.findByTestId('project-rightpanel-git-subtab:commit')).not.toBeNull();
+        expect(screen.findHostByTestId('project-rightpanel-git-surface:commit')).not.toBeNull();
     });
 });

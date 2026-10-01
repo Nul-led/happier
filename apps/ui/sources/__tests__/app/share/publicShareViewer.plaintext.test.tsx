@@ -4,6 +4,8 @@ import React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { installPublicShareViewerCommonModuleMocks } from './publicShareViewerTestHelpers';
+import { SessionTranscriptSourceProvider } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
+import type { SessionTranscriptSource } from '@/components/sessions/transcript/source/types';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -606,7 +608,7 @@ describe('PublicShareViewerScreen (plaintext)', () => {
             .mockImplementationOnce(() => tokenBMessages.promise);
 
         const { default: PublicShareViewerScreen } = await import('@/app/(app)/share/[token]');
-        await renderScreen(<PublicShareViewerScreen />);
+        const screen = await renderScreen(<PublicShareViewerScreen />);
         await act(async () => {
             tokenARoot.resolve(shareResponse('Token A', 'messages-a'));
         });
@@ -632,8 +634,9 @@ describe('PublicShareViewerScreen (plaintext)', () => {
         const tokenBProps = transcriptListSpy.mock.calls[transcriptListSpy.mock.calls.length - 1]?.[0];
         expect(tokenBProps).toEqual(expect.objectContaining({
             metadata: expect.objectContaining({ name: 'Token B' }),
-            sessionId: 'same-session',
         }));
+        const tokenBSource: SessionTranscriptSource = screen.findByType(SessionTranscriptSourceProvider).props.source;
+        expect(tokenBSource.sessionId).toBe('same-session');
         expect(tokenBProps.messages.map((message: any) => message.realID)).toEqual(['message-b']);
 
         tokenAMessages.resolve(messagesResponse('message-a', 'from A'));
@@ -708,16 +711,17 @@ describe('PublicShareViewerScreen (plaintext)', () => {
 
         const { default: PublicShareViewerScreen } = await import('@/app/(app)/share/[token]');
 
-        await renderScreen(<PublicShareViewerScreen />);
+        const screen = await renderScreen(<PublicShareViewerScreen />);
         await flushHookEffects({ cycles: 1, turns: 1 });
 
         const first = transcriptListSpy.mock.calls[transcriptListSpy.mock.calls.length - 1]?.[0];
         expect(first.messages.map((m: any) => m.text)).toEqual(['newest']);
-        expect(typeof first.loadOlder).toBe('function');
+        const source: SessionTranscriptSource = screen.findByType(SessionTranscriptSourceProvider).props.source;
+        expect(typeof source.history.loadOlder).toBe('function');
 
         let olderResult: any;
         await act(async () => {
-            olderResult = await first.loadOlder();
+            olderResult = await source.history.loadOlder!();
         });
         await flushHookEffects({ cycles: 1, turns: 1 });
 
@@ -735,6 +739,7 @@ describe('PublicShareViewerScreen (plaintext)', () => {
 
         const afterOlder = transcriptListSpy.mock.calls[transcriptListSpy.mock.calls.length - 1]?.[0];
         expect(afterOlder.messages.map((m: any) => m.text)).toEqual(['oldest', 'middle', 'newest']);
+        expect(screen.findByType(SessionTranscriptSourceProvider).props.source).toBe(source);
     });
 
     it('reports a failed older public share page as retryable instead of a loaded empty page', async () => {
@@ -783,13 +788,13 @@ describe('PublicShareViewerScreen (plaintext)', () => {
 
         const { default: PublicShareViewerScreen } = await import('@/app/(app)/share/[token]');
 
-        await renderScreen(<PublicShareViewerScreen />);
+        const screen = await renderScreen(<PublicShareViewerScreen />);
         await flushHookEffects({ cycles: 1, turns: 1 });
 
-        const first = transcriptListSpy.mock.calls[transcriptListSpy.mock.calls.length - 1]?.[0];
+        const source: SessionTranscriptSource = screen.findByType(SessionTranscriptSourceProvider).props.source;
         let olderResult: any;
         await act(async () => {
-            olderResult = await first.loadOlder();
+            olderResult = await source.history.loadOlder!();
         });
 
         expect(olderResult).toEqual({ loaded: 0, hasMore: true, status: 'retryable_error' });

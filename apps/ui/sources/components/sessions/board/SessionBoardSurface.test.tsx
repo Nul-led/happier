@@ -19,6 +19,11 @@ import {
     type SessionBoardSnapshot,
 } from '@/sync/domains/session/board';
 
+import {
+    PaneHeaderSlotProvider,
+    PaneHeaderSlotScope,
+    usePublishedPaneHeaderContent,
+} from '@/components/appShell/panes/paneHeaderSlot';
 import { SessionBoardSurface } from './SessionBoardSurface';
 import { useSessionBoardController } from './useSessionBoardController';
 
@@ -78,12 +83,14 @@ function Harness(props: Readonly<{
     onPrepareEncryption?: () => void;
     refresh?: () => void | Promise<void>;
     host?: 'details' | 'mobileCockpit';
+    onAskAgent?: () => void;
 }>): React.ReactElement {
     const controller = useSessionBoardController({
         sessionId: 'session-1',
         serverId: 'home-1',
         binding: { status: 'ready', snapshot: props.snapshot, refresh: props.refresh ?? (() => {}) },
         actions: props.actions === undefined ? OK_ACTIONS : props.actions,
+        ...(props.onAskAgent ? { onAskAgent: props.onAskAgent } : {}),
         ...(props.onPrepareEncryption ? { onPrepareEncryption: props.onPrepareEncryption } : {}),
     });
     return (
@@ -98,6 +105,50 @@ function Harness(props: Readonly<{
             {...(props.onAddToCompanion ? { onAddToCompanion: props.onAddToCompanion } : {})}
             {...(props.onRemoveFromCompanion ? { onRemoveFromCompanion: props.onRemoveFromCompanion } : {})}
         />
+    );
+}
+
+/** The one pane header a real host draws, reading what the Board published into its slot. */
+function PublishedHeader() {
+    const content = usePublishedPaneHeaderContent('board');
+    const line = content?.line?.segments.map((segment) => (typeof segment === 'string' ? segment : segment.text)).join(' · ') ?? '';
+    return React.createElement('View', { testID: 'pane-header' }, React.createElement('Text', { testID: 'pane-header-line' }, line), content?.action ?? null);
+}
+
+/** The compact sidebar (read-only monitor) or the phone Board, inside a header-owning pane. */
+function PaneHarness(props: Readonly<{
+    snapshot: SessionBoardSnapshot;
+    host: 'sidebar' | 'mobileCockpit';
+    onOpenBoardDetails?: () => void;
+    onOpenItemHere?: (itemId: string) => void;
+    onAskAgent?: () => void;
+    companionItemIds?: ReadonlySet<string>;
+}>): React.ReactElement {
+    const controller = useSessionBoardController({
+        sessionId: 'session-1',
+        serverId: 'home-1',
+        binding: { status: 'ready', snapshot: props.snapshot, refresh: () => {} },
+        actions: OK_ACTIONS,
+        ...(props.onAskAgent ? { onAskAgent: props.onAskAgent } : {}),
+    });
+    return (
+        <PaneHeaderSlotProvider>
+            <PublishedHeader />
+            <PaneHeaderSlotScope slotKey="board">
+                <SessionBoardSurface
+                    sessionId="session-1"
+                    controller={controller}
+                    host={props.host}
+                    resolvePrimaryHost={() => props.host}
+                    density={props.host === 'sidebar' ? 'compact' : 'full'}
+                    layout="single"
+                    {...(props.host === 'sidebar' ? { navigationOnly: true } : {})}
+                    {...(props.onOpenBoardDetails ? { onOpenBoardDetails: props.onOpenBoardDetails } : {})}
+                    {...(props.onOpenItemHere ? { onOpenItemHere: props.onOpenItemHere } : {})}
+                    {...(props.companionItemIds ? { companionItemIds: props.companionItemIds } : {})}
+                />
+            </PaneHeaderSlotScope>
+        </PaneHeaderSlotProvider>
     );
 }
 
@@ -116,6 +167,24 @@ function publishedActionIds(
     );
     const actions = (owner.at(-1)?.props as { actions?: ReadonlyArray<{ id: string }> } | undefined)?.actions ?? [];
     return actions.map((action) => action.id);
+}
+
+/** Opens the Board's Add popover and returns what it offers (its sections and ask entry). */
+async function openAddPopover(
+    screen: Awaited<ReturnType<typeof renderScreen>>,
+    triggerTestID: string,
+): Promise<Readonly<{
+    sections: ReadonlyArray<Readonly<{ id: string; entries: ReadonlyArray<Readonly<{ id: string; onPick: () => void }>> }>>;
+    ask?: Readonly<{ onPick: () => void }>;
+}>> {
+    await act(async () => { screen.pressByTestId(triggerTestID); });
+    const popover = screen.tree.root.findAll(
+        (node) => Array.isArray((node.props as { sections?: unknown }).sections)
+            && typeof (node.props as { searchPlaceholder?: unknown }).searchPlaceholder === 'string',
+        { deep: true },
+    ).at(-1);
+    if (!popover) throw new Error('Expected the Add popover to be open');
+    return popover.props as never;
 }
 
 const POPULATED: SessionBoardLayoutV1 = {
@@ -147,6 +216,32 @@ function mutableLayout(layout: SessionBoardLayoutV1) {
 }
 
 describe('SessionBoardSurface', () => {
+    it('does not claim a last loaded version before any Board item has loaded', async () => {
+        const initial = snapshot({});
+        const screen = await renderScreen(
+            <Harness snapshot={{ ...initial, freshness: 'stale', loading: 'refreshing' }} />,
+        );
+        expect(screen.findByTestId('session-board-freshness')).toBeNull();
+    });
+
+    it('keeps retained widgets at full strength under the shared freshness line when stale', async () => {
+        const populated = snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }] });
+        const screen = await renderScreen(<Harness snapshot={{ ...populated, freshness: 'stale' }} />);
+        expect(screen.findByTestId('session-board-freshness-text')?.props.children).toBe(t('sessionBoard.board.stale'));
+        expect(screen.findHostByTestId('session-board-item-note-1')).not.toBeNull();
+    });
+
+    it('explains reconnection when offline before any Board content has loaded', async () => {
+        const initial = snapshot({});
+        const screen = await renderScreen(
+            <Harness snapshot={{ ...initial, reachability: 'offline', freshness: 'stale' }} />,
+        );
+        // Nothing retained: a state card that names the cause, never a stale line over an empty body.
+        expect(screen.findByTestId('session-board-freshness')).toBeNull();
+        expect(screen.findHostByTestId('session-board-empty')).toBeNull();
+        expect(screen.findHostByTestId('session-board-offline')).not.toBeNull();
+    });
+
     it('keeps an ambiguous mutation visible and blocked until refresh enables a deliberate retry', async () => {
         const mutationRequest: SessionBoardMutationV1 = {
             operation: 'update_layout',
@@ -362,12 +457,20 @@ describe('SessionBoardSurface', () => {
         expect(remove).toHaveBeenCalledWith('note-1');
     });
 
-    it('keeps Add reachable after the Board has content', async () => {
+    it('keeps one Add chooser reachable after the Board has content', async () => {
+        const onAskAgent = vi.fn();
         const screen = await renderScreen(
-            <Harness snapshot={snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }] })} />,
+            <Harness snapshot={snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }] })} onAskAgent={onAskAgent} />,
         );
 
-        expect(screen.findHostByTestId('session-board-add-note')).not.toBeNull();
+        expect(screen.findByTestId('session-board-add-trigger')).not.toBeNull();
+        expect(screen.findHostByTestId('session-board-add-note')).toBeNull();
+        const popover = await openAddPopover(screen, 'session-board-add-trigger');
+        // Only the sources with a producer: a note to make, and the agent to ask; no plugins here.
+        expect(popover.sections.flatMap((section) => section.entries.map((entry) => entry.id))).toEqual(['note']);
+        expect(popover.ask).toBeDefined();
+        await act(async () => { popover.ask?.onPick(); });
+        expect(onAskAgent).toHaveBeenCalledOnce();
         expect(screen.findHostByTestId('session-board-empty')).toBeNull();
     });
 
@@ -401,11 +504,12 @@ describe('SessionBoardSurface', () => {
     it('renders no Add control for a source this build cannot create', async () => {
         const screen = await renderScreen(<Harness snapshot={snapshot({})} />);
 
-        // The empty state still invites the person in…
-        expect(screen.findHostByTestId('session-board-add-note')).not.toBeNull();
-        // …but never with a control whose producer does not exist.
-        expect(screen.findHostByTestId('session-board-add-interactiveView')).toBeNull();
-        expect(screen.findHostByTestId('session-board-add-fromPlugins')).toBeNull();
+        // The empty state still invites the person in, with the one source this build can create…
+        expect(screen.findByTestId('session-board-empty-action')).not.toBeNull();
+        expect(screen.getTextContent()).toContain(t('sessionBoard.empty.editor.addNote'));
+        // …and no chooser for sources whose producer does not exist.
+        expect(screen.findByTestId('session-board-add-trigger')).toBeNull();
+        expect(screen.getTextContent()).not.toContain(t('sessionBoard.add.interactiveView'));
     });
 
     it('offers no editing chrome at all to a viewer who cannot edit', async () => {
@@ -413,7 +517,7 @@ describe('SessionBoardSurface', () => {
             <Harness snapshot={snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }], canEdit: false })} />,
         );
 
-        expect(screen.findHostByTestId('session-board-add-note')).toBeNull();
+        expect(screen.findByTestId('session-board-add-trigger')).toBeNull();
         // Not one editing control, and no menu to hide them in either.
         expect(screen.findHostByTestId('session-board-item-note-1-actions')).toBeNull();
         expect(screen.findHostByTestId('session-board-item-note-1-move-handle')).toBeNull();
@@ -681,7 +785,90 @@ describe('SessionBoardSurface', () => {
             />,
         );
 
-        expect(screen.findHostByTestId('session-board-add-note')).toBeNull();
+        expect(screen.findByTestId('session-board-add-trigger')).toBeNull();
         expect(screen.findHostByTestId('session-board-item-note-1-actions')).toBeNull();
+    });
+
+    it('tells the sidebar pane header who sees the Board and how much is on it, with Open board as its one action', async () => {
+        const openBoard = vi.fn();
+        const screen = await renderScreen(
+            <PaneHarness
+                host="sidebar"
+                snapshot={snapshot({ layout: MOVABLE, items: [
+                    { itemId: 'note-1', item: note('Plan') },
+                    { itemId: 'note-2', item: note('Risks') },
+                ] })}
+                onOpenBoardDetails={openBoard}
+            />,
+        );
+
+        expect(screen.findByTestId('pane-header-line')?.props.children).toBe(
+            `${t('sessionBoard.sidebar.sharedWithEveryone')} · ${t('sessionBoard.sidebar.widgetCount', { count: 2 })}`,
+        );
+        // The action moved into the header: the body no longer draws its own Open row.
+        expect(screen.findHostByTestId('session-board-open-details')).toBeNull();
+        await screen.pressByTestIdAsync('session-board-header-open-board');
+        expect(openBoard).toHaveBeenCalledOnce();
+    });
+
+    it('opens a tapped sidebar card on the Details board and marks the ones kept in Companion', async () => {
+        const openItem = vi.fn();
+        const screen = await renderScreen(
+            <PaneHarness
+                host="sidebar"
+                snapshot={snapshot({ layout: MOVABLE, items: [
+                    { itemId: 'note-1', item: note('Plan') },
+                    { itemId: 'note-2', item: note('Risks') },
+                ] })}
+                onOpenItemHere={openItem}
+                companionItemIds={new Set(['note-1'])}
+            />,
+        );
+
+        expect(screen.findHostByTestId('session-board-item-note-1-companion-mark')).not.toBeNull();
+        expect(screen.findHostByTestId('session-board-item-note-2-companion-mark')).toBeNull();
+        await screen.pressByTestIdAsync('session-board-item-note-2-open');
+        expect(openItem).toHaveBeenCalledWith('note-2');
+    });
+
+    it('offers Ask the agent on an empty Board, even in the read-only sidebar, and it only drafts', async () => {
+        const onAskAgent = vi.fn();
+        const screen = await renderScreen(
+            <PaneHarness host="sidebar" snapshot={snapshot({})} onAskAgent={onAskAgent} />,
+        );
+
+        expect(screen.findHostByTestId('session-board-empty')).not.toBeNull();
+        expect(screen.getTextContent()).toContain(t('sessionBoard.empty.editor.title'));
+        // The sidebar writes nothing to the Board, so the Add chooser stays out of it.
+        expect(screen.findByTestId('session-board-add-trigger')).toBeNull();
+        await screen.pressByTestIdAsync('session-board-empty-action');
+        expect(onAskAgent).toHaveBeenCalledOnce();
+    });
+
+    it('leads an empty editable Board with Ask the agent and keeps Add a note as the quiet second way', async () => {
+        const onAskAgent = vi.fn();
+        const actions: SessionBoardActionsPort = {
+            ...OK_ACTIONS,
+            upsertItem: vi.fn(async () => ({ status: 'unavailable' as const, reason: 'board_actions_unavailable' as const })),
+        };
+        const screen = await renderScreen(
+            <Harness snapshot={snapshot({})} actions={actions} onAskAgent={onAskAgent} />,
+        );
+
+        await screen.pressByTestIdAsync('session-board-empty-action');
+        expect(onAskAgent).toHaveBeenCalledOnce();
+        expect(screen.findHostByTestId('session-board-empty-secondary-action')).not.toBeNull();
+    });
+
+    it('puts the phone Board\'s Add chooser in the pane header', async () => {
+        const screen = await renderScreen(
+            <PaneHarness host="mobileCockpit" snapshot={snapshot({ layout: POPULATED, items: [{ itemId: 'note-1', item: note('Plan') }] })} />,
+        );
+
+        const header = screen.findByTestId('pane-header');
+        expect(header?.findAll((node) => node.props.testID === 'session-board-add-trigger').length).toBeGreaterThan(0);
+        expect(screen.findByTestId('pane-header-line')?.props.children).toBe(
+            `${t('sessionBoard.sidebar.sharedWithEveryone')} · ${t('sessionBoard.sidebar.widgetCount', { count: 1 })}`,
+        );
     });
 });

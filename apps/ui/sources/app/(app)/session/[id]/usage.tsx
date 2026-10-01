@@ -1,5 +1,6 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { UsagePanel } from '@/components/settings/usage/UsagePanel';
 import { SessionInvalidLinkFallback } from '@/components/sessions/shell/SessionInvalidLinkFallback';
@@ -9,7 +10,7 @@ import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForR
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { isSessionRouteHydrationAvailable, isSessionRouteHydrationMissing } from '@/sync/domains/session/sessionRouteHydrationState';
 
-export default function SessionUsageScreenRoute() {
+export function SessionUsageScreenRoute() {
     const params = useLocalSearchParams<{ id: string; serverId?: string | string[] }>();
     const routeScope = React.useMemo(() => createSessionRouteServerScope(params as Record<string, unknown>), [params]);
     const sessionId = normalizeSessionId(params.id);
@@ -29,3 +30,7 @@ export default function SessionUsageScreenRoute() {
 
     return <UsagePanel sessionId={sessionId} />;
 }
+
+export { SessionUsageScreenRoute as WorkspaceRouteBody };
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={SessionUsageScreenRoute} />; }

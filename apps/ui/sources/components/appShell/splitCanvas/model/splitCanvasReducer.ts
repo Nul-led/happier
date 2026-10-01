@@ -18,6 +18,24 @@ export const SPLIT_CANVAS_RATIO_MIN = 0.2;
 export const SPLIT_CANVAS_RATIO_MAX = 0.8;
 export const SPLIT_CANVAS_DEFAULT_MAX_LEAVES = 8;
 
+function measuredRatioBounds(input: Readonly<{
+    availableSizePx?: number;
+    minimumFirstSizePx?: number;
+    minimumSecondSizePx?: number;
+}>): Readonly<{ minRatio: number; maxRatio: number }> | null {
+    const { availableSizePx, minimumFirstSizePx, minimumSecondSizePx } = input;
+    if (
+        typeof availableSizePx !== 'number' || !Number.isFinite(availableSizePx) || availableSizePx <= 0
+        || typeof minimumFirstSizePx !== 'number' || !Number.isFinite(minimumFirstSizePx) || minimumFirstSizePx < 0
+        || typeof minimumSecondSizePx !== 'number' || !Number.isFinite(minimumSecondSizePx) || minimumSecondSizePx < 0
+        || minimumFirstSizePx + minimumSecondSizePx > availableSizePx
+    ) return null;
+    return {
+        minRatio: minimumFirstSizePx / availableSizePx,
+        maxRatio: 1 - minimumSecondSizePx / availableSizePx,
+    };
+}
+
 export function createSplitCanvasState<TLeafPayload>(input: Readonly<{
     root: SplitCanvasLeafNode<TLeafPayload> | null;
     focusedLeafId?: string | null;
@@ -46,6 +64,17 @@ export function splitCanvasReduce<TLeafPayload>(
     state: SplitCanvasState<TLeafPayload>,
     action: SplitCanvasAction<TLeafPayload>,
 ): SplitCanvasState<TLeafPayload> {
+    const next = reduceSplitCanvasAction(state, action);
+    // Every focus-producing transition must reveal its target, including tree edits.
+    return next.maximizedLeafId && next.maximizedLeafId !== next.focusedLeafId
+        ? { ...next, maximizedLeafId: null }
+        : next;
+}
+
+function reduceSplitCanvasAction<TLeafPayload>(
+    state: SplitCanvasState<TLeafPayload>,
+    action: SplitCanvasAction<TLeafPayload>,
+): SplitCanvasState<TLeafPayload> {
     switch (action.type) {
         case 'replaceRoot': {
             return {
@@ -58,27 +87,24 @@ export function splitCanvasReduce<TLeafPayload>(
             };
         }
         case 'focusLeaf': {
-            if (!action.leafId || !findSplitCanvasLeaf(state.root, action.leafId)) {
-                const focusedLeafId = resolveValidFocusedLeafId(state.root, null);
-                if (state.focusedLeafId === focusedLeafId) {
-                    return state;
-                }
-                return {
-                    ...state,
-                    focusedLeafId,
-                };
-            }
-            if (state.focusedLeafId === action.leafId) {
+            const focusedLeafId = resolveValidFocusedLeafId(state.root, action.leafId);
+            if (state.focusedLeafId === focusedLeafId) {
                 return state;
             }
             return {
                 ...state,
-                focusedLeafId: action.leafId,
+                focusedLeafId,
             };
         }
         case 'splitLeaf': {
             if (!findSplitCanvasLeaf(state.root, action.targetLeafId)) return state;
-            if (countSplitCanvasLeaves(state.root) >= state.maxLeaves) return state;
+            if (action.availableSizePx !== undefined || action.minimumFirstSizePx !== undefined || action.minimumSecondSizePx !== undefined) {
+                const bounds = measuredRatioBounds(action);
+                if (!bounds || bounds.minRatio > 0.5 || bounds.maxRatio < 0.5) return state;
+            } else if (countSplitCanvasLeaves(state.root) >= state.maxLeaves) {
+                // The pre-workspace session canvas still calls this legacy path.
+                return state;
+            }
             const nextRoot = splitSplitCanvasLeaf(state.root, {
                 targetLeafId: action.targetLeafId,
                 axis: action.axis,
@@ -90,6 +116,7 @@ export function splitCanvasReduce<TLeafPayload>(
                 ...state,
                 root: nextRoot,
                 focusedLeafId: action.newLeaf.id,
+                maximizedLeafId: null,
             };
         }
         case 'replaceLeaf': {
@@ -147,13 +174,16 @@ export function splitCanvasReduce<TLeafPayload>(
             };
         }
         case 'setSplitRatio': {
+            const measured = action.availableSizePx !== undefined || action.minimumFirstSizePx !== undefined || action.minimumSecondSizePx !== undefined;
+            const bounds = measured ? measuredRatioBounds(action) : null;
+            if (measured && !bounds) return state;
             return {
                 ...state,
                 root: setSplitCanvasRatio(state.root, {
                     splitId: action.splitId,
                     ratio: action.ratio,
-                    minRatio: SPLIT_CANVAS_RATIO_MIN,
-                    maxRatio: SPLIT_CANVAS_RATIO_MAX,
+                    minRatio: bounds?.minRatio ?? SPLIT_CANVAS_RATIO_MIN,
+                    maxRatio: bounds?.maxRatio ?? SPLIT_CANVAS_RATIO_MAX,
                 }),
             };
         }

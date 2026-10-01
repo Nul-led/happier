@@ -126,7 +126,8 @@ vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
     upsertActivateAndSwitchServer: vi.fn(async () => {}),
 }));
 
-vi.mock('@/auth/pairing/pairingUrl', () => ({
+vi.mock('@/auth/pairing/pairingUrl', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/auth/pairing/pairingUrl')>(),
     classifyLegacyPairingDeepLink: () => null,
 }));
 

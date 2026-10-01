@@ -3,6 +3,7 @@ import renderer from 'react-test-renderer';
 import { VirtualizedList } from '@/components/ui/lists/virtualized/VirtualizedList';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
+import type { ScmFileStatus } from '@/scm/scmStatusFiles';
 import { installSessionGitPaneCommonModuleMocks } from './sessionGitPaneTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -10,28 +11,23 @@ import { installSessionGitPaneCommonModuleMocks } from './sessionGitPaneTestHelp
 (globalThis as any).cancelAnimationFrame ??= vi.fn();
 
 installSessionGitPaneCommonModuleMocks();
+// The recycler depends on native layout; render its rows deterministically at that boundary.
+vi.mock('@legendapp/list/react-native', async () => {
+    const { createCapturingLegendListMock } = await import('@/dev/testkit/mocks/legendList');
+    return createCapturingLegendListMock({ renderItems: true }).module;
+});
 vi.mock('@/components/workspaces/scm/SourceControlBranchSummary', () => ({
     SourceControlBranchSummary: (props: any) => React.createElement('SourceControlBranchSummary', props),
 }));
 vi.mock('@/components/sessions/sourceControl/commitSelection/ScmChangesSelectionHeaderRow', () => ({
     ScmChangesSelectionHeaderRow: (props: any) => React.createElement('ScmChangesSelectionHeaderRow', props),
 }));
-vi.mock('@/components/sessions/sourceControl/branches/SourceControlBranchMenu', () => ({
-    SourceControlBranchMenu: (props: any) => React.createElement('SourceControlBranchMenu', props),
-}));
 vi.mock('@/components/workspaces/scm/commitComposer/ScmCommitComposerCard', () => ({
     ScmCommitComposerCard: (props: any) => React.createElement('ScmCommitComposerCard', props),
 }));
-vi.mock('@/components/workspaces/scm/changes/ScmChangeRow', () => ({
+vi.mock('@/components/workspaces/scm/changes/ScmChangeRow', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/components/workspaces/scm/changes/ScmChangeRow')>(),
     ScmChangeRow: (props: any) => React.createElement('ScmChangeRow', props),
-    resolveScmChangeStatsColumnWidth: (files: readonly any[]) => {
-        const maxLabelLength = files.reduce((maxLength, file) => {
-            const added = Number.isFinite(file?.linesAdded) ? String(Math.max(0, Math.trunc(file.linesAdded))) : '0';
-            const removed = Number.isFinite(file?.linesRemoved) ? String(Math.max(0, Math.trunc(file.linesRemoved))) : '0';
-            return Math.max(maxLength, `+${added}/-${removed}`.length);
-        }, 0);
-        return Math.max(38, maxLabelLength * 7 + 4);
-    },
 }));
 vi.mock('@/components/ui/popover/Popover', () => ({
     Popover: () => null,
@@ -108,12 +104,11 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
+                    sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
+                    sessionCheckpointOverlap="unknown"
 
                     allRepositoryChangedFiles={[{
-                        fullPath: 'src/file-0.ts',
-                        path: 'src/file-0.ts',
-                        kind: 'modified',
-                        stats: { pendingAdded: 1, pendingRemoved: 0, includedAdded: 0, includedRemoved: 0, isBinary: false },
+                        ...groupedFile('src/file-0.ts'),
                     }] as any}
                     sessionAttributedFiles={[] as any}
                     repositoryOnlyFiles={[] as any}
@@ -171,12 +166,11 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
+                    sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
+                    sessionCheckpointOverlap="unknown"
 
                     allRepositoryChangedFiles={[{
-                        fullPath: 'src/file-0.ts',
-                        path: 'src/file-0.ts',
-                        kind: 'modified',
-                        stats: { pendingAdded: 1, pendingRemoved: 0, includedAdded: 0, includedRemoved: 0, isBinary: false },
+                        ...groupedFile('src/file-0.ts'),
                     }] as any}
                     turnAttributedFiles={[] as any}
                     turnRepositoryOnlyFiles={[] as any}
@@ -216,13 +210,8 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
             'session',
         ]);
 
-        const textContent = headerScreen.getTextContent();
-        expect(textContent).toContain('files.repositoryChangedFiles');
-        expect(textContent).not.toContain('files.toolbar.changedFiles');
-        expect(textContent).toContain('files.toolbar.review');
-        expect(textContent).not.toContain('files.toolbar.repositoryView');
-        expect(textContent).not.toContain('files.toolbar.turnView');
-        expect(textContent).not.toContain('files.toolbar.sessionView');
+        expect(headerScreen.findByTestId('session-rightpanel-git-view-mode-menu')).not.toBeNull();
+        expect(headerScreen.findByTestId('session-rightpanel-git-open-review')).not.toBeNull();
 
         menu.props.onSelect('session');
         expect(onChangedFilesViewMode).toHaveBeenCalledWith('session');
@@ -232,10 +221,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
         const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
 
         const files = Array.from({ length: 200 }).map((_, idx) => ({
-            fullPath: `src/file-${idx}.ts`,
-            path: `src/file-${idx}.ts`,
-            kind: 'modified',
-            stats: { pendingAdded: 1, pendingRemoved: 0, includedAdded: 0, includedRemoved: 0, isBinary: false },
+            ...groupedFile(`src/file-${idx}.ts`),
         }));
 
         let tree!: renderer.ReactTestRenderer;
@@ -254,6 +240,8 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
+                    sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
+                    sessionCheckpointOverlap="unknown"
 
                     allRepositoryChangedFiles={files as any}
                     sessionAttributedFiles={[] as any}
@@ -357,6 +345,124 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
         expect(screen.tree.findAllByType('ScrollView' as any)).toHaveLength(0);
     });
 
+    it('keeps historical Session evidence visible without offering a commit selection action', async () => {
+        const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
+        const historicalFile = {
+            fileName: 'historical.ts', filePath: 'src', fullPath: 'src/historical.ts',
+            status: 'modified', isIncluded: false, linesAdded: 1, linesRemoved: 0,
+        };
+        const currentFile = {
+            fileName: 'current.ts', filePath: 'src', fullPath: 'src/current.ts',
+            status: 'modified', isIncluded: false, linesAdded: 2, linesRemoved: 0,
+        };
+        const renderFileActions = vi.fn(() => React.createElement('StageAction'));
+        const onToggleSelectionForFile = vi.fn();
+
+        const screen = await renderScreen(<SessionRightPanelGitCommitTab
+            theme={makeGitTheme()}
+            sessionId="s1"
+            sessionPath="/workspace"
+            backendLabel="Git"
+            commitActionLabel="Commit"
+            scmSnapshot={null}
+            hasConflicts={false}
+            scmOperationBusy={false}
+            scmOperationStatus={null}
+            hasGlobalOperationInFlight={false}
+            inFlightScmOperation={null}
+            commitAllowed={false}
+            commitBlockedMessage={null}
+            changedFilesViewMode="session"
+            sessionAttribution={{ confidence: 'session_possible', reason: 'checkpoint_overlap_observed' }}
+            sessionCheckpointOverlap="observed"
+            allRepositoryChangedFiles={[currentFile] as any}
+            sessionAttributedFiles={[
+                { file: historicalFile, turns: [], content: { source: 'scm_checkpoint', confidence: 'exact' }, attribution: { confidence: 'session_possible', reason: 'checkpoint_overlap_observed' }, checkpointOverlap: 'observed', evidence: [] },
+                { file: currentFile, turns: [], content: { source: 'scm_checkpoint', confidence: 'exact' }, attribution: { confidence: 'session_possible', reason: 'checkpoint_overlap_observed' }, checkpointOverlap: 'observed', evidence: [] },
+            ] as any}
+            repositoryOnlyFiles={[]}
+            repositorySelectedCount={0}
+            onSelectAll={() => {}}
+            onSelectNone={() => {}}
+            disableSelectAll={true}
+            disableSelectNone={true}
+            onFilePress={() => {}}
+            onFilePressPinned={() => {}}
+            onToggleSelectionForFile={onToggleSelectionForFile}
+            renderFileActions={renderFileActions}
+            renderFileTrailingActions={() => null}
+            commitDraftMessage=""
+            onCommitDraftMessageChange={() => {}}
+            onCommitFromMessage={() => {}}
+            commitMessageGeneratorEnabled={false}
+            onGenerateCommitMessageSuggestion={async () => ({ ok: true, message: '' })}
+            scmStatusFiles={null}
+            showCommitComposer={false}
+        />);
+
+        const list = screen.tree.findByType(VirtualizedList);
+        const row = await renderScreen(list.props.renderItem({ item: list.props.data[0], index: 0 }));
+        expect(row.findByTestId('changed-file-evidence-trigger')).not.toBeNull();
+        expect(row.tree.findByType('ScmChangeRow' as any).props.leadingElement).toBeNull();
+        expect(row.tree.findByType('ScmChangeRow' as any).props.onToggleSelection).toBeUndefined();
+        expect(renderFileActions).not.toHaveBeenCalledWith(historicalFile);
+        expect(onToggleSelectionForFile).not.toHaveBeenCalled();
+
+        const currentRow = await renderScreen(list.props.renderItem({ item: list.props.data[1], index: 1 }));
+        expect(currentRow.tree.findByType('ScmChangeRow' as any).props.leadingElement).not.toBeNull();
+        expect(renderFileActions).toHaveBeenCalledWith(currentFile);
+        currentRow.tree.findByType('ScmChangeRow' as any).props.onToggleSelection();
+        expect(onToggleSelectionForFile).toHaveBeenCalledWith(currentFile);
+    });
+
+    it('explains unavailable checkpoint content without claiming there were no changes', async () => {
+        const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
+        const screen = await renderScreen(<SessionRightPanelGitCommitTab
+            theme={makeGitTheme()}
+            sessionId="s1"
+            sessionPath="/workspace"
+            backendLabel="Git"
+            commitActionLabel="Commit"
+            scmSnapshot={null}
+            hasConflicts={false}
+            scmOperationBusy={false}
+            scmOperationStatus={null}
+            hasGlobalOperationInFlight={false}
+            inFlightScmOperation={null}
+            commitAllowed={false}
+            commitBlockedMessage={null}
+            changedFilesViewMode="turn_checkpoint"
+            sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
+            sessionCheckpointOverlap="unknown"
+            allRepositoryChangedFiles={[]}
+            turnCheckpointFiles={[]}
+            turnCheckpointMetadata={{ version: 1, scopeId: 's1:/repo', baseRefSource: 'unavailable', contentConfidence: 'unavailable', attributionScope: 'unknown', receipts: [] }}
+            sessionAttributedFiles={[]}
+            repositoryOnlyFiles={[]}
+            showTurnCheckpointViewToggle={true}
+            repositorySelectedCount={0}
+            onSelectAll={() => {}}
+            onSelectNone={() => {}}
+            disableSelectAll={true}
+            disableSelectNone={true}
+            onFilePress={() => {}}
+            onFilePressPinned={() => {}}
+            onToggleSelectionForFile={() => {}}
+            renderFileActions={() => null}
+            renderFileTrailingActions={() => null}
+            commitDraftMessage=""
+            onCommitDraftMessageChange={() => {}}
+            onCommitFromMessage={() => {}}
+            commitMessageGeneratorEnabled={false}
+            onGenerateCommitMessageSuggestion={async () => ({ ok: true, message: '' })}
+            scmStatusFiles={null}
+            showCommitComposer={false}
+        />);
+
+        expect(screen.getTextContent()).toContain('files.checkpointUnavailable');
+        expect(screen.tree.findByType(VirtualizedList).props.ListEmptyComponent).toBeNull();
+    });
+
     it('uses the largest visible virtualized change stats as a shared stats column width', async () => {
         const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
         const files = [
@@ -395,6 +501,8 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
+                    sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
+                    sessionCheckpointOverlap="unknown"
 
                     allRepositoryChangedFiles={files as any}
                     sessionAttributedFiles={[] as any}
@@ -420,8 +528,8 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                 />);
 
         const flatList = screen.tree.findByType(VirtualizedList);
-        const firstRow = flatList.props.renderItem({ item: files[0], index: 0 });
-        const secondRow = flatList.props.renderItem({ item: files[1], index: 1 });
+        const firstRow = (await renderScreen(flatList.props.renderItem({ item: files[0], index: 0 }))).tree.findByType('ScmChangeRow');
+        const secondRow = (await renderScreen(flatList.props.renderItem({ item: files[1], index: 1 }))).tree.findByType('ScmChangeRow');
 
         expect(firstRow.props.statsColumnWidth).toBe(secondRow.props.statsColumnWidth);
         expect(firstRow.props.statsColumnWidth).toBeGreaterThan(38);
@@ -431,10 +539,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
         const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
 
         const files = Array.from({ length: 3 }).map((_, idx) => ({
-            fullPath: `src/file-${idx}.ts`,
-            path: `src/file-${idx}.ts`,
-            kind: 'modified',
-            stats: { pendingAdded: 1, pendingRemoved: 0, includedAdded: 0, includedRemoved: 0, isBinary: false },
+            ...groupedFile(`src/file-${idx}.ts`),
         }));
 
         let tree!: renderer.ReactTestRenderer;
@@ -487,16 +592,11 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
 
         const files = [
             {
-                fullPath: 'src/file-0.ts',
-                path: 'src/file-0.ts',
-                kind: 'modified',
-                stats: { pendingAdded: 1, pendingRemoved: 0, includedAdded: 0, includedRemoved: 0, isBinary: false },
+                ...groupedFile('src/file-0.ts'),
             },
             {
-                fullPath: 'src/some-dir/',
-                path: 'src/some-dir/',
-                kind: 'added',
-                stats: { pendingAdded: 1, pendingRemoved: 0, includedAdded: 0, includedRemoved: 0, isBinary: false },
+                ...groupedFile('src/some-dir/'),
+                status: 'added',
             },
         ];
 
@@ -516,6 +616,8 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                     commitAllowed={false}
                     commitBlockedMessage={null}
                     changedFilesViewMode="repository"
+                    sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
+                    sessionCheckpointOverlap="unknown"
 
                     allRepositoryChangedFiles={files as any}
                     sessionAttributedFiles={[] as any}
@@ -550,10 +652,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
         const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
         const files = [
             {
-                fullPath: 'src/file-0.ts',
-                path: 'src/file-0.ts',
-                kind: 'modified',
-                stats: { pendingAdded: 1, pendingRemoved: 0, includedAdded: 0, includedRemoved: 0, isBinary: false },
+                ...groupedFile('src/file-0.ts'),
             },
         ];
         const props: React.ComponentProps<typeof SessionRightPanelGitCommitTab> = {
@@ -626,10 +725,7 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
         const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
         const files = [
             {
-                fullPath: 'src/file-0.ts',
-                path: 'src/file-0.ts',
-                kind: 'modified',
-                stats: { pendingAdded: 1, pendingRemoved: 0, includedAdded: 0, includedRemoved: 0, isBinary: false },
+                ...groupedFile('src/file-0.ts'),
             },
         ];
         const actionsA = () => null;
@@ -654,6 +750,8 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
                         commitAllowed={false}
                         commitBlockedMessage={null}
                         changedFilesViewMode="repository"
+                        sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
+                        sessionCheckpointOverlap="unknown"
 
                         allRepositoryChangedFiles={files as any}
                         sessionAttributedFiles={[] as any}
@@ -701,4 +799,83 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
         expect(nextFlatListProps.extraData).not.toBe(firstFlatListProps.extraData);
         expect(nextFlatListProps.extraData.renderFileActions).toBe(actionsB);
     });
+
+    // Session-tabs lab G1 / GC.
+    function groupedFile(fullPath: string): ScmFileStatus {
+        const segments = fullPath.split('/');
+        return {
+            fileName: segments[segments.length - 1],
+            filePath: segments.slice(0, -1).join('/'),
+            fullPath,
+            status: 'modified',
+            isIncluded: false,
+            linesAdded: 1,
+            linesRemoved: 0,
+        };
+    }
+
+    async function renderGroupedCommitTab(extra: Record<string, unknown> = {}) {
+        const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
+        const files = [groupedFile('AGENTS.md'), groupedFile('apps/ui/modal.tsx'), groupedFile('docs/notes.md')];
+        const mine = files[1]!;
+        const screen = await renderScreen(<SessionRightPanelGitCommitTab
+            theme={makeGitTheme()}
+            sessionId="s1"
+            sessionPath="/workspace"
+            backendLabel="Git"
+            commitActionLabel="Commit"
+            scmSnapshot={{ repo: { isRepo: true, rootPath: '/workspace/happier' } } as any}
+            hasConflicts={false}
+            scmOperationBusy={false}
+            scmOperationStatus={null}
+            hasGlobalOperationInFlight={false}
+            inFlightScmOperation={null}
+            commitAllowed={false}
+            commitBlockedMessage={null}
+            changedFilesViewMode="repository"
+            sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
+            sessionCheckpointOverlap="unknown"
+            allRepositoryChangedFiles={files as any}
+            sessionAttributedFiles={[{ file: mine, turns: ['t1'], content: {}, attribution: {}, checkpointOverlap: 'unknown', evidence: [] }] as any}
+            repositoryOnlyFiles={[files[0], files[2]] as any}
+            showSessionViewToggle={true}
+            repositorySelectedCount={0}
+            onSelectAll={() => {}}
+            onSelectNone={() => {}}
+            disableSelectAll={true}
+            disableSelectNone={true}
+            onFilePress={() => {}}
+            onFilePressPinned={() => {}}
+            onToggleSelectionForFile={() => {}}
+            renderFileActions={() => null}
+            renderFileTrailingActions={() => null}
+            commitDraftMessage=""
+            onCommitDraftMessageChange={() => {}}
+            onCommitFromMessage={() => {}}
+            commitMessageGeneratorEnabled={false}
+            onGenerateCommitMessageSuggestion={async () => ({ ok: true, message: '' })}
+            scmStatusFiles={null}
+            showCommitComposer={false}
+            {...extra}
+        />);
+        const order = screen.tree.root.findAll((node: any) => (
+            node.type === 'ScmChangeRow'
+            || (typeof node.props?.testID === 'string' && typeof node.type === 'string'
+                && node.props.testID.startsWith('scm-change-group:'))
+        )).map((node: any) => (node.type === 'ScmChangeRow' ? node.props.file.fullPath : node.props.testID));
+        return { screen, order };
+    }
+
+    it('groups All changes into this session first, then the rest of the repository', async () => {
+        const { order } = await renderGroupedCommitTab();
+
+        expect(order).toEqual([
+            'scm-change-group:session',
+            'apps/ui/modal.tsx',
+            'scm-change-group:elsewhere',
+            'AGENTS.md',
+            'docs/notes.md',
+        ]);
+    });
+
 });

@@ -7,7 +7,7 @@ import {
     type WorkspaceScopeBase,
 } from '@/sync/domains/workspaces/workspaceScope';
 import type { UniversalSearchTarget } from './universalSearchResult';
-import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
+import { SETTINGS_ROUTES, settingsRoutePathname } from '@/components/settings/catalog/routes';
 
 function areWorkspaceScopesEqual(left: WorkspaceScopeBase, right: WorkspaceScopeBase): boolean {
     const normalizedLeft = normalizeWorkspaceScopeBase(left);
@@ -55,8 +55,8 @@ export function isUniversalSearchTargetCurrent(input: Readonly<{
         // current while that page is offered. The Overview owns only its own route.
         const pathname = target.route.split('?')[0];
         return [...input.settingsPages.values()].some((page) => typeof page.route === 'string' && (
-            page.route === pathname
-            || (page.route !== SETTINGS_ROUTES.general && pathname.startsWith(`${page.route}/`))
+            settingsRoutePathname(page.route) === pathname
+            || (page.route !== SETTINGS_ROUTES.general && pathname.startsWith(`${settingsRoutePathname(page.route)}/`))
         ));
     }
     if (!target.serverId) return false;

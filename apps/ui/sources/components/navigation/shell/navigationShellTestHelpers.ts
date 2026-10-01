@@ -107,18 +107,20 @@ export function installNavigationShellCommonModuleMocks(
             return await activeOptions.appPaneProvider();
         }
 
+        const context = {
+            dispatch: vi.fn(),
+            state: {
+                activeScopeId: null,
+                focusMode: { scopeId: null },
+                scopes: {},
+            },
+            getDriver: () => null,
+            driverRegistryVersion: 1,
+            registerDriver: () => () => {},
+        };
         return {
-            useAppPaneContext: () => ({
-                dispatch: vi.fn(),
-                state: {
-                    activeScopeId: null,
-                    focusMode: { scopeId: null },
-                    scopes: {},
-                },
-                getDriver: () => null,
-                driverRegistryVersion: 1,
-                registerDriver: () => () => {},
-            }),
+            useAppPaneContext: () => context,
+            useOptionalAppPaneContext: () => context,
         };
     });
 }

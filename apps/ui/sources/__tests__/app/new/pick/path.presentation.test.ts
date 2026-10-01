@@ -99,10 +99,11 @@ describe('PathPickerScreen (iOS presentation)', () => {
         expect(options?.presentation).toBe('containedModal');
         expect(typeof options?.headerLeft).toBe('function');
 
+        // K2 picker route chrome: the leading control is Cancel.
         const backButton = options?.headerLeft?.();
         expect(typeof backButton?.props?.onPress).toBe('function');
-        expect(backButton?.props?.accessibilityRole).toBe('button');
-        expect(backButton?.props?.accessibilityLabel).toBe('common.back');
+        expect(backButton?.props?.testID).toBe('new-session-path-picker-cancel');
+        expect(backButton?.props?.appearance).toBe('text');
         backButton?.props?.onPress?.();
         expect(navigationMock.goBack).toHaveBeenCalledTimes(1);
 

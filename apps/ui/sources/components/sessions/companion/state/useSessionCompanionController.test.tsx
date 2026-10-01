@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderHook } from '@/dev/testkit/hooks/renderHook';
-import { createPartialStorageModuleMock } from '@/dev/testkit/mocks/storage';
+import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
 
 /**
  * The persisted device-local settings slot is the only boundary mocked here: the
@@ -18,8 +18,8 @@ const local = vi.hoisted(() => ({
     ),
 }));
 
-vi.mock('@/sync/domains/state/storage', async (importOriginal) =>
-    createPartialStorageModuleMock(importOriginal, {
+vi.mock('@/sync/domains/state/storage', () =>
+    createStorageModuleStub({
         useSessionCompanionPreferenceSlot: (sessionId: string | null, serverId?: string | null) => {
             const storageKey = local.key(sessionId, serverId);
             return { storageKey, stored: storageKey ? local.byKey[storageKey] : undefined };
@@ -52,6 +52,24 @@ async function mountController(serverId: string | null = 'home-a') {
 }
 
 describe('useSessionCompanionController', () => {
+    it('persists and reverses an item frame override while retaining later changes to other items', async () => {
+        const hook = await mountController();
+        const controller = hook.getCurrent();
+        controller.show();
+        controller.addItem({ kind: 'builtin', id: 'agent_plan' });
+        const summary = { kind: 'builtin' as const, id: 'session_summary' as const };
+        const plan = { kind: 'builtin' as const, id: 'agent_plan' as const };
+        const outcome = controller.setItemFrameStyle(summary, 'card');
+        expect(outcome).not.toBeNull();
+        controller.setItemFrameStyle(plan, 'plain');
+        expect(controller.applyLocalInverse(outcome!)).toBe(true);
+        expect(storedNow()).toMatchObject({ items: [summary, { ...plan, frameStyle: 'plain' }] });
+        const reapplied = controller.setItemFrameStyle(summary, 'card');
+        controller.setItemFrameStyle(summary, 'plain');
+        expect(controller.applyLocalInverse(reapplied!)).toBe(false);
+        controller.setItemFrameStyle(summary, null);
+        expect(storedNow()).toMatchObject({ items: [summary, { ...plan, frameStyle: 'plain' }] });
+    });
     beforeEach(() => {
         local.accountId = 'account-a';
         local.byKey = {};

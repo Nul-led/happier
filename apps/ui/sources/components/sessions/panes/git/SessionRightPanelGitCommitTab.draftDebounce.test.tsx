@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
-import { renderScreen } from '@/dev/testkit';
+import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
 import { installSessionGitPaneCommonModuleMocks } from './sessionGitPaneTestHelpers';
 
@@ -9,6 +9,17 @@ import { installSessionGitPaneCommonModuleMocks } from './sessionGitPaneTestHelp
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const gitCommitTabTheme = createThemeFixture();
+import { readSessionScmDraft, resetSessionDraftValueCachesForTests } from '@/dev/testkit/sessionDraftRepositoryTestkit';
+
+vi.mock('@/sync/domains/state/browserRecordStorage', async () => {
+    const { createBrowserRecordStorageModuleMock } = await import('@/dev/testkit/mocks/browserRecordStorage');
+    return createBrowserRecordStorageModuleMock();
+});
+
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({ importOriginal, tokenStorage: { getCredentialsForServerUrl: async () => ({ token: 'header.' + Buffer.from(JSON.stringify({ sub: 'account-git-draft' })).toString('base64') + '.signature', secret: '' }) } });
+});
 
 installSessionGitPaneCommonModuleMocks({
     reactNative: async () => {
@@ -28,43 +39,24 @@ installSessionGitPaneCommonModuleMocks({
             },
         });
     },
-    typography: () => ({
-        Typography: {
-            default: () => ({}),
-            mono: () => ({}),
-            eyebrow: () => ({}),
-            keyHint: () => ({}),
-        },
-    }),
 });
 
-vi.mock('@expo/vector-icons', () => ({
-    Octicons: 'Octicons',
-}));
-
-vi.mock('@/components/sessions/files/SourceControlBranchSummary', () => ({
-    SourceControlBranchSummary: (props: any) => React.createElement('SourceControlBranchSummary', props),
-}));
-
-vi.mock('@/components/sessions/sourceControl/commitSelection/ScmChangesSelectionHeaderRow', () => ({
-    ScmChangesSelectionHeaderRow: (props: any) => React.createElement('ScmChangesSelectionHeaderRow', props),
-}));
-
-vi.mock('@/components/sessions/sourceControl/commitComposer/ScmCommitComposerCard', () => ({
-    ScmCommitComposerCard: (props: any) => React.createElement('ScmCommitComposerCard', props),
-}));
-
-vi.mock('@/components/sessions/sourceControl/changes/ScmChangeRow', () => ({
-    ScmChangeRow: (props: any) => React.createElement('ScmChangeRow', props),
-    resolveScmChangeStatsColumnWidth: () => 38,
-}));
-
 describe('SessionRightPanelGitCommitTab (draft debounce)', () => {
-    it('debounces commit draft persistence so typing does not update pane state on every keystroke', async () => {
-        const onCommitDraftMessageChange = vi.fn();
+    it('debounces typing into the session draft and restores the persisted message after remount', async () => {
+        resetSessionDraftValueCachesForTests();
+        const { prepareSessionDraftPersistenceStorage } = await import('@/sync/ops/sessionDrafts/sessionDraftPersistenceStorage');
+        await prepareSessionDraftPersistenceStorage();
+        const { upsertServerProfile, resolveServerProfileScopeIdForIdentifier } = await import('@/sync/domains/server/serverProfiles');
+        const profile = await upsertServerProfile({ serverUrl: 'https://git-draft.example.test', name: 'Git draft test' });
+        const scope = { serverId: resolveServerProfileScopeIdForIdentifier(profile.id), accountId: 'account-git-draft' };
+        const { useSessionScmDraft } = await import('@/hooks/session/sourceControl/useSessionScmDraft');
+        let available = false;
         const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
 
-        const screen = await renderScreen(<SessionRightPanelGitCommitTab
+        function Controller() {
+            const draft = useSessionScmDraft({ sessionId: 's1', serverId: profile.id });
+            available = draft.available;
+            return <SessionRightPanelGitCommitTab
             theme={gitCommitTabTheme}
             sessionId="s1"
             sessionPath="/workspace"
@@ -79,6 +71,8 @@ describe('SessionRightPanelGitCommitTab (draft debounce)', () => {
             commitAllowed={false}
             commitBlockedMessage={null}
             changedFilesViewMode="repository"
+            sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
+            sessionCheckpointOverlap="unknown"
 
             allRepositoryChangedFiles={[] as any}
             sessionAttributedFiles={[] as any}
@@ -94,84 +88,36 @@ describe('SessionRightPanelGitCommitTab (draft debounce)', () => {
             onToggleSelectionForFile={() => {}}
             renderFileActions={() => null}
             renderFileTrailingActions={() => null}
-            commitDraftMessage=""
-            onCommitDraftMessageChange={onCommitDraftMessageChange}
+            commitDraftMessage={draft.draft.commitMessage}
+            onCommitDraftMessageChange={draft.setCommitMessage}
             onCommitFromMessage={() => {}}
             commitMessageGeneratorEnabled={false}
             onGenerateCommitMessageSuggestion={async () => ({ ok: true, message: '' })}
             scmStatusFiles={null}
             showCommitComposer={true}
-        />);
+        />;
+        }
+        const screen = await renderScreen(<Controller />);
+        await flushHookEffects({ cycles: 3 });
+        expect(available).toBe(true);
 
-        const composer = screen.findByProps({ variant: 'railFooter' });
 
-        act(() => {
-            composer.props.onDraftMessageChange('h');
-            composer.props.onDraftMessageChange('he');
-            composer.props.onDraftMessageChange('hel');
-        });
-
-        expect(onCommitDraftMessageChange).toHaveBeenCalledTimes(0);
-
-        await act(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 400));
-        });
-
-        expect(onCommitDraftMessageChange).toHaveBeenCalledTimes(1);
-        expect(onCommitDraftMessageChange).toHaveBeenCalledWith('hel');
-    });
-
-    it('passes the commit-adjacent push action through to the composer', async () => {
-        const pushAction = {
-            label: 'Push to origin/main',
-            disabled: false,
-            busy: false,
-            onPress: vi.fn(),
-        };
-        const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
-
-        const screen = await renderScreen(<SessionRightPanelGitCommitTab
-            theme={gitCommitTabTheme}
-            sessionId="s1"
-            sessionPath="/workspace"
-            backendLabel="Git"
-            commitActionLabel="Commit"
-            scmSnapshot={null}
-            hasConflicts={false}
-            scmOperationBusy={false}
-            scmOperationStatus={null}
-            hasGlobalOperationInFlight={false}
-            inFlightScmOperation={null}
-            commitAllowed={false}
-            commitBlockedMessage={null}
-            changedFilesViewMode="repository"
-
-            allRepositoryChangedFiles={[] as any}
-            sessionAttributedFiles={[] as any}
-            repositoryOnlyFiles={[] as any}
-
-            repositorySelectedCount={0}
-            onSelectAll={() => {}}
-            onSelectNone={() => {}}
-            disableSelectAll={true}
-            disableSelectNone={true}
-            onFilePress={() => {}}
-            onFilePressPinned={() => {}}
-            onToggleSelectionForFile={() => {}}
-            renderFileActions={() => null}
-            renderFileTrailingActions={() => null}
-            commitDraftMessage=""
-            onCommitDraftMessageChange={() => {}}
-            onCommitFromMessage={() => {}}
-            commitMessageGeneratorEnabled={false}
-            onGenerateCommitMessageSuggestion={async () => ({ ok: true, message: '' })}
-            scmStatusFiles={null}
-            showCommitComposer={true}
-            commitAdjacentPushAction={pushAction}
-        />);
-
-        const composer = screen.findByProps({ variant: 'railFooter' });
-
-        expect(composer.props.pushShortcut).toBe(pushAction);
+        vi.useFakeTimers();
+        try {
+            act(() => {
+                screen.changeTextByTestId('scm-commit-message', 'h');
+                screen.changeTextByTestId('scm-commit-message', 'he');
+                screen.changeTextByTestId('scm-commit-message', 'hel');
+            });
+            expect(readSessionScmDraft(scope, 's1').commitMessage).toBe('');
+            await act(async () => { vi.advanceTimersByTime(350); });
+            expect(readSessionScmDraft(scope, 's1').commitMessage).toBe('hel');
+        } finally {
+            vi.useRealTimers();
+        }
+        await act(async () => { screen.tree.unmount(); });
+        const remounted = await renderScreen(<Controller />);
+        await flushHookEffects({ cycles: 3 });
+        expect(remounted.findByTestId('scm-commit-message')?.props.value).toBe('hel');
     });
 });

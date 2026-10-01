@@ -65,7 +65,7 @@ const SESSION_COCKPIT_TAB_SCREEN_OPTIONS = {
 } as const;
 const WebInertView = View as React.ComponentType<ViewProps & Pick<React.HTMLAttributes<HTMLElement>, 'inert'>>;
 
-type SessionCockpitTabNavigatorProps = Omit<SessionCockpitSurfaceScreenProps, 'surface'> & Readonly<{
+type SessionCockpitTabNavigatorProps = Omit<SessionCockpitSurfaceScreenProps, 'surface' | 'openWorkStateRequestKey' | 'onRequestOpenWorkState'> & Readonly<{
     initialSurface: SessionMobileSurface;
 }>;
 
@@ -241,6 +241,17 @@ export const SessionCockpitTabNavigator = React.memo((props: SessionCockpitTabNa
         if (!surface) return;
         commitNavigatorSurface(surface);
     }, [commitNavigatorSurface]);
+    const [openWorkStateRequestKey, setOpenWorkStateRequestKey] = React.useState<number | null>(null);
+    const requestOpenWorkState = React.useCallback(() => {
+        setOpenWorkStateRequestKey((current) => (current ?? 0) + 1);
+    }, []);
+    React.useEffect(() => {
+        // The request key is an ephemeral reveal intent for one exact Session
+        // address. Retained tab scenes can survive route updates, so retire the
+        // old intent when either the Session or its Home/account realm changes;
+        // a new Companion reveal then starts from a fresh sequence.
+        setOpenWorkStateRequestKey(null);
+    }, [retentionRealm]);
 
     return (
         <SessionBoardControllerProvider
@@ -285,7 +296,12 @@ export const SessionCockpitTabNavigator = React.memo((props: SessionCockpitTabNa
                                                     },
                                                 }}
                                             >
-                                                <SessionCockpitSurfaceScreen {...props} surface={surface} />
+                                                <SessionCockpitSurfaceScreen
+                                                    {...props}
+                                                    surface={surface}
+                                                    openWorkStateRequestKey={surface === 'chat' ? openWorkStateRequestKey : null}
+                                                    onRequestOpenWorkState={requestOpenWorkState}
+                                                />
                                             </SessionCockpitSurfaceNavigationProvider>
                                         </SessionCockpitSceneActivityBoundary>
                                     )}

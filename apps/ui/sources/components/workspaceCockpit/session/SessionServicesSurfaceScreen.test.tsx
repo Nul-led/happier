@@ -28,6 +28,21 @@ const useFeatureDecisionMock = vi.hoisted(() => vi.fn((featureId: FeatureId, _sc
     scope: { scopeKind: 'runtime' },
 })));
 const modalConfirmMock = vi.hoisted(() => vi.fn(async () => true));
+/**
+ * The public-link consequence sheet (`showLocalServiceExposureSheet`, F0 §3.D) is one `Modal.show`
+ * card that returns the chosen link type and lifetime; answer it with the first of each.
+ */
+const modalShowMock = vi.hoisted(() => vi.fn((config: unknown) => {
+    const props = (config as { props?: {
+        modeChoices: readonly { mode: string }[];
+        ttlChoices: readonly { ttlMs: number }[];
+        onResolve: (decision: { mode: string; ttlMs: number } | null) => void;
+    } }).props;
+    const mode = props?.modeChoices[0];
+    const ttl = props?.ttlChoices[0];
+    props?.onResolve(mode && ttl ? { mode: mode.mode, ttlMs: ttl.ttlMs } : null);
+    return 'modal-id';
+}));
 
 vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: (featureId: FeatureId, scope?: unknown) => useFeatureDecisionMock(featureId, scope),
@@ -37,7 +52,7 @@ vi.mock('@/modal', async () => {
     const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
     return createModalModuleMock({
         confirmResult: true,
-        spies: { confirm: modalConfirmMock },
+        spies: { confirm: modalConfirmMock, show: modalShowMock as never },
     }).module;
 });
 
@@ -137,6 +152,7 @@ describe('SessionServicesSurfaceScreen', () => {
     beforeEach(() => {
         useFeatureDecisionMock.mockImplementation((featureId: FeatureId): FeatureDecision => enabledDecision(featureId));
         modalConfirmMock.mockClear();
+        modalShowMock.mockClear();
     });
 
     it('passes supplied local service launcher state into the mobile Services pane', async () => {
@@ -272,11 +288,17 @@ describe('SessionServicesSurfaceScreen', () => {
         );
 
         await pressTestInstanceAsync(
+            screen.findByTestId('session-mobile-services-row:preview:mobile-feed-item'),
+            'session-mobile-services-row:preview:mobile-feed-item',
+        );
+        await pressTestInstanceAsync(
             screen.findByTestId('session-mobile-services-row:preview:mobile-feed-public-preview-target:preview-mobile-create'),
             'session-mobile-services-row:preview:mobile-feed-public-preview-target:preview-mobile-create',
         );
 
-        expect(modalConfirmMock).toHaveBeenCalledOnce();
+        for (let i = 0; i < 8; i += 1) await Promise.resolve();
+        // The consequence sheet is the consent (one card, not a confirm plus two prompts).
+        expect(modalShowMock).toHaveBeenCalledOnce();
         expect(runtimeActionExecute).toHaveBeenCalledExactlyOnceWith({
             actionId: 'localServices.publicPreview.create',
             input: {

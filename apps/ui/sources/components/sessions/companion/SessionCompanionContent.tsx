@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ScrollView, type LayoutChangeEvent } from 'react-native';
+import { ScrollView, View, type LayoutChangeEvent } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { SessionWidgetHost } from '@/components/sessions/board/SessionWidgetHost';
@@ -20,6 +20,17 @@ import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { publishPresentationNotice } from '@/components/sessions/presentation/presentationNotices';
 
+import { useWidgetFrameSurfaceDefault } from '@/components/widgets/frame/useWidgetFrameStyle';
+import type { WidgetFrameStyle } from '@/components/widgets/frame/WidgetFrame';
+import { resolveWidgetFrameStyle } from '@/components/widgets/frame/widgetFrameStyle';
+
+import {
+    isSessionCompanionGlanceItem,
+    SessionCompanionGlance,
+    SessionCompanionGlancePreview,
+    sessionCompanionGlanceLabel,
+    type SessionCompanionGlanceItem,
+} from './glances/SessionCompanionGlance';
 import { SessionCompanionItemFrame } from './SessionCompanionItemFrame';
 import {
     applySessionCompanionMutationWithNotice,
@@ -33,8 +44,24 @@ import {
     type SessionCompanionContentItem,
 } from './sessionCompanionContentModel';
 import type { SessionCompanionController } from './state/useSessionCompanionController';
-import { SESSION_SUMMARY_COMPANION_ITEM } from './state/sessionCompanionPreference';
-import { SessionSummaryCard, type SessionSummaryDestinationHandlers } from './summary/SessionSummaryCard';
+import {
+    SESSION_SUMMARY_COMPANION_ITEM,
+    sessionCompanionItemKey,
+    type SessionCompanionBuiltinItemId,
+} from './state/sessionCompanionPreference';
+import {
+    SessionSummaryCard,
+    type SessionSummaryAnswerPermission,
+    type SessionSummaryDestinationHandlers,
+} from './summary/SessionSummaryCard';
+import { SessionAgentPlanCard, type SessionAgentPlanActivity } from './plan/SessionAgentPlanCard';
+import { SessionCompanionAddControl, type SessionCompanionAddBinding } from './picker/SessionCompanionAddControl';
+import { SessionCompanionDropSlot } from './drop/SessionCompanionDropSlot';
+import type { SessionPendingPermission } from '@/sync/ops/sessionPendingPermissions';
+import { useSessionMachineName } from '@/components/sessions/agents/presentation/useSessionMachineName';
+import { showPendingPermissionInChat } from './summary/showPendingPermissionInChat';
+import { answerSessionPermission } from '@/sync/ops/sessionPermissionAnswers';
+import { createAppSessionTranscriptActions } from '@/components/sessions/transcript/source/appSessionTranscriptActions';
 import { useSessionSummaryModel } from './summary/useSessionSummaryModel';
 import {
     resolveSessionCompanionOuterRailWidthPx,
@@ -44,10 +71,11 @@ import {
 const stylesheet = StyleSheet.create(() => ({
     scroll: { flex: 1, minHeight: 0 },
     content: {
-        gap: 12,
-        paddingVertical: 12,
+        paddingTop: 2,
+        paddingBottom: 12,
         paddingHorizontal: SESSION_COMPANION_CONTENT_HORIZONTAL_PADDING_PX,
     },
+    stateControls: { flexDirection: 'row', justifyContent: 'flex-end' },
 }));
 
 type PendingWidgetState = Readonly<{
@@ -57,8 +85,13 @@ type PendingWidgetState = Readonly<{
     diagnosticCode?: string;
 }>;
 
+/** The Summary hero is the Companion's own anchor; every other item is a widget in the frame. */
+function isCompanionFramedItem(entry: SessionCompanionContentItem): boolean {
+    return entry.kind !== 'summary' && entry.kind !== 'pending_widget' && entry.kind !== 'missing_widget';
+}
+
 function companionItemMeasurementKey(entry: SessionCompanionContentItem): string {
-    return entry.kind === 'summary' ? 'builtin:session_summary' : `widget:${entry.ref.widgetId}`;
+    return sessionCompanionItemKey(entry.ref);
 }
 
 function resolvePendingWidgetState(
@@ -143,9 +176,16 @@ export type SessionCompanionContentProps = Readonly<{
     onRevealBoardItem?: (itemId: string) => void;
     /** Personal plugin settings recovery; independent from either removal. */
     onManageBoardItemPlugin?: (itemId: string) => void;
-    /** Shared Board deletion through the canonical controller and confirmation. */
-    onRemoveBoardItem?: (itemId: string) => void;
     onOpenFullSurface?: () => void;
+    /** The one Add to Companion path; absent for a measurement pass or a read-only host. */
+    addBinding?: Omit<SessionCompanionAddBinding, 'refs' | 'snapshot' | 'addItem'>;
+    /** Hosts that seat Add elsewhere (the phone's navigation bar) hide the column's row. */
+    addPlacement?: 'column' | 'external';
+    /**
+     * Hosts that replace the transcript (the phone's Companion destination) reveal it
+     * before "Show in chat" lands; a host beside a live transcript passes nothing.
+     */
+    revealTranscript?: () => void;
     /** The rail is intentionally condensed; the Cockpit/full route is uncapped. */
     presentation?: 'rail' | 'full';
     testID?: string;
@@ -201,6 +241,13 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
     // no person in front of it. Both halves of the required pair — pointer drag
     // and the explicit Move commands — appear together or not at all.
     const reorderable = props.measurementOnly !== true && items.length > 1;
+    // One subscription to the Companion's Appearance default; each item resolves against it.
+    const frameSurfaceDefault = useWidgetFrameSurfaceDefault('companion');
+    const frameStyleOf = (entry: SessionCompanionContentItem): WidgetFrameStyle => resolveWidgetFrameStyle({
+        placement: 'companion',
+        surfaceDefault: frameSurfaceDefault,
+        override: entry.ref.frameStyle ?? null,
+    });
     // Viewer-local card geometry for the shared pointer-drop resolver. It never
     // reaches persistence: a drop resolves to a semantic target index and the
     // Companion preference stores order, not pixels.
@@ -253,6 +300,23 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
         ?? defaultSessionBoardSourceAvailability;
 
     const summary = useSessionSummaryModel({ session: props.session, serverId: props.serverId ?? null });
+    const sessionId = props.session.id;
+    const actions = React.useMemo(() => createAppSessionTranscriptActions(sessionId, props.serverId ?? null), [sessionId, props.serverId]);
+    // The ONE permission-answer owner the chat card and plugin Host API use, bound to
+    // this exact Session. A measurement pass never answers anything.
+    const answerPermission = React.useCallback<SessionSummaryAnswerPermission>((request, answer) => (
+        answerSessionPermission({
+            requestId: request.requestId,
+            ...(request.turnId !== undefined ? { turnId: request.turnId } : {}),
+            toolName: request.toolName,
+            answer,
+            policy: request.policy,
+            respondToPermission: actions.respondToPermission,
+        })
+    ), [actions]);
+    const planActivity: SessionAgentPlanActivity = summary.needsYou
+        ? 'held'
+        : summary.status?.state === 'thinking' ? 'working' : 'idle';
     // Freshness is not authorization. Last-known Board content remains a valid
     // navigation target while its Home is reachable; CAS owns write concurrency.
     const boardReachable = board?.reachability === 'reachable';
@@ -279,6 +343,13 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
             apply: (companion) => companion.moveItem(entry.ref, toIndex),
         });
     }, [mutateCompanion]);
+    const setCompanionItemFrameStyle = React.useCallback((entry: SessionCompanionContentItem, style: WidgetFrameStyle | null) => {
+        mutateCompanion({
+            kind: 'companion.item.frameStyle.set',
+            message: t('widgetFrame.noticeChanged'),
+            apply: (companion) => companion.setItemFrameStyle(entry.ref, style),
+        });
+    }, [mutateCompanion]);
     const removeFromCompanion = React.useCallback((entry: SessionCompanionContentItem) => {
         mutateCompanion({
             kind: 'companion.item.remove',
@@ -286,6 +357,37 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
             apply: (companion) => companion.removeItem(entry.ref),
         });
     }, [mutateCompanion]);
+    const machineName = useSessionMachineName(props.session.id, props.serverId ?? null);
+    const revealTranscript = props.revealTranscript;
+    const showPermissionInChat = React.useCallback((request: SessionPendingPermission) => {
+        showPendingPermissionInChat({
+            sessionId,
+            requestId: request.requestId,
+            ...(revealTranscript ? { revealTranscript } : {}),
+        });
+    }, [revealTranscript, sessionId]);
+    const [pickerRequest, setPickerRequest] = React.useState(0);
+    const addItem = React.useCallback((ref: SessionCompanionAddBinding['refs'][number]) => {
+        mutateCompanion({
+            kind: 'companion.item.add',
+            message: t('sessionBoard.companion.notices.added'),
+            apply: (companion) => companion.addItem(ref),
+        });
+    }, [mutateCompanion]);
+    const addBindingInput = props.addBinding;
+    const glanceServerId = props.serverId ?? null;
+    // The add popover's Glances tiles show the real glance (Changes from the cached snapshot; Local
+    // services as its frame until added, so a closed popover never starts the daemon watch).
+    const renderGlancePreview = React.useCallback((id: SessionCompanionBuiltinItemId): React.ReactNode => (
+        id === 'changes' || id === 'local_services'
+            ? <SessionCompanionGlancePreview kind={id} sessionId={sessionId} serverId={glanceServerId} testID={`${testID}-add-preview-${id}`} />
+            : null
+    ), [glanceServerId, sessionId, testID]);
+    const addBinding = React.useMemo<SessionCompanionAddBinding | null>(() => (
+        addBindingInput && !props.measurementOnly
+            ? { ...addBindingInput, refs: controller.preference.items, snapshot: board, addItem, renderGlancePreview }
+            : null
+    ), [addBindingInput, addItem, board, controller.preference.items, props.measurementOnly, renderGlancePreview]);
 
     // A measurement pass must size the SAME card the live rail shows: compact rows,
     // row destinations and the "More details" overflow all shape its height. It keeps
@@ -298,7 +400,11 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
     const summaryOpenFullSurface = props.measurementOnly && props.onOpenFullSurface
         ? INERT_SUMMARY_HANDLER
         : props.onOpenFullSurface;
-    const renderBody = (entry: SessionCompanionContentItem): React.ReactNode => {
+    const renderBody = (
+        entry: SessionCompanionContentItem,
+        headerAccessory: React.ReactNode,
+        frameStyle: WidgetFrameStyle,
+    ): React.ReactNode => {
         if (entry.kind === 'summary') {
             return (
                 <SessionSummaryCard
@@ -307,10 +413,53 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
                     testID={`${testID}-summary`}
                     {...(summaryDestinations ? { destinations: summaryDestinations } : {})}
                     {...(summaryOpenFullSurface ? { onOpenFullSurface: summaryOpenFullSurface } : {})}
+                    {...(props.measurementOnly ? {} : { answerPermission })}
+                    {...(props.measurementOnly ? {} : { showPermissionInChat })}
+                    machineName={machineName}
+                    headerAccessory={headerAccessory}
                     presentation={full ? 'full' : 'card'}
                 />
             );
         }
+        if (isSessionCompanionGlanceItem(entry)) {
+            return (
+                <SessionCompanionGlance
+                    entry={entry}
+                    sessionId={props.session.id}
+                    serverId={props.serverId ?? null}
+                    frameStyle={frameStyle}
+                    headerAccessory={headerAccessory}
+                    measurementOnly={props.measurementOnly === true}
+                    testID={`${testID}-glance-${companionItemMeasurementKey(entry)}`}
+                />
+            );
+        }
+        if (entry.kind === 'plan') {
+            return (
+                <SessionAgentPlanCard
+                    plan={summary.plan}
+                    agentLabel={summary.agentLabel}
+                    activity={planActivity}
+                    headerAccessory={headerAccessory}
+                    frameStyle={frameStyle}
+                    testID={`${testID}-plan`}
+                />
+            );
+        }
+        // Pending, removed and widget items keep their own typed states; the
+        // placement's controls sit above them on the same line as their title.
+        return (
+            <>
+                {entry.kind === 'widget' ? null : <View style={styles.stateControls}>{headerAccessory}</View>}
+                {renderWidgetBody(entry, headerAccessory, frameStyle)}
+            </>
+        );
+    };
+    const renderWidgetBody = (
+        entry: Exclude<SessionCompanionContentItem, { kind: 'summary' } | { kind: 'plan' } | SessionCompanionGlanceItem>,
+        headerAccessory: React.ReactNode,
+        frameStyle: WidgetFrameStyle,
+    ): React.ReactNode => {
         if (entry.kind === 'pending_widget') {
             // Not resolved yet. Uncertainty is never relabelled as a deletion.
             const retry = (entry.inventory.kind === 'offline'
@@ -342,6 +491,14 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
                     reason={t('sessionBoard.item.removed.reason')}
                     diagnosticCode="session_companion_widget_removed"
                     accessibilitySemantics="status"
+                    // Only an authoritative inventory reaches this state, so dropping the
+                    // reference is the one next step; it never touches the Board.
+                    {...(props.measurementOnly ? {} : {
+                        action: {
+                            label: t('sessionBoard.companion.actions.removeFromCompanion'),
+                            onPress: () => { removeFromCompanion(entry); },
+                        },
+                    })}
                 />
             );
         }
@@ -351,6 +508,9 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
                 session={props.session}
                 item={entry.item}
                 host="companion"
+                frame="section"
+                frameStyle={frameStyle}
+                headerAccessory={headerAccessory}
                 // A cold sizing pass is deliberately not a visible-host
                 // candidate. `null` forces installed and hosted sources through
                 // their incumbent inert preview path, so no plugin frame, Host
@@ -360,29 +520,14 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
                     : props.resolvePrimaryHost(entry.ref.widgetId)}
                 density={full ? 'full' : 'compact'}
                 expanded={full}
-                canEdit={!props.measurementOnly && board?.canEdit === true}
+                // Editing and deleting the shared record happen on the Board; the
+                // Companion keeps a reference and offers only its own actions.
+                canEdit={false}
                 executableCurrentness={board
                     ? resolveSessionBoardExecutableCurrentness(board, entry.item, pluginRuntime)
                     : 'unverified'}
                 heightBounds={{ min: 96, max: 520 }}
                 resolveSourceAvailability={resolveSourceAvailability}
-                {...(!props.measurementOnly && boardReachable && props.onRevealBoardItem
-                    ? {
-                        onOpenHere: () => props.onRevealBoardItem?.(entry.ref.widgetId),
-                        // The shared host's default label is "Open here", which
-                        // would promise the item is about to run in THIS rail.
-                        // It is not: this control reaches the Board, exactly like
-                        // the sibling item-menu entry, and the sidebar overrides
-                        // the same label for the same reason.
-                        openActionLabel: t('sessionBoard.companion.actions.openOnBoard'),
-                    }
-                    : {})}
-                {...(!props.measurementOnly && props.onManageBoardItemPlugin
-                    ? { onManagePlugin: () => props.onManageBoardItemPlugin?.(entry.ref.widgetId) }
-                    : {})}
-                {...(!props.measurementOnly && board?.canEdit === true && props.onRemoveBoardItem
-                    ? { onRemove: () => props.onRemoveBoardItem?.(entry.ref.widgetId) }
-                    : {})}
                 {...(pluginRuntime ? { pluginRuntime } : {})}
                 {...(!props.measurementOnly && props.callerHostedHtmlRuntime
                     ? { callerHostedHtmlRuntime: props.callerHostedHtmlRuntime }
@@ -395,9 +540,13 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
     const label = (entry: SessionCompanionContentItem): string => (
         entry.kind === 'summary'
             ? t('sessionBoard.companion.summary.title')
+            : entry.kind === 'plan'
+            ? t('sessionCompanion.plan.title')
             : entry.kind === 'widget'
                 ? resolveSessionBoardItemTitle(entry.item.state)
-                : t('sessionBoard.item.untitled')
+                : isSessionCompanionGlanceItem(entry)
+                    ? sessionCompanionGlanceLabel(entry)
+                    : t('sessionBoard.item.untitled')
     );
 
     return (
@@ -408,7 +557,14 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
                     kind="empty"
                     title={t('sessionBoard.companion.empty.title')}
                     reason={t('sessionBoard.companion.empty.reason')}
+                    note={t('sessionBoard.companion.empty.note')}
                     accessibilitySemantics="status"
+                    {...(!addBinding ? {} : {
+                        secondaryAction: {
+                            label: t('sessionCompanion.picker.chooseWidget'),
+                            onPress: () => { setPickerRequest((request) => request + 1); },
+                        },
+                    })}
                     {...(props.measurementOnly ? {} : {
                         action: {
                             label: t('sessionBoard.companion.actions.addSummary'),
@@ -424,11 +580,16 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
                 />
             ) : items.map((entry, index) => {
                 const key = companionItemMeasurementKey(entry);
+                const frameStyle = frameStyleOf(entry);
+                // Everything but the Summary hero draws itself in the widget frame.
+                const framed = isCompanionFramedItem(entry);
                 return (
                     <SessionCompanionItemFrame
                         key={key}
                         testID={`${testID}-item-${key}`}
                         label={label(entry)}
+                        separated={index > 0}
+                        {...(framed ? { flush: frameStyle } : {})}
                         onLayout={props.onMeasuredCardBounds || reorderable
                             ? (event) => reportCardLayout(key, event)
                             : undefined}
@@ -445,15 +606,40 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
                             count: items.length,
                             moveTo: (toIndex) => { moveCompanionItemTo(entry, toIndex); },
                             remove: () => { removeFromCompanion(entry); },
-                            ...(entry.kind !== 'summary' && boardReachable && props.onRevealBoardItem
-                                ? { openOnBoard: () => props.onRevealBoardItem?.(entry.ref.widgetId) }
+                            ...(entry.ref.kind === 'widget' && boardReachable && props.onRevealBoardItem
+                                ? { openOnBoard: () => props.onRevealBoardItem?.(entry.ref.kind === 'widget' ? entry.ref.widgetId : '') }
                                 : {}),
+                            ...(entry.kind === 'widget' && props.onManageBoardItemPlugin
+                                && entry.item.state.kind === 'ready'
+                                && entry.item.state.item.source.kind === 'installedSurface'
+                                ? { managePlugin: () => props.onManageBoardItemPlugin?.(entry.ref.widgetId) }
+                                : {}),
+                            ...(framed ? {
+                                frame: {
+                                    surfaceDefault: frameSurfaceDefault,
+                                    override: entry.ref.frameStyle ?? null,
+                                    onSet: (style: WidgetFrameStyle | null) => setCompanionItemFrameStyle(entry, style),
+                                },
+                            } : {}),
                         })}
                     >
-                        {renderBody(entry)}
+                        {(accessory) => renderBody(entry, accessory, frameStyle)}
                     </SessionCompanionItemFrame>
                 );
             })}
+            {!full && !props.measurementOnly ? (
+                <SessionCompanionDropSlot sessionId={props.session.id} testID={`${testID}-drop`} />
+            ) : null}
+            {addBinding ? (
+                // Rendered while empty too, so "Choose a widget…" has its anchor; the
+                // phone seats the visible control in its navigation bar instead.
+                <SessionCompanionAddControl
+                    binding={addBinding}
+                    variant={props.addPlacement === 'external' || items.length === 0 ? 'anchor' : 'row'}
+                    openRequest={pickerRequest}
+                    testID={`${testID}-add`}
+                />
+            ) : null}
         </ScrollView>
     );
 });

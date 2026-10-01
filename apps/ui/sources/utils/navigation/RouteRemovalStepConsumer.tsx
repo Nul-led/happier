@@ -1,5 +1,7 @@
 import * as React from 'react';
 import { NavigationContext, usePreventRemove } from '@react-navigation/native';
+import { useDestinationInstanceKey } from '@/components/appShell/workspace/DestinationInstanceHost';
+import { useOptionalWorkspaceNavigation } from '@/components/appShell/workspace/WorkspaceNavigationContext';
 
 /**
  * The one owner of "this screen has an internal step; spend it before leaving".
@@ -25,6 +27,8 @@ import { NavigationContext, usePreventRemove } from '@react-navigation/native';
  * screen never becomes a trap: `consume` returning `false` is "I have no step",
  * and the user leaves on that same press.
  *
+ * In a hosted destination the workspace Back owner invokes this same step
+ * before traversing its own history; no outer Expo route removal is installed.
  * It renders nothing and owns no route. `usePreventRemove` requires a navigator
  * in scope, so the hook lives one component down from the null check rather than
  * being called conditionally.
@@ -42,6 +46,8 @@ export function RouteRemovalStepConsumer(props: Readonly<{
     consume: () => boolean;
 }>): React.ReactElement | null {
     const navigation = React.useContext(NavigationContext);
+    const tabId = useDestinationInstanceKey();
+    if (tabId !== null) return <HostedRouteRemovalStepConsumer {...props} tabId={tabId} />;
     if (!props.active || navigation == null) return null;
     return (
         <ActiveRouteRemovalStepConsumer
@@ -49,6 +55,21 @@ export function RouteRemovalStepConsumer(props: Readonly<{
             consume={props.consume}
         />
     );
+}
+
+function HostedRouteRemovalStepConsumer(props: Readonly<{
+    active: boolean;
+    consume: () => boolean;
+    tabId: string;
+}>): null {
+    const registerBackStep = useOptionalWorkspaceNavigation()?.registerBackStep;
+    const consumeRef = React.useRef(props.consume);
+    consumeRef.current = props.consume;
+    React.useEffect(() => {
+        if (!props.active || !registerBackStep) return;
+        return registerBackStep(props.tabId, () => consumeRef.current());
+    }, [props.active, props.tabId, registerBackStep]);
+    return null;
 }
 
 type RouteNavigationDispatch = Readonly<{

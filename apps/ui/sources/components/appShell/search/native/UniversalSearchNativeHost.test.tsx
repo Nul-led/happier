@@ -96,8 +96,8 @@ describe('UniversalSearchNativeHost', () => {
     it('seats the controller-owned catalog in one canonical bottom-placed input', async () => {
         const { UniversalSearchNativeHost } = await import('./UniversalSearchNativeHost');
         const { SelectionList } = await import('@/components/ui/selectionList');
-        const scopeControl = React.createElement('ScopeControl');
-        const props = defaultProps({ inputPrefix: scopeControl });
+        const scopeFilters = [{ id: 'scope', label: 'Home', valueLabel: 'Studio' }];
+        const props = defaultProps({ filters: scopeFilters });
 
         const screen = await renderScreen(<UniversalSearchNativeHost {...(props as any)} />);
 
@@ -109,7 +109,7 @@ describe('UniversalSearchNativeHost', () => {
         expect(list.props.inputValue).toBe('');
         expect(list.props.onChangeInputValue).toBe(props.onChangeQuery);
         expect(list.props.onSelect).toBe(props.onSelect);
-        expect(list.props.inputPrefix).toBe(scopeControl);
+        expect(list.props.filters).toBe(scopeFilters);
         // One query owner: the host never renders a search field of its own beside the list's.
         expect(screen.root.findAllByType('TextInput' as unknown as React.ComponentType)).toHaveLength(1);
     });

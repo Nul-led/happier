@@ -1,6 +1,4 @@
 import React from 'react';
-import { Platform } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 import {
     FEATURE_IDS,
     featureRequiresServerSnapshot,
@@ -14,7 +12,7 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { useSettingMutable, useLocalSettingMutable } from '@/sync/domains/state/storage';
 import { Switch } from '@/components/ui/forms/Switch';
-import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { t } from '@/text';
 import { FeatureDiagnosticsPanel } from '@/components/settings/features/FeatureDiagnosticsPanel';
 import {
@@ -25,64 +23,28 @@ import {
 } from '@/sync/domains/features/featureRegistry';
 import { getFeatureBuildPolicyDecision } from '@/sync/domains/features/featureBuildPolicy';
 import { useEffectiveServerSelection } from '@/hooks/server/useEffectiveServerSelection';
-import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import {
     useServerFeaturesMainSelectionSnapshot,
     useServerFeaturesRuntimeSnapshot,
 } from '@/sync/domains/features/featureDecisionRuntime';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor, SettingRow, SettingSection } from '@/components/settings/shell/SettingRow';
+import { settingRendersOnHost } from '@/components/settings/catalog/settingDeclarations';
+import { FEATURES_SETTINGS, resolveFeatureToggleSetting } from '@/components/settings/features/featuresSettings';
 
-export default React.memo(function FeaturesSettingsScreen() {
-    const { theme } = useUnistyles();
+export const WorkspaceRouteBody = React.memo(function FeaturesSettingsScreen() {
     const [experiments, setExperiments] = useSettingMutable('experiments');
     const [featureToggles, setFeatureToggles] = useSettingMutable('featureToggles');
     const [useProfiles, setUseProfiles] = useSettingMutable('useProfiles');
     const [commandPaletteEnabled, setCommandPaletteEnabled] = useSettingMutable('commandPaletteEnabled');
     const [embeddedTerminalDockLocation, setEmbeddedTerminalDockLocation] = useLocalSettingMutable('embeddedTerminalDockLocation');
     const [terminalRendererPreference, setTerminalRendererPreference] = useLocalSettingMutable('terminalRendererPreference');
-    const [showEnvironmentBadge, setShowEnvironmentBadge] = useSettingMutable('showEnvironmentBadge');
     const [useMachinePickerSearch, setUseMachinePickerSearch] = useSettingMutable('useMachinePickerSearch');
     const [usePathPickerSearch, setUsePathPickerSearch] = useSettingMutable('usePathPickerSearch');
     const [devModeEnabled] = useLocalSettingMutable('devModeEnabled');
 
     const toggleDefinitions = React.useMemo(() => listUiFeatureToggleDefinitions(), []);
     const selection = useEffectiveServerSelection();
-
-    const resolveLegacyIconColor = React.useCallback((color: string): string => {
-        const normalized = String(color).trim().toUpperCase();
-        switch (normalized) {
-            case '#007AFF':
-            case '#0A84FF':
-                return theme.colors.accent.blue;
-            case '#34C759':
-            case '#32D74B':
-                return theme.colors.state.success.foreground;
-            case '#FF9500':
-            case '#FF9F0A':
-                return theme.colors.accent.orange;
-            case '#AF52DE':
-            case '#BF5AF2':
-                return theme.colors.accent.purple;
-            case '#5856D6':
-            case '#5E5CE6':
-                return theme.colors.accent.indigo;
-            case '#FF3B30':
-            case '#FF453A':
-                return theme.colors.state.danger.foreground;
-            case '#FFCC00':
-            case '#FFD60A':
-                return theme.colors.accent.yellow;
-            default:
-                return color;
-        }
-    }, [
-        theme.colors.accent.blue,
-        theme.colors.accent.indigo,
-        theme.colors.accent.orange,
-        theme.colors.accent.purple,
-        theme.colors.accent.yellow,
-        theme.colors.state.success.foreground,
-        theme.colors.state.danger.foreground,
-    ]);
 
     const shouldProbeServerForToggleVisibility = React.useMemo(() => {
         for (const def of toggleDefinitions) {
@@ -213,8 +175,6 @@ export default React.memo(function FeaturesSettingsScreen() {
 
     const standardToggleDefinitions = visibleToggleDefinitions.filter((d) => !d.isExperimental);
     const experimentalToggleDefinitions = visibleToggleDefinitions.filter((d) => d.isExperimental);
-    const [embeddedTerminalDockMenuOpen, setEmbeddedTerminalDockMenuOpen] = React.useState(false);
-    const [terminalRendererMenuOpen, setTerminalRendererMenuOpen] = React.useState(false);
 
     const seedExperimentalFeatureToggleDefaults = React.useCallback(() => {
         const defaults = buildUiFeatureToggleDefaults({ experimentalOnly: true });
@@ -261,30 +221,6 @@ export default React.memo(function FeaturesSettingsScreen() {
         return resolveUiFeatureToggleEnabled(toggleSettings, 'terminal.embeddedPty');
     }, [isFeatureHardDisabledByServer, isLocallyBlockedByDependencies, toggleDefinitions, toggleSettings]);
 
-    const embeddedTerminalDockLocationLabel = React.useMemo(() => {
-        switch (embeddedTerminalDockLocation) {
-            case 'details':
-                return t('terminalEmbedded.location.details');
-            case 'bottom':
-                return t('terminalEmbedded.location.bottom');
-            case 'sidebar':
-            default:
-                return t('terminalEmbedded.location.sidebar');
-        }
-    }, [embeddedTerminalDockLocation]);
-
-    const terminalRendererPreferenceLabel = React.useMemo(() => {
-        switch (terminalRendererPreference) {
-            case 'xterm-webview':
-                return t('terminalEmbedded.settings.rendererXtermWebView');
-            case 'native':
-                return t('terminalEmbedded.settings.rendererNative');
-            case 'auto':
-            default:
-                return t('terminalEmbedded.settings.rendererAuto');
-        }
-    }, [terminalRendererPreference]);
-
     const applyLocalToggleChange = React.useCallback((featureId: FeatureId, next: boolean) => {
         const nextToggles: Record<string, boolean> = {
             ...(featureToggles ?? {}),
@@ -308,67 +244,134 @@ export default React.memo(function FeaturesSettingsScreen() {
         setFeatureToggles(nextToggles);
     }, [dependentsByFeatureId, featureToggles, setFeatureToggles]);
 
+    const renderToggleRow = (d: UiFeatureToggleDefinition) => {
+        const blockedByDependencies = isLocallyBlockedByDependencies(d.featureId);
+        const enabled = blockedByDependencies ? false : resolveUiFeatureToggleEnabled(toggleSettings, d.featureId);
+        const setting = resolveFeatureToggleSetting(d.featureId);
+        const row = (
+            <Item
+                title={t(d.titleKey)}
+                subtitle={t(d.subtitleKey)}
+                rightElement={
+                    <Switch
+                        testID={`settings-feature-toggle-${d.featureId}`}
+                        value={enabled}
+                        disabled={blockedByDependencies}
+                        onValueChange={(next) => applyLocalToggleChange(d.featureId, next)}
+                    />
+                }
+                showChevron={false}
+            />
+        );
+        return setting ? <SettingAnchor key={d.featureId} setting={setting}>{row}</SettingAnchor> : <React.Fragment key={d.featureId}>{row}</React.Fragment>;
+    };
+
     return (
-        <ItemList style={{ paddingTop: 0 }}>
-            {/* Standard feature toggles first */}
-            <ItemGroup>
-                <Item
-                    title={t('settingsFeatures.environmentBadge')}
-                    subtitle={t('settingsFeatures.environmentBadgeSubtitle')}
-                    icon={<Icon name="tag" size={29} color={theme.colors.accent.indigo} />}
-                    rightElement={<Switch value={showEnvironmentBadge} onValueChange={setShowEnvironmentBadge} />}
-                    showChevron={false}
-                />
-                <Item
-                    title={t('settingsFeatures.machinePickerSearch')}
-                    subtitle={t('settingsFeatures.machinePickerSearchSubtitle')}
-                    icon={<Icon name="magnifying-glass" size={29} color={theme.colors.accent.blue} />}
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settings.featuresSubtitle')} />
+            <ItemGroup
+                title={t(FEATURES_SETTINGS.sections.general.titleKey)}
+                description={t('settingsFeatures.generalDescription')}
+            >
+                <SettingRow
+                    setting={FEATURES_SETTINGS.settings.machinePickerSearch}
                     rightElement={<Switch value={useMachinePickerSearch} onValueChange={setUseMachinePickerSearch} />}
                     showChevron={false}
                 />
-                <Item
-                    title={t('settingsFeatures.pathPickerSearch')}
-                    subtitle={t('settingsFeatures.pathPickerSearchSubtitle')}
-                    icon={<Icon name="folder" size={29} color={theme.colors.accent.blue} />}
+                <SettingRow
+                    setting={FEATURES_SETTINGS.settings.pathPickerSearch}
                     rightElement={<Switch value={usePathPickerSearch} onValueChange={setUsePathPickerSearch} />}
                     showChevron={false}
                 />
-                <Item
-                    title={t('settingsFeatures.profiles')}
+                <SettingRow
+                    setting={FEATURES_SETTINGS.settings.profiles}
                     subtitle={useProfiles
                         ? t('settingsFeatures.profilesEnabled')
                         : t('settingsFeatures.profilesDisabled')}
-                    icon={<Icon name="person" size={29} color={theme.colors.accent.purple} />}
                     rightElement={<Switch value={useProfiles} onValueChange={setUseProfiles} />}
                     showChevron={false}
                 />
             </ItemGroup>
 
-            {/* Web-only Features */}
-            {Platform.OS === 'web' && (
+            {standardToggleDefinitions.length > 0 && (
+                // The terminal rows need the embedded terminal on; the section shows its switch.
+                <SettingSection section={FEATURES_SETTINGS.sectionRefs.optionalFeatures}>
                 <ItemGroup
-                    title={t('settingsFeatures.webFeatures')}
-                    footer={t('settingsFeatures.webFeaturesDescription')}
+                    title={t(FEATURES_SETTINGS.sections.optionalFeatures.titleKey)}
+                    description={t('settingsFeatures.localTogglesFooter')}
                 >
-                    <Item
-                        title={t('settingsFeatures.commandPalette')}
+                    {standardToggleDefinitions.flatMap((d) => {
+                        const rows = [renderToggleRow(d)];
+                        if (d.featureId !== 'terminal.embeddedPty' || !embeddedTerminalDockSettingVisible) return rows;
+                        // Where the terminal opens and how it draws belong right under the terminal itself.
+                        rows.push(
+                            <SettingAnchor key="terminalLocation" setting={FEATURES_SETTINGS.settings.terminalLocation}>
+                                <SegmentedChoiceItem<'sidebar' | 'details' | 'bottom'>
+                                    testID="settings-embedded-terminal-dock-location"
+                                    testIDPrefix="settings-embedded-terminal-dock-location"
+                                    title={t(FEATURES_SETTINGS.settings.terminalLocation.titleKey)}
+                                    options={[
+                                        { id: 'sidebar', label: t('terminalEmbedded.location.sidebar') },
+                                        { id: 'details', label: t('terminalEmbedded.location.details') },
+                                        { id: 'bottom', label: t('terminalEmbedded.location.bottom') },
+                                    ]}
+                                    value={embeddedTerminalDockLocation === 'details' || embeddedTerminalDockLocation === 'bottom'
+                                        ? embeddedTerminalDockLocation
+                                        : 'sidebar'}
+                                    onChange={setEmbeddedTerminalDockLocation}
+                                />
+                            </SettingAnchor>,
+                        );
+                        if (settingRendersOnHost(FEATURES_SETTINGS.settings.terminalRenderer)) {
+                            rows.push(
+                                <SettingAnchor key="terminalRenderer" setting={FEATURES_SETTINGS.settings.terminalRenderer}>
+                                    <SegmentedChoiceItem<'auto' | 'xterm-webview' | 'native'>
+                                        testID="settings-terminal-renderer-preference"
+                                        testIDPrefix="settings-terminal-renderer-preference"
+                                        title={t(FEATURES_SETTINGS.settings.terminalRenderer.titleKey)}
+                                        options={[
+                                            { id: 'auto', label: t('terminalEmbedded.settings.rendererAuto'), description: t('terminalEmbedded.settings.rendererAutoDescription') },
+                                            { id: 'xterm-webview', label: t('terminalEmbedded.settings.rendererXtermWebView'), description: t('terminalEmbedded.settings.rendererXtermWebViewDescription') },
+                                            { id: 'native', label: t('terminalEmbedded.settings.rendererNative'), description: t('terminalEmbedded.settings.rendererNativeDescription') },
+                                        ]}
+                                        value={terminalRendererPreference === 'xterm-webview' || terminalRendererPreference === 'native'
+                                            ? terminalRendererPreference
+                                            : 'auto'}
+                                        onChange={setTerminalRendererPreference}
+                                    />
+                                </SettingAnchor>,
+                            );
+                        }
+                        return rows;
+                    })}
+                </ItemGroup>
+                </SettingSection>
+            )}
+
+            {/* Web-only features */}
+            {settingRendersOnHost(FEATURES_SETTINGS.settings.commandPalette) && (
+                <ItemGroup
+                    title={t(FEATURES_SETTINGS.sections.webFeatures.titleKey)}
+                    description={t('settingsFeatures.webFeaturesDescription')}
+                >
+                    <SettingRow
+                        setting={FEATURES_SETTINGS.settings.commandPalette}
                         subtitle={commandPaletteEnabled ? t('settingsFeatures.commandPaletteEnabled') : t('settingsFeatures.commandPaletteDisabled')}
-                        icon={<Icon name="squares-four" size={29} color={theme.colors.accent.blue} />}
                         rightElement={<Switch value={commandPaletteEnabled} onValueChange={setCommandPaletteEnabled} />}
                         showChevron={false}
                     />
                 </ItemGroup>
             )}
 
-            {/* Experiments last */}
+            {/* Experiments last: the switch, then the experimental features it unlocks. */}
+            <SettingSection section={FEATURES_SETTINGS.sectionRefs.experiments}>
             <ItemGroup
-                title={t('settingsFeatures.experiments')}
-                footer={t('settingsFeatures.experimentsDescription')}
+                title={t(FEATURES_SETTINGS.sections.experiments.titleKey)}
+                description={t('settingsFeatures.experimentsDescription')}
             >
-                <Item
-                    title={t('settingsFeatures.experimentalFeatures')}
+                <SettingRow
+                    setting={FEATURES_SETTINGS.settings.experimentalFeatures}
                     subtitle={experiments ? t('settingsFeatures.experimentalFeaturesEnabled') : t('settingsFeatures.experimentalFeaturesDisabled')}
-                    icon={<Icon name="flask" size={29} color={theme.colors.accent.indigo} />}
                     rightElement={
                         <Switch
                             testID="settings-feature-experiments-toggle"
@@ -384,147 +387,9 @@ export default React.memo(function FeaturesSettingsScreen() {
                     }
                     showChevron={false}
                 />
+                {experiments ? experimentalToggleDefinitions.map(renderToggleRow) : null}
             </ItemGroup>
-
-            {standardToggleDefinitions.length > 0 && (
-                <ItemGroup
-                    title={t('settingsFeatures.localTogglesTitle')}
-                    footer={t('settingsFeatures.localTogglesFooter')}
-                >
-                    {standardToggleDefinitions.map((d) => {
-                        const blockedByDependencies = isLocallyBlockedByDependencies(d.featureId);
-                        const enabled = blockedByDependencies ? false : resolveUiFeatureToggleEnabled(toggleSettings, d.featureId);
-
-                        return (
-                            <React.Fragment key={d.featureId}>
-                                <Item
-                                    title={t(d.titleKey)}
-                                    subtitle={t(d.subtitleKey)}
-                                    icon={<Icon name={d.icon.ioniconName as IconName} size={29} color={resolveLegacyIconColor(d.icon.color)} />}
-                                    rightElement={
-                                        <Switch
-                                            testID={`settings-feature-toggle-${d.featureId}`}
-                                            value={enabled}
-                                            disabled={blockedByDependencies}
-                                            onValueChange={(next) => applyLocalToggleChange(d.featureId, next)}
-                                        />
-                                    }
-                                    showChevron={false}
-                                />
-
-                                {d.featureId === 'terminal.embeddedPty' && embeddedTerminalDockSettingVisible ? (
-                                    <>
-                                        <DropdownMenu
-                                            open={embeddedTerminalDockMenuOpen}
-                                            onOpenChange={setEmbeddedTerminalDockMenuOpen}
-                                            variant="selectable"
-                                            search={false}
-                                            selectedId={embeddedTerminalDockLocation}
-                                            showCategoryTitles={false}
-                                            matchTriggerWidth={true}
-                                            connectToTrigger={true}
-                                            rowKind="item"
-                                            itemTrigger={{
-                                                title: t('terminalEmbedded.settings.locationTitle'),
-                                                subtitle: embeddedTerminalDockLocationLabel,
-                                                icon: <Icon name="terminal" size={29} color={theme.colors.accent.blue} />,
-                                                itemProps: { testID: 'settings-embedded-terminal-dock-location' },
-                                            }}
-                                            items={[
-                                                { id: 'sidebar', title: t('terminalEmbedded.location.sidebar'), icon: <Icon name="stack" size={16} color={theme.colors.text.secondary} /> },
-                                                { id: 'details', title: t('terminalEmbedded.location.details'), icon: <Icon name="info" size={16} color={theme.colors.text.secondary} /> },
-                                                { id: 'bottom', title: t('terminalEmbedded.location.bottom'), icon: <Icon name="list" size={16} color={theme.colors.text.secondary} /> },
-                                            ]}
-                                            onSelect={(id) => {
-                                                if (id === 'sidebar' || id === 'details' || id === 'bottom') {
-                                                    setEmbeddedTerminalDockLocation(id);
-                                                }
-                                                setEmbeddedTerminalDockMenuOpen(false);
-                                            }}
-                                        />
-
-                                        {Platform.OS !== 'web' ? (
-                                            <DropdownMenu
-                                                open={terminalRendererMenuOpen}
-                                                onOpenChange={setTerminalRendererMenuOpen}
-                                                variant="selectable"
-                                                search={false}
-                                                selectedId={terminalRendererPreference}
-                                                showCategoryTitles={false}
-                                                matchTriggerWidth={true}
-                                                connectToTrigger={true}
-                                                rowKind="item"
-                                                itemTrigger={{
-                                                    title: t('terminalEmbedded.settings.rendererTitle'),
-                                                    subtitle: terminalRendererPreferenceLabel,
-                                                    icon: <Icon name="cpu" size={29} color={theme.colors.accent.indigo} />,
-                                                    itemProps: { testID: 'settings-terminal-renderer-preference' },
-                                                }}
-                                                items={[
-                                                    {
-                                                        id: 'auto',
-                                                        title: t('terminalEmbedded.settings.rendererAuto'),
-                                                        subtitle: t('terminalEmbedded.settings.rendererAutoDescription'),
-                                                        icon: <Icon name="sparkle" size={16} color={theme.colors.text.secondary} />,
-                                                    },
-                                                    {
-                                                        id: 'xterm-webview',
-                                                        title: t('terminalEmbedded.settings.rendererXtermWebView'),
-                                                        subtitle: t('terminalEmbedded.settings.rendererXtermWebViewDescription'),
-                                                        icon: <Icon name="wheelchair" size={16} color={theme.colors.text.secondary} />,
-                                                    },
-                                                    {
-                                                        id: 'native',
-                                                        title: t('terminalEmbedded.settings.rendererNative'),
-                                                        subtitle: t('terminalEmbedded.settings.rendererNativeDescription'),
-                                                        icon: <Icon name="cpu" size={16} color={theme.colors.text.secondary} />,
-                                                    },
-                                                ]}
-                                                onSelect={(id) => {
-                                                    if (id === 'auto' || id === 'xterm-webview' || id === 'native') {
-                                                        setTerminalRendererPreference(id);
-                                                    }
-                                                    setTerminalRendererMenuOpen(false);
-                                                }}
-                                            />
-                                        ) : null}
-                                    </>
-                                ) : null}
-                            </React.Fragment>
-                        );
-                    })}
-                </ItemGroup>
-            )}
-
-            {experiments && experimentalToggleDefinitions.length > 0 && (
-                <ItemGroup
-                    title={t('settingsFeatures.experimentalOptions')}
-                    footer={t('settingsFeatures.experimentalOptionsDescription')}
-                >
-                    {experimentalToggleDefinitions.map((d) => {
-                        const blockedByDependencies = isLocallyBlockedByDependencies(d.featureId);
-                        const enabled = blockedByDependencies ? false : resolveUiFeatureToggleEnabled(toggleSettings, d.featureId);
-
-                        return (
-                            <Item
-                                key={d.featureId}
-                                title={t(d.titleKey)}
-                                subtitle={t(d.subtitleKey)}
-                                icon={<Icon name={d.icon.ioniconName as IconName} size={29} color={resolveLegacyIconColor(d.icon.color)} />}
-                                rightElement={
-                                    <Switch
-                                        testID={`settings-feature-toggle-${d.featureId}`}
-                                        value={enabled}
-                                        disabled={blockedByDependencies}
-                                        onValueChange={(next) => applyLocalToggleChange(d.featureId, next)}
-                                    />
-                                }
-                                showChevron={false}
-                            />
-                        );
-                    })}
-                </ItemGroup>
-            )}
+            </SettingSection>
 
             {(__DEV__ || devModeEnabled) && (
                 <FeatureDiagnosticsPanel featureIds={FEATURE_IDS} />
@@ -532,3 +397,5 @@ export default React.memo(function FeaturesSettingsScreen() {
         </ItemList>
     );
 });
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

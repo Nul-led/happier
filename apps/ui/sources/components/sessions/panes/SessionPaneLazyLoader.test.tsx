@@ -24,14 +24,6 @@ vi.mock('react-native-unistyles', async () => {
     return createUnistylesMock();
 });
 
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: (props: any) => React.createElement('Text', props, props.children),
-}));
-
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({ translate: (key) => key });
@@ -70,7 +62,7 @@ describe('SessionPaneLazyLoader', () => {
             vi.doMock('@/components/sessions/files/views/SessionFileDetailsView', () => ({
                 SessionFileDetailsView: () => React.createElement('LoadedFileDetails', { testID: 'loaded-file-details' }),
             }));
-            await pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' }), 'retry details');
+            await pressTestInstanceAsync(screen.findByTestId('session-file-details-loading-error-action'), 'retry details');
             await act(async () => { await vi.dynamicImportSettled(); });
             expect(screen.findByTestId('loaded-file-details')).toBeTruthy();
             expect(screen.findByTestId('retained-app')).toBeTruthy();
@@ -118,14 +110,42 @@ describe('SessionPaneLazyLoader', () => {
             />,
         );
 
+        // Pane-states lab 0 "X": what failed in words, one recovery, the code behind Details — never the
+        // bare "Error / Please try again".
         expect(screen.findByTestId('session-pane-loader-error')).toBeTruthy();
-        expect(screen.getTextContent()).toContain('common.error');
-        expect(screen.getTextContent()).toContain('common.retry');
+        expect(screen.getTextContent()).toContain('surfaceState.paneFailedTitle');
+        expect(screen.getTextContent()).not.toContain('common.error');
+        expect(screen.findByTestId('session-pane-loader-error-diagnostic-pane_module_load_failed')).toBeTruthy();
 
-        const retryButton = screen.findByProps({ accessibilityRole: 'button' });
+        const retryButton = screen.findByTestId('session-pane-loader-error-action');
         await pressTestInstanceAsync(retryButton, 'session-pane-loader retry button');
 
         expect(load).toHaveBeenCalledTimes(2);
         expect(screen.findByType(LoadedPane)).toBeTruthy();
+    });
+
+    it('contains a loaded pane render failure and retries after the pane recovers', async () => {
+        let broken = true;
+        const LoadedPane = () => {
+            if (broken) throw new Error('pane render failed');
+            return React.createElement('LoadedPane', { testID: 'loaded-pane' });
+        };
+        const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const screen = await renderScreen(
+                <AppFailureProbe>
+                    {React.createElement('RetainedApp', { testID: 'retained-app' })}
+                    <SessionPaneLazyLoader testID="session-pane-loader" load={async () => LoadedPane} props={{}} />
+                </AppFailureProbe>,
+            );
+            expect(screen.findByTestId('session-pane-loader-error')).toBeTruthy();
+            expect(screen.findByTestId('retained-app')).toBeTruthy();
+            expect(screen.findByTestId('session-pane-loader-error-diagnostic-pane_render_failed')).toBeTruthy();
+            broken = false;
+            await pressTestInstanceAsync(screen.findByTestId('session-pane-loader-error-action'), 'retry pane');
+            expect(screen.findByTestId('loaded-pane')).toBeTruthy();
+        } finally {
+            errorLog.mockRestore();
+        }
     });
 });

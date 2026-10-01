@@ -2,34 +2,23 @@ import { useAuth } from '@/auth/context/AuthContext';
 import { View } from 'react-native';
 import * as React from 'react';
 import { StyleSheet } from 'react-native-unistyles';
-import { useRouter, useGlobalSearchParams } from 'expo-router';
+import { useRouter, useGlobalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 import { MainView } from '@/components/navigation/shell/MainView';
-import { BaseModal } from '@/modal/components/BaseModal';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { clearPendingSetupIntent, setPendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent';
-import { buildDismissedThisComputerSetupIntent } from '@/sync/domains/pending/pendingSetupIntent.shared';
 import { getPendingTerminalConnect } from '@/sync/domains/pending/pendingTerminalConnect';
-import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { PreAuthOnboardingWizardEntry } from '@/components/onboarding/preAuth/PreAuthOnboardingWizardEntry';
 import { usePendingSetupIntent } from '@/components/onboarding/state/usePendingSetupIntent';
-import { useMachineSetupStepSatisfied } from '@/components/onboarding/state/useMachineSetupStepSatisfied';
-import {
-    doesOnboardingJourneyOwnTransientDemoServer,
-    useOnboardingJourneySessionActive,
-} from '@/components/onboarding/tour/state/journeySession';
+import { useOnboardingJourneySessionActive } from '@/components/onboarding/tour/state/journeySession';
 import { readJourneyReplayBeatId } from '@/components/onboarding/tour/state/journeyReplayIntent';
-import { SetupWizardSurface } from '@/components/onboarding/surfaces/SetupWizardSurface';
 import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
-import { useApplyLocalSettings } from '@/sync/store/settingsWriters';
 import { isAuthenticatedRootDeepLinkRedirectAllowed } from '@/auth/routing/authenticatedRootDeepLinkRedirectAllowed';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
-import { shouldHoldUnauthenticatedShellForWebServerOverride } from '@/sync/domains/server/url/shouldHoldUnauthenticatedShellForWebServerOverride';
 import { createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
 import { resolveNewSessionAuthContinuation } from '@/components/sessions/new/navigation/newSessionAuthContinuation';
 import { useVoiceSurfaceE2eFixtureComposition } from '@/dev/testkit/harness/useVoiceSurfaceE2eFixtureComposition';
 import { isPersonalHomeBootstrapRuntimeHost } from '@/components/personalHome/bootstrap/personalHomeBootstrapHost';
-import { t } from '@/text';
+import { buildMachineAddHref } from '@/components/settings/machines/collection/machineCollectionModel';
 import { shouldKeepDesktopPersonalHomeShell } from './personalHomeIndexRoutePolicy';
 
 const stylesheet = StyleSheet.create({
@@ -39,39 +28,14 @@ const stylesheet = StyleSheet.create({
     },
 });
 
-export default function Home() {
+export function Home() {
     const auth = useAuth();
     const activeServerSnapshot = useActiveServerSnapshot();
     const onboardingJourneyActive = useOnboardingJourneySessionActive();
     const onboardingTourDecision = useFeatureDecision('app.ui.onboardingTour', { scopeKind: 'runtime' });
-    const routeGatePendingSetupIntent = usePendingSetupIntent();
-    // The post-auth machine-setup step is satisfied once the account has ANY machine (even
-    // offline). Canonical owner: useMachineSetupStepSatisfied → useAllMachines().length > 0.
-    const machineSetupStepSatisfied = useMachineSetupStepSatisfied();
     const voiceE2eFixture = useVoiceSurfaceE2eFixtureComposition();
-    // D21/P1 composition invariant: with the journey flag ON, post-auth setup NEVER
-    // renders beside the authenticated shell. The in-memory journey-session latch can
-    // be lost (page reload, crash) while the persisted setup intent survives — in that
-    // state the route hands the setup act back to the full-viewport journey host, which
-    // re-latches on mount. The legacy in-shell wizard renders only when the flag is off.
-    const hasPendingSetupContinuation =
-        routeGatePendingSetupIntent?.phase === 'awaiting_auth'
-        || routeGatePendingSetupIntent?.phase === 'post_auth';
-    // Fail-closed: an unresolved decision is treated as disabled (legacy path).
-    // Once the account already has a machine (even offline), the machine-setup step is
-    // satisfied — the route never auto re-latches the full-viewport setup act; it falls
-    // through to the authenticated shell, which settles the stale continuation intent.
-    // This gates the AUTO re-latch only; a live journey session (onboardingJourneyActive)
-    // is intentionally not gated, so a first machine arriving mid-S3 never yanks the step.
-    const journeyOwnsSetupContinuation =
-        auth.isAuthenticated
-        && hasPendingSetupContinuation
-        && onboardingTourDecision?.state === 'enabled'
-        && !machineSetupStepSatisfied;
-    // Explicit replay deep-link (`?happier_journey_beat=<id>`): a production entry
-    // point for returning users. The entry owns the actual replay semantics; the
-    // route gate only has to hand it the viewport instead of the authenticated shell.
-    // Same fail-closed flag gating as the continuation path.
+    // Explicit replay and a live journey own the viewport; a persisted machine-add
+    // continuation routes to its draft instead of relaunching the setup journey.
     const hasExplicitJourneyReplayIntent =
         onboardingTourDecision?.state === 'enabled'
         && readJourneyReplayBeatId() != null;
@@ -82,23 +46,8 @@ export default function Home() {
     if (
         (!auth.isAuthenticated && !keepDesktopPersonalHomeShell)
         || onboardingJourneyActive
-        || journeyOwnsSetupContinuation
         || hasExplicitJourneyReplayIntent
     ) {
-        // The URL override owns the real relay and must settle before first mount. Once the
-        // journey has mounted, its demo world intentionally activates a temporary local
-        // relay; treating that presentation-only server as override drift would unmount the
-        // journey, restore the real relay, and reseed forever. Defer the hold only for this
-        // exact live demo lifetime. True journey exit restores the pinned relay first, and a
-        // genuinely different override remains pending for the normal route owner afterward.
-        const activeJourneyOwnsTransientDemoServer =
-            doesOnboardingJourneyOwnTransientDemoServer(onboardingJourneyActive);
-        if (
-            !activeJourneyOwnsTransientDemoServer
-            && shouldHoldUnauthenticatedShellForWebServerOverride(auth.isAuthenticated, activeServerSnapshot.serverUrl)
-        ) {
-            return null;
-        }
         // The provider-level Personal Home gate is the sole Desktop bootstrap-readiness owner.
         // Once it releases this route, adoption/auth recovery stays in the real shell rather
         // than re-entering the retired pre-auth setup journey.
@@ -109,14 +58,14 @@ export default function Home() {
     return (
         <Authenticated
             activeServerId={activeServerSnapshot.serverId}
-            shouldSuppressAutoOpenSetupWizard={voiceE2eFixture.shouldSuppressOnboarding}
+            shouldSuppressSetupContinuation={voiceE2eFixture.shouldSuppressOnboarding}
         />
     );
 }
 
 function Authenticated(props: Readonly<{
     activeServerId: string;
-    shouldSuppressAutoOpenSetupWizard: boolean;
+    shouldSuppressSetupContinuation: boolean;
 }>) {
     const params = useGlobalSearchParams<{
         id?: string | string[];
@@ -128,13 +77,11 @@ function Authenticated(props: Readonly<{
         draftId?: string | string[];
     }>();
     const router = useRouter();
-    const applyLocalSettings = useApplyLocalSettings();
-    const [setupWizardVisible, setSetupWizardVisible] = React.useState(false);
 
     const sessionId = typeof params.id === 'string' ? params.id : Array.isArray(params.id) ? (params.id[0] ?? null) : null;
     const messageId = typeof params.messageId === 'string' ? params.messageId : Array.isArray(params.messageId) ? (params.messageId[0] ?? null) : null;
     const jumpChildId = typeof params.jumpChildId === 'string' ? params.jumpChildId : Array.isArray(params.jumpChildId) ? (params.jumpChildId[0] ?? null) : null;
-    const shouldSuppressAutoOpenSetupWizard = props.shouldSuppressAutoOpenSetupWizard;
+    const shouldSuppressSetupContinuation = props.shouldSuppressSetupContinuation;
     const sessionRouteServerScope = createSessionRouteServerScope(params);
     const newSessionAuthContinuation = React.useMemo(() => {
         return resolveNewSessionAuthContinuation({
@@ -143,57 +90,12 @@ function Authenticated(props: Readonly<{
         });
     }, [params, props.activeServerId]);
     const pendingSetupIntent = usePendingSetupIntent();
+    const consumedIntentRef = React.useRef<typeof pendingSetupIntent>(null);
     const pendingTerminalConnect = getPendingTerminalConnect();
-    const pendingSetupIntentDismissed = pendingSetupIntent?.phase === 'dismissed';
-    const hasPendingSetupContinuation =
-        pendingSetupIntent?.phase === 'awaiting_auth'
-        || pendingSetupIntent?.phase === 'post_auth';
-    const hasPendingTerminalConnectApproval = pendingTerminalConnect != null;
-    // Binding decision: the machine-setup step auto-displays only while the account has ZERO
-    // machines. Any machine (even offline) satisfies it — on EVERY platform, including the
-    // desktop local-daemon-health auto-open — so the in-shell wizard never auto-opens again
-    // and a stale pending continuation is settled (cleared below when !needsSetupWizard).
-    // Explicit entry points (sessions empty-state, settings, journey replay) are not gated.
-    const machineSetupStepSatisfied = useMachineSetupStepSatisfied();
-    // Desktop main-window first-run setup is owned by `PersonalHomeBootstrapGate` (mounted in
-    // the Desktop provider tree). The route must not auto-open the initial setup wizard from
-    // local machine/relay health facts, must not seed a this-computer setup continuation, and
-    // must not run its own daemon/relay sequencing. Non-Desktop platforms keep the existing
-    // automatic first-run wizard; a pending continuation seeded by the optional onboarding
-    // journey (or an explicit entry point) still settles here on every platform.
-    const shouldAutoOpenSetupWizard = shouldSuppressAutoOpenSetupWizard ? false : !isDesktopHost();
-    const needsSetupWizard =
-        !hasPendingTerminalConnectApproval
-        && shouldSuppressAutoOpenSetupWizard !== true
-        &&
-        pendingSetupIntentDismissed !== true
-        && machineSetupStepSatisfied !== true
-        && (hasPendingSetupContinuation || shouldAutoOpenSetupWizard);
-
     React.useEffect(() => {
-        if (!shouldSuppressAutoOpenSetupWizard) return;
-        if (setupWizardVisible) {
-            setSetupWizardVisible(false);
-        }
-        if (!pendingSetupIntent) return;
-        if (pendingSetupIntent.phase === 'dismissed') return;
+        if (!shouldSuppressSetupContinuation || !pendingSetupIntent || pendingSetupIntent.phase === 'dismissed') return;
         setPendingSetupIntent({ ...pendingSetupIntent, phase: 'dismissed' });
-    }, [pendingSetupIntent, setupWizardVisible, shouldSuppressAutoOpenSetupWizard]);
-
-    const dismissPendingSetupIntent = React.useCallback(() => {
-        const current = pendingSetupIntent;
-        if (current) {
-            if (current.phase !== 'dismissed') {
-                setPendingSetupIntent({ ...current, phase: 'dismissed' });
-            }
-            return;
-        }
-        if (!shouldAutoOpenSetupWizard) {
-            return;
-        }
-        const snapshot = getActiveServerSnapshot();
-        setPendingSetupIntent(buildDismissedThisComputerSetupIntent(snapshot.serverUrl));
-    }, [pendingSetupIntent, shouldAutoOpenSetupWizard]);
+    }, [pendingSetupIntent, shouldSuppressSetupContinuation]);
 
     React.useEffect(() => {
         if (!newSessionAuthContinuation) return;
@@ -222,62 +124,25 @@ function Authenticated(props: Readonly<{
     }, [jumpChildId, messageId, router, sessionId, sessionRouteServerScope]);
 
     React.useEffect(() => {
-        const sid = normalizeSessionId(sessionId);
-        if (sid) return;
+        if (normalizeSessionId(sessionId) || newSessionAuthContinuation) return;
         if (!isAuthenticatedRootDeepLinkRedirectAllowed()) return;
+        if (shouldSuppressSetupContinuation || pendingTerminalConnect) return;
+        if (!pendingSetupIntent || consumedIntentRef.current === pendingSetupIntent) return;
+        if (pendingSetupIntent.phase !== 'awaiting_auth' && pendingSetupIntent.phase !== 'post_auth') return;
 
-        if (setupWizardVisible) {
-            return;
-        }
-        if (!needsSetupWizard) {
-            if (pendingSetupIntent?.phase !== 'dismissed') {
-                clearPendingSetupIntent();
-            }
-            return;
-        }
-
-        if (pendingSetupIntent?.phase === 'awaiting_auth') {
-            setPendingSetupIntent({
-                ...pendingSetupIntent,
-                phase: 'post_auth',
-            });
-        } else if (!pendingSetupIntent && shouldAutoOpenSetupWizard) {
-            const snapshot = getActiveServerSnapshot();
-            const relayUrl = snapshot.serverUrl ? String(snapshot.serverUrl).trim().replace(/\/+$/, '') : null;
-            setPendingSetupIntent({
-                branch: 'thisComputer',
-                phase: 'post_auth',
-                relayUrl: relayUrl || null,
-            });
-        }
-
-        setSetupWizardVisible(true);
-    }, [needsSetupWizard, pendingSetupIntent, sessionId, setupWizardVisible, shouldAutoOpenSetupWizard]);
-
-    const handleSetupWizardExit = React.useCallback(() => {
-        setSetupWizardVisible(false);
-        applyLocalSettings({ sessionGettingStartedGuidanceDismissed: true });
-        dismissPendingSetupIntent();
-    }, [applyLocalSettings, dismissPendingSetupIntent]);
+        consumedIntentRef.current = pendingSetupIntent;
+        clearPendingSetupIntent();
+        router.replace(buildMachineAddHref({
+            path: pendingSetupIntent.branch === 'remoteMachine' ? 'ssh' : 'thisComputer',
+        }));
+    }, [newSessionAuthContinuation, pendingSetupIntent, pendingTerminalConnect, router, sessionId, shouldSuppressSetupContinuation]);
 
     return (
         <View style={stylesheet.root}>
             <MainView variant="phone" />
-            {setupWizardVisible ? (
-                <BaseModal
-                    visible
-                    showBackdrop
-                    accessibilityLabel={t('setupOnboarding.screenTitle')}
-                    closeOnBackdrop={false}
-                    onClose={handleSetupWizardExit}
-                >
-                    <SetupWizardSurface
-                        isDesktopShell={isDesktopHost()}
-                        useOuterScrollContainer={true}
-                        onExit={handleSetupWizardExit}
-                    />
-                </BaseModal>
-            ) : null}
         </View>
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { Home as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={Home} />; }

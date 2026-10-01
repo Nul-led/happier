@@ -6,7 +6,6 @@ import type {
     PluginHostedWebBridgeEnvelopeV1,
     UiSurfaceExecutableApprovalKeyV1,
 } from '@happier-dev/protocol/plugins/ui';
-import type { SessionSurfaceItemV1 } from '@happier-dev/protocol/sessions/board';
 
 import type { CallerHostedHtmlRuntime } from '@/components/ui/surfaces/hostedHtml/HostedHtmlSurfaceAdapter';
 import { createSessionFixture, renderScreen, standardCleanup } from '@/dev/testkit';
@@ -59,7 +58,7 @@ vi.mock('@/sync/domains/features/featureDecisionRuntime', () => ({
     resolveRuntimeFeatureDecisionFromSnapshot: () => ({ state: 'enabled' }),
 }));
 
-const item: SessionBoardItemProjection = {
+const item = {
     itemId: 'caller-widget-1',
     revision: 'revision-7',
     state: {
@@ -79,9 +78,9 @@ const item: SessionBoardItemProjection = {
                 },
             },
             input: { view: 'summary' },
-        } as SessionSurfaceItemV1,
+        },
     },
-};
+} satisfies SessionBoardItemProjection;
 
 function runtime(): CallerHostedHtmlRuntime {
     return {

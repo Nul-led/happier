@@ -10,6 +10,12 @@ import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneSco
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let localSettingsMock: Record<string, unknown> = {};
+const routerReplace = vi.hoisted(() => vi.fn());
+
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { replace: routerReplace } }).module;
+});
 
 vi.mock('@/sync/domains/state/storage', async () => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
@@ -69,6 +75,7 @@ function PaneScopeProbe(props: Readonly<{ scopeId: string }>) {
 
     return React.createElement('PaneScopeProbe', {
         scopeState: pane.scopeState,
+        openDetailsTab: pane.openDetailsTab,
     });
 }
 
@@ -92,6 +99,43 @@ describe('ProjectCockpitShell', () => {
     beforeEach(() => {
         standardCleanup();
         localSettingsMock = {};
+        routerReplace.mockClear();
+    });
+
+    it('reveals the canonical conflict comparison after an overview conflict opens a details tab', async () => {
+        const { ProjectCockpitShell } = await import('./ProjectCockpitShell');
+        const workspaceRef = { id: 'wr_1', serverId: 'server-1', machineId: 'machine-1',
+            rootPath: '/repo', createdAtMs: 1 } as const;
+        const shell = (surface: 'overview' | 'tabs') => <AppPaneProvider>
+            <ProjectCockpitShell workspaceRef={workspaceRef} scopeId="project:wr_1"
+                activeRootPath="/repo" surface={surface} isFocused onSelectRootPath={vi.fn()} />
+            <PaneScopeProbe scopeId="project:wr_1" />
+        </AppPaneProvider>;
+        const screen = await renderScreen(shell('overview'));
+        expect(screen.tree.findByType('ProjectDetailsMainPanel' as never).props.forceOverviewMode).toBe(true);
+
+        await act(async () => {
+            screen.tree.findByType('PaneScopeProbe' as never).props.openDetailsTab({
+                key: 'workspace-sync-conflicts:wr_1', kind: 'workspaceSyncConflicts', title: 'Conflicts',
+                resource: { kind: 'workspaceSyncConflicts', hubWorkspaceRefId: 'wr_1',
+                    workspaceRefId: 'wr_1', controllerMachineId: 'machine-1', serverId: 'server-1' },
+            }, { intent: 'pinned' });
+        });
+
+        expect(routerReplace).toHaveBeenCalledWith('/projects/wr_1/details?worktreeId=%40root');
+        expect(screen.tree.findByType('ProjectDetailsMainPanel' as never).props.forceOverviewMode).toBe(false);
+        await screen.update(shell('tabs'));
+        expect(screen.tree.findByType('PaneScopeProbe' as never).props.scopeState.details.tabs[0].resource)
+            .toMatchObject({ kind: 'workspaceSyncConflicts', controllerMachineId: 'machine-1' });
+        expect(screen.tree.findByType('ProjectDetailsMainPanel' as never).props.forceOverviewMode).toBe(false);
+        routerReplace.mockClear();
+        await screen.update(shell('overview'));
+        expect(screen.tree.findByType('ProjectDetailsMainPanel' as never).props.forceOverviewMode).toBe(true);
+        expect(screen.tree.findByType('PaneScopeProbe' as never).props.scopeState.details).toMatchObject({
+            isOpen: false,
+            tabs: [expect.objectContaining({ key: 'workspace-sync-conflicts:wr_1', isPinned: true })],
+        });
+        expect(routerReplace).not.toHaveBeenCalled();
     });
 
     it('closes an already-open right pane when the overview surface becomes active', async () => {

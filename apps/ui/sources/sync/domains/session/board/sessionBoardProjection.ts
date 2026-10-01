@@ -1,5 +1,6 @@
 import type {
     SessionBoardItemWidth,
+    SessionBoardItemFrameStyle,
     SessionBoardLayoutV1,
     SessionSurfaceItemV1,
 } from '@happier-dev/protocol/sessions/board';
@@ -44,6 +45,7 @@ export type SessionBoardItemProjection = Readonly<{
 export type SessionBoardPlacementProjection = Readonly<{
     itemId: string;
     width: SessionBoardItemWidth;
+    frameStyle?: SessionBoardItemFrameStyle;
     item: SessionBoardItemProjection;
 }>;
 
@@ -174,6 +176,7 @@ function reusePlacements(
         return candidate
             && candidate.itemId === placement.itemId
             && candidate.width === placement.width
+            && candidate.frameStyle === placement.frameStyle
             && candidate.item === placement.item
             ? candidate
             : placement;
@@ -235,6 +238,7 @@ export function projectSessionBoard(
             return Object.freeze({
                 itemId: placement.itemId,
                 width: placement.width,
+                ...(placement.frameStyle === undefined ? {} : { frameStyle: placement.frameStyle }),
                 item: readItem(placement.itemId),
             });
         });

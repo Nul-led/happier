@@ -1,1 +1,4 @@
-export { VoiceSettingsIntentIndexScreen as default } from '@/voice/settings/VoiceSettingsIntentIndexScreen';
+import { VoiceSettingsIntentIndexScreen as WorkspaceRouteBody } from '@/voice/settings/VoiceSettingsIntentIndexScreen';
+export { WorkspaceRouteBody };
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

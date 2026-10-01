@@ -6,7 +6,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { getAgentCore } from '@/agents/catalog/catalog';
-import { buildScmStatusSummaryFromSnapshot } from '@/components/sessions/sourceControl/status/statusSummary';
+import { buildSessionScmSummary } from '@/components/sessions/sourceControl/status/statusSummary';
 import { resolveSessionAgentActivityPresentation } from '@/components/sessions/agents/presentation/sessionAgentActivityPresentation';
 import { t } from '@/text';
 import { useSessionListRelativeNowMs } from '@/hooks/session/sessionListRuntimeClock';
@@ -29,6 +29,10 @@ import {
     type SessionSummaryCardModel,
     type SessionSummaryUsageFacts,
 } from './sessionSummaryProjection';
+import { useSessionRecap } from './useSessionRecap';
+import { projectSessionAgentPlan } from '../plan/sessionAgentPlan';
+import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { listSessionPendingPermissions, type SessionPendingPermission } from '@/sync/ops/sessionPendingPermissions';
 
 type SessionUsageLike = Readonly<{
     contextSize?: number;
@@ -40,13 +44,30 @@ const REALM_UNAVAILABLE_SUMMARY: SessionSummaryCardModel = Object.freeze({
     scope: 'realm_unavailable',
     title: null,
     agentLabel: null,
+    agentId: null,
     status: null,
     stale: false,
     availability: 'locked',
     encryption: 'unknown',
     identityDestination: 'sessionInfo',
     rows: Object.freeze([]),
+    needsYou: null,
+    sinceMs: null,
+    progress: null,
+    plan: null,
+    facts: Object.freeze([]),
 });
+
+const NO_PENDING_PERMISSIONS: readonly SessionPendingPermission[] = Object.freeze([]);
+
+/** The running turn's observed start, the same fact the submit-mode owner reads. */
+function readTurnStartedAtMs(session: Session): number | null {
+    return session.latestTurnStatus === 'in_progress'
+        && typeof session.latestTurnStatusObservedAt === 'number'
+        && Number.isFinite(session.latestTurnStatusObservedAt)
+        ? session.latestTurnStatusObservedAt
+        : null;
+}
 
 function readUsageFacts(usage: SessionUsageLike): SessionSummaryUsageFacts | null {
     if (!usage) return null;
@@ -116,20 +137,26 @@ export function useSessionSummaryModel(input: Readonly<{
     // Summary age while heartbeats keep arriving, so this surface subscribes to the live row
     // itself. That is below the memoized shell, so the shell's own subscription locality and
     // its narrow rerender signature are unchanged.
-    const liveSession = useSession(session.id);
-    const awarenessSource = liveSession !== null
-        && (!liveSession.serverId
-            || !session.serverId
-            || areServerProfileIdentifiersEquivalent(liveSession.serverId, session.serverId))
-        ? liveSession
-        : session;
+    const liveSession = useSession(address?.sessionId ?? '', address?.serverId ?? null);
+    const awarenessSource = liveSession ?? session;
     const awareness = React.useMemo(
         () => projectUiSessionAwareness(awarenessSource, awarenessNowMs),
         [awarenessNowMs, awarenessSource],
     );
-    const scm = React.useMemo(() => buildScmStatusSummaryFromSnapshot(scmSnapshot), [scmSnapshot]);
+    const recap = useSessionRecap(address);
+    const accountScopeResolution = useServerCredentialAccountScopeResolution(address?.serverId);
+    const accountScope = accountScopeResolution.kind === 'bound' ? accountScopeResolution.scope : null;
+    // Pending asks and the Plan come from the live row: both are exactly the facts
+    // the stabilised shell Session omits from its render signature.
+    const pendingPermissions = React.useMemo(
+        () => (address ? listSessionPendingPermissions(awarenessSource, accountScope) : NO_PENDING_PERMISSIONS),
+        [accountScope, address, awarenessSource],
+    );
+    const plan = projectSessionAgentPlan(awarenessSource.todos);
+    const scm = React.useMemo(() => buildSessionScmSummary(scmSnapshot), [scmSnapshot]);
     const usageFacts = React.useMemo(() => readUsageFacts(usage), [usage]);
     const agentLabel = React.useMemo(() => readAgentLabel(session), [session]);
+    const agentId = React.useMemo(() => readSessionPresentationAgentId(session), [session]);
     const activityHeadline = React.useMemo(() => {
         const entry = activity.entries[0];
         if (!entry) return null;
@@ -145,11 +172,16 @@ export function useSessionSummaryModel(input: Readonly<{
     return projectSessionSummaryCard({
         awareness,
         agentLabel,
+        agentId,
         activity: activity.counts.total > 0
             ? { ...activity.counts, headline: activityHeadline }
             : null,
         openApprovalCount: approvals.length,
         scm,
         usage: usageFacts,
+        recap,
+        pendingPermissions,
+        plan,
+        turnStartedAtMs: readTurnStartedAtMs(awarenessSource),
     });
 }

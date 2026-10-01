@@ -30,6 +30,7 @@ import { PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS } from '@/components/plugin
 const DAEMON_ACTION: PluginProjectedActionV2 = {
     id: 'mint-session',
     pluginId: 'acme.voice',
+    occurrenceId: 'acme-voice-occurrence-12',
     title: 'Mint session',
     scopes: ['session'],
     // This host is the externally-contributed Voice surface. The dispatcher
@@ -48,7 +49,6 @@ const CLIENT_ACTION_LOCAL_ID = 'open-client-destination';
 const CLIENT_ACTION_GENERATION = 12;
 const CLIENT_ACTION_TARGET = Object.freeze({
     artifactId: 'voice-client-action-bundle',
-    modulePath: './clientActionRuntime',
     exportName: 'activate',
     platform: 'web' as const,
 });
@@ -83,7 +83,6 @@ function createClientActionFixture(handler: PluginClientActionHandler) {
             target: 'client' as const,
             client: {
                 artifactId: CLIENT_ACTION_TARGET.artifactId,
-                modulePath: CLIENT_ACTION_TARGET.modulePath,
                 exportName: CLIENT_ACTION_TARGET.exportName,
             },
             platforms: [CLIENT_ACTION_TARGET.platform],
@@ -93,6 +92,7 @@ function createClientActionFixture(handler: PluginClientActionHandler) {
     const action = PluginProjectedActionV2Schema.parse({
         ...declaration,
         pluginId: CLIENT_ACTION_PLUGIN_ID,
+        occurrenceId: 'acme-voice-client-action-occurrence-12',
         serverIdentityId: CLIENT_ACTION_ORIGIN.serverIdentityId,
         materializationRef: CLIENT_ACTION_ORIGIN.materializationRef,
         available: true,
@@ -101,15 +101,9 @@ function createClientActionFixture(handler: PluginClientActionHandler) {
     const identity: PluginReactNativeBundleCacheIdentity = Object.freeze({
         pluginId: CLIENT_ACTION_PLUGIN_ID,
         contributionId: CLIENT_ACTION_LOCAL_ID,
+        artifactId: CLIENT_ACTION_TARGET.artifactId,
         artifactDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        hostAppVersion: '2.0.0',
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
         platform: CLIENT_ACTION_TARGET.platform,
-        channel: 'internal',
-        nativeCapabilitiesDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        projectionGeneration: CLIENT_ACTION_GENERATION,
     });
     const cache = createPluginReactNativeBundleCache();
     cache.putInstalledArtifact({
@@ -121,7 +115,7 @@ function createClientActionFixture(handler: PluginClientActionHandler) {
         api.actions.register(CLIENT_ACTION_LOCAL_ID, handler);
     });
     const backend: PluginReactNativeLoaderBackend = Object.freeze({
-        backendId: 'reactNativeWebModule',
+        backendId: 'commonJs',
         available: true,
         loadInstalledBundle: vi.fn(async () => activate as PluginReactNativeExecutableExport),
     });
@@ -130,23 +124,21 @@ function createClientActionFixture(handler: PluginClientActionHandler) {
         activate,
         activation: Object.freeze({
             pluginId: CLIENT_ACTION_PLUGIN_ID,
+            occurrenceId: action.occurrenceId,
+            hostUiApiRange: '^1.0.0',
             pluginVersion: '1.2.3',
             contributes: PluginContributesV2Schema.parse({ actions: [declaration] }),
             target: CLIENT_ACTION_TARGET,
             executionOrigin: CLIENT_ACTION_ORIGIN,
-            projectionGeneration: CLIENT_ACTION_GENERATION,
             cache,
             identity,
             moduleReference: {
-                containerName: 'voice-client-action-runtime',
-                modulePath: CLIENT_ACTION_TARGET.modulePath,
                 exportName: CLIENT_ACTION_TARGET.exportName,
             },
             backend,
             authority: {
                 serverId: 'srv_voice_client_action',
                 machineId: 'machine-1',
-                projectionGeneration: CLIENT_ACTION_GENERATION,
             },
             isCurrent: () => true,
         }),
@@ -182,7 +174,7 @@ describe('AppShell plugin UI invocation host', () => {
         const invocation = {
             pluginId: CLIENT_ACTION_PLUGIN_ID,
             contributionId: 'conversation',
-            generation: String(CLIENT_ACTION_GENERATION),
+            occurrenceId: fixture.action.occurrenceId,
             machineId: 'machine-1',
             serverId: 'srv_voice_client_action',
             signal: new AbortController().signal,
@@ -207,7 +199,6 @@ describe('AppShell plugin UI invocation host', () => {
             expect(fixture.activate).toHaveBeenCalledTimes(1);
             expect(resolvePluginUiClientActionRegistration({
                 action: fixture.action,
-                projectionGeneration: CLIENT_ACTION_GENERATION,
                 platform: CLIENT_ACTION_TARGET.platform,
                 reader: fixture.composition,
             })).not.toBeNull();
@@ -240,8 +231,8 @@ describe('AppShell plugin UI invocation host', () => {
             await fixture.composition.reconcile([fixture.activation]);
             const base = {
                 pluginId: CLIENT_ACTION_PLUGIN_ID,
+                occurrenceId: fixture.action.occurrenceId,
                 contributionId: 'conversation',
-                generation: String(CLIENT_ACTION_GENERATION),
                 machineId: 'machine-1',
                 serverId: 'srv_voice_client_action',
                 signal: new AbortController().signal,
@@ -287,7 +278,7 @@ describe('AppShell plugin UI invocation host', () => {
         const ui = createAppShellPluginUiInvocationHost({
             pluginId: 'acme.voice',
             contributionId: 'conversation',
-            generation: '12',
+            occurrenceId: 'acme-voice-occurrence-12',
             machineId: 'machine-1',
             serverId: 'server-1',
             signal,
@@ -301,7 +292,7 @@ describe('AppShell plugin UI invocation host', () => {
             .resolves.toEqual({ token: 'bounded-artifact' });
         expect(execute).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-1',
-            expectedGeneration: '12',
+            expectedContributorOccurrenceId: 'acme-voice-occurrence-12',
             qualifiedActionId: 'acme.voice/mint-session',
             input: { voice: 'alloy' },
             executionSurface: 'voice',
@@ -311,7 +302,7 @@ describe('AppShell plugin UI invocation host', () => {
         const request = execute.mock.calls[0]?.[1];
         expect(DaemonPluginStructuredMessageActionExecuteRequestSchema.safeParse({
             machineId: 'machine-1',
-            expectedGeneration: request?.expectedGeneration,
+            expectedContributorOccurrenceId: request?.expectedContributorOccurrenceId,
             qualifiedActionId: request?.qualifiedActionId,
             input: request?.input,
             executionSurface: request?.executionSurface,
@@ -323,7 +314,7 @@ describe('AppShell plugin UI invocation host', () => {
         const execute = vi.fn();
         const stale = createAppShellPluginUiInvocationHost({
             pluginId: 'acme.voice', contributionId: 'conversation',
-            generation: '12', machineId: 'machine-1', signal: new AbortController().signal,
+            occurrenceId: 'acme-voice-occurrence-12', machineId: 'machine-1', signal: new AbortController().signal,
             isCurrent: () => false, execute,
         });
         await expect(stale.executeAction('mint-session', null)).rejects.toMatchObject({
@@ -334,7 +325,7 @@ describe('AppShell plugin UI invocation host', () => {
         caller.abort();
         const aborted = createAppShellPluginUiInvocationHost({
             pluginId: 'acme.voice', contributionId: 'conversation',
-            generation: '12', machineId: 'machine-1', signal: new AbortController().signal,
+            occurrenceId: 'acme-voice-occurrence-12', machineId: 'machine-1', signal: new AbortController().signal,
             isCurrent: () => true, execute,
         });
         await expect(aborted.executeAction('mint-session', null, { signal: caller.signal })).rejects.toMatchObject({
@@ -347,7 +338,7 @@ describe('AppShell plugin UI invocation host', () => {
         const caller = new AbortController();
         const cancelledAfterSettlement = createAppShellPluginUiInvocationHost({
             pluginId: 'acme.voice', contributionId: 'conversation',
-            generation: '12', machineId: 'machine-1', signal: new AbortController().signal,
+            occurrenceId: 'acme-voice-occurrence-12', machineId: 'machine-1', signal: new AbortController().signal,
             isCurrent: () => true,
             resolveContributedAction: resolveDaemonAction,
             execute: async () => {
@@ -364,7 +355,7 @@ describe('AppShell plugin UI invocation host', () => {
         let current = true;
         const retiredInFlight = createAppShellPluginUiInvocationHost({
             pluginId: 'acme.voice', contributionId: 'conversation',
-            generation: '12', machineId: 'machine-1', signal: new AbortController().signal,
+            occurrenceId: 'acme-voice-occurrence-12', machineId: 'machine-1', signal: new AbortController().signal,
             isCurrent: () => current,
             resolveContributedAction: resolveDaemonAction,
             execute: async () => {
@@ -380,7 +371,7 @@ describe('AppShell plugin UI invocation host', () => {
     it('normalizes daemon unavailability and action errors', async () => {
         const unavailable = createAppShellPluginUiInvocationHost({
             pluginId: 'acme.voice', contributionId: 'conversation',
-            generation: '12', machineId: 'machine-1', signal: new AbortController().signal,
+            occurrenceId: 'acme-voice-occurrence-12', machineId: 'machine-1', signal: new AbortController().signal,
             isCurrent: () => true,
             resolveContributedAction: resolveDaemonAction,
             execute: async () => ({ supported: false, reason: 'not-supported' }),
@@ -391,7 +382,7 @@ describe('AppShell plugin UI invocation host', () => {
 
         const denied = createAppShellPluginUiInvocationHost({
             pluginId: 'acme.voice', contributionId: 'conversation',
-            generation: '12', machineId: 'machine-1', signal: new AbortController().signal,
+            occurrenceId: 'acme-voice-occurrence-12', machineId: 'machine-1', signal: new AbortController().signal,
             isCurrent: () => true,
             resolveContributedAction: resolveDaemonAction,
             execute: async () => ({ supported: true, result: { ok: false, code: 'plugin_action_grant_missing' } }),
@@ -408,7 +399,7 @@ describe('AppShell plugin UI invocation host', () => {
         }));
         const ui = createAppShellPluginUiInvocationHost({
             pluginId: 'acme.voice', contributionId: 'conversation',
-            generation: '12', machineId: 'machine-1', signal: new AbortController().signal,
+            occurrenceId: 'acme-voice-occurrence-12', machineId: 'machine-1', signal: new AbortController().signal,
             isCurrent: () => true,
             resolveContributedAction: resolveDaemonAction,
             execute,
@@ -419,7 +410,7 @@ describe('AppShell plugin UI invocation host', () => {
         });
         expect(execute).toHaveBeenCalledWith('machine-1', {
             serverId: null,
-            expectedGeneration: '12',
+            expectedContributorOccurrenceId: 'acme-voice-occurrence-12',
             qualifiedActionId: 'acme.voice/mint-session',
             input: null,
             executionSurface: 'voice',
@@ -431,7 +422,7 @@ describe('AppShell plugin UI invocation host', () => {
     it('keeps the complete UI host API present while unsupported mounted-only methods fail closed', async () => {
         const ui = createAppShellPluginUiInvocationHost({
             pluginId: 'acme.voice', contributionId: 'conversation',
-            generation: '12', machineId: 'machine-1', signal: new AbortController().signal,
+            occurrenceId: 'acme-voice-occurrence-12', machineId: 'machine-1', signal: new AbortController().signal,
             isCurrent: () => true,
         });
 

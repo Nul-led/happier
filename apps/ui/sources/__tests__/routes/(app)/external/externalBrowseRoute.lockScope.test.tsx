@@ -67,7 +67,6 @@ const projection = {
             },
         },
     },
-    backendsById: {},
     actionsById: {},
     toolsById: {},
     commandsById: {},

@@ -25,7 +25,7 @@ function runtime(input: Readonly<{
         pluginId: source.surface.pluginId,
         surfaceId: source.surface.localId,
         rendererId: 'review-native',
-        role: 'sessionWidget',
+        role: 'widget',
         target: { kind: 'session' },
     });
     if (!binding) throw new Error('fixture must use an admitted inline binding');

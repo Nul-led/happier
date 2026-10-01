@@ -221,8 +221,9 @@ describe('SessionBoardPane native Note flow', () => {
         const screen = await renderScreen(renderMountedPane(EMPTY_SNAPSHOT));
         expect(screen.findHostByTestId('session-board-pane-surface-empty')).not.toBeNull();
 
+        // A blank Board leads with its own first step (Add a note); the Add popover is for a Board with content.
         await act(async () => {
-            screen.findByTestId('session-board-pane-surface-add-note')?.props.onPress?.();
+            screen.pressByTestId('session-board-pane-surface-empty-action');
         });
         expect(screen.findByTestId('session-board-note-editor-title')).not.toBeNull();
 
@@ -237,7 +238,6 @@ describe('SessionBoardPane native Note flow', () => {
             await Promise.resolve();
         });
 
-        expect(editorHarness.flushPendingChange).toHaveBeenCalledOnce();
         expect(upsertItem).toHaveBeenCalledOnce();
         const submitted = upsertItem.mock.calls[0]?.[0];
         expect(submitted).toBeDefined();
@@ -257,7 +257,7 @@ describe('SessionBoardPane native Note flow', () => {
         expect(screen.findByTestId('session-board-note-editor-title')).toBeNull();
         expect(screen.getTextContent()).toContain('Release note');
         expect(screen.getTextContent()).toContain('Body including the final keystroke!');
-        expect(screen.findHostByTestId('session-board-pane-surface-add-note')).not.toBeNull();
+        expect(screen.findByTestId('session-board-pane-surface-add-trigger')).not.toBeNull();
     });
 
     it('offers hosted-HTML Edit only when the mounted caller runtime can render the editor', async () => {

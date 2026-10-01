@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Platform, View } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation } from '@/components/appShell/workspace/destinationRoute';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
@@ -140,16 +140,7 @@ export function SessionBoardNoteEditorCard(props: SessionBoardNoteEditorCardProp
         tag: 'SessionBoardNoteEditorCard',
     }), [editor.dirtyRef, requestDecision, save]);
 
-    const prepareGuard = React.useCallback(async (): Promise<void> => {
-        // Navigation can race the markdown surface's debounce just like Save can.
-        // Flush before the dirty decision, then make the guard observe the value
-        // the person can still see in the editor.
-        const flushed = await flushBody();
-        if (typeof flushed === 'string' && flushed !== editor.body) {
-            editor.setBody(flushed);
-            editor.dirtyRef.current = true;
-        }
-    }, [editor, flushBody]);
+    const prepareGuard = editor.flushToContinuity;
 
     const runGuardedTransition = React.useCallback(async (transition: () => void | Promise<void>): Promise<boolean> => {
         await prepareGuard();

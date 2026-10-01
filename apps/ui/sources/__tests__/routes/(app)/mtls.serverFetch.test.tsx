@@ -107,7 +107,7 @@ vi.mock('@/auth/storage/tokenStorage', () => {
             expected: Record<string, unknown>,
             continuation: Record<string, unknown>,
             target: Record<string, unknown>,
-        ) => recordTeamInvitationPostAuthContinuationMock(expected, continuation, target),
+        ) => recordTeamInvitationPostAuthContinuationMock(expected, continuation),
         },
     };
 });

@@ -40,6 +40,7 @@ type CapturedEditFormProps = {
     onCancel: () => void;
     onDirtyChange: (isDirty: boolean) => void;
     saveRef: React.MutableRefObject<(() => boolean) | null>;
+    header?: React.ReactNode;
 };
 
 const promptUnsavedChangesAlertSpy = vi.hoisted(() => vi.fn());
@@ -79,11 +80,28 @@ const administrationTargetState = vi.hoisted(() => ({
     } | null,
 }));
 
+const shareState = vi.hoisted(() => ({
+    shown: [] as Array<{ chrome?: { testID?: string }; props?: Record<string, unknown> }>,
+    alerts: [] as unknown[][],
+    calls: [] as Array<{ actionId: string; input: unknown; context: unknown }>,
+    publishResult: { ok: true, result: { artifactId: 'artifact-new' } } as unknown,
+    savedFiles: [] as Array<{ fileName: string; json: string }>,
+}));
+
 installProfilesCommonModuleMocks({
     reactNative: () => createReactNativeWebMock({
         Platform: { OS: 'web' },
     }),
+    // The modal host is the presentation boundary: the test reads what the page asked it to show.
+    modal: async () => {
+        const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+        return createModalModuleMock({ spies: {
+            show: (config) => { shareState.shown.push(config as never); return 'modal-id'; },
+            alert: (...args) => { shareState.alerts.push(args); },
+        } }).module;
+    },
     storage: () => createStorageModuleStub({
+        useActiveServerAccountScope: () => ({ serverId: 'server-1', accountId: 'account-1' }),
         useAllMachines: () => [],
         useSetting: (key: string) => settingsState.values[key],
         useSettingMutable: (key: string) => [
@@ -102,17 +120,47 @@ vi.mock('@react-navigation/native', () => createReactNavigationNativeMock({
     },
 }));
 
-vi.mock('expo-router', () => createExpoRouterMock({
-    navigation: {
-        addListener: (event: string, callback: (event: BeforeRemoveEvent) => void) => {
-            if (event === 'beforeRemove') {
-                navigationState.legacyBeforeRemove = callback;
-            }
-            return { remove: vi.fn() };
+const routerSpies = vi.hoisted(() => ({
+    replace: null as unknown as ReturnType<typeof vi.fn>,
+}));
+
+vi.mock('expo-router', () => {
+    const mock = createExpoRouterMock({
+        navigation: {
+            addListener: (event: string, callback: (event: BeforeRemoveEvent) => void) => {
+                if (event === 'beforeRemove') {
+                    navigationState.legacyBeforeRemove = callback;
+                }
+                return { remove: vi.fn() };
+            },
+            dispatch: navigationState.dispatch,
         },
-        dispatch: navigationState.dispatch,
+    });
+    routerSpies.replace = mock.spies.replace;
+    return mock.module;
+});
+
+const applyProfileSaveSpy = vi.hoisted(() => vi.fn());
+// The account settings writer is the persistence boundary (it syncs to the server).
+vi.mock('@/sync/store/settingsWriters', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/store/settingsWriters')>()),
+    useApplyProfileSave: () => applyProfileSaveSpy,
+}));
+
+// The Action front door is the boundary of publication: the Settings CAS and Artifact store are the host's.
+vi.mock('@/sync/ops/actions/frontDoorRuntimeActionExecutor', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/ops/actions/frontDoorRuntimeActionExecutor')>()),
+    createFrontDoorActionExecute: () => async (actionId: string, input: unknown, context: unknown) => {
+        shareState.calls.push({ actionId, input, context });
+        return shareState.publishResult;
     },
-}).module);
+}));
+
+// The document file boundary (web download / native share sheet) is the platform edge of "Send a copy".
+vi.mock('@/sync/domains/workflows/workflowDocumentFile', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/domains/workflows/workflowDocumentFile')>()),
+    saveWorkflowDocument: async (file: { fileName: string; json: string }) => { shareState.savedFiles.push(file); },
+}));
 
 vi.mock('@/utils/ui/promptUnsavedChangesAlert', () => ({
     promptUnsavedChangesAlert: (...args: unknown[]) => promptUnsavedChangesAlertSpy(...args),
@@ -176,15 +224,32 @@ function currentBeforeRemoveCallback(): (event: BeforeRemoveEvent) => void {
     if (navigationState.legacyBeforeRemove) {
         return navigationState.legacyBeforeRemove;
     }
-    throw new Error('ProfileManager did not register an unsaved-navigation guard');
+    throw new Error('The profile detail did not register an unsaved-navigation guard');
 }
 
-async function renderDirtyInlineEditor() {
-    const ProfileManager = (await import('@/app/(app)/settings/profiles')).default;
-    const screen = await renderScreen(React.createElement(ProfileManager));
-    await act(async () => {
-        capturedProfilesListProps?.onAddProfilePress?.();
-    });
+const savedV2Profile = {
+    v: 2 as const,
+    id: 'profile-v2',
+    name: 'Saved profile',
+    extraEnvironmentVariables: [],
+    defaultPermissionModeByTargetKey: {},
+    defaultPersistenceModeByTargetKey: {},
+    compatibilityByTargetKey: {},
+    createdAt: 1,
+    updatedAt: 1,
+};
+
+type DetailTarget =
+    | { kind: 'profile'; profileId: string }
+    | { kind: 'draft'; cloneFrom: string | null };
+
+async function renderDetail(target: DetailTarget) {
+    const { ProfileDetailScreen } = await import('@/components/settings/profiles/ProfileDetailScreen');
+    return renderScreen(React.createElement(ProfileDetailScreen, { target }));
+}
+
+async function renderDirtyEditor(target: DetailTarget = { kind: 'profile', profileId: savedV2Profile.id }) {
+    const screen = await renderDetail(target);
     expect(capturedEditFormProps).not.toBeNull();
     await act(async () => {
         capturedEditFormProps?.onDirtyChange(true);
@@ -192,8 +257,15 @@ async function renderDirtyInlineEditor() {
     return screen;
 }
 
-function hasInlineEditor(screen: RenderScreenResult): boolean {
+function hasEditor(screen: RenderScreenResult): boolean {
     return screen.findAll((node) => String(node.type) === 'LaunchProfileEditForm').length > 0;
+}
+
+function goBack(key: string) {
+    return () => currentBeforeRemoveCallback()({
+        data: { action: { type: 'GO_BACK', key } },
+        preventDefault: vi.fn(),
+    });
 }
 
 async function invokeAndFlush(callback: () => void): Promise<void> {
@@ -204,8 +276,10 @@ async function invokeAndFlush(callback: () => void): Promise<void> {
     });
 }
 
-describe('ProfileManager web unsaved navigation', () => {
-    beforeEach(() => {
+describe('Settings › Profiles detail: machine scope and unsaved navigation', () => {
+    beforeEach(async () => {
+        // Profile readers resolve Settings rows for the focused Account only (U13 hydration).
+        await seedFocusedAccount();
         capturedProfilesListProps = null;
         capturedEditFormProps = null;
         navigationState.legacyBeforeRemove = null;
@@ -214,7 +288,9 @@ describe('ProfileManager web unsaved navigation', () => {
         navigationState.dispatch.mockReset();
         promptUnsavedChangesAlertSpy.mockReset();
         settingsState.values.useProfiles = true;
-        settingsState.values.profiles = [];
+        settingsState.values.profiles = [savedV2Profile];
+        applyProfileSaveSpy.mockReset();
+        routerSpies.replace?.mockClear();
         administrationTargetState.selectedTarget = {
             serverIdentityId: 'server-identity-b',
             machineId: 'machine-b',
@@ -234,33 +310,24 @@ describe('ProfileManager web unsaved navigation', () => {
     });
 
     it('uses the exact Administration target for V2 profile reads instead of an active or first machine', async () => {
-        await renderDirtyInlineEditor();
+        await renderDirtyEditor();
 
-        expect(capturedProfilesListProps).toMatchObject({
-            machineId: 'machine-b',
-            serverId: 'server-profile-b',
-        });
-        const header = capturedProfilesListProps?.header;
-        expect(React.isValidElement(header)).toBe(true);
-        if (!React.isValidElement(header)) throw new Error('Expected the Administration target selector');
-        expect(header.props).toMatchObject({
-            testIDPrefix: 'settings.profiles.administration.target',
-        });
         expect(capturedEditFormProps).toMatchObject({
             machineId: 'machine-b',
             serverId: 'server-profile-b',
         });
+        const header = capturedEditFormProps?.header;
+        expect(React.isValidElement(header)).toBe(true);
+        if (!React.isValidElement(header)) throw new Error('Expected the profile header');
+        // The machine chip rides on the header of a machine-scoped (V2) profile.
+        expect(header.props).toMatchObject({ showMachineChip: true });
     });
 
     it('does not substitute another machine when the selected Administration target is no longer executable', async () => {
         administrationTargetState.executionTarget = null;
 
-        await renderDirtyInlineEditor();
+        await renderDirtyEditor();
 
-        expect(capturedProfilesListProps).toMatchObject({
-            machineId: null,
-            serverId: null,
-        });
         expect(capturedEditFormProps).toMatchObject({
             machineId: null,
             serverId: null,
@@ -271,34 +338,22 @@ describe('ProfileManager web unsaved navigation', () => {
         const { DEFAULT_PROFILES } = await import('@/sync/domains/profiles/profileUtils');
         const builtInDefinition = DEFAULT_PROFILES[0];
         if (!builtInDefinition) throw new Error('Expected a legacy profile fixture');
-        const { createEmptyCustomProfile } = await import('@/sync/domains/profiles/profileMutations');
-        const { projectAiLaunchProfileForLegacyUi } = await import('@/sync/domains/profiles/aiLaunchProfileCollection');
-        const legacyProfile = {
-            ...projectAiLaunchProfileForLegacyUi({
-                ...createEmptyCustomProfile(),
-                id: builtInDefinition.id,
-                name: builtInDefinition.name,
-            }),
-            isBuiltIn: true,
-        } satisfies AIBackendProfile;
-        const ProfileManager = (await import('@/app/(app)/settings/profiles')).default;
-        await renderScreen(React.createElement(ProfileManager));
 
-        await act(async () => {
-            capturedProfilesListProps?.onEditProfile?.(legacyProfile);
-        });
+        await renderDetail({ kind: 'profile', profileId: builtInDefinition.id });
 
+        expect(capturedEditFormProps?.profile).toMatchObject({ id: builtInDefinition.id });
         expect(capturedEditFormProps).toMatchObject({
-            profile: legacyProfile,
             machineId: null,
             serverId: null,
         });
+        expect(React.isValidElement(capturedEditFormProps?.header)
+            && (capturedEditFormProps?.header as React.ReactElement<{ showMachineChip: boolean }>).props.showMachineChip).toBe(false);
     });
 
     it('serializes repeated navigator exits while the first decision is pending', async () => {
         const decision = createDeferred<UnsavedChangesDecision>();
         promptUnsavedChangesAlertSpy.mockReturnValue(decision.promise);
-        await renderDirtyInlineEditor();
+        await renderDirtyEditor();
         const beforeRemove = currentBeforeRemoveCallback();
 
         await act(async () => {
@@ -324,53 +379,46 @@ describe('ProfileManager web unsaved navigation', () => {
         expect(capturedEditFormProps).not.toBeNull();
     });
 
-    it('keeps a dirty inline editor open on Keep editing and closes it on Discard', async () => {
+    it('keeps the dirty editor on Keep editing and continues the exit on Discard', async () => {
         promptUnsavedChangesAlertSpy
             .mockResolvedValueOnce('keepEditing')
             .mockResolvedValueOnce('discard');
-        const screen = await renderDirtyInlineEditor();
-        const editForm = capturedEditFormProps;
-        if (!editForm) throw new Error('Expected the inline Profile editor');
+        const screen = await renderDirtyEditor();
 
-        await invokeAndFlush(editForm.onCancel);
+        await invokeAndFlush(goBack('keep'));
 
-        expect(hasInlineEditor(screen)).toBe(true);
-        expect(promptUnsavedChangesAlertSpy).toHaveBeenCalledTimes(1);
+        expect(hasEditor(screen)).toBe(true);
+        expect(navigationState.dispatch).not.toHaveBeenCalled();
 
-        await invokeAndFlush(editForm.onCancel);
+        await invokeAndFlush(goBack('discard'));
 
-        expect(hasInlineEditor(screen)).toBe(false);
         expect(promptUnsavedChangesAlertSpy).toHaveBeenCalledTimes(2);
+        expect(navigationState.dispatch).toHaveBeenCalledOnce();
+        expect(navigationState.dispatch).toHaveBeenCalledWith({ type: 'GO_BACK', key: 'discard' });
     });
 
     it('keeps the dirty editor and navigation blocked on save failure, then continues after save succeeds', async () => {
         promptUnsavedChangesAlertSpy.mockResolvedValue('save');
-        const screen = await renderDirtyInlineEditor();
+        const screen = await renderDirtyEditor();
         const firstEditForm = capturedEditFormProps;
-        if (!firstEditForm) throw new Error('Expected the inline Profile editor');
+        if (!firstEditForm) throw new Error('Expected the profile editor');
         firstEditForm.saveRef.current = () => false;
 
-        await invokeAndFlush(() => currentBeforeRemoveCallback()({
-            data: { action: { type: 'GO_BACK', key: 'save-fails' } },
-            preventDefault: vi.fn(),
-        }));
+        await invokeAndFlush(goBack('save-fails'));
 
-        expect(hasInlineEditor(screen)).toBe(true);
+        expect(hasEditor(screen)).toBe(true);
         expect(navigationState.dispatch).not.toHaveBeenCalled();
 
         const currentEditForm = capturedEditFormProps;
-        if (!currentEditForm) throw new Error('Expected the inline Profile editor after save failure');
+        if (!currentEditForm) throw new Error('Expected the profile editor after save failure');
         currentEditForm.saveRef.current = () => currentEditForm.onSave({
             ...currentEditForm.profile,
-            name: 'Saved profile',
+            name: 'Renamed profile',
         });
 
-        await invokeAndFlush(() => currentBeforeRemoveCallback()({
-            data: { action: { type: 'GO_BACK', key: 'save-succeeds' } },
-            preventDefault: vi.fn(),
-        }));
+        await invokeAndFlush(goBack('save-succeeds'));
 
-        expect(hasInlineEditor(screen)).toBe(false);
+        expect(applyProfileSaveSpy).toHaveBeenCalledWith(expect.objectContaining({ profileId: savedV2Profile.id }));
         expect(navigationState.dispatch).toHaveBeenCalledOnce();
         expect(navigationState.dispatch).toHaveBeenCalledWith({
             type: 'GO_BACK',
@@ -378,53 +426,41 @@ describe('ProfileManager web unsaved navigation', () => {
         });
     });
 
-    it('closes the dirty editor before continuing a discarded navigator action', async () => {
-        promptUnsavedChangesAlertSpy.mockResolvedValue('discard');
-        const screen = await renderDirtyInlineEditor();
-        const action = { type: 'GO_BACK', key: 'discard' };
+    it('selects a saved draft in the collection, but lets a save on the way out keep the exit', async () => {
+        await renderDetail({ kind: 'draft', cloneFrom: null });
+        const draftForm = capturedEditFormProps;
+        if (!draftForm) throw new Error('Expected the draft editor');
 
-        await invokeAndFlush(() => currentBeforeRemoveCallback()({
-            data: { action },
-            preventDefault: vi.fn(),
-        }));
+        let saved = false;
+        await act(async () => {
+            saved = draftForm.onSave({ ...draftForm.profile, name: 'Fresh profile' });
+        });
 
-        expect(hasInlineEditor(screen)).toBe(false);
-        expect(promptUnsavedChangesAlertSpy).toHaveBeenCalledOnce();
-        expect(navigationState.dispatch).toHaveBeenCalledOnce();
-        expect(navigationState.dispatch).toHaveBeenCalledWith(action);
+        expect(saved).toBe(true);
+        expect(applyProfileSaveSpy).toHaveBeenCalledWith(expect.objectContaining({ profileId: draftForm.profile.id }));
+        expect(routerSpies.replace).toHaveBeenCalledWith(`/settings/profiles/${encodeURIComponent(draftForm.profile.id)}`);
+
+        routerSpies.replace.mockClear();
+        promptUnsavedChangesAlertSpy.mockResolvedValue('save');
+        await renderDirtyEditor({ kind: 'draft', cloneFrom: null });
+        const exitingForm = capturedEditFormProps;
+        if (!exitingForm) throw new Error('Expected the second draft editor');
+        exitingForm.saveRef.current = () => exitingForm.onSave({ ...exitingForm.profile, name: 'Saved on exit' });
+
+        await invokeAndFlush(goBack('save-on-exit'));
+
+        expect(routerSpies.replace).not.toHaveBeenCalled();
+        expect(navigationState.dispatch).toHaveBeenCalledWith({ type: 'GO_BACK', key: 'save-on-exit' });
     });
 
-    it('keeps built-in Save As prompt semantics for the web inline editor', async () => {
+    it('keeps built-in Save As prompt semantics', async () => {
         const { DEFAULT_PROFILES } = await import('@/sync/domains/profiles/profileUtils');
         const builtInDefinition = DEFAULT_PROFILES[0];
         if (!builtInDefinition) throw new Error('Expected at least one built-in Profile fixture');
-        const { createEmptyCustomProfile } = await import('@/sync/domains/profiles/profileMutations');
-        const { projectAiLaunchProfileForLegacyUi } = await import('@/sync/domains/profiles/aiLaunchProfileCollection');
-        const emptyProfile = createEmptyCustomProfile();
-        const projectedProfile = projectAiLaunchProfileForLegacyUi({
-            ...emptyProfile,
-            name: 'Built-in test profile',
-        });
-        const builtIn: AIBackendProfile = {
-            ...projectedProfile,
-            id: builtInDefinition.id,
-            name: builtInDefinition.name,
-            isBuiltIn: true,
-        };
         promptUnsavedChangesAlertSpy.mockResolvedValue('keepEditing');
-        const ProfileManager = (await import('@/app/(app)/settings/profiles')).default;
-        await renderScreen(React.createElement(ProfileManager));
 
-        await act(async () => {
-            capturedProfilesListProps?.onEditProfile?.(builtIn);
-        });
-        await act(async () => {
-            capturedEditFormProps?.onDirtyChange(true);
-        });
-        const editForm = capturedEditFormProps;
-        if (!editForm) throw new Error('Expected the built-in inline Profile editor');
-
-        await invokeAndFlush(editForm.onCancel);
+        await renderDirtyEditor({ kind: 'profile', profileId: builtInDefinition.id });
+        await invokeAndFlush(goBack('built-in'));
 
         expect(promptUnsavedChangesAlertSpy).toHaveBeenCalledWith(
             expect.any(Function),
@@ -435,7 +471,7 @@ describe('ProfileManager web unsaved navigation', () => {
         );
     });
 
-    it('uses the shared browser-unload guard only while the inline draft is dirty', async () => {
+    it('uses the shared browser-unload guard only while the editor is dirty', async () => {
         const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
         type BeforeUnloadHandler = (event: {
             preventDefault: () => void;
@@ -456,8 +492,7 @@ describe('ProfileManager web unsaved navigation', () => {
         });
 
         try {
-            promptUnsavedChangesAlertSpy.mockResolvedValue('discard');
-            const screen = await renderDirtyInlineEditor();
+            await renderDirtyEditor();
 
             expect(addEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
             const preventDefault = vi.fn();
@@ -466,11 +501,10 @@ describe('ProfileManager web unsaved navigation', () => {
             expect(preventDefault).toHaveBeenCalledOnce();
             expect(event.returnValue).toBe('');
 
-            const editForm = capturedEditFormProps;
-            if (!editForm) throw new Error('Expected the inline Profile editor');
-            await invokeAndFlush(editForm.onCancel);
+            await act(async () => {
+                capturedEditFormProps?.onDirtyChange(false);
+            });
 
-            expect(hasInlineEditor(screen)).toBe(false);
             expect(removeEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
             expect(beforeUnloadHandlerRef.current).toBeNull();
         } finally {
@@ -480,5 +514,116 @@ describe('ProfileManager web unsaved navigation', () => {
                 Reflect.deleteProperty(globalThis, 'window');
             }
         }
+    });
+});
+
+const publishedProfileContent = {
+    kind: 'launch-profile.v1' as const,
+    profile: { ...savedV2Profile, id: 'team-v2', name: 'Team profile' },
+    secretBindings: {},
+};
+
+async function seedFocusedAccount(artifacts: Record<string, unknown> = {}) {
+    // The real store: profile readers hydrate references from its Artifact documents for the focused Account.
+    const { storage } = await import('@/sync/domains/state/storageStore');
+    storage.setState({ settingsScope: { serverId: 'server-1', accountId: 'account-1' }, artifacts } as never);
+}
+
+function headerMenuActions(): Array<{ id: string; onSelect: () => unknown }> {
+    const header = capturedEditFormProps?.header;
+    if (!React.isValidElement(header)) throw new Error('Expected the profile header');
+    return (header.props as { menuActions: Array<{ id: string; onSelect: () => unknown }> }).menuActions;
+}
+
+describe('Settings › Profiles detail: Share…', () => {
+    beforeEach(async () => {
+        capturedEditFormProps = null;
+        shareState.shown = [];
+        shareState.alerts = [];
+        shareState.calls = [];
+        shareState.savedFiles = [];
+        shareState.publishResult = { ok: true, result: { artifactId: 'artifact-new' } };
+        promptUnsavedChangesAlertSpy.mockReset();
+        settingsState.values.profiles = [savedV2Profile];
+        await seedFocusedAccount();
+    });
+
+    afterEach(() => {
+        standardCleanup();
+    });
+
+    it('opens the one document share sheet on a published profile without publishing it again', async () => {
+        settingsState.values.profiles = [{ artifactId: 'artifact-team' }];
+        await seedFocusedAccount({
+            'artifact-team': {
+                id: 'artifact-team', isDecrypted: true, title: 'Team profile',
+                header: { kind: 'launch-profile.v1', profileId: 'team-v2', name: 'Team profile', title: 'Team profile' },
+                body: JSON.stringify(publishedProfileContent),
+                headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1,
+            },
+        });
+        await renderDetail({ kind: 'profile', profileId: 'team-v2' });
+        const share = headerMenuActions().find((action) => action.id === 'share');
+        expect(share).toBeDefined();
+        await act(async () => { await share!.onSelect(); });
+
+        expect(shareState.calls).toEqual([]);
+        expect(shareState.shown).toHaveLength(1);
+        expect(shareState.shown[0]).toMatchObject({
+            chrome: { testID: 'document-share-modal' },
+            props: { kind: 'launch-profile.v1', artifactId: 'artifact-team', linkPath: '/settings/profiles/team-v2' },
+        });
+
+        // "Send a copy instead" hands over the value-free document itself, never Settings values.
+        await act(async () => { await (shareState.shown[0]!.props!.onSendCopy as () => unknown)(); });
+        await vi.waitFor(() => expect(shareState.savedFiles).toHaveLength(1));
+        const { LaunchProfileArtifactV1Schema } = await import('@happier-dev/protocol');
+        expect(LaunchProfileArtifactV1Schema.parse(JSON.parse(shareState.savedFiles[0]!.json)))
+            .toEqual(LaunchProfileArtifactV1Schema.parse(publishedProfileContent));
+    });
+
+    it('publishes a saved inline profile once, as the person on this Home, then shares the new Artifact', async () => {
+        await renderDetail({ kind: 'profile', profileId: savedV2Profile.id });
+        await act(async () => { await headerMenuActions().find((action) => action.id === 'share')!.onSelect(); });
+
+        expect(shareState.calls).toEqual([{
+            actionId: 'launch_profiles.publish',
+            input: { profileId: savedV2Profile.id },
+            context: expect.objectContaining({ surface: 'ui', authority: 'present_user', serverId: 'server-1' }),
+        }]);
+        expect(shareState.shown[0]).toMatchObject({
+            chrome: { testID: 'document-share-modal' },
+            props: { kind: 'launch-profile.v1', artifactId: 'artifact-new' },
+        });
+    });
+
+    it('explains a secret-value refusal and opens no sheet', async () => {
+        shareState.publishResult = { ok: false, errorCode: 'action_failed', error: 'profile_contains_secret_values' };
+        await renderDetail({ kind: 'profile', profileId: savedV2Profile.id });
+        await act(async () => { await headerMenuActions().find((action) => action.id === 'share')!.onSelect(); });
+
+        expect(shareState.shown).toEqual([]);
+        expect(shareState.alerts).toEqual([[
+            'roles.profiles.shareFailedTitle',
+            'roles.profiles.shareNeedsSavedSecrets',
+        ]]);
+    });
+
+    it('does not publish over unsaved edits the person chose to keep editing', async () => {
+        promptUnsavedChangesAlertSpy.mockResolvedValue('keepEditing');
+        await renderDirtyEditor();
+        await act(async () => { await headerMenuActions().find((action) => action.id === 'share')!.onSelect(); });
+
+        expect(promptUnsavedChangesAlertSpy).toHaveBeenCalledOnce();
+        expect(shareState.calls).toEqual([]);
+        expect(shareState.shown).toEqual([]);
+    });
+
+    it('offers no Share on a built-in profile or a draft', async () => {
+        const { DEFAULT_PROFILES } = await import('@/sync/domains/profiles/profileUtils');
+        await renderDetail({ kind: 'profile', profileId: DEFAULT_PROFILES[0]!.id });
+        expect(headerMenuActions().map((action) => action.id)).not.toContain('share');
+        await renderDetail({ kind: 'draft', cloneFrom: null });
+        expect(headerMenuActions().map((action) => action.id)).not.toContain('share');
     });
 });

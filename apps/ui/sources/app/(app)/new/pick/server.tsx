@@ -4,6 +4,8 @@ import { useWindowDimensions } from 'react-native';
 
 import { NewSessionServerSelectionContent } from '@/components/sessions/new/components/NewSessionServerSelectionContent';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
+import { AppHeaderCloseButton } from '@/components/navigation/AppHeaderCloseButton';
+import { t } from '@/text';
 import { useNewSessionPickerRoutePresentation } from '@/components/sessions/new/navigation/newSessionContainedModalScreen';
 import { buildNewSessionPickerFallbackHref } from '@/components/sessions/new/navigation/setNewSessionPickerReturnParams';
 
@@ -15,10 +17,21 @@ export default React.memo(function ServerPickerScreen() {
     const { height: windowHeight } = useWindowDimensions();
     const maxHeight = Math.min(760, Math.max(420, Math.floor(windowHeight * 0.88)));
     const presentation = useNewSessionPickerRoutePresentation();
+    const close = React.useCallback(
+        () => safeRouterBack({ router, navigation, fallbackHref: pickerFallbackHref }),
+        [navigation, pickerFallbackHref, router],
+    );
+    // K2 picker route chrome: the native title plus Cancel, and no second title band in the content.
+    const headerLeft = React.useCallback(() => (
+        <AppHeaderCloseButton testID="new-session-server-picker-cancel" appearance="text" onPress={close} />
+    ), [close]);
     const screenOptions = React.useMemo(() => ({
-        headerShown: false,
+        headerShown: true,
+        title: t('common.homeProductName'),
+        headerTitle: t('common.homeProductName'),
+        headerLeft,
         presentation,
-    }), [presentation]);
+    }), [headerLeft, presentation]);
 
     return (
         <>
@@ -26,7 +39,7 @@ export default React.memo(function ServerPickerScreen() {
             <NewSessionServerSelectionContent
                 maxHeight={maxHeight}
                 ownsScrollViewport={true}
-                onClose={() => safeRouterBack({ router, navigation, fallbackHref: pickerFallbackHref })}
+                onClose={close}
             />
         </>
     );

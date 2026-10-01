@@ -35,6 +35,11 @@ const UniversalSearchRuntimeContext = React.createContext<UniversalSearchRuntime
 
 export const UniversalSearchRuntimeProvider = UniversalSearchRuntimeContext.Provider;
 
+/** For owners mounted where the runtime may be absent (the palette provider that mounts it). */
+export function useOptionalUniversalSearchRuntime(): UniversalSearchRuntime | null {
+    return React.useContext(UniversalSearchRuntimeContext);
+}
+
 export function useUniversalSearchRuntime(): UniversalSearchRuntime {
     const runtime = React.useContext(UniversalSearchRuntimeContext);
     if (!runtime) throw new Error('Universal Search runtime is not mounted');

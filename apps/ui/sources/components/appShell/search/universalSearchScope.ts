@@ -5,6 +5,7 @@ import { resolveServerProfileScopeId } from '@/sync/domains/server/serverProfile
 import { resolveServerProfileScopeIdForSelectionIdentifier } from '@/sync/domains/server/selection/serverSelectionProfileScopeIds';
 import type { UniversalSearchScopeSeed } from './UniversalSearchRuntimeContext';
 import { buildUniversalSearchScopeKey } from './universalSearchResult';
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 
 export type UniversalSearchScopeChoice = Readonly<{
     key: string;
@@ -81,7 +82,7 @@ export function buildUniversalSearchScopeChoices(input: Readonly<{
             machineId: null,
             rootPath: null,
         } satisfies UniversalSearchScopeSeed;
-        return [{ key: buildUniversalSearchScopeKeyFromSeed(scope), label: profile.name, scope }];
+        return [{ key: buildUniversalSearchScopeKeyFromSeed(scope), label: resolveHomeDisplayLabel(profile, profile.id), scope }];
     });
     for (const workspace of input.workspaces) {
         const serverId = resolveServerProfileScopeIdForSelectionIdentifier(input.profiles, workspace.serverId);

@@ -56,6 +56,69 @@ describe('SessionBoardViewStrip', () => {
         expect(screen.findHostByTestId('session-board-views')).toBeNull();
     });
 
+    it('still renders the inline rename editor for the only real view', async () => {
+        // After the first saved Note there is exactly one real view. The Rename action
+        // stays enabled, so hiding the whole strip made it a silent no-op.
+        const onRenameCommit = vi.fn();
+        const onRenameCancel = vi.fn();
+        const screen = await renderScreen(
+            <SessionBoardViewStrip
+                views={[view('overview', 'Overview')]}
+                activeViewId="overview"
+                onSelectView={() => undefined}
+                renamingViewId="overview"
+                onRenameCommit={onRenameCommit}
+                onRenameCancel={onRenameCancel}
+                {...A11Y_IDS}
+            />,
+        );
+        const input = screen.findByTestId('session-board-views-rename-overview');
+        expect(input).not.toBeNull();
+        await act(async () => { input?.props.onChangeText?.('Planning'); });
+        await act(async () => { input?.props.onSubmitEditing?.(); });
+        expect(onRenameCommit).toHaveBeenCalledWith('overview', 'Planning');
+
+        // Not renaming: the lone selector stays quiet.
+        const quiet = await renderScreen(
+            <SessionBoardViewStrip
+                views={[view('overview', 'Overview')]}
+                activeViewId="overview"
+                onSelectView={() => undefined}
+                renamingViewId={null}
+                {...A11Y_IDS}
+            />,
+        );
+        expect(quiet.findHostByTestId('session-board-views')).toBeNull();
+    });
+
+    it('returns focus to the surviving Board action after renaming the only visible view', async () => {
+        const fallbackFocus = vi.fn();
+        const focusFallbackRef = { current: { focus: fallbackFocus } };
+        const screen = await renderScreen(
+            <SessionBoardViewStrip
+                views={[view('overview', 'Overview')]}
+                activeViewId="overview"
+                onSelectView={() => undefined}
+                renamingViewId="overview"
+                focusFallbackRef={focusFallbackRef}
+                {...A11Y_IDS}
+            />,
+        );
+        expect(screen.findByTestId('session-board-views-rename-overview')).not.toBeNull();
+        await screen.update(
+            <SessionBoardViewStrip
+                views={[view('overview', 'Planning')]}
+                activeViewId="overview"
+                onSelectView={() => undefined}
+                renamingViewId={null}
+                focusFallbackRef={focusFallbackRef}
+                {...A11Y_IDS}
+            />,
+        );
+        expect(screen.findHostByTestId('session-board-views')).toBeNull();
+        expect(fallbackFocus).toHaveBeenCalledOnce();
+    });
+
     it('moves selection with Arrow keys and wraps at the ends', async () => {
         const onSelectView = vi.fn();
         const screen = await renderScreen(

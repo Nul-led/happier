@@ -12,10 +12,13 @@ import { WorkflowRunScreen } from '@/components/workflows/screens/WorkflowRunScr
  * Automation context and works for a direct Run whose originating Session is
  * gone.
  */
-export default function WorkflowRunDetailRoute() {
+export function WorkflowRunDetailRoute() {
     return (
         <WorkflowsGate>
             <WorkflowRunScreen />
         </WorkflowsGate>
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { WorkflowRunDetailRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkflowRunDetailRoute} />; }

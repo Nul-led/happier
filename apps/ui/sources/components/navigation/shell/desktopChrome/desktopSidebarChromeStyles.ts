@@ -1,60 +1,10 @@
-import { Typography } from '@/constants/Typography';
 import { StyleSheet } from 'react-native-unistyles';
-import { ICON_SIZE } from '@/components/ui/icons/Icon';
 import {
-    DESKTOP_SIDEBAR_CHROME_ACTION_CONTROL_SIZE_PX,
-    DESKTOP_SIDEBAR_CHROME_BRAND_LOGO_SIZE_PX,
-    DESKTOP_SIDEBAR_CHROME_BRAND_ROW_MIN_HEIGHT_PX,
-    DESKTOP_SIDEBAR_CHROME_CONTROL_GAP_PX,
-    DESKTOP_SIDEBAR_CHROME_HORIZONTAL_PADDING_PX,
-    DESKTOP_SIDEBAR_CHROME_ROW_GAP_PX,
-    DESKTOP_SIDEBAR_CHROME_TOP_ICON_GAP_PX,
-    DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX,
-    DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_DISABLED_OPACITY,
-    DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_OPACITY,
-    DESKTOP_SIDEBAR_CHROME_TOP_PADDING_PX,
-    DESKTOP_SIDEBAR_CHROME_TOP_SETTINGS_ICON_BUTTON_SIZE_PX,
-    DESKTOP_SIDEBAR_CHROME_TOP_SETTINGS_ICON_OPACITY,
-    DESKTOP_SIDEBAR_CHROME_WINDOW_CONTROLS_GAP_PX,
     DESKTOP_WINDOW_CONTROLS_SLOT_MIN_HEIGHT_PX,
     DESKTOP_WINDOW_CONTROLS_SLOT_MIN_WIDTH_PX,
 } from './desktopChromeMetrics';
 
 export const desktopSidebarChromeStyles = StyleSheet.create((theme) => ({
-    header: {
-        flexDirection: 'column',
-        alignItems: 'stretch',
-        paddingHorizontal: DESKTOP_SIDEBAR_CHROME_HORIZONTAL_PADDING_PX,
-        paddingTop: DESKTOP_SIDEBAR_CHROME_TOP_PADDING_PX,
-        paddingBottom: DESKTOP_SIDEBAR_CHROME_CONTROL_GAP_PX / 2,
-        backgroundColor: theme.colors.background.canvas,
-        position: 'relative',
-        zIndex: 100,
-        overflow: 'visible',
-        gap: DESKTOP_SIDEBAR_CHROME_ROW_GAP_PX,
-    },
-    windowControlsRow: {
-        minHeight: DESKTOP_WINDOW_CONTROLS_SLOT_MIN_HEIGHT_PX,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'flex-start',
-        gap: DESKTOP_SIDEBAR_CHROME_WINDOW_CONTROLS_GAP_PX,
-        position: 'relative',
-        width: '100%',
-    },
-    utilityRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: DESKTOP_SIDEBAR_CHROME_TOP_ICON_GAP_PX,
-        marginLeft: 'auto',
-        position: 'relative',
-        zIndex: 1,
-    },
-    inlineUtilityRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-    },
     windowControlsHost: {
         flexShrink: 0,
         minWidth: DESKTOP_WINDOW_CONTROLS_SLOT_MIN_WIDTH_PX,
@@ -62,30 +12,6 @@ export const desktopSidebarChromeStyles = StyleSheet.create((theme) => ({
         justifyContent: 'center',
         position: 'relative',
         zIndex: 1,
-    },
-    contentRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: DESKTOP_SIDEBAR_CHROME_CONTROL_GAP_PX,
-    },
-    compactContentRow: {
-        minHeight: DESKTOP_SIDEBAR_CHROME_BRAND_ROW_MIN_HEIGHT_PX,
-    },
-    brandGroup: {
-        flexGrow: 1,
-        flexShrink: 1,
-        flexBasis: 0,
-        minWidth: 0,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: DESKTOP_SIDEBAR_CHROME_CONTROL_GAP_PX,
-    },
-    brandButton: {
-        width: DESKTOP_SIDEBAR_CHROME_ACTION_CONTROL_SIZE_PX,
-        minHeight: DESKTOP_SIDEBAR_CHROME_BRAND_ROW_MIN_HEIGHT_PX,
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexShrink: 0,
     },
     updateIndicatorHost: {
         flexShrink: 0,
@@ -108,94 +34,6 @@ export const desktopSidebarChromeStyles = StyleSheet.create((theme) => ({
         ...StyleSheet.absoluteFillObject,
         borderRadius: DESKTOP_WINDOW_CONTROLS_SLOT_MIN_HEIGHT_PX / 2,
     },
-    titleContainerLeft: {
-        flexGrow: 1,
-        flexShrink: 1,
-        flexBasis: 0,
-        minWidth: 0,
-        flexDirection: 'column',
-        alignItems: 'flex-start',
-        justifyContent: 'center',
-        overflow: 'visible',
-    },
-    titleRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        flexShrink: 1,
-        minWidth: 0,
-        maxWidth: '100%',
-    },
-    brandLogo: {
-        width: DESKTOP_SIDEBAR_CHROME_BRAND_LOGO_SIZE_PX,
-        height: DESKTOP_SIDEBAR_CHROME_BRAND_LOGO_SIZE_PX,
-    },
-    titleText: {
-        flexShrink: 1,
-        fontSize: 18,
-        lineHeight: 24,
-        color: theme.colors.chrome.header.foreground,
-        ...Typography.default('semiBold'),
-    },
-    statusControlWrapper: {
-        alignSelf: 'stretch',
-        flexShrink: 1,
-        minWidth: 0,
-        maxWidth: '100%',
-    },
-    envBadge: {
-        marginTop: -4,
-        marginLeft: -4,
-        paddingHorizontal: 4,
-        paddingVertical: 1,
-        borderRadius: 999,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-    },
-    envBadgeText: {
-        fontSize: 6,
-        lineHeight: 8,
-        color: theme.colors.text.secondary,
-        ...Typography.default('semiBold'),
-    },
-    rightContainer: {
-        flexShrink: 0,
-        marginLeft: 'auto',
-        alignItems: 'center',
-        flexDirection: 'row',
-        gap: 4,
-        // Optical inset, not a stray negative margin: the last control is a centred box, so its ink
-        // stops half the box/glyph difference short of the header's padding line. Pull the cluster
-        // out by exactly that much so the trailing glyph sits flush with the right margin.
-        marginRight: -(DESKTOP_SIDEBAR_CHROME_ACTION_CONTROL_SIZE_PX - ICON_SIZE.md) / 2,
-    },
-    iconButton: {
-        width: DESKTOP_SIDEBAR_CHROME_ACTION_CONTROL_SIZE_PX,
-        height: DESKTOP_SIDEBAR_CHROME_ACTION_CONTROL_SIZE_PX,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    topIconButton: {
-        width: DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX,
-        height: DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX,
-        alignItems: 'center',
-        justifyContent: 'center',
-        opacity: DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_OPACITY,
-    },
-    topIconButtonDisabled: {
-        opacity: DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_DISABLED_OPACITY,
-    },
-    topSettingsIconButton: {
-        width: DESKTOP_SIDEBAR_CHROME_TOP_SETTINGS_ICON_BUTTON_SIZE_PX,
-        height: DESKTOP_SIDEBAR_CHROME_TOP_SETTINGS_ICON_BUTTON_SIZE_PX,
-        alignItems: 'center',
-        justifyContent: 'center',
-        opacity: DESKTOP_SIDEBAR_CHROME_TOP_SETTINGS_ICON_OPACITY,
-    },
-    notificationButton: {
-        position: 'relative',
-    },
     badge: {
         position: 'absolute',
         top: -4,
@@ -207,11 +45,6 @@ export const desktopSidebarChromeStyles = StyleSheet.create((theme) => ({
         paddingHorizontal: 4,
         justifyContent: 'center',
         alignItems: 'center',
-    },
-    badgeText: {
-        color: theme.colors.button.primary.tint,
-        fontSize: 10,
-        ...Typography.default('semiBold'),
     },
     windowControlsButtons: {
         flexDirection: 'row',

@@ -12,6 +12,8 @@ function roundRatio(value: number): number {
     return Number(value.toFixed(4));
 }
 
+export const SPLIT_CANVAS_DIVIDER_SIZE_PX = { row: 10, column: 18 } as const;
+
 export const SplitCanvasDivider = React.memo((props: Readonly<{
     splitId: string;
     axis: SplitCanvasAxis;
@@ -47,7 +49,7 @@ export const SplitCanvasDivider = React.memo((props: Readonly<{
 
     const vertical = props.axis === 'row';
     const nativeTouchTargetSize = resolveResizablePaneNativeTouchTargetSize();
-    const visualHandleSize = vertical ? 10 : 18;
+    const visualHandleSize = SPLIT_CANVAS_DIVIDER_SIZE_PX[props.axis];
     const targetSize = nativeTouchTargetSize ?? visualHandleSize;
     const layoutCompensation = (targetSize - visualHandleSize) / 2;
 
@@ -79,13 +81,13 @@ export const SplitCanvasDivider = React.memo((props: Readonly<{
                         ? {
                             top: 0,
                             bottom: 0,
-                            width: 10,
+                            width: SPLIT_CANVAS_DIVIDER_SIZE_PX.row,
                             left: 0,
                         }
                         : {
                             left: 0,
                             right: 0,
-                            height: 18,
+                            height: SPLIT_CANVAS_DIVIDER_SIZE_PX.column,
                         }),
                     zIndex: 100,
                 }}

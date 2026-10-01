@@ -1,0 +1,41 @@
+import * as React from 'react';
+
+import { AppScopeRightSidebar, AppScopeRightSidebarActionRail } from '@/components/appShell/rightSidebar/AppScopeRightSidebar';
+import { APP_PANE_SCOPE_ID } from '@/components/appShell/rightSidebar/appScopeRightSidebarNavigation';
+import { useAppRightSidebarTabs } from '@/components/appShell/rightSidebar/appRightSidebarTabs';
+
+import { AppPaneScopeHost, type AppPaneDestinationDetails } from './AppPaneScopeHost';
+import type { PaneRightSidebarAdapter } from './types';
+
+const APP_RIGHT_SIDEBAR_ADAPTER: PaneRightSidebarAdapter = Object.freeze({
+    render: ({ scopeId }: Readonly<{ scopeId: string }>) => (
+        <AppScopeRightSidebar scopeId={scopeId} closable testID="app-scope-right-sidebar" />
+    ),
+});
+const APP_RIGHT_SIDEBAR_RAIL_ADAPTER: PaneRightSidebarAdapter = Object.freeze({
+    ...APP_RIGHT_SIDEBAR_ADAPTER,
+    renderActionRail: ({ scopeId }) => <AppScopeRightSidebarActionRail scopeId={scopeId} />,
+});
+
+/**
+ * The pane host of the App's own pages (Plugins, plugin pages): one `PaneColumnsHost` for the page, its
+ * destination-owned details and the App's right sidebar (design §3.3). The route stays the only owner of
+ * the details selection; the right sidebar's selection lives in the one App pane scope.
+ */
+export const AppScopePaneHost = React.memo(function AppScopePaneHost(props: Readonly<{
+    main: React.ReactNode;
+    /** The destination's open details, or `null` while none is open. */
+    destinationDetails?: AppPaneDestinationDetails | null;
+    mainMinWidthPx?: number;
+}>) {
+    const tabs = useAppRightSidebarTabs();
+    return (
+        <AppPaneScopeHost
+            scopeId={APP_PANE_SCOPE_ID}
+            main={props.main}
+            rightSidebarAdapter={tabs.length > 0 ? APP_RIGHT_SIDEBAR_RAIL_ADAPTER : APP_RIGHT_SIDEBAR_ADAPTER}
+            destinationDetails={props.destinationDetails ?? null}
+            mainMinWidthPx={props.mainMinWidthPx}
+        />
+    );
+});

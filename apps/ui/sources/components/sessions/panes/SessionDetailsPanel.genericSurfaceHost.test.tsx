@@ -43,10 +43,6 @@ vi.mock('./SessionDetailsPanelDetailViews', () => ({
     SessionSubagentDetailsViewForPanel: () => React.createElement('SessionSubagentDetailsViewForPanel'),
 }));
 
-vi.mock('@/components/sessions/runs/launcher/SessionExecutionRunLauncherView', () => ({
-    SessionExecutionRunLauncherView: () => React.createElement('SessionExecutionRunLauncherView'),
-}));
-
 vi.mock('@/agents/registry/sessionSubagentUiBehavior', () => ({
     renderProviderSessionDetailsTab: () => null,
     resolveProviderSessionDetailsTabIconName: () => null,

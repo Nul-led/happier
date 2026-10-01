@@ -1,3 +1,4 @@
+import { t } from '@/text';
 import {
     RIGHT_SIDEBAR_BUILTIN_TABS,
     type RightSidebarAvailabilityInput,
@@ -36,11 +37,21 @@ export type ResolveRightSidebarTabsInput = Readonly<{
     /** The exact Home's `sessions.board` decision; omitted means disabled. */
     boardFeatureEnabled?: boolean;
     sessionSharingAvailable?: boolean;
+    /** Omitted means available; see `RightSidebarAvailabilityInput.sourceControlTabAvailable`. */
+    sourceControlTabAvailable?: boolean;
     presentation?: RightSidebarPresentation;
     pluginPlacements?: readonly PluginUiSurfacePlacementProjection[];
     projectionGeneration?: number | null;
     runtimeAdmission?: RightSidebarPluginTabRuntimeAdmission;
     localize?: PluginLocalizedTextResolver;
+    /**
+     * The App's own panels (`rightSidebarTab × app`) from the app-shell projection. A Session's or
+     * Project's right sidebar lists them after its own tabs (design §3.3); the App's own sidebar
+     * already has them as its plugin placements.
+     */
+    appPluginPlacements?: readonly PluginUiSurfacePlacementProjection[];
+    appProjectionGeneration?: number | null;
+    appLocalize?: PluginLocalizedTextResolver;
 }>;
 
 export type SessionRightSidebarTabId =
@@ -80,6 +91,7 @@ export function resolveRightSidebarTabs(
         presentation: input.presentation ?? 'desktop',
         boardFeatureEnabled: input.boardFeatureEnabled === true,
         sessionSharingAvailable: input.sessionSharingAvailable === true,
+        sourceControlTabAvailable: input.sourceControlTabAvailable !== false,
     };
     const builtInTabs = RIGHT_SIDEBAR_BUILTIN_TABS
         .filter((tab) => isTabAvailable(tab, availabilityInput))
@@ -91,8 +103,19 @@ export function resolveRightSidebarTabs(
         ...(input.localize ? { localize: input.localize } : {}),
         ...(input.runtimeAdmission === undefined ? {} : { runtimeAdmission: input.runtimeAdmission }),
     });
-    return Object.freeze([...builtInTabs, ...pluginTabs]
-        .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)));
+    const appTabs = input.scope === 'app' || !input.appPluginPlacements
+        ? []
+        : resolveRightSidebarPluginTabs({
+            scope: 'app',
+            placements: input.appPluginPlacements,
+            projectionGeneration: input.appProjectionGeneration,
+            ...(input.appLocalize ? { localize: input.appLocalize } : {}),
+            ...(input.runtimeAdmission === undefined ? {} : { runtimeAdmission: input.runtimeAdmission }),
+        });
+    return Object.freeze([
+        ...[...builtInTabs, ...pluginTabs].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)),
+        ...appTabs,
+    ]);
 }
 
 export function resolveSessionRightSidebarTabs(
@@ -242,4 +265,8 @@ export function resolveRightSidebarMobileSurface(
     scope: RightSidebarScope,
 ): RightSidebarMobileSurface | null {
     return resolveProjectedRightSidebarMobileSurface(tab, scope);
+}
+
+export function getRightSidebarTabLabel(tab: RightSidebarTabDefinition): string {
+    return tab.owner === 'builtin' ? t(tab.labelKey) : tab.label;
 }

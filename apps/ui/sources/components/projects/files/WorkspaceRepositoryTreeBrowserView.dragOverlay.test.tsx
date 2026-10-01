@@ -117,10 +117,6 @@ vi.mock('@/components/workspaces/files/repositoryTree/SearchResultsList', () => 
     SearchResultsList: () => React.createElement('SearchResultsList'),
 }));
 
-vi.mock('@/components/workspaces/files/repositoryTree/ChangedFilesTreeList', () => ({
-    ChangedFilesTreeList: () => React.createElement('ChangedFilesTreeList'),
-}));
-
 describe('WorkspaceRepositoryTreeBrowserView (drag overlay)', () => {
     beforeEach(() => {
         startUploadsSpy.mockClear();

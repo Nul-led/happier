@@ -3,8 +3,9 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { invokeTestInstanceHandler, renderScreen } from '@/dev/testkit';
 import { installPanelCommonModuleMocks } from '@/components/ui/panels/panelTestHelpers';
-import { createSplitCanvasState } from '../model/splitCanvasReducer';
+import { createSplitCanvasState, splitCanvasReduce } from '../model/splitCanvasReducer';
 import type { SplitCanvasDropTarget, SplitCanvasLeafNode, SplitCanvasNode, SplitCanvasState } from '../model/splitCanvasTypes';
+import type { SplitCanvasHostControls } from './SplitCanvasHost';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -23,6 +24,7 @@ vi.mock('@/components/workspaces/files/repositoryTree/WebDropTargetView', () => 
 
 vi.mock('./SplitCanvasDivider', () => ({
     SplitCanvasDivider: (props: any) => splitCanvasDividerSpy(props),
+    SPLIT_CANVAS_DIVIDER_SIZE_PX: { row: 10, column: 18 },
 }));
 
 function createLeaf(id: string) {
@@ -99,6 +101,110 @@ function findAncestorWithFlattenedStyle(
 }
 
 describe('SplitCanvasHost', () => {
+    it('propagates visibility changes into a retained hidden subtree when its tree node stays unchanged', async () => {
+        const { SplitCanvasHost } = await import('./SplitCanvasHost');
+        const state = createNestedState();
+        const tree = (maximizedLeafId: string | null) => <SplitCanvasHost
+            state={{ ...state, maximizedLeafId }} dispatch={() => {}}
+            renderLeaf={({ leaf }) => React.createElement('VisibilityProbe', {
+                leafId: leaf.id, visible: maximizedLeafId === null || maximizedLeafId === leaf.id,
+            })} />;
+        const screen = await renderScreen(tree(null));
+        await act(async () => { screen.tree.update(tree('leaf-a')); });
+        expect(screen.root.findAllByType('VisibilityProbe').map((node) => [node.props.leafId, node.props.visible]))
+            .toEqual([['leaf-a', true], ['leaf-b', false], ['leaf-c', false]]);
+        await act(async () => { screen.tree.update(tree(null)); });
+        expect(screen.root.findAllByType('VisibilityProbe').every((node) => node.props.visible)).toBe(true);
+    });
+    it('offers mounted actions the same measured split admission as UI requests', async () => {
+        const { SplitCanvasHost } = await import('./SplitCanvasHost');
+        const controlsRef: { current: SplitCanvasHostControls | null } = { current: null };
+        const screen = await renderScreen(<SplitCanvasHost
+            state={createNestedState()} dispatch={() => {}} renderLeaf={() => null}
+            getLeafMinimumSizePx={() => ({ width: 100, height: 80 })}
+            controlsRef={controlsRef}
+        />);
+        expect(controlsRef.current).not.toBeNull();
+        expect(controlsRef.current?.readSplitMeasurement('leaf-a', 'right')).toBeNull();
+        await act(async () => {
+            invokeTestInstanceHandler(screen.findByTestId('split-canvas-host'), 'onLayout', {
+                nativeEvent: { layout: { width: 1000, height: 600 } },
+            });
+        });
+        expect(controlsRef.current?.readSplitMeasurement('leaf-a', 'right')).toEqual({ availableSizePx: 485, minimumExistingSizePx: 100 });
+        expect(controlsRef.current?.readSplitMeasurement('missing', 'right')).toBeNull();
+        await act(async () => { screen.unmount(); });
+        expect(controlsRef.current).toBeNull();
+    });
+    it('measures a maximized nested leaf in its normal layout for both split axes', async () => {
+        const { SplitCanvasHost } = await import('./SplitCanvasHost');
+        const nested = createNestedState();
+        const state: SplitCanvasState<string> = {
+            ...nested, root: nested.root?.kind === 'split' ? { ...nested.root, ratio: 0.2 } : nested.root,
+            focusedLeafId: 'leaf-c', maximizedLeafId: 'leaf-c',
+        };
+        const onRequestSplitLeaf = vi.fn();
+        const screen = await renderScreen(<SplitCanvasHost
+            state={state} dispatch={vi.fn()} keyboardEnabled={false}
+            getLeafMinimumSizePx={(leaf) => ({ width: leaf.id === 'leaf-a' ? 600 : 100, height: 100 })}
+            onRequestSplitLeaf={onRequestSplitLeaf}
+            renderLeaf={({ leaf, requestSplit }) => React.createElement('LeafContent', { leafId: leaf.id, requestSplit })}
+        />);
+        await act(async () => {
+            invokeTestInstanceHandler(screen.findByTestId('split-canvas-host'), 'onLayout', {
+                nativeEvent: { layout: { x: 0, y: 0, width: 1010, height: 818 } },
+            });
+            invokeTestInstanceHandler(screen.findByTestId('split-canvas-leaf-interaction-surface-leaf-c'), 'onLayout', {
+                nativeEvent: { layout: { x: 0, y: 0, width: 1010, height: 818 } },
+            });
+        });
+        const content = screen.tree.root.findAllByType('LeafContent').find((node) => node.props.leafId === 'leaf-c');
+        await act(async () => content?.props.requestSplit('right'));
+        expect(onRequestSplitLeaf).toHaveBeenLastCalledWith({
+            leafId: 'leaf-c', direction: 'right', availableSizePx: 390, minimumExistingSizePx: 100,
+        });
+        await act(async () => content?.props.requestSplit('down'));
+        expect(onRequestSplitLeaf).toHaveBeenLastCalledWith({
+            leafId: 'leaf-c', direction: 'down', availableSizePx: 382, minimumExistingSizePx: 100,
+        });
+    });
+
+    it('rejects an undersized maximized split, then admits it after the host grows', async () => {
+        const { SplitCanvasHost } = await import('./SplitCanvasHost');
+        let state: SplitCanvasState<string> = { ...createNestedState(), focusedLeafId: 'leaf-c', maximizedLeafId: 'leaf-c' };
+        const screen = await renderScreen(<SplitCanvasHost
+            state={state} dispatch={vi.fn()} keyboardEnabled={false}
+            getLeafMinimumSizePx={() => ({ width: 250, height: 100 })}
+            onRequestSplitLeaf={(input) => {
+                state = splitCanvasReduce(state, {
+                    type: 'splitLeaf', targetLeafId: input.leafId, axis: 'row', placement: 'after', newLeaf: createLeaf('leaf-d'),
+                    availableSizePx: input.availableSizePx, minimumFirstSizePx: input.minimumExistingSizePx, minimumSecondSizePx: 250,
+                });
+            }}
+            renderLeaf={({ leaf, requestSplit }) => React.createElement('LeafContent', { leafId: leaf.id, requestSplit })}
+        />);
+        const content = screen.tree.root.findAllByType('LeafContent').find((node) => node.props.leafId === 'leaf-c');
+        const initial = state;
+        await act(async () => {
+            invokeTestInstanceHandler(screen.findByTestId('split-canvas-host'), 'onLayout', {
+                nativeEvent: { layout: { x: 0, y: 0, width: 1010, height: 818 } },
+            });
+            invokeTestInstanceHandler(screen.findByTestId('split-canvas-leaf-interaction-surface-leaf-c'), 'onLayout', {
+                nativeEvent: { layout: { x: 0, y: 0, width: 1010, height: 818 } },
+            });
+            content?.props.requestSplit('right');
+        });
+        expect(state).toBe(initial);
+        await act(async () => {
+            invokeTestInstanceHandler(screen.findByTestId('split-canvas-host'), 'onLayout', {
+                nativeEvent: { layout: { x: 0, y: 0, width: 1210, height: 818 } },
+            });
+            content?.props.requestSplit('right');
+        });
+        expect(state.focusedLeafId).toBe('leaf-d');
+        expect(state.maximizedLeafId).toBeNull();
+    });
+
     it('hides sibling leaves when the focused leaf is maximized through the shared leaf controls', async () => {
         const { SplitCanvasHost } = await import('./SplitCanvasHost');
         const { splitCanvasReduce } = await import('../model/splitCanvasReducer');
@@ -242,6 +348,7 @@ describe('SplitCanvasHost', () => {
                 state={state}
                 dispatch={dispatch}
                 renderLeaf={({ leaf }) => React.createElement('LeafContent', { leafId: leaf.id })}
+                getLeafMinimumSizePx={(leaf) => ({ width: leaf.id === 'leaf-b' ? 250 : 100, height: 180 })}
                 onActiveDropTargetChange={onActiveDropTargetChange}
                 onLeafDrop={onLeafDrop}
             />,
@@ -330,6 +437,8 @@ describe('SplitCanvasHost', () => {
                 leafId: 'leaf-b',
                 placement: 'left',
             },
+            availableSizePx: 390,
+            minimumExistingSizePx: 250,
         });
         expect(onActiveDropTargetChange).toHaveBeenLastCalledWith(null);
     });
@@ -593,6 +702,42 @@ describe('SplitCanvasHost', () => {
         expect(screen.findByTestId('split-canvas-pane-second-split-root')?.props.style).toEqual(
             expect.objectContaining({ flex: 0.3 }),
         );
+    });
+
+    it('uses both child subtree minimums to bound a measured divider', async () => {
+        const dispatch = vi.fn();
+        const { SplitCanvasHost } = await import('./SplitCanvasHost');
+        const state: SplitCanvasState<string> = {
+            root: {
+                id: 'split-measured', kind: 'split', axis: 'row', ratio: 0.6,
+                first: createLeaf('leaf-a'), second: createLeaf('leaf-b'),
+            },
+            focusedLeafId: 'leaf-a', maximizedLeafId: null, maxLeaves: 4,
+        };
+        const screen = await renderScreen(
+            <SplitCanvasHost
+                state={state}
+                dispatch={dispatch}
+                getLeafMinimumSizePx={(leaf) => ({ width: leaf.id === 'leaf-a' ? 400 : 100, height: 100 })}
+                renderLeaf={({ leaf }) => React.createElement('LeafContent', { leafId: leaf.id })}
+            />,
+        );
+
+        await act(async () => {
+            invokeTestInstanceHandler(screen.findByTestId('split-canvas-split-split-measured'), 'onLayout', {
+                nativeEvent: { layout: { width: 700, height: 400 } },
+            });
+        });
+
+        const divider = screen.tree.root.findByType('SplitCanvasDivider');
+        expect(divider.props.minRatio).toBeCloseTo(400 / 690);
+        expect(divider.props.maxRatio).toBeCloseTo(1 - 100 / 690);
+
+        await act(async () => divider.props.onCommitRatio?.(0.4));
+        expect(dispatch).toHaveBeenCalledWith({
+            type: 'setSplitRatio', splitId: 'split-measured', ratio: 0.4,
+            availableSizePx: 690, minimumFirstSizePx: 400, minimumSecondSizePx: 100,
+        });
     });
 
     it('coalesces live divider ratio updates into animation frames when resizing on web', async () => {

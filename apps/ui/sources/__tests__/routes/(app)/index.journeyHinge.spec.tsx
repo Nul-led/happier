@@ -2,7 +2,10 @@ import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { buildMachineAddHref } from '@/components/settings/machines/collection/machineCollectionModel';
 import { clearDemoWorld } from '@/demoMode/seed/seedDemoWorld';
 import { takeStoreSnapshot } from '@/demoMode/seed/storeSnapshot';
 import { getDemoFirewallDenyLog, resetDemoFirewallForTests, uninstallDemoFirewall } from '@/demoMode/guards/demoFirewall';
@@ -14,6 +17,9 @@ import {
     upsertAndActivateServer,
 } from '@/sync/domains/server/serverRuntime';
 import { beginOnboardingJourneySession, endOnboardingJourneySession } from '@/components/onboarding/tour/state/journeySession';
+import { discardMachineAddFlowDraft, updateMachineAddFlowDraft } from '@/components/machines/add/machineAddFlowStore';
+import { createAwaitedMachineArrivalBaseline } from '@/components/onboarding/detection/useAwaitedMachineArrival';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { runtimeFetch } from '@/utils/system/runtimeFetch';
 import type { PendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent.shared';
 import type {
@@ -96,32 +102,12 @@ vi.mock('@/components/onboarding/preAuth/PreAuthOnboardingWizardEntry', async ()
                 authenticationCatalog: { provenance: 'legacy', methods: [] },
                 authenticationActions: [],
                 keyChallengeV2Available: false,
+                authEntryUnavailable: false,
                 homeTarget: { kind: 'saved_profile', profileRef: 'relay-profile' },
                 homeLabel: 'Relay Home',
                 serverAvailability: 'ready',
                 serverUrlForCopy: 'https://relay.example.test',
                 showAuthActions: true,
-                showProviderSignup: false,
-                showAnonymousSignup: false,
-                showMtlsLogin: false,
-                showKeylessProviderLogin: false,
-                providerId: null,
-                keylessProviderId: null,
-                providerSignupTitle: '',
-                providerKeylessTitle: '',
-                anonymousSignupTitle: '',
-                mtlsTitle: '',
-                primaryAction: null,
-                mtlsPrimary: false,
-                keylessPrimary: false,
-                autoRedirect: {
-                    enabled: false,
-                    providerId: null,
-                    toKeyedProvision: false,
-                    toKeylessLogin: false,
-                    toMtls: false,
-                    toLegacySignupProvider: false,
-                },
                 retryServerCheck: () => undefined,
             },
             accountContinuationIntent: { kind: 'enter', target: { kind: 'automatic' } },
@@ -165,10 +151,6 @@ vi.mock('@/modal/components/BaseModal', () => ({
     BaseModal: (props: any) => React.createElement('BaseModal', props, props.children),
 }));
 
-vi.mock('@/components/onboarding/surfaces/SetupWizardSurface', () => ({
-    SetupWizardSurface: (props: any) => React.createElement('SetupWizardSurface', props),
-}));
-
 const applyLocalSettingsSpy = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/store/settingsWriters', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/store/settingsWriters')>();
@@ -197,23 +179,10 @@ vi.mock('@/text/i18n', () => ({
     setPreferredLanguageFromSettings: vi.fn(),
 }));
 
-vi.mock('react-native-reanimated', () => ({
-    __esModule: true,
-    default: {
-        View: 'Animated.View',
-        createAnimatedComponent: (component: unknown) => component,
-    },
-    Easing: {
-        cubic: 'cubic',
-        out: (value: unknown) => value,
-    },
-    useAnimatedStyle: (factory: () => unknown) => factory(),
-    useSharedValue: (value: unknown) => ({ value }),
-    makeMutable: (value: unknown) => ({ value }),
-    cancelAnimation: vi.fn(),
-    withDelay: (_delayMs: number, value: unknown) => value,
-    withTiming: (value: unknown) => value,
-}));
+vi.mock('react-native-reanimated', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    return createReanimatedModuleMock();
+});
 
 vi.mock('react-native-svg', () => ({
     __esModule: true,
@@ -308,41 +277,6 @@ vi.mock('@/components/settings/server/useRelayDriftBanner', () => ({
     useRelayDriftBanner: () => null,
 }));
 
-const setupControllerState = vi.hoisted(() => ({
-    lastProps: null as Record<string, unknown> | null,
-    current: {
-        stepId: 'setup_this_computer',
-        currentStepIndex: 0,
-        stepCount: 2,
-        contentTransitionKey: 'setup_this_computer',
-        contentTransitionDirection: 'replace',
-        title: 'setup',
-        subtitle: null,
-        scrollable: false,
-        body: null as React.ReactNode,
-        onPrimary: vi.fn(),
-        primaryLabel: 'Continue setup',
-        primaryDisabled: false,
-        onBack: vi.fn(),
-        backLabel: 'Back',
-        showBack: true,
-        onSkip: vi.fn(),
-        skipLabel: 'Skip',
-        skipDisabled: false,
-        showSkip: true,
-        footerHint: null,
-        goToStep: vi.fn(),
-    },
-}));
-vi.mock('@/components/onboarding/surfaces/useSetupWizardController', () => ({
-    useSetupWizardController: (props: Record<string, unknown>) => {
-        setupControllerState.lastProps = props;
-        return {
-            ...setupControllerState.current,
-            body: React.createElement('Text', { testID: 'route-journey-setup-body' }, 'Setup controller body'),
-        };
-    },
-}));
 
 vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
     getServerFeaturesSnapshot: vi.fn(async () => ({ status: 'ready', features: { capabilities: { auth: { methods: [] } } } })),
@@ -447,13 +381,7 @@ describe('/ (welcome) journey hinge', () => {
         };
         expoRouterSpies.replace.mockReset();
         expoRouterSpies.push.mockReset();
-        setupControllerState.lastProps = null;
-        setupControllerState.current.stepId = 'setup_this_computer';
-        setupControllerState.current.contentTransitionKey = 'setup_this_computer';
-        setupControllerState.current.onPrimary.mockClear();
-        setupControllerState.current.onBack.mockClear();
-        setupControllerState.current.onSkip.mockClear();
-        setupControllerState.current.goToStep.mockClear();
+        discardMachineAddFlowDraft();
         syncSingletonState.applySettings.mockReset();
         routeBaseFetchSpy = vi.fn(async () => new Response('{}', { status: 200 }));
         globalThis.fetch = routeBaseFetchSpy as unknown as typeof fetch;
@@ -548,7 +476,7 @@ describe('/ (welcome) journey hinge', () => {
         }
     });
 
-    it('still holds an active journey latch for a genuine unresolved server override outside demo mode', async () => {
+    it('keeps onboarding mounted for an unresolved supplied Home address outside demo mode', async () => {
         journeyRouteState.enabled = true;
         journeyRouteState.initialBeatId = 'S1';
         isAuthenticated = false;
@@ -576,7 +504,7 @@ describe('/ (welcome) journey hinge', () => {
             const screen = await renderScreen(React.createElement(Screen));
             await flushHookEffects({ cycles: 2, turns: 2 });
 
-            expect(journeyRouteState.mountIds).toEqual([]);
+            expect(journeyRouteState.mountIds).toEqual([1]);
             expect(demoWorldState.seedCalls).toBe(0);
             expect(demoWorldState.clearCalls).toBe(0);
 
@@ -598,7 +526,6 @@ describe('/ (welcome) journey hinge', () => {
 
         expect(journeyRouteState.mountIds).toEqual([1]);
         expect(screen.getTextContent()).toContain('Pre-auth controller body');
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
         // A journey mounted directly at a setup beat never seeds the demo world,
         // so there is nothing to tear down (JV3-LIVEQA setup-entry invariant).
         expect(demoWorldState.clearCalls).toBe(0);
@@ -615,61 +542,10 @@ describe('/ (welcome) journey hinge', () => {
 
         expect(journeyRouteState.mountIds).toEqual([1]);
         expect(journeyRouteState.unmountIds).toEqual([]);
-        expect(screen.getTextContent()).toContain('Setup controller body');
-        expect(setupControllerState.lastProps).toMatchObject({
-            initialStepId: 'setup_this_computer',
-            scope: 'machine',
-        });
+        expect(screen.findByTestId('route-journey-machine-add')).not.toBeNull();
+
         expect(takeStoreSnapshot(storage.getState())).toEqual(before);
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
         expect(screen.findAllByType('BaseModal' as never)).toHaveLength(0);
-    });
-
-    it('advances the route-mounted journey from S3 to S4 and S5 as the embedded setup controller advances', async () => {
-        journeyRouteState.enabled = true;
-        journeyRouteState.initialBeatId = 'S3';
-        isAuthenticated = true;
-        getPendingSetupIntentMock.mockReturnValue({
-            branch: 'thisComputer',
-            phase: 'post_auth',
-            relayUrl: 'https://relay.example.test',
-        });
-        setupControllerState.current.onPrimary.mockImplementation(() => {
-            if (setupControllerState.current.stepId === 'setup_this_computer') {
-                setupControllerState.current.stepId = 'providers_optional';
-                setupControllerState.current.contentTransitionKey = 'providers_optional';
-                return;
-            }
-            setupControllerState.current.stepId = 'done';
-            setupControllerState.current.contentTransitionKey = 'done';
-        });
-        beginOnboardingJourneySession();
-
-        const Screen = (await import('@/app/(app)/index')).default;
-        const screen = await renderScreen(React.createElement(Screen));
-        await flushHookEffects({ cycles: 8, turns: 4, frames: 1 });
-
-        expect(screen.findByTestId('route-journey-desktop-current-beat:S3')).not.toBeNull();
-        // Composition invariant (P1): while the journey session is active the host owns
-        // the whole viewport — the authenticated shell (session sidebar) must NOT mount.
-        expect(screen.findAllByType('MainView' as never)).toHaveLength(0);
-
-        await screen.pressByTestIdAsync('route-journey-desktop-config-primary');
-        await screen.update(React.createElement(Screen));
-        await flushHookEffects({ cycles: 8, turns: 4, frames: 1 });
-
-        expect(screen.findByTestId('route-journey-desktop-current-beat:S4')).not.toBeNull();
-        expect(setupControllerState.current.stepId).toBe('providers_optional');
-        // S4 (providers beat) stays inside the journey host, never beside the live shell.
-        expect(screen.findAllByType('MainView' as never)).toHaveLength(0);
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
-
-        await screen.pressByTestIdAsync('route-journey-desktop-config-primary');
-        await screen.update(React.createElement(Screen));
-        await flushHookEffects({ cycles: 8, turns: 4, frames: 1 });
-
-        expect(screen.findByTestId('route-journey-desktop-current-beat:S5')).not.toBeNull();
-        expect(setupControllerState.current.stepId).toBe('done');
     });
 
     it('settles the setup intent and lands on authenticated home when Act-2 setup is skipped', async () => {
@@ -681,12 +557,6 @@ describe('/ (welcome) journey hinge', () => {
             phase: 'post_auth',
             relayUrl: 'https://relay.example.test',
         });
-        setupControllerState.current.onSkip.mockImplementation(() => {
-            const onExit = setupControllerState.lastProps?.onExit;
-            if (typeof onExit === 'function') {
-                onExit();
-            }
-        });
         beginOnboardingJourneySession();
 
         const Screen = (await import('@/app/(app)/index')).default;
@@ -694,7 +564,6 @@ describe('/ (welcome) journey hinge', () => {
         await flushHookEffects({ cycles: 8, turns: 4, frames: 1 });
 
         expect(screen.findByTestId('route-journey-desktop-current-beat:S3')).not.toBeNull();
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
 
         await screen.pressByTestIdAsync('route-journey-desktop-config-skip');
         await flushHookEffects({ cycles: 8, turns: 4, frames: 1 });
@@ -706,7 +575,6 @@ describe('/ (welcome) journey hinge', () => {
         });
         expect(journeyRouteState.unmountIds).toEqual([1]);
         expect(screen.findAllByType('MainView' as never)).toHaveLength(1);
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
         expect(screen.findAllByType('BaseModal' as never)).toHaveLength(0);
     });
 
@@ -715,12 +583,6 @@ describe('/ (welcome) journey hinge', () => {
         journeyRouteState.initialBeatId = 'S3';
         isAuthenticated = true;
         getPendingSetupIntentMock.mockReturnValue(null);
-        setupControllerState.current.onSkip.mockImplementation(() => {
-            const onExit = setupControllerState.lastProps?.onExit;
-            if (typeof onExit === 'function') {
-                onExit();
-            }
-        });
         beginOnboardingJourneySession();
 
         const Screen = (await import('@/app/(app)/index')).default;
@@ -740,14 +602,10 @@ describe('/ (welcome) journey hinge', () => {
         });
         expect(journeyRouteState.unmountIds).toEqual([1]);
         expect(screen.findAllByType('MainView' as never)).toHaveLength(1);
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
         expect(screen.findAllByType('BaseModal' as never)).toHaveLength(0);
     });
 
-    it('re-latches the journey full-viewport for an authed pending setup continuation after the in-memory session is lost (flag-on)', async () => {
-        // Live-reproduced escape (jv3-flow-r2 repro-07): reload mid-setup loses the
-        // in-memory journeySessionActive latch while the persisted pendingSetupIntent
-        // survives; the route then rendered the authenticated shell + legacy modal.
+    it('opens the shared draft for a pending continuation after the in-memory journey is lost (flag-on)', async () => {
         journeyRouteState.enabled = true;
         journeyRouteState.initialBeatId = 'S3';
         isAuthenticated = true;
@@ -762,10 +620,10 @@ describe('/ (welcome) journey hinge', () => {
         const screen = await renderScreen(React.createElement(Screen));
         await flushHookEffects({ cycles: 8, turns: 4, frames: 1 });
 
-        // Full-viewport journey host owns the route; the authenticated shell never mounts.
-        expect(journeyRouteState.mountIds).toEqual([1]);
-        expect(screen.findAllByType('MainView' as never)).toHaveLength(0);
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
+        expect(journeyRouteState.mountIds).toEqual([]);
+        expect(screen.findAllByType('MainView' as never)).toHaveLength(1);
+        expect(expoRouterSpies.replace).toHaveBeenCalledWith(buildMachineAddHref({ path: 'thisComputer' }));
+        expect(clearPendingSetupIntentMock).toHaveBeenCalledTimes(1);
         expect(screen.findAllByType('BaseModal' as never)).toHaveLength(0);
     });
 
@@ -798,7 +656,7 @@ describe('/ (welcome) journey hinge', () => {
         }
     });
 
-    it('keeps the flag-off login continuation on the classic setup wizard path', async () => {
+    it('routes the flag-off login continuation to the shared machine draft', async () => {
         journeyRouteState.enabled = false;
         isAuthenticated = false;
 
@@ -811,10 +669,10 @@ describe('/ (welcome) journey hinge', () => {
         await flushHookEffects({ cycles: 2, turns: 2 });
 
         expect(journeyRouteState.mountIds).toEqual([]);
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(1);
+        expect(expoRouterSpies.replace).toHaveBeenCalledWith(buildMachineAddHref({ path: 'thisComputer' }));
     });
 
-    it('falls back to classic setup continuation when the journey is abandoned before login completes', async () => {
+    it('opens the shared machine draft when the journey is abandoned before login completes', async () => {
         journeyRouteState.enabled = true;
         journeyRouteState.initialBeatId = 'S2';
         isAuthenticated = false;
@@ -832,7 +690,7 @@ describe('/ (welcome) journey hinge', () => {
         await screen.update(React.createElement(Screen));
         await flushHookEffects({ cycles: 2, turns: 2 });
 
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(1);
+        expect(expoRouterSpies.replace).toHaveBeenCalledWith(buildMachineAddHref({ path: 'thisComputer' }));
         expect(screen.findAllByType('DemoStage' as never)).toHaveLength(0);
     });
 
@@ -852,7 +710,6 @@ describe('/ (welcome) journey hinge', () => {
 
         expect(journeyRouteState.mountIds).toEqual([1]);
         expect(journeyRouteState.unmountIds).toEqual([]);
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
 
         await screen.pressByTestIdAsync('route-journey-desktop-config-primary');
         await flushHookEffects({ cycles: 8, turns: 4, frames: 1 });
@@ -866,7 +723,6 @@ describe('/ (welcome) journey hinge', () => {
             phase: 'dismissed',
             relayUrl: 'https://relay.example.test',
         });
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
     });
 
     it('completes a setup-entry journey without ever seeding, and still settles the exit', async () => {
@@ -894,7 +750,6 @@ describe('/ (welcome) journey hinge', () => {
         expect(demoWorldState.clearCalls).toBe(1);
         expect(journeyRouteState.unmountIds).toEqual([1]);
         expect(screen.findAllByType('DemoStage' as never)).toHaveLength(0);
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
         expect(syncSingletonState.applySettings).toHaveBeenCalledWith({
             sessionListAttentionPromotionModeV1: 'global',
             sessionListWorkingPlacementModeV1: 'global',
@@ -925,17 +780,11 @@ describe('/ (welcome) journey hinge', () => {
 
         expect(demoWorldState.clearCalls).toBe(0);
         expect(journeyRouteState.unmountIds).toEqual([]);
-        expect(screen.getTextContent()).toContain('Setup controller body');
+        expect(screen.findByTestId('route-journey-machine-add')).not.toBeNull();
         expect(screen.findAllByType('DemoStage' as never)).toHaveLength(0);
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
     });
 
-    it('does not re-latch the journey for an authed pending continuation once the account already has a machine (offline)', async () => {
-        // Binding decision: the post-auth machine-setup step auto-displays only while the
-        // account has ZERO machines. A reload lost the in-memory journey latch and a
-        // post_auth continuation survives, but the account already has a machine (even
-        // offline), so the route must fall through to the authenticated shell — never
-        // auto re-latch the full-viewport setup act — and settle the stale intent.
+    it('routes an explicit pending continuation to the draft even with an offline machine, without automatically re-latching the journey', async () => {
         journeyRouteState.enabled = true;
         journeyRouteState.initialBeatId = 'S3';
         isAuthenticated = true;
@@ -954,16 +803,17 @@ describe('/ (welcome) journey hinge', () => {
 
         expect(journeyRouteState.mountIds).toEqual([]);
         expect(screen.findAllByType('MainView' as never)).toHaveLength(1);
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
         // The stale continuation intent is settled via the canonical setter, not left to TTL.
         expect(clearPendingSetupIntentMock).toHaveBeenCalled();
+        expect(expoRouterSpies.replace).toHaveBeenCalledWith(buildMachineAddHref({ path: 'thisComputer' }));
     });
 
-    it('keeps the live journey mounted at S3 when the first machine arrives mid-setup (does not yank the step away)', async () => {
-        // The gate applies to whether the step AUTO-DISPLAYS on entry — not mid-step. During
-        // a live journey session at S3, the arrival of the user's FIRST machine is the success
-        // state (the arrival card), so the active session must keep owning the viewport.
+    it('keeps the journey mounted and advances to agents when the first machine arrives', async () => {
         journeyRouteState.enabled = true;
+        const home = getActiveServerSnapshot();
+        storage.setState({ machineListByServerId: { [home.serverId]: [] } });
+        updateMachineAddFlowDraft((draft) => ({ ...draft, serverId: home.serverId, path: 'thisComputer',
+            startedAtMs: Date.now(), baseline: createAwaitedMachineArrivalBaseline(home.serverUrl, [], home.serverId) }));
         journeyRouteState.initialBeatId = 'S3';
         isAuthenticated = true;
         tauriDesktopState.value = false;
@@ -982,13 +832,12 @@ describe('/ (welcome) journey hinge', () => {
         expect(screen.findAllByType('MainView' as never)).toHaveLength(0);
 
         act(() => {
-            seedActiveServerMachine();
+            storage.setState({ machineListByServerId: { [home.serverId]: [createMachineFixture({ id: 'arrived', activeAt: Date.now() })] } });
         });
         await screen.update(React.createElement(Screen));
         await flushHookEffects({ cycles: 8, turns: 4, frames: 1 });
 
-        // Still the live S3 setup step — the arrival did not tear the journey down.
-        expect(screen.findByTestId('route-journey-desktop-current-beat:S3')).not.toBeNull();
+        expect(screen.findByTestId('route-journey-desktop-current-beat:S4')).not.toBeNull();
         expect(screen.findAllByType('MainView' as never)).toHaveLength(0);
         expect(journeyRouteState.unmountIds).toEqual([]);
     });

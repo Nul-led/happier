@@ -2,10 +2,7 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { Text } from '@/components/ui/text/Text';
 import { ReviewCommentsSessionSurface } from '@/components/reviews/ReviewCommentsSessionSurface';
-import { Typography } from '@/constants/Typography';
-import { t } from '@/text';
 import { buildWorkspaceChangedFilesData } from '@/hooks/workspaces/scm/buildWorkspaceChangedFilesData';
 import { useWorkspaceScmSnapshotController } from '@/hooks/workspaces/scm/useWorkspaceScmSnapshotController';
 import { NotSourceControlRepositoryState } from '@/components/workspaces/scm/states/NotSourceControlRepositoryState';
@@ -16,7 +13,7 @@ import { fetchWorkspaceUnifiedDiffForPath } from '@/scm/diff/fetchWorkspaceUnifi
 import type { ScmReviewUnifiedDiffFetcher } from '@/components/workspaces/scm/review/scmReviewDiffFetcher';
 import { useWorkspaceReviewCommentDraftHandlers } from '@/components/workspaces/files/details/workspaceFileDetails/useWorkspaceReviewCommentDraftHandlers';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
 import { createPluginPermissionGrantActions } from '@/sync/domains/plugins/permissions/actions';
 import { usePluginPermissionGrants } from '@/sync/domains/plugins/permissions/usePluginPermissionGrants';
 import { createFrontDoorUiActionExecutor } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
@@ -34,6 +31,11 @@ import { SCM_COMMIT_STRATEGIES, type ScmCommitStrategy } from '@/scm/settings/co
 import { buildCommitSelectionPathHints, isFileSelectedForCommit } from '@/scm/operations/commitSelectionHints';
 import { isDirectoryLikeScmFileStatus } from '@/scm/isDirectoryLikeScmFileStatus';
 import { WorkspaceScmCommitSelectionToggleButton } from '@/components/projects/scm/WorkspaceScmCommitSelectionToggleButton';
+import { activeReviewFileKeyForWorkspace } from '@/components/workspaces/scm/review/activeReviewFile';
+import { useLayoutPresentationActive } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
+
+/** A project's Review is a Details tab too: the shared Review header and its file list first. */
+const WORKSPACE_REVIEW_DETAILS_HEADER = Object.freeze({});
 
 export type WorkspaceScmReviewDetailsViewProps = Readonly<{
     scopeId: string;
@@ -62,6 +64,12 @@ export const WorkspaceScmReviewDetailsView = React.memo((props: WorkspaceScmRevi
         machineId: props.machineId,
         rootPath: props.rootPath,
     }), [props.machineId, props.rootPath, props.serverId]);
+    const presented = useLayoutPresentationActive();
+    const activeReviewFileKey = activeReviewFileKeyForWorkspace(scope);
+    const activeReviewFile = React.useMemo(
+        () => ({ key: activeReviewFileKey, presented }),
+        [activeReviewFileKey, presented],
+    );
     const reviewCommentsEnabled = useFeatureEnabled('files.reviewComments') === true;
     const scmWriteEnabled = useFeatureEnabled('scm.writeOperations') === true;
     const reviewCommentDrafts = useWorkspaceReviewCommentsDrafts(scope);
@@ -160,14 +168,7 @@ export const WorkspaceScmReviewDetailsView = React.memo((props: WorkspaceScmRevi
     ]);
 
     if (loading && !snapshot) {
-        return (
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 16, gap: 10 }}>
-                <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-                <Text style={{ color: theme.colors.text.secondary, ...Typography.default() }}>
-                    {t('common.loading')}
-                </Text>
-            </View>
-        );
+        return <PaneLoadingFallback />;
     }
 
     if (error) {
@@ -191,6 +192,7 @@ export const WorkspaceScmReviewDetailsView = React.memo((props: WorkspaceScmRevi
             {reviewCommentsEnabled ? (
                 <ReviewCommentsSessionSurface
                     workspaceId={props.workspaceRefId}
+                    workspace={{ machineId: props.machineId, path: props.rootPath }}
                     execute={frontDoorActionExecutor}
                     directWriteGrants={directWriteGrants}
                     pendingDirectWriteGrantRequests={pendingDirectWriteGrantRequests}
@@ -205,6 +207,8 @@ export const WorkspaceScmReviewDetailsView = React.memo((props: WorkspaceScmRevi
                 />
             ) : null}
             <ChangedFilesReview
+                activeReviewFile={activeReviewFile}
+                detailsHeader={WORKSPACE_REVIEW_DETAILS_HEADER}
                 theme={theme}
                 sessionId={props.scopeId}
                 snapshot={snapshot ?? null}

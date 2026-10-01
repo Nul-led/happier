@@ -111,10 +111,6 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     });
 });
 
-vi.mock('@/sync/domains/transfers/runtime/useMachineRpcDirectRouteAvailability', () => ({
-    useMachineRpcDirectRouteAvailability: () => 'viable',
-}));
-
 vi.mock('@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle', () => ({
     isIrohMachineTransferLifecycleAvailable: () => false,
     probeIrohMachineTransferLifecycleAvailability: async () => false,
@@ -194,12 +190,17 @@ vi.mock('./WorkspaceRepositoryTreeList', () => ({
     },
 }));
 
-vi.mock('@/components/workspaces/files/repositoryTree/SearchResultsList', () => ({
-    SearchResultsList: () => React.createElement('SearchResultsList'),
+vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
+    DropdownMenu: (props: any) => {
+        const trigger = typeof props.trigger === 'function'
+            ? props.trigger({ toggle: vi.fn(), openMenu: vi.fn(), closeMenu: vi.fn(), open: Boolean(props.open), selectedItem: null })
+            : props.trigger;
+        return React.createElement('DropdownMenu', props, trigger);
+    },
 }));
 
-vi.mock('@/components/workspaces/files/repositoryTree/ChangedFilesTreeList', () => ({
-    ChangedFilesTreeList: () => React.createElement('View', { testID: 'changed-files-tree-list-stub' }),
+vi.mock('@/components/workspaces/files/repositoryTree/SearchResultsList', () => ({
+    SearchResultsList: () => React.createElement('SearchResultsList'),
 }));
 
 describe('WorkspaceRepositoryTreeBrowserView (toolbar actions)', () => {
@@ -327,54 +328,48 @@ describe('WorkspaceRepositoryTreeBrowserView (toolbar actions)', () => {
         expect(searchWorkspaceFilesSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('toggles between full tree and changed-only tree', async () => {
-        const screen = await renderView();
+    const menu = (screen: Awaited<ReturnType<typeof renderView>>, testID: string) => screen.findByTestId(testID);
+    const menuItem = (screen: Awaited<ReturnType<typeof renderView>>, testID: string, id: string) =>
+        menu(screen, testID)?.props.items.find((item: any) => item.id === id);
 
-        expect(screen.findAllByTestId('workspace-repository-tree-list-stub')).toHaveLength(1);
-        expect(screen.findAllByTestId('changed-files-tree-list-stub')).toHaveLength(0);
-        expect(screen.findAllByTestId('workspace-repository-tree-filter-changed').length).toBeGreaterThanOrEqual(1);
+    it('prunes the same tree to the changed files in place, and the chip clears it', async () => {
+        const screen = await renderView();
+        expect(latestWorkspaceRepositoryTreeListProps.current?.changedOnly).toBe(false);
 
         await act(async () => {
             screen.pressByTestId('workspace-repository-tree-filter-changed');
             await settle();
         });
 
-        expect(screen.findAllByTestId('workspace-repository-tree-list-stub')).toHaveLength(0);
-        expect(screen.findAllByTestId('changed-files-tree-list-stub')).toHaveLength(1);
+        expect(screen.findAllByTestId('workspace-repository-tree-list-stub')).toHaveLength(1);
+        expect(latestWorkspaceRepositoryTreeListProps.current?.changedOnly).toBe(true);
+        await act(async () => {
+            screen.pressByTestId('workspace-repository-tree-changed-only-chip');
+            await settle();
+        });
+        expect(latestWorkspaceRepositoryTreeListProps.current?.changedOnly).toBe(false);
     });
 
-    it('keeps refresh visible and uses it as the tree refresh loading indicator', async () => {
+    it('shows the tree loading on the View menu while the root refreshes', async () => {
         latestWorkspaceRepositoryTreeListProps.rootLoading = true;
         const screen = await renderView();
-
-        expect(latestWorkspaceRepositoryTreeListProps.current).toBeTruthy();
-        expect(typeof latestWorkspaceRepositoryTreeListProps.current?.onRootLoadingChange).toBe('function');
         await act(async () => {
             latestWorkspaceRepositoryTreeListProps.current?.onRootLoadingChange?.(true);
             await settle();
         });
-
-        const toolbar = screen.findByTestId('repository-tree-toolbar');
-        expect(toolbar).toBeTruthy();
-        await act(async () => {
-            toolbar?.props.onLayout?.({ nativeEvent: { layout: { width: 320, height: 42, x: 0, y: 0 } } });
-        });
-
-        expect(screen.findAllByTestId('workspace-repository-tree-refresh').length).toBeGreaterThanOrEqual(1);
-        const overflowMenu = screen.findAllByType('ItemRowActions' as any)[0] ?? null;
-        expect(overflowMenu?.props.actions.some((item: any) => item.id === 'workspace-repository-tree-refresh') ?? false).toBe(false);
         expect(screen.findByTestId('workspace-repository-tree-refresh-loading')).toBeTruthy();
     });
 
-    it('hides collapse-all when no folders are expanded', async () => {
+    it('leaves Collapse all out of the View menu when no folders are expanded', async () => {
         const screen = await renderView({
             expandedPaths: [],
             onExpandedPathsChange: vi.fn(),
         });
 
-        expect(screen.findAllByTestId('workspace-repository-tree-collapse-all')).toHaveLength(0);
-        const overflowMenu = screen.findAllByType('ItemRowActions' as any)[0] ?? null;
-        expect(overflowMenu?.props.actions.some((item: any) => item.id === 'workspace-repository-tree-collapse-all') ?? false).toBe(false);
+        expect(menu(screen, 'workspace-repository-tree-view-menu')?.props.items.map((item: any) => item.id)).toEqual([
+            'workspace-repository-tree-toggle-details',
+            'workspace-repository-tree-refresh',
+        ]);
     });
 
     it('creates a file under the workspace root via workspaceWriteFile', async () => {
@@ -383,7 +378,7 @@ describe('WorkspaceRepositoryTreeBrowserView (toolbar actions)', () => {
         const screen = await renderView();
 
         await act(async () => {
-            screen.pressByTestId('workspace-repository-tree-create-file');
+            menu(screen, 'repository-tree-create-menu')?.props.onSelect('repository-tree-create-file');
             await settle();
         });
 
@@ -402,7 +397,7 @@ describe('WorkspaceRepositoryTreeBrowserView (toolbar actions)', () => {
         const screen = await renderView();
 
         await act(async () => {
-            screen.pressByTestId('workspace-repository-tree-create-folder');
+            menu(screen, 'repository-tree-create-menu')?.props.onSelect('repository-tree-create-folder');
             await settle();
         });
 
@@ -415,7 +410,7 @@ describe('WorkspaceRepositoryTreeBrowserView (toolbar actions)', () => {
     it('wires workspace uploads through the canonical workspace transfer hook and refreshes after upload success', async () => {
         const screen = await renderView();
 
-        expect(screen.findAllByTestId('workspace-repository-tree-upload').length).toBeGreaterThanOrEqual(1);
+        expect(menuItem(screen, 'repository-tree-create-menu', 'repository-tree-upload-files')).toBeTruthy();
         expect(latestTransferOptions?.workspaceScope).toEqual({
             serverId: 'server',
             machineId: 'm1',
@@ -440,7 +435,7 @@ describe('WorkspaceRepositoryTreeBrowserView (toolbar actions)', () => {
         expect(workspaceScmControllerState.refresh).toHaveBeenCalled();
     });
 
-    it('keeps transfer actions available for a status-only 0.2 predecessor after the RPC probe succeeds', async () => {
+    it('keeps transfer actions unavailable for a daemon without a current transfer declaration', async () => {
         machineState.current = {
             id: 'm1',
             active: true,
@@ -450,9 +445,7 @@ describe('WorkspaceRepositoryTreeBrowserView (toolbar actions)', () => {
 
         const screen = await renderView();
 
-        const uploadAction = screen.findByTestId('workspace-repository-tree-upload');
-        expect(uploadAction).toBeTruthy();
-        expect(uploadAction?.props.disabled).toBe(false);
+        expect(menuItem(screen, 'repository-tree-create-menu', 'repository-tree-upload-files')?.disabled).toBe(true);
     });
 
     it('renders the shared transfer status bar when a workspace upload is in progress', async () => {

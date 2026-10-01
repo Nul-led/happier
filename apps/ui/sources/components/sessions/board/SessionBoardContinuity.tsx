@@ -40,7 +40,6 @@ export type SessionBoardContinuity = Readonly<{
         noteDraft: StateCell<SessionBoardNoteDraft | null>;
         headingFocusRequest: StateCell<Readonly<{ itemId: string; requestId: number }> | null>;
         hostedHtmlDraft: StateCell<SessionBoardHostedHtmlDraft | null>;
-        installedWidgetPickerOpen: StateCell<boolean>;
         lastOutcome: StateCell<SessionBoardCommandOutcome | null>;
         retainedMutation: StateCell<SessionBoardRetainedMutation | null>;
         announcement: StateCell<string | null>;
@@ -97,7 +96,7 @@ export function SessionBoardContinuityProvider(props: React.PropsWithChildren<Re
         [props.serverId, props.sessionId],
     );
     if (!address) return <>{props.children}</>;
-    return <QualifiedSessionBoardContinuityProvider address={address}>{props.children}</QualifiedSessionBoardContinuityProvider>;
+    return <QualifiedSessionBoardContinuityProvider key={sessionAddressKey(address)} address={address}>{props.children}</QualifiedSessionBoardContinuityProvider>;
 }
 
 function QualifiedSessionBoardContinuityProvider(props: React.PropsWithChildren<Readonly<{
@@ -115,12 +114,16 @@ function QualifiedSessionBoardContinuityProvider(props: React.PropsWithChildren<
     const noteDraft = React.useState<SessionBoardNoteDraft | null>(null);
     const headingFocusRequest = React.useState<Readonly<{ itemId: string; requestId: number }> | null>(null);
     const hostedHtmlDraft = React.useState<SessionBoardHostedHtmlDraft | null>(null);
-    const installedWidgetPickerOpen = React.useState(false);
     const lastOutcome = React.useState<SessionBoardCommandOutcome | null>(null);
     const retainedMutation = React.useState<SessionBoardRetainedMutation | null>(null);
     const announcement = React.useState<string | null>(null);
     const busy = React.useState(false);
     const editorDraftsRef = React.useRef(new Map<string, unknown>());
+    const mountedRef = React.useRef(true);
+    React.useLayoutEffect(() => {
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
     const presentationPositionsRef = React.useRef(new Map<string, SessionBoardPresentationPosition>());
     const activeGuardRef = React.useRef<GuardedTransition | null>(null);
     const [activeEditorOwnerId, setActiveEditorOwnerId] = React.useState<string | null>(null);
@@ -191,7 +194,6 @@ function QualifiedSessionBoardContinuityProvider(props: React.PropsWithChildren<
                 noteDraft,
                 headingFocusRequest,
                 hostedHtmlDraft,
-                installedWidgetPickerOpen,
                 lastOutcome,
                 retainedMutation,
                 announcement,
@@ -203,7 +205,10 @@ function QualifiedSessionBoardContinuityProvider(props: React.PropsWithChildren<
                 clear,
             },
             editorDrafts: {
-                read: <T,>(key: string) => (editorDraftsRef.current.get(key) as T | undefined) ?? null,
+                // Pending editor results may outlive the Session shell, but may
+                // not retire a draft or publish notices into its replacement.
+                read: <T,>(key: string) => mountedRef.current
+                    ? (editorDraftsRef.current.get(key) as T | undefined) ?? null : null,
                 write: <T,>(key: string, draft: T) => { editorDraftsRef.current.set(key, draft); },
                 clear: (key: string) => { editorDraftsRef.current.delete(key); },
             },
@@ -242,7 +247,6 @@ function QualifiedSessionBoardContinuityProvider(props: React.PropsWithChildren<
         focusedItemId,
         hostedHtmlDraft,
         headingFocusRequest,
-        installedWidgetPickerOpen,
         lastOutcome,
         retainedMutation,
         noteDraft,

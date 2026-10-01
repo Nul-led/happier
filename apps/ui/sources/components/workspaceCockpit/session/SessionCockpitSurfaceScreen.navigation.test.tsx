@@ -6,7 +6,7 @@ import { normalizePluginUiDestinationBindingV1 } from '@happier-dev/protocol/plu
 
 import { invokeTestInstanceHandler, renderScreen, standardCleanup } from '@/dev/testkit';
 import { installNavigationCommonModuleMocks } from '@/components/ui/navigation/navigationTestHelpers';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { SessionMobileSurface } from './sessionCockpitState';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -110,7 +110,10 @@ installNavigationCommonModuleMocks({
 
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
-    return createExpoRouterMock({ pathname: () => '/session/session-1' }).module;
+    return createExpoRouterMock({
+        pathname: () => '/session/session-1',
+        navigation: { addListener: () => () => {} },
+    }).module;
 });
 
 vi.mock('@react-navigation/native', () => ({
@@ -371,6 +374,7 @@ function createCockpitPluginProjection(input: Readonly<{
         pluginId: REVIEW_PLUGIN_ID,
         contributionKind: 'surfacePlacement' as const,
         descriptorId: 'review-panel',
+        occurrenceId: 'review-install-occurrence',
         binding,
         target: binding.target,
         renderer: { kind: 'reactNative' as const, contributionId: 'review-panel' },
@@ -515,20 +519,55 @@ describe('SessionCockpitSurfaceScreen navigation surface', () => {
         transcriptNavigationPaneStore.set('session-1', null);
     });
 
-    it('routes Companion work through the incumbent Chat work-state control and keeps approval lookup Home-qualified', async () => {
-        const events: string[] = [];
-        const CockpitHarness = await loadCockpitHarness();
-        const screen = await renderScreen(
-            <CockpitHarness events={events} initialSurface={'companion' as SessionMobileSurface} />,
+    it('routes repeated Companion work reveals to the separate Chat scene without losing its draft', async () => {
+        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+        const { SessionCockpitChromeRegistryProvider } = await import('./SessionCockpitChromeRegistry');
+        const { SessionCockpitShell } = await import('./SessionCockpitShell');
+        const renderNavigator = (serverId: string, sessionId: string) => (
+            <AppPaneProvider>
+                <SessionCockpitChromeRegistryProvider>
+                    <SessionCockpitShell
+                        surface="companion"
+                        routeServerId={serverId}
+                        scopeId={`session:${sessionId}`}
+                        sessionId={sessionId}
+                        terminalTabAvailable={false}
+                    />
+                </SessionCockpitChromeRegistryProvider>
+            </AppPaneProvider>
         );
+        const screen = await renderScreen(renderNavigator('server-1', 'session-1'));
         const companion = screen.tree.findByType('SessionCompanionScreen' as never);
         const destinations = companion.props.summaryDestinations as Readonly<{ work: () => void }>;
+        const chatScene = screen.findByTestId('session-cockpit-scene:chat');
+        if (!chatScene) throw new Error('The production navigator did not mount Chat');
+        const readChat = () => chatScene.findByType('SessionView' as never);
+        expect(readChat().props.openWorkStateRequestKey).toBeNull();
 
         await act(async () => destinations.work());
 
-        expect(events).toEqual(['surface:chat']);
-        expect(screen.tree.findByType('SessionView' as never).props.openWorkStateRequestKey).toBe(1);
+        expect(cockpitNavigatorState.activeSurface).toBe('chat');
+        expect(readChat().props.openWorkStateRequestKey).toBe(1);
         expect(approvalSessionTargets.at(-1)).toEqual({ serverId: 'server-1', sessionId: 'session-1' });
+
+        await act(async () => readChat().props.setComposerDraft('keep my draft'));
+        await act(async () => cockpitNavigatorState.goBack?.());
+        expect(cockpitNavigatorState.activeSurface).toBe('companion');
+        await act(async () => destinations.work());
+
+        expect(cockpitNavigatorState.activeSurface).toBe('chat');
+        expect(readChat().props.openWorkStateRequestKey).toBe(2);
+        expect(readChat().props.composerDraft).toBe('keep my draft');
+
+        await screen.update(renderNavigator(' server-1 ', 'session-1'));
+        expect(readChat().props.composerDraft).toBe('keep my draft');
+        expect(readChat().props.openWorkStateRequestKey).toBe(2);
+
+        await screen.update(renderNavigator('server-2', 'session-1'));
+        expect(screen.findByTestId('session-cockpit-scene:chat')?.findByType('SessionView' as never).props.openWorkStateRequestKey).toBeNull();
+        await act(async () => screen.tree.findByType('SessionCompanionScreen' as never).props.summaryDestinations.work());
+        await screen.update(renderNavigator('server-2', 'session-2'));
+        expect(screen.findByTestId('session-cockpit-scene:chat')?.findByType('SessionView' as never).props.openWorkStateRequestKey).toBeNull();
     });
 
     it('mounts Board and Companion through the resolved exact Home when the route has no server hint', async () => {
@@ -840,15 +879,16 @@ describe('SessionCockpitSurfaceScreen navigation surface', () => {
         expect(events).toEqual(['surface:chat', 'jump']);
     });
 
-    it('exits the navigation surface through the close affordance', async () => {
+    it('wears the phone pane header as its only header, with no nested close of its own', async () => {
         const events: string[] = [];
         const CockpitHarness = await loadCockpitHarness();
         const screen = await renderScreen(<CockpitHarness events={events} />);
 
-        await screen.pressByTestIdAsync('session-transcript-navigation-close');
-
-        expect(events).toEqual(['surface:chat']);
-        expect(screen.findByTestId(SCREEN_TEST_ID)).toBeNull();
+        // B21 + lab Np: the large title is the surface header; leaving is the navigation bar's back
+        // (or Escape, below), never a second close inside the body.
+        expect(screen.findByTestId(`${SCREEN_TEST_ID}:header`)).not.toBeNull();
+        expect(screen.findByTestId('session-transcript-navigation-close')).toBeNull();
+        expect(events).toEqual([]);
     });
 
     it('exits the navigation surface on Escape from the timeline', async () => {

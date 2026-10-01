@@ -14,19 +14,24 @@ import {
     createSessionFileDetailsTab,
     createSessionScmReviewDetailsTab,
     createSessionScmStashDetailsTab,
+    createSessionScmPullRequestDetailsTab,
     createSessionDiscussionDetailsTab,
     createSessionBoardDetailsTab,
     type SessionBoardDetailsFocusTarget,
     SESSION_DETAILS_SCM_REVIEW_TAB_KEY,
     SESSION_DETAILS_SCM_STASH_TAB_KEY,
+    SESSION_DETAILS_SCM_PULL_REQUEST_TAB_KEY,
 } from '@/components/sessions/panes/details/sessionDetailsTabBuilders';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+import type { DetailsTab, DetailsTabState } from '@/components/appShell/panes/details/workspace/detailsWorkspaceTypes';
+import type { AppPaneScopeApi } from '@/components/appShell/panes/hooks/useAppPaneScope';
 
 export type SessionPaneUrlDetailsTarget =
     | Readonly<{ kind: 'file'; path: string }>
     | Readonly<{ kind: 'commit'; sha: string }>
     | Readonly<{ kind: 'scmReview' }>
     | Readonly<{ kind: 'scmStash' }>
+    | Readonly<{ kind: 'scmPullRequest' }>
     | Readonly<{ kind: 'terminal'; terminalInstanceId?: string }>
     | Readonly<{ kind: 'discussion'; discussionId: string }>
     | Readonly<{ kind: 'board'; focusTarget?: SessionBoardDetailsFocusTarget }>;
@@ -79,6 +84,9 @@ export function parseSessionPaneUrlState(params: Readonly<Record<string, unknown
     if (detailsRaw === 'scmStash') {
         details = { kind: 'scmStash' };
     }
+    if (detailsRaw === 'scmPullRequest') {
+        details = { kind: 'scmPullRequest' };
+    }
     if (detailsRaw === 'terminal') {
         details = terminalInstanceIdRaw
             ? { kind: 'terminal', terminalInstanceId: terminalInstanceIdRaw }
@@ -122,6 +130,9 @@ export function serializeSessionPaneUrlState(state: SessionPaneUrlState): Record
     }
     if (state.details?.kind === 'scmStash') {
         out.details = 'scmStash';
+    }
+    if (state.details?.kind === 'scmPullRequest') {
+        out.details = 'scmPullRequest';
     }
     if (state.details?.kind === 'terminal') {
         out.details = 'terminal';
@@ -172,6 +183,10 @@ export function buildActiveDetailsRouteParams(
 
     if (activeTab.key === SESSION_DETAILS_SCM_STASH_TAB_KEY || activeTab.kind === 'scmStash') {
         return serializeSessionPaneUrlState({ details: { kind: 'scmStash' } });
+    }
+
+    if (activeTab.key === SESSION_DETAILS_SCM_PULL_REQUEST_TAB_KEY || activeTab.kind === 'scmPullRequest') {
+        return serializeSessionPaneUrlState({ details: { kind: 'scmPullRequest' } });
     }
 
     if (isTerminalDetailsTab({ resource: activeTab.resource, tabKey: activeTab.key })) {
@@ -245,6 +260,8 @@ export function deriveSessionPaneUrlStateFromScopeState(scopeState: PaneScopeSta
             details = { kind: 'scmReview' };
         } else if (tab?.key === SESSION_DETAILS_SCM_STASH_TAB_KEY || tab?.kind === 'scmStash') {
             details = { kind: 'scmStash' };
+        } else if (tab?.key === SESSION_DETAILS_SCM_PULL_REQUEST_TAB_KEY || tab?.kind === 'scmPullRequest') {
+            details = { kind: 'scmPullRequest' };
         } else if (tab && isTerminalDetailsTab({ resource: tab.resource, tabKey: tab.key })) {
             const terminalInstanceId = resolveTerminalDetailsInstanceId({
                 resource: tab.resource,
@@ -280,13 +297,54 @@ export function deriveSessionPaneUrlStateFromScopeState(scopeState: PaneScopeSta
     };
 }
 
+/** Constructs the existing surface model without selecting a tab in shared pane state. */
+export function createSessionPaneDetailsTab(
+    target: SessionPaneUrlDetailsTarget,
+    address?: SessionAddress | null,
+): DetailsTabState | null {
+    let tab: DetailsTab | null = null;
+    switch (target.kind) {
+        case 'file': {
+            const path = target.path.trim();
+            if (isSafeWorkspaceRelativePath(path)) tab = createSessionFileDetailsTab(path);
+            break;
+        }
+        case 'commit':
+            tab = createSessionCommitDetailsTab(target.sha);
+            break;
+        case 'scmReview':
+            tab = createSessionScmReviewDetailsTab();
+            break;
+        case 'scmStash':
+            tab = createSessionScmStashDetailsTab();
+            break;
+        case 'scmPullRequest':
+            tab = createSessionScmPullRequestDetailsTab();
+            break;
+        case 'terminal': {
+            const terminalInstanceId = target.terminalInstanceId?.trim();
+            tab = terminalInstanceId
+                ? createSessionDetailsTerminalTab({ terminalInstanceId })
+                : createPrimarySessionDetailsTerminalTab();
+            break;
+        }
+        case 'discussion':
+            if (address) tab = createSessionDiscussionDetailsTab({ kind: 'discussion', address, discussionId: target.discussionId });
+            break;
+        case 'board':
+            tab = createSessionBoardDetailsTab(target.focusTarget);
+            break;
+    }
+    return tab ? { ...tab, isPinned: true, isPreview: false } : null;
+}
+
 export function applySessionPaneUrlState(
     pane: Readonly<{
         openRight: (options?: Readonly<{ tabId?: string }>) => void;
         setRightTab: (tabId: string) => void;
         openBottom: (options?: Readonly<{ tabId?: string }>) => void;
         setBottomTab: (tabId: string) => void;
-        openDetailsTab: (tab: any, options?: any) => void;
+        openDetailsTab: AppPaneScopeApi['openDetailsTab'];
     }>,
     state: SessionPaneUrlState,
     address?: SessionAddress | null,
@@ -300,54 +358,14 @@ export function applySessionPaneUrlState(
         pane.setBottomTab(state.bottomTabId);
     }
 
-    if (state.details?.kind === 'file') {
-        const fullPath = state.details.path.trim();
-        if (!isSafeWorkspaceRelativePath(fullPath)) return;
-        pane.openDetailsTab(createSessionFileDetailsTab(fullPath));
-        return;
-    }
-
-    if (state.details?.kind === 'commit') {
-        const safeSha = state.details.sha.trim().split(/\s+/)[0] ?? '';
-        if (!safeSha) return;
-        const tab = createSessionCommitDetailsTab(safeSha);
-        if (!tab) return;
+    if (!state.details) return;
+    const constructed = createSessionPaneDetailsTab(state.details, address);
+    if (!constructed) return;
+    const { isPinned: _isPinned, isPreview: _isPreview, ...tab } = constructed;
+    if (state.details.kind === 'file' || state.details.kind === 'commit' || state.details.kind === 'discussion') {
         pane.openDetailsTab(tab);
-        return;
-    }
-
-    if (state.details?.kind === 'scmReview') {
-        pane.openDetailsTab(createSessionScmReviewDetailsTab(), { intent: 'pinned' });
-        return;
-    }
-
-    if (state.details?.kind === 'scmStash') {
-        pane.openDetailsTab(createSessionScmStashDetailsTab(), { intent: 'pinned' });
-        return;
-    }
-
-    if (state.details?.kind === 'terminal') {
-        const terminalInstanceId = state.details.terminalInstanceId?.trim() ?? '';
-        pane.openDetailsTab(
-            terminalInstanceId
-                ? createSessionDetailsTerminalTab({ terminalInstanceId })
-                : createPrimarySessionDetailsTerminalTab(),
-            { intent: 'pinned' },
-        );
-        return;
-    }
-
-    if (state.details?.kind === 'discussion' && address) {
-        pane.openDetailsTab(createSessionDiscussionDetailsTab({
-            kind: 'discussion',
-            address,
-            discussionId: state.details.discussionId,
-        }));
-        return;
-    }
-
-    if (state.details?.kind === 'board') {
-        pane.openDetailsTab(createSessionBoardDetailsTab(state.details.focusTarget), { intent: 'pinned' });
+    } else {
+        pane.openDetailsTab(tab, { intent: 'pinned' });
     }
 }
 
@@ -359,7 +377,7 @@ export function reconcileSessionPaneScopeFromUrlState(
         openBottom: (options?: Readonly<{ tabId?: string }>) => void;
         closeBottom: () => void;
         setBottomTab: (tabId: string) => void;
-        openDetailsTab: (tab: any, options?: any) => void;
+        openDetailsTab: AppPaneScopeApi['openDetailsTab'];
         closeDetails: () => void;
     }>,
     state: SessionPaneUrlState | null,

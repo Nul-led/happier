@@ -69,6 +69,29 @@ describe('plugin app page catalog (EU-5b)', () => {
         });
     });
 
+    it("derives the page's own column as a placement of its column renderer, only while that renderer is available", () => {
+        const columnRenderer = { kind: 'reactNative', contributionId: 'notes-column' };
+        const available = { state: 'available' as const, reason: 'available', diagnostics: [] };
+        const [withColumn] = resolvePluginAppPages({
+            placements: [createPagePlacement({ column: { renderer: columnRenderer, availability: available } })],
+        });
+        expect(withColumn?.columnPlacement).toMatchObject({
+            renderer: columnRenderer,
+            availability: available,
+            binding: withColumn?.placement.binding,
+        });
+        // A second mount of the same page: it must not share the page mount's surface identity.
+        expect(withColumn?.columnPlacement?.id).not.toBe(withColumn?.placement.id);
+
+        const [unavailable] = resolvePluginAppPages({
+            placements: [createPagePlacement({
+                column: { renderer: columnRenderer, availability: { state: 'disabled' as const, reason: 'artifact_missing', diagnostics: [] } },
+            })],
+        });
+        expect(unavailable?.columnPlacement).toBeUndefined();
+        expect(resolvePluginAppPages({ placements: [createPagePlacement()] })[0]?.columnPlacement).toBeUndefined();
+    });
+
     it('keeps two plugins declaring the same local page id apart', () => {
         const pages = resolvePluginAppPages({
             placements: [

@@ -17,7 +17,6 @@ vi.mock('@/components/plugins/surfaces/dispatchPluginResolvedSemanticCommand', (
 const SCOPED = Object.freeze({
     serverId: 'server-1',
     machineId: 'machine-1',
-    generation: 7,
     interactionEnabled: true,
 });
 
@@ -47,6 +46,7 @@ function projection(overrides: Partial<PluginUiProjectionModel> = {}): PluginUiP
             'searchProvider:happier.triage:entries': Object.freeze({
                 id: 'searchProvider:happier.triage:entries',
                 pluginId: 'happier.triage',
+                occurrenceId: 'happier-triage-occurrence-7',
                 contributionKind: 'searchProvider' as const,
                 descriptorId: 'entries',
                 identity: Object.freeze({ pluginId: 'happier.triage', localId: 'entries' }),
@@ -57,6 +57,7 @@ function projection(overrides: Partial<PluginUiProjectionModel> = {}): PluginUiP
             'happier.triage/search': Object.freeze({
                 id: 'search',
                 pluginId: 'happier.triage',
+                occurrenceId: 'happier-triage-occurrence-7',
                 title: 'PRs & Issues',
                 icon: 'action',
                 scopes: ['global'],
@@ -100,15 +101,32 @@ describe('buildPluginSearchProviderSections', () => {
         expect(built[0]!.visibleWhen?.('pr')).toBe(true);
     });
 
-    it('rebinds the resolver when the generation, machine or server changes', () => {
+    it('keeps the resolver across peer projection changes and rebinds for occurrence, machine, or server changes', () => {
         const first = sections()[0]!.resolverKey;
-        const nextGeneration = sections({
+        const peerProjectionChange = sections({
             projection: projection({ generation: 8 }),
-            scopedLaunchFacts: { ...SCOPED, generation: 8 },
+        })[0]!.resolverKey;
+        const current = projection();
+        const nextOccurrence = sections({
+            projection: projection({
+                searchProvidersById: Object.freeze({
+                    'searchProvider:happier.triage:entries': Object.freeze({
+                        ...current.searchProvidersById['searchProvider:happier.triage:entries'],
+                        occurrenceId: 'happier-triage-occurrence-8',
+                    }),
+                }),
+                actionsById: Object.freeze({
+                    'happier.triage/search': Object.freeze({
+                        ...current.actionsById['happier.triage/search']!,
+                        occurrenceId: 'happier-triage-occurrence-8',
+                    }),
+                }),
+            }),
         })[0]!.resolverKey;
         const otherMachine = sections({ scopedLaunchFacts: { ...SCOPED, machineId: 'machine-2' } })[0]!.resolverKey;
         const otherServer = sections({ scopedLaunchFacts: { ...SCOPED, serverId: 'server-2' } })[0]!.resolverKey;
-        expect(new Set([first, nextGeneration, otherMachine, otherServer]).size).toBe(4);
+        expect(peerProjectionChange).toBe(first);
+        expect(new Set([first, nextOccurrence, otherMachine, otherServer]).size).toBe(4);
     });
 
     it('omits a provider whose query Action is unavailable or retired', () => {
@@ -117,6 +135,7 @@ describe('buildPluginSearchProviderSections', () => {
                 'happier.triage/search': Object.freeze({
                     id: 'search',
                     pluginId: 'happier.triage',
+                    occurrenceId: 'happier-triage-occurrence-7',
                     title: 'PRs & Issues',
                     scopes: ['global'],
                     surfaces: ['ui'],
@@ -131,8 +150,6 @@ describe('buildPluginSearchProviderSections', () => {
         expect(sections({
             projection: projection({ searchProvidersById: Object.freeze({}) }),
         })).toHaveLength(0);
-        // Retired generation: the scope no longer matches the projection.
-        expect(sections({ scopedLaunchFacts: { ...SCOPED, generation: 6 } })).toHaveLength(0);
         expect(sections({ scopedLaunchFacts: { ...SCOPED, interactionEnabled: false } })).toHaveLength(0);
     });
 
@@ -230,6 +247,7 @@ describe('buildPluginSearchProviderSections', () => {
                 'searchProvider:acme.first:entries': Object.freeze({
                     id: 'searchProvider:acme.first:entries',
                     pluginId: 'acme.first',
+                    occurrenceId: 'acme-first-occurrence-11',
                     contributionKind: 'searchProvider' as const,
                     descriptorId: 'entries',
                     identity: Object.freeze({ pluginId: 'acme.first', localId: 'entries' }),
@@ -239,6 +257,7 @@ describe('buildPluginSearchProviderSections', () => {
                 'searchProvider:acme.second:entries': Object.freeze({
                     id: 'searchProvider:acme.second:entries',
                     pluginId: 'acme.second',
+                    occurrenceId: 'acme-second-occurrence-22',
                     contributionKind: 'searchProvider' as const,
                     descriptorId: 'entries',
                     identity: Object.freeze({ pluginId: 'acme.second', localId: 'entries' }),
@@ -248,11 +267,11 @@ describe('buildPluginSearchProviderSections', () => {
             }),
             actionsById: Object.freeze({
                 'acme.first/search': Object.freeze({
-                    id: 'search', pluginId: 'acme.first', title: 'First', scopes: ['global'], surfaces: ['ui'],
+                    id: 'search', pluginId: 'acme.first', occurrenceId: 'acme-first-occurrence-11', title: 'First', scopes: ['global'], surfaces: ['ui'],
                     execution: { target: 'daemon' }, dangerLevel: 'safe', available: true, hostOrigin: firstOrigin,
                 }),
                 'acme.second/search': Object.freeze({
-                    id: 'search', pluginId: 'acme.second', title: 'Second', scopes: ['global'], surfaces: ['ui'],
+                    id: 'search', pluginId: 'acme.second', occurrenceId: 'acme-second-occurrence-22', title: 'Second', scopes: ['global'], surfaces: ['ui'],
                     execution: { target: 'daemon' }, dangerLevel: 'safe', available: true, hostOrigin: secondOrigin,
                 }),
             }),
@@ -277,7 +296,6 @@ describe('buildPluginSearchProviderSections', () => {
             scopedLaunchFacts: {
                 serverId: null,
                 machineId: null,
-                generation: 999,
                 interactionEnabled: true,
             },
             onCommitActivation,
@@ -288,8 +306,8 @@ describe('buildPluginSearchProviderSections', () => {
         );
 
         expect(dispatchSemanticCommand.mock.calls.map(([call]) => call.scopedLaunchFacts)).toEqual([
-            { serverId: 'server-machine-a', machineId: 'machine-a', generation: 999, interactionEnabled: true },
-            { serverId: 'server-machine-b', machineId: 'machine-b', generation: 999, interactionEnabled: true },
+            { serverId: 'server-machine-a', machineId: 'machine-a', interactionEnabled: true },
+            { serverId: 'server-machine-b', machineId: 'machine-b', interactionEnabled: true },
         ]);
 
         resolved[1]!.options[0]!.onSelect?.();
@@ -298,7 +316,6 @@ describe('buildPluginSearchProviderSections', () => {
         expect(activation.scopedLaunchFacts).toEqual({
             serverId: 'server-machine-b',
             machineId: 'machine-b',
-            generation: 999,
             interactionEnabled: true,
         });
         expect(activation.command).toEqual({
@@ -325,6 +342,7 @@ describe('buildPluginSearchProviderSections', () => {
                 'searchProvider:acme.healthy:entries': Object.freeze({
                     id: 'searchProvider:acme.healthy:entries',
                     pluginId: 'acme.healthy',
+                    occurrenceId: 'acme-healthy-occurrence-7',
                     contributionKind: 'searchProvider' as const,
                     descriptorId: 'entries',
                     identity: Object.freeze({ pluginId: 'acme.healthy', localId: 'entries' }),
@@ -334,7 +352,7 @@ describe('buildPluginSearchProviderSections', () => {
             actionsById: Object.freeze({
                 ...projection().actionsById,
                 'acme.healthy/search': Object.freeze({
-                    id: 'search', pluginId: 'acme.healthy', title: 'Healthy', scopes: ['global'], surfaces: ['ui'],
+                    id: 'search', pluginId: 'acme.healthy', occurrenceId: 'acme-healthy-occurrence-7', title: 'Healthy', scopes: ['global'], surfaces: ['ui'],
                     execution: { target: 'daemon' }, dangerLevel: 'safe', available: true,
                 }),
             }),
@@ -575,10 +593,22 @@ describe('buildPluginSearchProviderSections', () => {
 
     it('replaces and removes provider sections across update, disable, and uninstall lifecycle changes', () => {
         const original = sections()[0]!;
-        const updated = sections({
-            projection: projection({ generation: 8 }),
-            scopedLaunchFacts: { ...SCOPED, generation: 8 },
-        })[0]!;
+        const current = projection();
+        const updated = sections({ projection: projection({
+            generation: 8,
+            searchProvidersById: Object.freeze({
+                'searchProvider:happier.triage:entries': Object.freeze({
+                    ...current.searchProvidersById['searchProvider:happier.triage:entries'],
+                    occurrenceId: 'happier-triage-occurrence-8',
+                }),
+            }),
+            actionsById: Object.freeze({
+                'happier.triage/search': Object.freeze({
+                    ...current.actionsById['happier.triage/search']!,
+                    occurrenceId: 'happier-triage-occurrence-8',
+                }),
+            }),
+        }) })[0]!;
         expect(updated.id).toBe(original.id);
         expect(updated.resolverKey).not.toBe(original.resolverKey);
         expect(sections({ scopedLaunchFacts: { ...SCOPED, interactionEnabled: false } })).toEqual([]);

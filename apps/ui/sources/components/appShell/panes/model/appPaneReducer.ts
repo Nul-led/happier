@@ -1,3 +1,4 @@
+import type { DetailsOpenerRegion } from '@/components/ui/panels/paneBreakpoints';
 import type {
     DetailsTab,
     DetailsTabOpenMode,
@@ -31,6 +32,7 @@ import type {
     PluginUiInstanceKeyV1,
 } from '@happier-dev/protocol/plugins/ui';
 import { arePaneStateJsonValuesEqual } from './paneStateStructuralEquality';
+import { readSessionTerminalWorkspace, reduceSessionTerminalWorkspace, type SessionTerminalWorkspaceCommand } from '@/components/sessions/terminal/sessionTerminalWorkspace';
 import {
     areSelectedPaneDestinationsEqual,
     createBuiltinPaneDestination,
@@ -75,6 +77,8 @@ export type AppPaneState = Readonly<{
 export type AppPaneAction =
     | { type: 'mergePersistedScopes'; scopes: Readonly<Record<string, PaneScopeState>> }
     | { type: 'activateScope'; scopeId: string }
+    /** The page that owned the active scope left the screen: no page's panes are active until one is. */
+    | { type: 'releaseScope'; scopeId: string }
     | { type: 'enterFocusMode'; scopeId: string }
     | { type: 'exitFocusMode'; scopeId?: string }
     | { type: 'openRight'; scopeId: string; tabId?: string }
@@ -87,7 +91,15 @@ export type AppPaneAction =
     | { type: 'setBottomTab'; scopeId: string; tabId: string }
     | { type: 'selectBottomDestination'; scopeId: string; destination: SelectedPaneDestinationV1 }
     | { type: 'setBottomTabState'; scopeId: string; tabId: string; nextState: unknown }
-    | { type: 'openDetailsTab'; scopeId: string; tab: DetailsTab; openAs: DetailsTabOpenMode }
+    | { type: 'terminalWorkspace'; scopeId: string; command: SessionTerminalWorkspaceCommand }
+    | {
+        type: 'openDetailsTab';
+        scopeId: string;
+        tab: DetailsTab;
+        openAs: DetailsTabOpenMode;
+        /** The region the open came from; Details opening its own tabs keeps the recorded opener. */
+        origin?: DetailsOpenerRegion | 'details' | null;
+    }
     | Readonly<{
         type: 'replaceDetailsTab';
         scopeId: string;
@@ -288,6 +300,14 @@ export function appPaneReduce(state: AppPaneState, action: AppPaneAction): AppPa
             };
             return evictScopesIfNeeded(next);
         }
+        case 'releaseScope': {
+            if (state.activeScopeId !== action.scopeId) return state;
+            return {
+                ...state,
+                activeScopeId: null,
+                focusMode: state.focusMode.scopeId === action.scopeId ? { scopeId: null } : state.focusMode,
+            };
+        }
         case 'enterFocusMode': {
             if (state.activeScopeId !== action.scopeId) return state;
             if (!scopeHasFocusablePane(state.scopes[action.scopeId])) return state;
@@ -461,6 +481,30 @@ export function appPaneReduce(state: AppPaneState, action: AppPaneAction): AppPa
                 },
             }));
         }
+        case 'terminalWorkspace': {
+            const prev = state.scopes[action.scopeId] ?? createEmptyScopeState();
+            const workspace = readSessionTerminalWorkspace(getOwnPaneTabStateEntry(prev.bottom.tabState, 'terminal'));
+            const next = reduceSessionTerminalWorkspace(workspace, action.command);
+            const command = action.command;
+            const reveal = command.type === 'focus'
+                ? workspace.tabs.some((tab) => tab.terminals.some((terminal) => terminal.id === command.terminalId))
+                : next !== workspace && (command.type === 'open' || command.type === 'split' || command.type === 'detach');
+            const terminalDestination = createBuiltinPaneDestination('terminal');
+            if (next === workspace && (!reveal || (prev.bottom.isOpen && areSelectedPaneDestinationsEqual(prev.bottom.selectedDestination, terminalDestination)))) return state;
+            const terminalSelected = prev.bottom.selectedDestination?.kind === 'builtin'
+                ? prev.bottom.selectedDestination.id === 'terminal'
+                : prev.bottom.selectedDestination == null && prev.bottom.activeTabId === 'terminal';
+            return upsertScope(state, action.scopeId, () => ({
+                ...prev,
+                bottom: {
+                    ...prev.bottom,
+                    isOpen: next.tabs.length === 0 && terminalSelected ? false : reveal ? true : prev.bottom.isOpen,
+                    activeTabId: reveal ? 'terminal' : prev.bottom.activeTabId,
+                    selectedDestination: reveal ? terminalDestination : prev.bottom.selectedDestination,
+                    tabState: { ...prev.bottom.tabState, terminal: next },
+                },
+            }));
+        }
         case 'setBottomTabState': {
             const prev = state.scopes[action.scopeId] ?? createEmptyScopeState();
             if (arePaneStateJsonValuesEqual(getOwnPaneTabStateEntry(prev.bottom.tabState, action.tabId), action.nextState)) {
@@ -478,9 +522,12 @@ export function appPaneReduce(state: AppPaneState, action: AppPaneAction): AppPa
             }));
         }
         case 'openDetailsTab':
-            return updateScopeDetails(state, action.scopeId, (details) => (
-                applyOpenDetailsTab(details, { tab: action.tab, openAs: action.openAs })
-            ));
+            return updateScopeDetails(state, action.scopeId, (details) => {
+                const opened = applyOpenDetailsTab(details, { tab: action.tab, openAs: action.openAs });
+                const origin = action.origin === 'main' || action.origin === 'side' ? action.origin : null;
+                if (!origin || opened.openedFrom === origin) return opened;
+                return { ...opened, openedFrom: origin };
+            });
         case 'replaceDetailsTab':
             return updateScopeDetails(state, action.scopeId, (details) => (
                 applyReplaceDetailsTab(details, {

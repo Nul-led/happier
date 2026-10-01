@@ -15,10 +15,18 @@ export default function TeamJoinRoute() {
         target?: string | string[];
         targetBinding?: string | string[];
     }>();
+    const token = firstRouteParam(params.token);
+    const homeTarget = firstRouteParam(params.target) || null;
+    // Expo Router updates a mounted dynamic route's params in place, so a second
+    // invitation link arrives without a remount. The screen's selected action,
+    // identity recovery and completed admission are all bound to ONE invitation
+    // on ONE Home, so the screen is keyed by that authority instead of being
+    // reset field by field — the same rule the Team sign-in route already applies.
     return (
         <TeamJoinScreen
-            token={firstRouteParam(params.token)}
-            homeTarget={firstRouteParam(params.target) || null}
+            key={`${token}\u0000${homeTarget ?? ''}`}
+            token={token}
+            homeTarget={homeTarget}
             targetBinding={firstRouteParam(params.targetBinding) || null}
         />
     );

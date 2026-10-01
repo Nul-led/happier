@@ -70,7 +70,7 @@ export async function executeWorkspaceScmRemoteOperation(input: Readonly<{
         },
         removeIndexLock: async (request) =>
             await machineScmRepositoryRemoveIndexLock(input.scope.machineId, request, { serverId: input.scope.serverId }),
-        reportOperation: ({ operation, status, detail, rawError, errorCode }) => {
+        reportOperation: ({ operation, status, detail, rawError, errorCode, outcome }) => {
             reportWorkspaceScmOperation({
                 state: storage.getState(),
                 scope: input.scope,
@@ -79,6 +79,7 @@ export async function executeWorkspaceScmRemoteOperation(input: Readonly<{
                 detail,
                 rawError,
                 errorCode,
+                outcome,
                 surface: 'files',
                 tracking: input.tracking,
             });

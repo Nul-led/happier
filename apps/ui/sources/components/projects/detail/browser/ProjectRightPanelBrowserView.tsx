@@ -8,6 +8,8 @@ import {
 import { useScopedPluginUiProjection } from '@/components/plugins/projection/useScopedPluginUiProjection';
 import { useWorkspaceRefById } from '@/components/projects/detail/useWorkspaceRefById';
 import type { PluginUiProjectionCurrentness } from '@/sync/domains/plugins/ui/usePluginUiProjectionCurrentness';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { t } from '@/text';
 
 /**
  * Project-cockpit mobile browser surface (project-mobile-only post-D1). Mounts a scoped instance of
@@ -39,16 +41,25 @@ export function ProjectRightPanelBrowserView(props: Readonly<{
         pluginBrowserProjection: pluginProjection.pluginBrowserProjection,
     });
 
+    // A project's browser belongs to its workspace, not to a session: it gets the real workspace
+    // scope (it used to pose as a Session whose id was the workspace ref).
+    const workspaceScope = React.useMemo(() => (workspaceRef
+        ? {
+            kind: 'workspace' as const,
+            workspaceRefId: props.workspaceRefId,
+            serverId: workspaceRef.serverId,
+            machineId: workspaceRef.machineId,
+            rootPath: workspaceRef.rootPath,
+        }
+        : null), [props.workspaceRefId, workspaceRef]);
+    if (!workspaceScope) {
+        return <SurfaceStateCard kind="loading" title={t('browserSurface.title')} testID="project-rightpanel-browser-loading" />;
+    }
+
     return (
         <BrowserScopedWorkspace
             scopeId={scopeId}
-            scope={{
-                kind: 'session',
-                sessionId: props.workspaceRefId,
-                workspaceRefId: props.workspaceRefId,
-                serverId: workspaceRef?.serverId ?? null,
-                machineId: workspaceRef?.machineId ?? null,
-            }}
+            scope={workspaceScope}
             openScope="sessionMobile"
             platform={resolveBrowserSurfacePlatform()}
             localServicePreviewState={hostProps.localServicePreviewState}

@@ -1,16 +1,17 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { normalizeSessionAddress, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import {
     createSessionBoardActionsPort,
     type SessionBoardActionsPort,
+    type SessionBoardMountHost,
     type SessionBoardPrimaryMountResolver,
 } from '@/sync/domains/session/board';
 import { useAuth } from '@/auth/context/AuthContext';
 import { openAccountSecurityForHome } from '@/components/settings/account/openAccountSecurityForHome';
-import { buildPluginDetailRoute } from '@/components/settings/plugins/model/pluginDetailRoute';
+import { buildPluginDetailRoute } from '@/components/settings/plugins/model/pluginsSurfaceRoutes';
 import { openRouteWithEstablishedHome } from '@/sync/domains/server/selection/openRouteWithEstablishedHome';
 import { useSessionBoardFeatureEnabled } from './useSessionBoardFeatureEnabled';
 import { Modal } from '@/modal';
@@ -41,12 +42,12 @@ import { useSessionBoardRemovalConfirmationRequired } from './useSessionBoardRem
 import { showSessionBoardViewRemovalDisposition } from './showSessionBoardViewRemovalDisposition';
 import {
     selectCurrentSessionWidgetCandidates,
-    type SessionWidgetCandidate,
-} from '@/components/sessions/widgets/sessionWidgetCatalog';
+    type WidgetCandidate,
+} from '@/components/widgets/widgetCatalog';
 import type { SessionBoardBinding } from './observeSessionBoard';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { useSessionBoardMutationApproval } from './sessionBoardMutationApproval';
-import type { SessionBoardPlacementPrimaryMountResolver } from './sessionBoardHostVisibility';
+import type { SessionBoardBodyEligibilityReporter, SessionBoardPlacementPrimaryMountResolver } from './sessionBoardHostVisibility';
 
 export type MountedSessionBoardController = Readonly<{
     address: SessionAddress;
@@ -58,7 +59,7 @@ export type MountedSessionBoardController = Readonly<{
     pluginRuntime: SessionPluginRuntimeState;
     callerHostedHtmlRuntime: CallerHostedHtmlRuntime | null;
     /** One exact-session policy selection shared by Add visibility and picker rows. */
-    installedWidgetCandidates: readonly SessionWidgetCandidate[];
+    installedWidgetCandidates: readonly WidgetCandidate[];
     /**
      * The Session shell's OWN derived executable placement, carried for hosts that
      * are too deep in the tree to receive it as a prop — today, the inline
@@ -67,11 +68,13 @@ export type MountedSessionBoardController = Readonly<{
      * a shell that publishes none answers `null`, which every host reads as "this
      * placement does not run the item".
      *
-     * The owner adds the one fact only it knows — whether its selected Board view
-     * draws the item — so a host outside the Board (the Companion rail) is never
-     * told that a Board tab runs an item that tab does not draw.
+     * The owner adds selected-view membership and each Surface's measured body
+     * eligibility, so a host outside the Board (the Companion rail) is never told
+     * that a Board tab runs an item whose body that tab does not build.
      */
     resolvePrimaryHost: SessionBoardPlacementPrimaryMountResolver;
+    /** Measured body eligibility from each generic surface; the shell still chooses the host. */
+    onBodyEligibilityChange: SessionBoardBodyEligibilityReporter;
     /** Registers the real workspace tab hosts consumed by Board removal dialogs. */
     onViewFocusTargetChange: (viewId: string, target: FocusReturnTarget) => void;
     /** Registers the workspace's surviving Board-view action control fallback. */
@@ -81,7 +84,7 @@ export type MountedSessionBoardController = Readonly<{
 }>;
 
 const NO_PRIMARY_MOUNT: SessionBoardPrimaryMountResolver = () => null;
-const NO_INSTALLED_WIDGET_CANDIDATES: readonly SessionWidgetCandidate[] = Object.freeze([]);
+const NO_INSTALLED_WIDGET_CANDIDATES: readonly WidgetCandidate[] = Object.freeze([]);
 
 const SessionBoardControllerContext = React.createContext<MountedSessionBoardController | null>(null);
 
@@ -92,7 +95,7 @@ function SessionBoardWidgetCandidateSelection(props: Readonly<{
     canEdit: boolean;
     hostedHtmlRendererAvailable: boolean;
     children: (selection: Readonly<{
-        candidates: readonly SessionWidgetCandidate[];
+        candidates: readonly WidgetCandidate[];
         resolveSourceAvailability: ReturnType<typeof createSessionBoardSourceAvailabilityResolver>;
     }>) => React.ReactElement;
 }>): React.ReactElement {
@@ -122,7 +125,7 @@ function SessionBoardWidgetCandidateSelectionReady(props: Readonly<{
     canEdit: boolean;
     hostedHtmlRendererAvailable: boolean;
     children: (selection: Readonly<{
-        candidates: readonly SessionWidgetCandidate[];
+        candidates: readonly WidgetCandidate[];
         resolveSourceAvailability: ReturnType<typeof createSessionBoardSourceAvailabilityResolver>;
     }>) => React.ReactElement;
 }>): React.ReactElement {
@@ -312,7 +315,7 @@ function SessionBoardControllerRuntimeOwner(props: React.PropsWithChildren<Reado
         if (projected?.state.kind !== 'ready') return;
         const source = projected.state.item.source;
         if (source.kind !== 'installedSurface') return;
-        await openRecoveryRoute(() => { router.push(buildPluginDetailRoute(source.surface.pluginId)); });
+        await openRecoveryRoute(() => { router.push(buildPluginDetailRoute('settings', source.surface.pluginId)); });
     }, [openRecoveryRoute, router]);
 
     // Board records use the Session's existing Plain/E2EE owner. A locked row
@@ -394,7 +397,7 @@ export function SessionBoardControllerOwner(props: React.PropsWithChildren<Reado
     requestApprovalContinuation?: ReturnType<typeof useSessionBoardMutationApproval>['request'];
     pluginRuntime: SessionPluginRuntimeState;
     callerHostedHtmlRuntime: CallerHostedHtmlRuntime | null;
-    installedWidgetCandidates?: readonly SessionWidgetCandidate[];
+    installedWidgetCandidates?: readonly WidgetCandidate[];
     resolvePrimaryHost?: SessionBoardPlacementPrimaryMountResolver;
     onViewFocusTargetChange?: (viewId: string, target: FocusReturnTarget) => void;
     onViewActionsFocusTargetChange?: (target: FocusReturnTarget) => void;
@@ -421,13 +424,36 @@ export function SessionBoardControllerOwner(props: React.PropsWithChildren<Reado
         () => new Set(selectedViewItemKey.length > 0 ? selectedViewItemKey.split('\u001f') : []),
         [selectedViewItemKey],
     );
+    // Fixed shell host slots carry only the Surface's existing virtualization facts.
+    // They do not store a primary or let a placement elect itself. An unmeasured or
+    // retained surface is not an executable candidate until its body is available.
+    const [bodyEligibility, setBodyEligibility] = React.useState<Partial<Record<SessionBoardMountHost, Readonly<{
+        viewId: string;
+        itemIds: ReadonlySet<string>;
+    }>>>>({});
+    const onBodyEligibilityChange = React.useCallback<SessionBoardBodyEligibilityReporter>((host, viewId, itemIds) => {
+        const facts = { viewId, itemIds };
+        setBodyEligibility((current) => ({ ...current, [host]: facts }));
+        return () => setBodyEligibility((current) => {
+            if (current[host] !== facts) return current;
+            const next = { ...current };
+            delete next[host];
+            return next;
+        });
+    }, []);
     const resolvePrimaryHost = React.useCallback<SessionBoardPlacementPrimaryMountResolver>(
         (itemId, destination, boardView) => shellResolvePrimaryHost(
             itemId,
             destination,
-            boardView ?? { drawnBySelectedBoardView: selectedViewItemIds.has(itemId) },
+            {
+                drawnBySelectedBoardView: boardView?.drawnBySelectedBoardView ?? selectedViewItemIds.has(itemId),
+                bodyEligibleHosts: (Object.keys(bodyEligibility) as SessionBoardMountHost[]).filter((host) => (
+                    bodyEligibility[host]?.viewId === controller.activeViewId
+                    && bodyEligibility[host]?.itemIds.has(itemId)
+                )),
+            },
         ),
-        [selectedViewItemIds, shellResolvePrimaryHost],
+        [bodyEligibility, controller.activeViewId, selectedViewItemIds, shellResolvePrimaryHost],
     );
     const value = React.useMemo<MountedSessionBoardController>(() => ({
         address: props.address,
@@ -442,10 +468,11 @@ export function SessionBoardControllerOwner(props: React.PropsWithChildren<Reado
         callerHostedHtmlRuntime: props.callerHostedHtmlRuntime,
         installedWidgetCandidates,
         resolvePrimaryHost,
+        onBodyEligibilityChange,
         onViewFocusTargetChange: props.onViewFocusTargetChange ?? (() => {}),
         onViewActionsFocusTargetChange: props.onViewActionsFocusTargetChange ?? (() => {}),
         viewActionsFocusTargetRef: props.viewActionsFocusTargetRef,
-    }), [props.actions, props.address, props.approvalPending, props.binding, props.callerHostedHtmlRuntime, installedWidgetCandidates, props.onViewActionsFocusTargetChange, props.onViewFocusTargetChange, props.pluginRuntime, props.requestApprovalContinuation, props.viewActionsFocusTargetRef, controller, resolvePrimaryHost]);
+    }), [props.actions, props.address, props.approvalPending, props.binding, props.callerHostedHtmlRuntime, installedWidgetCandidates, props.onViewActionsFocusTargetChange, props.onViewFocusTargetChange, props.pluginRuntime, props.requestApprovalContinuation, props.viewActionsFocusTargetRef, controller, resolvePrimaryHost, onBodyEligibilityChange]);
     return (
         <SessionBoardControllerContext.Provider value={value}>
             {props.children}

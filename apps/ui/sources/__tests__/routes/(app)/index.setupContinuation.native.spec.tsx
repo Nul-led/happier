@@ -1,7 +1,10 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createExpoRouterMock, flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import type { PendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent.shared';
 
 vi.mock('@/assets/images/logotype-light.png', () => ({ default: 'logotype-light' }));
@@ -12,12 +15,6 @@ vi.mock('@/components/onboarding', () => ({
 }));
 vi.mock('@/components/onboarding/PreAuthOnboardingWizardEntry', () => ({
     PreAuthOnboardingWizardEntry: () => null,
-}));
-vi.mock('@/components/onboarding/surfaces/SetupWizardSurface', () => ({
-    SetupWizardSurface: (props: any) => React.createElement('SetupWizardSurface', props),
-}));
-vi.mock('@/modal/components/BaseModal', () => ({
-    BaseModal: (props: any) => React.createElement('BaseModal', props, props.children),
 }));
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -102,20 +99,11 @@ describe('/ (welcome) setup continuation on native', () => {
         standardCleanup();
     });
 
-    it('renders setup continuation inside BaseModal on native (no bespoke overlay wrapper)', async () => {
-        const Screen = (await import('@/app/(app)/index')).default;
-        const screen = await renderScreen(React.createElement(Screen));
+    it('routes the native auth continuation to the machine draft without a modal', async () => {
+        const Screen = (await import('@/app/(app)/index')).Home;
+        const screen = await renderScreen(<Screen />);
         await flushHookEffects({ cycles: 1, turns: 2 });
-
-        expect(screen.findByTestId('setupWizard.nativeOverlay')).toBeNull();
-
-        const modals = screen.findAllByType('BaseModal' as never);
-        expect(modals).toHaveLength(1);
-        const modal = modals[0]!;
-        expect(modal.props.visible).toBe(true);
-        expect(modal.props.showBackdrop).toBe(true);
-        expect(modal.props.closeOnBackdrop).toBe(false);
-
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(1);
+        expect(expoRouterMock.spies.replace).toHaveBeenCalledWith('/settings/machines/add?path=thisComputer');
+        expect(screen.findAllByType('BaseModal' as never)).toHaveLength(0);
     });
 });

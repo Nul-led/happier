@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import type { KeyboardShortcutHandlers } from '@/keyboard';
 import type { Settings } from '@/sync/domains/settings/settings';
+import { CommandPaletteProvider } from './CommandPaletteProvider';
+import { executeCommandPaletteAction } from './commandPaletteActionRuntime';
 
 const testState = vi.hoisted(() => ({
     routerPush: vi.fn(),
@@ -77,6 +79,10 @@ vi.mock('@/hooks/session/useNavigateToSession', () => ({
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: (featureId: string) => testState.enabledFeatures.has(featureId),
 }));
+// The same server feature seam, as the canonical decision the Workflows entry reads.
+vi.mock('@/hooks/server/useFeatureDecision', () => ({
+    useFeatureDecision: (featureId: string) => (testState.enabledFeatures.has(featureId) ? { state: 'enabled' } : null),
+}));
 
 vi.mock('@/sync/ops/actions/defaultActionExecutor', () => ({
     createDefaultActionExecutor: () => ({
@@ -131,7 +137,6 @@ vi.mock('./buildCommandPaletteCommands', async () => {
 
 describe('CommandPaletteProvider lazy command building', () => {
     beforeEach(() => {
-        vi.resetModules();
         vi.clearAllMocks();
         standardCleanup();
         testState.routerPush.mockClear();
@@ -159,6 +164,18 @@ describe('CommandPaletteProvider lazy command building', () => {
 
         expect(buildCommandPaletteCommandsSpy).toHaveBeenCalledTimes(1);
         expect(Modal.show).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets a mounted Action invoke the same account navigation without opening the palette', async () => {
+        const screen = await renderScreen(<CommandPaletteProvider><React.Fragment /></CommandPaletteProvider>);
+        await expect(executeCommandPaletteAction({
+            actionId: 'ui.command_palette.invoke', input: { commandId: 'account' }, context: { surface: 'agent' },
+        })).resolves.toEqual({ ok: true, result: { invoked: true } });
+        expect(testState.routerPush).toHaveBeenCalledWith('/settings/account');
+        await act(async () => { screen.unmount(); });
+        await expect(executeCommandPaletteAction({
+            actionId: 'ui.command_palette.list', input: {}, context: { surface: 'agent' },
+        })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
     });
 
     it('keeps repeated web open requests on the existing Search modal', async () => {

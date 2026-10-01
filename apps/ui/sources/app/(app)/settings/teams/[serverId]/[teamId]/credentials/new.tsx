@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { TeamCredentialCreateScreen } from '@/components/settings/teams/credentials/TeamCredentialCreateScreen';
 import { firstRouteParam } from '@/components/settings/teams/teamRouteParams';
 
-export default function TeamCredentialCreateScreenRoute() {
+export function TeamCredentialCreateScreenRoute() {
     const params = useLocalSearchParams<{
         serverId?: string | string[];
         teamId?: string | string[];
@@ -44,3 +44,6 @@ export default function TeamCredentialCreateScreenRoute() {
         />
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { TeamCredentialCreateScreenRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={TeamCredentialCreateScreenRoute} />; }

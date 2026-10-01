@@ -33,7 +33,7 @@ function actionAuthority(generation: number): PluginSurfaceLaunchAuthority {
     return {
         machineId: 'machine-1',
         serverId: 'server-a',
-        generation,
+        occurrenceId: `page-action-occurrence-${generation}`,
         accountLifetime: null,
         executionOrigin: null,
     };
@@ -45,6 +45,7 @@ function resolveClientTargetAction(
     return {
         id: identity.localId,
         pluginId: identity.pluginId,
+        occurrenceId: `${identity.pluginId}-occurrence-current`,
         title: identity.localId,
         scopes: ['session'],
         surfaces: ['ui'],
@@ -52,7 +53,6 @@ function resolveClientTargetAction(
             target: 'client',
             client: {
                 artifactId: 'client-action-bundle',
-                modulePath: './actions/clientAction',
                 exportName: 'execute',
             },
             platforms: ['web'],
@@ -68,6 +68,7 @@ function resolveDaemonTargetAction(
     return {
         id: identity.localId,
         pluginId: identity.pluginId,
+        occurrenceId: `${identity.pluginId}-occurrence-current`,
         title: identity.localId,
         scopes: ['session'],
         surfaces: ['ui'],
@@ -201,7 +202,7 @@ describe('dispatchPluginAppPageHeaderAction', () => {
 
         expect(execute).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-a',
-            expectedGeneration: '7',
+            expectedContributorOccurrenceId: '7',
             qualifiedActionId: 'acme.notes/refresh-index',
             executionSurface: 'ui',
         });

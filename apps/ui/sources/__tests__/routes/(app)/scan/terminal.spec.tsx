@@ -13,7 +13,6 @@ const routerBackSpy = vi.fn();
 const routerReplaceSpy = vi.fn();
 const promptSpy = vi.fn(async (..._args: unknown[]) => null as string | null);
 const alertAsyncSpy = vi.fn(async (..._args: unknown[]) => undefined);
-let lastAccountConnectOptions: any = null;
 let lastTerminalConnectOptions: any = null;
 installScanRouteCommonModuleMocks({
     reactNative: async () => {
@@ -51,18 +50,10 @@ installScanRouteCommonModuleMocks({
 });
 
 const processTerminalAuthUrlSpy = vi.fn(async (_url: string) => true);
-const processAccountAuthUrlSpy = vi.fn(async (_url: string) => true);
 vi.mock('@/hooks/session/useConnectTerminal', () => ({
     useConnectTerminal: (opts?: any) => {
         lastTerminalConnectOptions = opts ?? null;
         return { processAuthUrl: processTerminalAuthUrlSpy, isLoading: false };
-    },
-}));
-
-vi.mock('@/hooks/auth/useConnectAccount', () => ({
-    useConnectAccount: (opts?: any) => {
-        lastAccountConnectOptions = opts ?? null;
-        return { processAuthUrl: processAccountAuthUrlSpy, isLoading: false };
     },
 }));
 
@@ -88,9 +79,7 @@ describe('/scan/terminal', () => {
         promptSpy.mockClear();
         alertAsyncSpy.mockClear();
         processTerminalAuthUrlSpy.mockClear();
-        processAccountAuthUrlSpy.mockClear();
         lastScannerProps = null;
-        lastAccountConnectOptions = null;
         lastTerminalConnectOptions = null;
     });
 
@@ -126,7 +115,6 @@ describe('/scan/terminal', () => {
 
         expect(processTerminalAuthUrlSpy).toHaveBeenCalledTimes(1);
         expect(processTerminalAuthUrlSpy).toHaveBeenCalledWith('happier://terminal?key=abc&server=https%3A%2F%2Fapi.happier.dev');
-        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
     });
 
     it('rejects scanned account URLs from the terminal scanner', async () => {
@@ -143,7 +131,6 @@ describe('/scan/terminal', () => {
         expect(alertAsyncSpy).toHaveBeenCalledTimes(1);
         expect(alertAsyncSpy).toHaveBeenCalledWith('common.error', 'modals.invalidAuthUrl', [{ text: 'common.ok' }]);
         expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
-        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
     });
 
     it('keeps the terminal manual-entry copy on the canonical full-screen form', async () => {
@@ -165,7 +152,9 @@ describe('/scan/terminal', () => {
         const input = screen.findHostByTestId('restore-pairing-link-input');
         expect(input?.props.placeholder).toBe('connect.terminalUrlPlaceholder');
         expect(input?.props.autoFocus).toBe(true);
-        expect(screen.findByTestId('restore-pairing-link-submit').props.title).toBe('common.authenticate');
+        const submit = screen.findByTestId('restore-pairing-link-submit');
+        if (!submit) throw new Error('Expected the terminal link form submit button');
+        expect(submit.props.title).toBe('common.authenticate');
     });
 
     it('submits a pasted terminal link through the shared scan processor', async () => {
@@ -181,12 +170,13 @@ describe('/scan/terminal', () => {
             );
         });
         await act(async () => {
-            await screen.findByTestId('restore-pairing-link-submit').props.action();
+            const submit = screen.findByTestId('restore-pairing-link-submit');
+            if (!submit) throw new Error('Expected the terminal link form submit button');
+            await submit.props.action();
         });
 
         expect(promptSpy).not.toHaveBeenCalled();
         expect(processTerminalAuthUrlSpy).toHaveBeenCalledWith('happier://terminal?key=manual&server=https%3A%2F%2Fapi.happier.dev');
-        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
     });
 
     it('rejects a pasted account URL from the terminal form with an inline alert and a retained draft', async () => {
@@ -199,12 +189,13 @@ describe('/scan/terminal', () => {
             screen.changeTextByTestId('restore-pairing-link-input', 'happier:///account?abc123');
         });
         await act(async () => {
-            await screen.findByTestId('restore-pairing-link-submit').props.action();
+            const submit = screen.findByTestId('restore-pairing-link-submit');
+            if (!submit) throw new Error('Expected the terminal link form submit button');
+            await submit.props.action();
         });
 
         expect(alertAsyncSpy).toHaveBeenCalledWith('common.error', 'modals.invalidAuthUrl', [{ text: 'common.ok' }]);
         expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
-        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
         expect(screen.findHostByTestId('restore-pairing-link-error')?.props.accessibilityRole).toBe('alert');
         expect(screen.findHostByTestId('restore-pairing-link-input')?.props.value).toBe('happier:///account?abc123');
     });
@@ -235,6 +226,5 @@ describe('/scan/terminal', () => {
 
         expect(routerReplaceSpy).toHaveBeenCalledWith('/');
         expect(routerBackSpy).not.toHaveBeenCalled();
-        expect(lastAccountConnectOptions?.onSuccess).toBe(lastTerminalConnectOptions?.onSuccess);
     });
 });

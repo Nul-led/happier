@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { TeamManagedIdentityProviderEditorScreen } from '@/components/settings/teams/identity/TeamIdentityProviderSetupScreen';
 import { firstRouteParam } from '@/components/settings/teams/teamRouteParams';
 
-export default function TeamManagedIdentityProviderEditorRoute() {
+export function TeamManagedIdentityProviderEditorRoute() {
     const params = useLocalSearchParams<{
         serverId?: string | string[];
         teamId?: string | string[];
@@ -18,3 +18,6 @@ export default function TeamManagedIdentityProviderEditorRoute() {
         providerId={firstRouteParam(params.providerId)}
     />;
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { TeamManagedIdentityProviderEditorRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={TeamManagedIdentityProviderEditorRoute} />; }

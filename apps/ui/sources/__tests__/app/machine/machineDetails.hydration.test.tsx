@@ -63,7 +63,6 @@ vi.mock('@/components/ui/lists/ItemList', () => ({ ItemList: (props: React.Props
 vi.mock('@/components/ui/forms/MultiTextInput', () => ({ MultiTextInput: () => null }));
 vi.mock('@/components/ui/pathBrowser/PathInputBrowseButton', () => ({ PathInputBrowseButton: () => null }));
 vi.mock('@/components/ui/pathBrowser/openMachinePathBrowserModal', () => ({ openMachinePathBrowserModal: vi.fn(async () => null) }));
-vi.mock('@/components/machines/DetectedClisList', () => ({ DetectedClisList: () => null }));
 vi.mock('@/components/ui/forms/Switch', () => ({ Switch: () => null }));
 vi.mock('@/components/ui/text/Text', () => ({ Text: 'Text', TextInput: 'TextInput' }));
 vi.mock('@/components/machines/InstallableDepInstaller', () => ({ InstallableDepInstaller: () => null }));
@@ -100,7 +99,6 @@ vi.mock('@/utils/errors/daemonUnavailableAlert', () => ({
 vi.mock('@/utils/sessions/machineUtils', () => ({ isMachineOnline: (machine: { active?: boolean }) => machine.active === true }));
 vi.mock('@/utils/sessions/sessionUtils', () => ({ formatOSPlatform: (platform?: string) => platform ?? '', formatPathRelativeToHome: () => '', getSessionName: () => '', getSessionSubtitle: () => '' }));
 vi.mock('@/utils/path/pathUtils', () => ({ resolveAbsolutePath: () => '' }));
-vi.mock('@/sync/domains/settings/terminalSettings', () => ({ resolveTerminalSpawnOptions: () => ({}) }));
 vi.mock('@/sync/domains/session/spawn/windowsRemoteSessionConsole', () => ({ resolveWindowsRemoteSessionConsoleFromMachineMetadata: () => 'visible' }));
 vi.mock('@/sync/domains/session/spawn/windowsRemoteSessionLaunchMode', () => ({
     readMachineWindowsRemoteSessionLaunchMode: () => undefined,

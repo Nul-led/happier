@@ -6,6 +6,8 @@ import {
 } from '@happier-dev/protocol';
 
 import type { DetailsTabState } from '@/components/appShell/panes/details/workspace/detailsWorkspaceTypes';
+import { readComputerScreenSessionSurfaceResource } from '@/components/computer/computerScreenDetailsTab';
+import { SessionComputerScreenPane } from '@/components/computer/SessionComputerScreenPane';
 import { SessionSimulatorPreviewPane } from '@/components/sessions/simulator/SessionSimulatorPreviewPane';
 import { selectSimulatorPreviewViewModel } from '@/sync/domains/devices/simulator/selectors';
 import type { SimulatorPreviewViewModel } from '@/sync/domains/devices/simulator/types';
@@ -104,10 +106,15 @@ export function renderSimulatorSessionSurfaceTab(params: Readonly<{
 
 export function renderSessionSurfaceTab(params: Readonly<{
     sessionId: string;
+    serverId?: string | null;
     tab: DetailsTabState;
     simulatorPreview?: SimulatorPreviewSurfaceRuntime | null;
     nowMs?: () => number;
 }>): React.ReactNode | null {
+    const computerScreen = readComputerScreenSessionSurfaceResource(params.tab.resource);
+    if (computerScreen) {
+        return <SessionComputerScreenPane sessionId={params.sessionId} serverId={params.serverId ?? null} machineId={computerScreen.machineId} />;
+    }
     return renderSimulatorSessionSurfaceTab({
         sessionId: params.sessionId,
         tab: params.tab,
@@ -121,6 +128,9 @@ export function resolveSessionSurfaceTabIconName(params: Readonly<{
 }>): string | null {
     if (isSimulatorPreviewSessionSurfaceResource(params.tab.resource)) {
         return 'device-mobile';
+    }
+    if (readComputerScreenSessionSurfaceResource(params.tab.resource)) {
+        return 'browsers';
     }
     return null;
 }

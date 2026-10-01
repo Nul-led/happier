@@ -17,6 +17,7 @@ const routeRuntime = vi.hoisted(() => ({
 const sessionState = vi.hoisted(() => ({
     current: null as Readonly<{
         id: string;
+        serverId?: string;
         active: boolean;
         metadata: unknown;
         ownerMetadataView?: unknown;
@@ -53,7 +54,7 @@ vi.mock('@/sync/domains/state/storage', () => ({
 }));
 
 vi.mock('@/components/sessions/shell/SessionInvalidLinkFallback', () => ({
-    SessionInvalidLinkFallback: (props: unknown) => React.createElement('SessionInvalidLinkFallback', props),
+    SessionInvalidLinkFallback: (props: Record<string, unknown>) => React.createElement('SessionInvalidLinkFallback', props),
 }));
 
 describe('ordinary session route layout', () => {
@@ -88,9 +89,10 @@ describe('ordinary session route layout', () => {
         expect(screen.findAllByType('SessionRouteSlot')).toHaveLength(0);
     });
 
-    it('keeps ordinary user sessions routed normally', async () => {
+    it('keeps ordinary user sessions routed normally on the Home that holds them', async () => {
         sessionState.current = {
             id: 'session-1',
+            serverId: 'home-b',
             active: false,
             metadata: {
                 summary: {
@@ -102,11 +104,37 @@ describe('ordinary session route layout', () => {
         const Layout = await import('@/app/(app)/session/[id]/_layout');
 
         const screen = await renderScreen(React.createElement(Layout.default));
+        expect(routeRuntime.setParams).toHaveBeenCalledWith({ serverId: 'home-b' });
+        await screen.update(React.createElement(Layout.default));
 
         expect(screen.findAllByType('SessionInvalidLinkFallback')).toHaveLength(0);
         expect(screen.findAllByType('SessionRouteSlot')).toHaveLength(1);
+        expect(routeRuntime.childHydrationServerIds).toEqual(['home-b']);
+    });
+
+    it('never lets the focused Home answer a bare link to a Session no Home is known to hold', async () => {
+        const Layout = await import('@/app/(app)/session/[id]/_layout');
+
+        const screen = await renderScreen(React.createElement(Layout.default));
+
+        // No hydration against the focused Home: the Which Home? chooser asks instead.
+        expect(screen.findAllByType('SessionRouteSlot')).toHaveLength(0);
+        expect(routeRuntime.childHydrationServerIds).toEqual([]);
         expect(routeRuntime.setParams).not.toHaveBeenCalled();
-        expect(routeRuntime.childHydrationServerIds).toEqual(['home-a']);
+        expect(screen.findAllByType('SessionInvalidLinkFallback')[0]?.props).toMatchObject({
+            sessionId: 'session-1',
+            homeChoice: 'unknown',
+        });
+    });
+
+    it('opens an explicitly qualified link directly, even when no Home is known to hold it', async () => {
+        routeParams.value = { id: 'session-1', serverId: 'home-b' };
+        const Layout = await import('@/app/(app)/session/[id]/_layout');
+
+        const screen = await renderScreen(React.createElement(Layout.default));
+
+        expect(screen.findAllByType('SessionInvalidLinkFallback')).toHaveLength(0);
+        expect(routeRuntime.childHydrationServerIds).toEqual(['home-b']);
     });
 
     it('opens the Which Home fallback without mounting hydration for an ambiguous legacy route', async () => {
@@ -142,6 +170,7 @@ describe('ordinary session route layout', () => {
             paneState: {
                 summary: { sessionsReady: true, sessionCount: 2 }, visibleSessionListIndex: [],
                 hasHiddenInactiveSessions: false, folderFocus: null, showLoading: false, showEmptyState: false,
+                folderFeatureEnabledServerIds: [],
                 query: {
                     active: true,
                     statesByServerId: { 'home-a': queryState('home-a'), 'home-b': queryState('home-b') },
@@ -164,6 +193,7 @@ describe('ordinary session route layout', () => {
             paneState: {
                 summary: { sessionsReady: true, sessionCount: 1 }, visibleSessionListIndex: [],
                 hasHiddenInactiveSessions: false, folderFocus: null, showLoading: false, showEmptyState: false,
+                folderFeatureEnabledServerIds: [],
                 query: {
                     active: true,
                     statesByServerId: {

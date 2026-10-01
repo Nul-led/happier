@@ -1,5 +1,6 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { Platform, View, useWindowDimensions } from 'react-native';
 import { SessionCommitDetailsView } from '@/components/sessions/files/views/SessionCommitDetailsView';
 import { useDeviceType } from '@/utils/platform/responsive';
@@ -14,6 +15,7 @@ import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForR
 import { isSessionRouteHydrationAvailable, isSessionRouteHydrationMissing } from '@/sync/domains/session/sessionRouteHydrationState';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
 
 function decodeSha(value: string): string {
     try {
@@ -23,7 +25,7 @@ function decodeSha(value: string): string {
     }
 }
 
-export default function CommitScreen() {
+export function CommitScreen() {
     const router = useRouter();
     const params = useLocalSearchParams<{ id: string; serverId?: string }>();
     const routeScope = React.useMemo(() => createSessionRouteServerScope(params), [params]);
@@ -49,7 +51,7 @@ export default function CommitScreen() {
         && sessionHydrated
         && shouldRedirectDetailsRouteToPanes({ containerWidthPx, deviceType, multiPaneEnabled });
 
-    const pane = useAppPaneScope(createSessionPaneScopeId(sessionId, routeScope.serverId));
+    const pane = useAppPaneScope(useDestinationPaneScopeId(createSessionPaneScopeId(sessionId, routeScope.serverId)));
     const shouldUseDetailsScreen = Platform.OS !== 'web';
     const hasRedirectedToDetailsRef = React.useRef(false);
 
@@ -108,3 +110,7 @@ export default function CommitScreen() {
     if (shouldUseDetailsScreen) return null;
     return <SessionCommitDetailsView sessionId={sessionId} serverId={routeScope.serverId} sha={sha} onBack={() => router.back()} />;
 }
+
+export { CommitScreen as WorkspaceRouteBody };
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={CommitScreen} />; }

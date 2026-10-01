@@ -1,15 +1,13 @@
 import type { ItemAction } from '@/components/ui/lists/itemActions';
+import type { WidgetFrameStyle } from '@/components/widgets/frame/WidgetFrame';
+import { buildWidgetFrameStyleActions } from '@/components/widgets/frame/widgetFrameMenu';
 import { t } from '@/text';
 
-import {
-    SESSION_SUMMARY_COMPANION_ITEM,
-    areSessionCompanionItemsEqual,
-    type SessionCompanionDensity,
-    type SessionCompanionEdge,
-    type SessionCompanionItemRefV1,
-    type SessionCompanionPreferenceV1,
+import type {
+    SessionCompanionDensity,
+    SessionCompanionEdge,
+    SessionCompanionPreferenceV1,
 } from './state/sessionCompanionPreference';
-import type { SessionCompanionAddableItem } from './sessionCompanionContentModel';
 import { resolveSessionCompanionPhysicalSide } from './layout/resolveSessionCompanionPlacement';
 
 /**
@@ -26,37 +24,15 @@ export function buildSessionCompanionMenuActions(input: Readonly<{
     preference: SessionCompanionPreferenceV1;
     /** Current physical reading direction; preferences remain logical. */
     layoutDirection?: 'ltr' | 'rtl';
-    /** Currently readable Board items this Companion does not already hold. */
-    addableItems: readonly SessionCompanionAddableItem[];
     setEdge: (edge: SessionCompanionEdge) => void;
     setDensity: (density: SessionCompanionDensity) => void;
     setCollapsed: (collapsed: boolean) => void;
     hide: () => void;
-    addItem: (item: SessionCompanionItemRefV1) => void;
     openFullSurface?: () => void;
 }>): ItemAction[] {
+    // Adding lives in ONE place, the Add to Companion picker at the end of the
+    // column; this menu holds only the column's own layout choices.
     const actions: ItemAction[] = [];
-    const hasSummary = input.preference.items.some(
-        (item) => areSessionCompanionItemsEqual(item, SESSION_SUMMARY_COMPANION_ITEM),
-    );
-
-    if (!hasSummary) {
-        actions.push({
-            id: 'add-summary',
-            title: t('sessionBoard.companion.actions.addSummary'),
-            icon: 'plus',
-            onPress: () => input.addItem(SESSION_SUMMARY_COMPANION_ITEM),
-        });
-    }
-    for (const candidate of input.addableItems) {
-        actions.push({
-            id: `add-${candidate.widgetId}`,
-            title: t('sessionBoard.companion.actions.addItem', { title: candidate.title }),
-            icon: 'plus',
-            onPress: () => input.addItem({ kind: 'widget', widgetId: candidate.widgetId }),
-        });
-    }
-
     // Persistence remains logical, while the menu names and icons the physical
     // destination the reader will actually see in the current direction.
     const direction = input.layoutDirection ?? 'ltr';
@@ -142,6 +118,14 @@ export function buildSessionCompanionItemActions(input: Readonly<{
     remove: () => void;
     /** Present only while the Board is currently reachable for this viewer. */
     openOnBoard?: () => void;
+    /** Personal plugin settings recovery for a plugin widget. */
+    managePlugin?: () => void;
+    /** This item's frame: Show/Hide frame for it alone, and back to the Companion's default. */
+    frame?: Readonly<{
+        surfaceDefault: WidgetFrameStyle;
+        override: WidgetFrameStyle | null | undefined;
+        onSet: (style: WidgetFrameStyle | null) => void;
+    }>;
 }>): ItemAction[] {
     const actions: ItemAction[] = [];
     if (input.index > 0) {
@@ -160,26 +144,25 @@ export function buildSessionCompanionItemActions(input: Readonly<{
             onPress: () => input.moveTo(input.index + 1),
         });
     }
-    // First/last are only distinct once a step and a jump differ; with three or
-    // fewer items "move to first" IS "move up", and a menu that says both twice
-    // is noise, not reach.
-    if (input.count > 3) {
-        if (input.index > 1) {
-            actions.push({
-                id: 'move-first',
-                title: t('sessionBoard.companion.actions.moveToFirst'),
-                icon: 'arrow-circle-up',
-                onPress: () => input.moveTo(0),
-            });
-        }
-        if (input.index < input.count - 2) {
-            actions.push({
-                id: 'move-last',
-                title: t('sessionBoard.companion.actions.moveToLast'),
-                icon: 'arrow-circle-down',
-                onPress: () => input.moveTo(input.count - 1),
-            });
-        }
+    // First/last are only distinct once a step and a jump differ, which is exactly
+    // what these two position predicates already say: at index 1 "move to first" IS
+    // "move up". A separate count gate additionally hid the real two-position jump a
+    // three-item list has at both ends.
+    if (input.index > 1) {
+        actions.push({
+            id: 'move-first',
+            title: t('sessionBoard.companion.actions.moveToFirst'),
+            icon: 'arrow-circle-up',
+            onPress: () => input.moveTo(0),
+        });
+    }
+    if (input.index < input.count - 2) {
+        actions.push({
+            id: 'move-last',
+            title: t('sessionBoard.companion.actions.moveToLast'),
+            icon: 'arrow-circle-down',
+            onPress: () => input.moveTo(input.count - 1),
+        });
     }
     if (input.openOnBoard) {
         actions.push({
@@ -188,6 +171,17 @@ export function buildSessionCompanionItemActions(input: Readonly<{
             icon: 'squares-four',
             onPress: input.openOnBoard,
         });
+    }
+    if (input.managePlugin) {
+        actions.push({
+            id: 'manage-plugin',
+            title: t('sessionBoard.item.actions.managePlugin'),
+            icon: 'puzzle-piece',
+            onPress: input.managePlugin,
+        });
+    }
+    if (input.frame) {
+        actions.push(...buildWidgetFrameStyleActions({ placement: 'companion', ...input.frame }));
     }
     actions.push({
         id: 'remove',

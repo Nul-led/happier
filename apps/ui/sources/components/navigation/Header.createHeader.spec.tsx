@@ -249,4 +249,87 @@ describe('createHeader', () => {
         backButtons[0]?.props.onPress();
         expect(navigation.goBack).toHaveBeenCalledOnce();
     });
+    it('draws no stack header for a page inside the desktop app shell, and keeps back navigation outside it', async () => {
+        const { createHeader } = await import('./Header');
+        const { AppShellColumnContext } = await import('@/components/navigation/shell/appRail/appShellColumnContext');
+        const headerProps = (presentation?: string) => ({
+            options: {
+                headerShown: true,
+                headerTitle: 'Plugins',
+                headerTintColor: '#111111',
+                headerTitleStyle: {},
+                headerStyle: {},
+                ...(presentation ? { presentation } : {}),
+            },
+            route: { key: 'plugins', name: 'plugins/index' },
+            navigation: { goBack: vi.fn(), getState: () => ({ index: 2 }) } as any,
+            back: { title: 'Back' },
+        } as any);
+        const inShell = (element: React.ReactElement, present: boolean) => (
+            <AppShellColumnContext.Provider value={{ present, columnVisible: present }}>{element}</AppShellColumnContext.Provider>
+        );
+
+        // Desktop, inside the shell: the page's own header, the rail and the history arrows carry it.
+        const desktop = await renderScreen(inShell(createHeader(headerProps()) as React.ReactElement, true));
+        expect(desktop.getTextContent()).not.toContain('Plugins');
+        expect(desktop.root.findAll((node) => (node.type as unknown) === 'Icon')).toHaveLength(0);
+
+        // A modal presented over the shell keeps its own bar.
+        const modal = await renderScreen(inShell(createHeader(headerProps('modal')) as React.ReactElement, true));
+        expect(modal.getTextContent()).toContain('Plugins');
+
+        // A phone (no shell) keeps the header and its back button.
+        const phone = await renderScreen(inShell(createHeader(headerProps()) as React.ReactElement, false));
+        expect(phone.getTextContent()).toContain('Plugins');
+        expect(phone.root.findAll((node) => (node.type as unknown) === 'Icon').length).toBeGreaterThan(0);
+    });
+    it("moves a route's header actions into the page header inside the desktop shell, and keeps them in the bar elsewhere", async () => {
+        const { createHeader } = await import('./Header');
+        const { AppShellColumnContext } = await import('@/components/navigation/shell/appRail/appShellColumnContext');
+        const { useClaimedStackHeaderActions } = await import('./stackHeaderActions');
+        const { NavigationRouteContext } = await import('@react-navigation/native');
+        const addFriend = vi.fn();
+        const headerProps = {
+            options: {
+                headerShown: true,
+                headerTitle: 'Friends',
+                headerTintColor: '#111111',
+                headerTitleStyle: {},
+                headerStyle: {},
+                headerRight: () => React.createElement('Pressable', { testID: 'friends-add', onPress: addFriend }),
+            },
+            route: { key: 'friends-manage', name: 'friends/manage' },
+            navigation: { goBack: vi.fn(), getState: () => ({ index: 2 }) } as any,
+            back: { title: 'Back' },
+        } as any;
+        function PageHeaderActions() {
+            return React.createElement(React.Fragment, null, useClaimedStackHeaderActions());
+        }
+        const shell = (present: boolean, withPageHeader: boolean) => (
+            <AppShellColumnContext.Provider value={{ present, columnVisible: present }}>
+                <NavigationRouteContext.Provider value={headerProps.route}>
+                    {createHeader(headerProps) as React.ReactElement}
+                    {withPageHeader ? <PageHeaderActions /> : null}
+                </NavigationRouteContext.Provider>
+            </AppShellColumnContext.Provider>
+        );
+        const actions = (screen: Awaited<ReturnType<typeof renderScreen>>) => screen.root.findAll((node) => node.props?.testID === 'friends-add' && typeof node.type === 'string');
+
+        // Desktop, page with a page header: the action is there once, and the header draws nothing.
+        const desktop = await renderScreen(shell(true, true));
+        expect(actions(desktop)).toHaveLength(1);
+        expect(desktop.getTextContent()).not.toContain('Friends');
+        desktop.tree.unmount();
+
+        // Desktop, page without one: the header keeps an actions-only bar.
+        const bare = await renderScreen(shell(true, false));
+        expect(actions(bare)).toHaveLength(1);
+        expect(bare.getTextContent()).not.toContain('Friends');
+        bare.tree.unmount();
+
+        // Phone: the header with its title and action, not repeated in the page.
+        const phone = await renderScreen(shell(false, true));
+        expect(actions(phone)).toHaveLength(1);
+        expect(phone.getTextContent()).toContain('Friends');
+    });
 });

@@ -293,7 +293,8 @@ describe('Session Run Details Screen', () => {
 
         expect(stackScreenSpy).toHaveBeenCalled();
         const stackOptions = stackScreenSpy.mock.calls.at(-1)?.[0]?.options;
-        expect(stackOptions?.headerTitle).toBe('runs.runLabel');
+        // Never "run <id>": the page's own header names the Run.
+        expect(stackOptions?.headerTitle).toBe('session.subagents.panel.title');
         expect(typeof stackOptions?.headerLeft).toBe('function');
         expect(typeof stackOptions?.headerRight).toBe('function');
 

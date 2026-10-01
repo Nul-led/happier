@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createPartialStorageModuleMock, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createStorageModuleStub, renderScreen, standardCleanup } from '@/dev/testkit';
 import {
     createSessionBoardActionsPort,
     projectSessionBoard,
@@ -9,7 +9,8 @@ import {
 } from '@/sync/domains/session/board';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
-import { SessionBoardContinuityProvider } from '../../board/SessionBoardContinuity';
+import { SessionBoardContinuityProvider, useSessionBoardContinuity } from '../../board/SessionBoardContinuity';
+import { readPresentationNotice } from '@/components/sessions/presentation/presentationNotices';
 import {
     SessionBoardControllerOwner,
 } from '../../board/SessionBoardControllerProvider';
@@ -21,8 +22,8 @@ import type {
 
 const local = vi.hoisted(() => ({ stored: undefined as unknown }));
 
-vi.mock('@/sync/domains/state/storage', async (importOriginal) =>
-    createPartialStorageModuleMock(importOriginal, {
+vi.mock('@/sync/domains/state/storage', () =>
+    createStorageModuleStub({
         useSessionCompanionPreferenceSlot: (sessionId: string | null, serverId?: string | null) => ({
             storageKey: sessionId && serverId ? `${serverId}:${sessionId}` : null,
             stored: local.stored,
@@ -71,11 +72,37 @@ function snapshot(
     });
 }
 
+function snapshotWithViews(viewIds: readonly string[]): SessionBoardSnapshot {
+    return projectSessionBoard({
+        layout: {
+            revision: 'ssr1:layout',
+            outcome: {
+                status: 'ready',
+                value: { v: 1, tabs: viewIds.map((id) => ({ id, title: id.toUpperCase(), items: [] })) },
+            },
+        },
+        items: new Map(),
+        capabilities: { readTranscript: true, editSessionRecords: true },
+        freshness: 'fresh',
+        reachability: 'reachable',
+        loading: 'idle',
+        incomplete: false,
+    } as Parameters<typeof projectSessionBoard>[0]);
+}
+
+type ContinuityProbe = { current: ReturnType<typeof useSessionBoardContinuity> };
+
+function ContinuityProbe(props: Readonly<{ probe: ContinuityProbe }>): null {
+    props.probe.current = useSessionBoardContinuity(OWNER_ADDRESS);
+    return null;
+}
+
 function Harness(props: Readonly<{
     binding: SessionBoardBinding;
     bridgeAddress?: SessionAddress;
     applierRef: React.MutableRefObject<SessionPresentationIntentApplier | null>;
     openBoard: ReturnType<typeof vi.fn>;
+    continuityProbe?: ContinuityProbe;
 }>): React.ReactElement {
     const bridgeAddress = props.bridgeAddress ?? OWNER_ADDRESS;
     return (
@@ -96,6 +123,7 @@ function Harness(props: Readonly<{
                 pluginRuntime={pluginRuntime}
                 callerHostedHtmlRuntime={null}
             >
+                {props.continuityProbe ? <ContinuityProbe probe={props.continuityProbe} /> : null}
                 <SessionCompanionPresentationBridge
                     sessionId={bridgeAddress.sessionId}
                     serverId={bridgeAddress.serverId}
@@ -162,6 +190,48 @@ describe('SessionCompanionPresentationBridge Board currentness', () => {
         expect(applierRef.current?.({ kind: 'board.open', mode: 'focus' }))
             .toEqual({ status: 'applied' });
         expect(openBoard).toHaveBeenCalledWith('focus');
+    });
+
+    it('undoes a Board view selection to the view that was current before it, and never over a newer choice', async () => {
+        const applierRef = { current: null } as React.MutableRefObject<SessionPresentationIntentApplier | null>;
+        const openBoard = vi.fn(() => ({ status: 'unchanged' as const }));
+        const probe: ContinuityProbe = { current: null };
+        const screen = await renderScreen(
+            <Harness
+                binding={{ status: 'ready', snapshot: snapshotWithViews(['a', 'b', 'c']) }}
+                applierRef={applierRef}
+                openBoard={openBoard}
+                continuityProbe={probe}
+            />,
+        );
+        const rerender = async () => await screen.update(
+            <Harness
+                binding={{ status: 'ready', snapshot: snapshotWithViews(['a', 'b', 'c']) }}
+                applierRef={applierRef}
+                openBoard={openBoard}
+                continuityProbe={probe}
+            />,
+        );
+        probe.current!.viewSelection.request('a');
+        await rerender();
+        expect(applierRef.current?.({ kind: 'board.view.select', viewId: 'b' })).toMatchObject({ status: 'applied' });
+        await rerender();
+        expect(probe.current!.viewSelection.read()).toBe('b');
+
+        // The actual published notice inverse restores the pre-command selection.
+        readPresentationNotice()?.undo?.run();
+        await rerender();
+        expect(probe.current!.viewSelection.read()).toBe('a');
+
+        // A newer human selection wins: the old inverse stays inert.
+        expect(applierRef.current?.({ kind: 'board.view.select', viewId: 'b' })).toMatchObject({ status: 'applied' });
+        await rerender();
+        const staleUndo = readPresentationNotice()?.undo;
+        probe.current!.viewSelection.request('c');
+        await rerender();
+        staleUndo?.run();
+        await rerender();
+        expect(probe.current!.viewSelection.read()).toBe('c');
     });
 
     it('keeps Companion-only intents independent of unavailable Board currentness', async () => {

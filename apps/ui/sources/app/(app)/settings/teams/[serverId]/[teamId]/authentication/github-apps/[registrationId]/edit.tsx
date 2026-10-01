@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { TeamGitHubAppEditorScreen } from '@/components/settings/teams/identity/TeamGitHubAppScreens';
 import { firstRouteParam } from '@/components/settings/teams/teamRouteParams';
 
-export default function TeamGitHubAppEditRoute() {
+export function TeamGitHubAppEditRoute() {
     const params = useLocalSearchParams<{
         serverId?: string | string[];
         teamId?: string | string[];
@@ -18,3 +18,6 @@ export default function TeamGitHubAppEditRoute() {
         />
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { TeamGitHubAppEditRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={TeamGitHubAppEditRoute} />; }

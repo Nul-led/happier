@@ -7,8 +7,11 @@ import { useAuth } from '@/auth/context/AuthContext';
 import { useConnectTerminal } from '@/hooks/session/useConnectTerminal';
 import { t } from '@/text';
 import { clearPendingTerminalConnect, getPendingTerminalConnect, setPendingTerminalConnect } from '@/sync/domains/pending/pendingTerminalConnect';
-import { normalizeServerUrl, upsertActivateAndSwitchServer } from '@/sync/domains/server/activeServerSwitch';
-import { getActiveServerUrl } from '@/sync/domains/server/serverProfiles';
+import { normalizeServerUrl, setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
+import { getActiveServerUrl, resolveUniqueServerProfileByUrl } from '@/sync/domains/server/serverProfiles';
+import { connectHomeAtAddress } from '@/sync/ops/home/connectHomeAtAddress';
+import { confirmCanonicalHomeUrl, confirmInsecureHomeHttp, homeConnectFailureMessage } from '@/components/homes/add/homeConnectPresentation';
+import { Modal } from '@/modal';
 import { shouldSwitchToServerUrl } from '@/sync/domains/server/url/serverUrlOverridePolicy';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import {
@@ -157,14 +160,45 @@ export default function TerminalConnectScreen() {
         fireAndForget((async () => {
             if (effectiveTarget && shouldSwitchToServerUrl({ targetServerUrl: effectiveTarget, activeServerUrl })) {
                 try {
-                    await upsertActivateAndSwitchServer({
-                        serverUrl: effectiveTarget,
-                        source: 'url',
+                    let profile = resolveUniqueServerProfileByUrl(effectiveTarget);
+                    if (!profile) {
+                        const connected = await connectHomeAtAddress({
+                            serverUrl: effectiveTarget,
+                            source: 'url',
+                            confirmInsecureHttp: confirmInsecureHomeHttp,
+                            confirmCanonicalUrl: confirmCanonicalHomeUrl,
+                        });
+                        if (connected.kind === 'declined') {
+                            clearPendingTerminalConnect();
+                            return;
+                        }
+                        if (connected.kind !== 'connected') {
+                            Modal.alert(t('common.error'), homeConnectFailureMessage(connected) ?? t('common.error'));
+                            return;
+                        }
+                        profile = connected.profile;
+                    }
+                    const switched = await setActiveServerAndSwitch({
+                        serverId: profile.id,
                         scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
                         refreshAuth: auth.refreshFromActiveServer,
                     });
-                } catch {
-                    // ignore; auth entry route can still recover later
+                    if (switched === 'blocked') return;
+                    if (profile.serverUrl !== desiredServerUrl) {
+                        setPendingTerminalConnect({
+                            publicKeyB64Url: publicKey,
+                            serverUrl: profile.serverUrl,
+                            serverIdentityId: serverIdentityId ?? '',
+                            ...(pairing ? { pairing } : {}),
+                            ...(supportsTokenOnly ? { supportsTokenOnly: true } : {}),
+                            ...(homeConnectionDescriptor ? { homeConnectionDescriptor } : {}),
+                        });
+                    }
+                    router.replace(buildTerminalConnectAuthRedirectHref({ serverUrl: profile.serverUrl }));
+                    return;
+                } catch (error) {
+                    Modal.alert(t('common.error'), error instanceof Error ? error.message : t('common.error'));
+                    return;
                 }
             }
             router.replace(buildTerminalConnectAuthRedirectHref({ serverUrl: desiredServerUrl }));

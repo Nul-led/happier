@@ -1,10 +1,10 @@
 import * as React from 'react';
 import { Platform } from 'react-native';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 import type { AppPaneScopeApi } from '@/components/appShell/panes/hooks/useAppPaneScope';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import type { DetailsTabState, DetailsWorkspaceGroupView } from './detailsWorkspaceTypes';
 
 vi.mock('@/text', async () => {
@@ -171,6 +171,9 @@ describe('DetailsTabStrip chrome absorption for browser-view tabs', () => {
 
     it('uses the shared RTL-aware roving keyboard contract for outer Details tabs', async () => {
         const { DetailsTabStrip } = await import('./DetailsTabStrip');
+        // Roving arrow keys are a web keyboard contract (native tabs are reached by the screen reader).
+        const originalPlatform = Platform.OS;
+        Object.defineProperty(Platform, 'OS', { configurable: true, value: 'web' });
         const pane = createPane();
         const activeTab = browserViewTab();
         const inactiveTab: DetailsTabState = {
@@ -197,10 +200,12 @@ describe('DetailsTabStrip chrome absorption for browser-view tabs', () => {
         screen.findByTestId('tab-browser-view_bs_bv')?.props.onKeyDown?.(event);
         expect(event.preventDefault).toHaveBeenCalledTimes(1);
         expect(pane.setActiveDetailsTab).toHaveBeenCalledWith(inactiveTab.key);
+        Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatform });
     });
 
-    it('uses the shared platform target size for the tab and its pin and close controls', async () => {
+    it('gives a finger the platform touch floor and keeps the strip dense under a precise pointer', async () => {
         const { DetailsTabStrip } = await import('./DetailsTabStrip');
+        const { resolveTouchTargetFloorPx } = await import('@/components/ui/interactiveTargetSize');
         const originalPlatform = Platform.OS;
         const tab = { ...browserViewTab(), isPreview: true };
 
@@ -214,18 +219,15 @@ describe('DetailsTabStrip chrome absorption for browser-view tabs', () => {
                         testIds={testIds}
                     />,
                 );
-                const targetSize = resolveMinimumInteractiveTargetSize(platform);
+                const floor = resolveTouchTargetFloorPx(platform);
 
-                for (const testID of [
-                    'tab-browser-view_bs_bv',
-                    'tab-pin-browser-view_bs_bv',
-                    'tab-close-browser-view_bs_bv',
-                ]) {
-                    const target = screen.findByTestId(testID);
-                    expect(target).not.toBeNull();
-                    const style = flattenStyle(target?.props.style);
-                    expect(style.minWidth).toBe(targetSize);
-                    expect(style.minHeight).toBe(targetSize);
+                const tabStyle = flattenStyle(screen.findByTestId('tab-browser-view_bs_bv')?.props.style);
+                expect(tabStyle.minHeight).toBe(floor ?? 28);
+                for (const testID of ['tab-pin-browser-view_bs_bv', 'tab-close-browser-view_bs_bv']) {
+                    const style = flattenStyle(screen.findByTestId(testID)?.props.style);
+                    // Never below the WCAG 2.5.8 target, and the platform floor for a finger.
+                    expect(style.minWidth).toBe(floor ?? 24);
+                    expect(style.minHeight).toBe(floor ?? 24);
                 }
 
                 await screen.unmount();
@@ -257,6 +259,44 @@ describe('DetailsTabStrip chrome absorption for browser-view tabs', () => {
         expect(flattenStyle(actionRegion.props.style).position).toBeUndefined();
         expect(pin.props.hitSlop).toBeUndefined();
         expect(close.props.hitSlop).toBeUndefined();
+    });
+});
+
+describe('DetailsTabStrip unsaved tabs', () => {
+    it('marks a tab whose content reports unsaved edits, and says so on its close control', async () => {
+        const { DetailsTabGroupPanel } = await import('./DetailsTabGroupPanel');
+        const { useDetailsTabChrome } = await import('./detailsTabChrome');
+        const tab: DetailsTabState = {
+            key: 'file:src/a.ts',
+            kind: 'file',
+            title: 'a.ts',
+            isPinned: true,
+            isPreview: false,
+            resource: { kind: 'file', path: 'src/a.ts' },
+        };
+        let reportUnsaved: ((unsaved: boolean) => void) | null = null;
+        function EditorContent() {
+            const chrome = useDetailsTabChrome();
+            reportUnsaved = chrome.setUnsaved;
+            return null;
+        }
+        const screen = await renderScreen(
+            <DetailsTabGroupPanel
+                pane={createPane()}
+                group={group(tab)}
+                testIds={{ ...testIds, tabUnsaved: (k: string) => `tab-unsaved-${k}` }}
+                renderTabContent={() => <EditorContent />}
+            />,
+        );
+        expect(screen.findByTestId('tab-unsaved-file_src_a.ts')).toBeNull();
+
+        await act(async () => { reportUnsaved?.(true); });
+        expect(screen.findByTestId('tab-unsaved-file_src_a.ts')).not.toBeNull();
+        expect(screen.findByTestId('tab-close-file_src_a.ts')?.props.accessibilityLabel)
+            .toBe('detailsSurface.chrome.closeUnsavedTabA11y');
+
+        await act(async () => { reportUnsaved?.(false); });
+        expect(screen.findByTestId('tab-unsaved-file_src_a.ts')).toBeNull();
     });
 });
 

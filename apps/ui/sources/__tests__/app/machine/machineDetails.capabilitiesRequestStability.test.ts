@@ -17,7 +17,6 @@ const { requests } = vi.hoisted(() => ({
 }));
 const hookCalls = vi.hoisted(() => ({
     capabilities: [] as Array<{ machineId: string | null; serverId?: string | null; enabled: boolean }>,
-    daemonProjection: [] as Array<{ machineId: string | null; serverId?: string | null; enabled: boolean }>,
 }));
 const modalSpies = vi.hoisted(() => ({
     alert: vi.fn(),
@@ -101,9 +100,6 @@ vi.mock('@/components/ui/pathBrowser/openMachinePathBrowserModal', () => ({
     openMachinePathBrowserModal: vi.fn(async () => null),
 }));
 
-vi.mock('@/components/machines/DetectedClisList', () => ({
-    DetectedClisList: () => null,
-}));
 
 vi.mock('@/components/ui/forms/Switch', () => ({
     Switch: () => null,
@@ -139,16 +135,6 @@ vi.mock('@/hooks/server/useMachineCapabilitiesCache', () => {
         },
     };
 });
-vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
-    useDaemonMergedProjectionInputs: (params: { machineId: string | null; serverId?: string | null; enabled: boolean }) => {
-        hookCalls.daemonProjection.push({
-            machineId: params.machineId,
-            serverId: params.serverId,
-            enabled: params.enabled,
-        });
-        return { inputs: null };
-    },
-}));
 
 vi.mock('@/sync/ops', () => {
     return {
@@ -203,9 +189,6 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
     getActiveServerId: () => activeServerIdRef.current,
 }));
 
-vi.mock('@/sync/domains/settings/terminalSettings', () => {
-    return { resolveTerminalSpawnOptions: () => ({}) };
-});
 vi.mock('@/sync/domains/session/spawn/windowsRemoteSessionLaunchMode', () => ({
     readMachineWindowsRemoteSessionLaunchMode: () => undefined,
     resolveEffectiveWindowsRemoteSessionLaunchMode: () => ({ mode: 'visible' }),
@@ -233,7 +216,6 @@ describe('MachineDetailScreen capabilities request', () => {
     it('passes a stable request object to useMachineCapabilitiesCache', async () => {
         requests.length = 0;
         hookCalls.capabilities.length = 0;
-        hookCalls.daemonProjection.length = 0;
         routeParamsRef.current = { id: 'machine-1' };
         activeServerIdRef.current = 'server-a';
 
@@ -250,10 +232,9 @@ describe('MachineDetailScreen capabilities request', () => {
         expect(requests[0]).toBe(requests[1]);
     });
 
-    it('prefers the requested route server for machine-scoped capability and projection hooks', async () => {
+    it('prefers the requested route server for machine-scoped capability hooks', async () => {
         requests.length = 0;
         hookCalls.capabilities.length = 0;
-        hookCalls.daemonProjection.length = 0;
         routeParamsRef.current = { id: 'machine-1', serverId: 'server-b' };
         activeServerIdRef.current = 'server-a';
 
@@ -263,11 +244,6 @@ describe('MachineDetailScreen capabilities request', () => {
         expect(hookCalls.capabilities.at(0)).toMatchObject({
             machineId: 'machine-1',
             serverId: 'server-b',
-        });
-        expect(hookCalls.daemonProjection.at(0)).toMatchObject({
-            machineId: 'machine-1',
-            serverId: 'server-b',
-            enabled: true,
         });
     });
 });

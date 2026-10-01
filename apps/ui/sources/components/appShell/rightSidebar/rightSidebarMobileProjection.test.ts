@@ -24,6 +24,7 @@ if (!pluginBinding) {
 const pluginPlacement = {
     id: `surfacePlacement:${REVIEW_PLUGIN_ID}:review-panel`,
     pluginId: REVIEW_PLUGIN_ID,
+    occurrenceId: 'acme-review-occurrence',
     contributionKind: 'surfacePlacement',
     descriptorId: 'review-panel',
     binding: pluginBinding,

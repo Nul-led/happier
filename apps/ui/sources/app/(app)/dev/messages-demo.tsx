@@ -3,37 +3,43 @@ import { FlatList, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 import { MessageView } from '@/components/sessions/transcript/MessageView';
 import { debugMessages } from '@/dev/messagesDemoData';
-import { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import { useDemoMessages } from '@/hooks/session/useDemoMessages';
+import { SessionTranscriptSourceProvider } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
+import { resolveTranscriptHostWakeCountByMessageId } from '@/components/sessions/transcript/events/transcriptEventEmphasis';
 
 export default React.memo(function MessagesDemoScreen() {
-    // Combine all demo messages
-    const allMessages = [...debugMessages];
+    const allMessages = debugMessages;
 
-    // Load demo messages into session storage
-    const sessionId = useDemoMessages(allMessages);
+    const source = useDemoMessages(allMessages);
+    const messagesById = source.useMessagesById();
+    const hostWakeCountByMessageId = React.useMemo(() => resolveTranscriptHostWakeCountByMessageId({
+        messageIdsOldestFirst: allMessages.map((message) => message.id),
+        messagesById,
+    }), [allMessages, messagesById]);
 
     return (
-        <View style={styles.container}>
-            {allMessages.length > 0 && (
-                <FlatList
-                    data={allMessages}
-                    keyExtractor={(item) => item.id}
-                    renderItem={({ item }) => (
-                        <MessageView
-                            message={item}
-                            metadata={null}
-                            sessionId={sessionId}
-                            getMessageById={(id: string): Message | null => {
-                                return allMessages.find((m)=>m.id === id) || null;
-                            }}
-                        />
-                    )}
-                    style={{ flexGrow: 1, flexBasis: 0 }}
-                    contentContainerStyle={{ paddingVertical: 20 }}
-                />
-            )}
-        </View>
+        <SessionTranscriptSourceProvider source={source}>
+            <View style={styles.container}>
+                {allMessages.length > 0 && (
+                    <FlatList
+                        data={allMessages}
+                        keyExtractor={(item) => item.id}
+                        renderItem={({ item }) => (
+                            <MessageView
+                                message={item}
+                                metadata={null}
+                                sessionId={source.sessionId}
+                                getMessageById={(id: string): Message | null => messagesById[id] ?? null}
+                                hostWakeCount={hostWakeCountByMessageId[item.id]}
+                            />
+                        )}
+                        style={{ flexGrow: 1, flexBasis: 0 }}
+                        contentContainerStyle={{ paddingVertical: 20 }}
+                    />
+                )}
+            </View>
+        </SessionTranscriptSourceProvider>
     );
 });
 

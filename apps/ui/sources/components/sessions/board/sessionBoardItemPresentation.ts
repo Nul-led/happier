@@ -3,7 +3,7 @@ import { readSessionSurfaceNoteTextV1, type SessionSurfaceItemV1 } from '@happie
 import type { SessionBoardItemState } from '@/sync/domains/session/board';
 import type { SessionBoardMountMode } from '@/sync/domains/session/board';
 import type { SessionPluginRuntimeState } from '@/components/sessions/plugins/useSessionPluginRuntime';
-import { resolveInstalledSessionWidgetMount } from '@/components/sessions/widgets/sessionWidgetInstalledSurface';
+import { resolveInstalledWidgetMount } from '@/components/widgets/installedWidgetMount';
 import { canRenderPluginUiProjectionEntry, type PluginUiPolicyEvaluationContext } from '@/sync/domains/plugins/ui/policy';
 import type { SurfaceStateKind } from '@/components/ui/surfaces/SurfaceStateCard';
 import { t } from '@/text';
@@ -24,7 +24,7 @@ export type SessionBoardSourceAvailability =
 export type SessionBoardSourceUnavailableReason =
     /** PEP's hosted-HTML renderer is not present in this build. */
     | 'hosted_html_renderer_unavailable'
-    /** PEP's installed `sessionWidget` contribution/lifecycle is not present in this build. */
+    /** PEP's installed `widget` contribution/lifecycle is not present in this build. */
     | 'session_widget_contribution_unavailable'
     /** The referenced plugin is not installed, is disabled, or was retired on this device. */
     | 'plugin_unavailable';
@@ -81,8 +81,9 @@ export function createSessionBoardSourceAvailabilityResolver(
             return options?.hostedHtmlRendererAvailable === true ? AVAILABLE : NO_HTML_RENDERER;
         }
         if (!runtime) return NO_WIDGET_CONTRIBUTION;
-        const resolved = resolveInstalledSessionWidgetMount({
+        const resolved = resolveInstalledWidgetMount({
             source,
+            target: 'session',
             presentation: context?.presentation ?? 'content',
             runtime,
         });

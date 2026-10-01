@@ -50,12 +50,16 @@ vi.mock('@/components/ui/code/editor/CodeEditor', () => ({
     }),
 }));
 
-vi.mock('@/utils/ui/promptUnsavedChangesAlert', () => ({
-    promptUnsavedChangesAlert: async () => {
-        decisionHarness.request();
-        return decisionHarness.decision;
-    },
-}));
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ spies: {
+        alert: (_title, _message, buttons) => {
+            decisionHarness.request();
+            const style = decisionHarness.decision === 'discard' ? 'destructive' : 'cancel';
+            buttons?.find((button) => button.style === style)?.onPress?.();
+        },
+    } }).module;
+});
 
 const baseActions: SessionBoardActionsPort = {
     upsertItem: async () => ({ status: 'unavailable', reason: 'board_actions_unavailable' }),
@@ -72,6 +76,33 @@ describe('SessionBoardHostedHtmlEditorCard', () => {
         editorHarness.flushPendingChange.mockClear();
         decisionHarness.decision = 'keepEditing';
         decisionHarness.request.mockClear();
+    });
+
+    it('closes without a discard prompt when the final embedded edit undid every change', async () => {
+        const onCancel = vi.fn();
+        const screen = await renderScreen(
+            <SessionBoardHostedHtmlEditorCard
+                sessionId="session-1"
+                itemId="interactive-1"
+                expectedItemRevision="rev-2"
+                initialTitle="Dashboard"
+                initialHtml="<main>base</main>"
+                reachable
+                actions={baseActions}
+                onCancel={onCancel}
+                onSaved={vi.fn()}
+            />,
+        );
+        act(() => {
+            screen.findByTestId('session-board-hosted-html-editor-source')?.props.onChange('<main>changed</main>');
+        });
+        // Undo is still behind the embedded editor's debounce when Cancel is pressed.
+        editorHarness.values.set('session-board-hosted-html-editor-source', '<main>base</main>');
+        await act(async () => {
+            screen.findByTestId('session-board-hosted-html-editor-cancel')?.props.onPress();
+        });
+        expect(onCancel).toHaveBeenCalledOnce();
+        expect(decisionHarness.request).not.toHaveBeenCalled();
     });
 
     it('shows the authoritative HTML only after review and then applies the retained local draft', async () => {

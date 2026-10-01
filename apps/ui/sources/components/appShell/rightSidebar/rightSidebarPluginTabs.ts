@@ -113,7 +113,7 @@ export function resolveRightSidebarPluginTabs(
             label: destination.label,
             icon: destination.icon,
             ...(destination.badge === undefined ? {} : { badge: destination.badge }),
-            ...(destination.groupHint === undefined ? {} : { groupHint: destination.groupHint }),
+            ...(destination.requestedPlacement === undefined ? {} : { requestedPlacement: destination.requestedPlacement }),
             ...(destination.rankHint === undefined ? {} : { rankHint: destination.rankHint }),
             order: destination.order,
             scopes: Object.freeze([input.scope]),

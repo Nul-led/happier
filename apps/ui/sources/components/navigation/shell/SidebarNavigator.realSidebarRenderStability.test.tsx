@@ -57,7 +57,9 @@ function installDocumentEventListenerSpy(): Readonly<{
                 records.splice(index, 1);
             }
         }),
-    } satisfies Pick<Document, 'addEventListener' | 'removeEventListener'>;
+        // Modules the app shell imports probe the document at load (a list backend's web check).
+        getElementById: vi.fn(() => null),
+    } satisfies Pick<Document, 'addEventListener' | 'removeEventListener' | 'getElementById'>;
 
     Object.defineProperty(globalThis, 'document', {
         configurable: true,
@@ -193,7 +195,8 @@ vi.mock('@/components/navigation/ConnectionStatusControl', () => ({
     ConnectionStatusControl: () => React.createElement('ConnectionStatusControl'),
 }));
 
-vi.mock('@/utils/platform/responsive', () => ({
+vi.mock('@/utils/platform/responsive', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/utils/platform/responsive')>()),
     useHeaderHeight: () => 56,
     useIsTablet: () => true,
 }));
@@ -214,10 +217,6 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: (featureId: string) => featureId === 'inbox.global' ? true : false,
 }));
 
-vi.mock('@/sync/runtime/appVariant', () => ({
-    resolveVisibleAppEnvironmentBadge: () => null,
-}));
-
 vi.mock('@/config', () => ({
     config: { variant: 'prod' },
 }));
@@ -236,6 +235,11 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
 
 vi.mock('@/components/voice/surface/VoiceSurface', () => ({
     VoiceSurface: () => React.createElement('VoiceSurface'),
+}));
+
+vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/components/appShell/search/UniversalSearchRuntimeContext')>()),
+    useUniversalSearchRuntime: () => ({ open: vi.fn(), buildCommands: vi.fn() }),
 }));
 
 vi.mock('@/components/ui/popover', () => ({
@@ -264,12 +268,13 @@ function flattenStyle(style: unknown): Record<string, unknown> {
 }
 
 describe('SidebarNavigator real sidebar render stability', () => {
-    it('renders the authenticated permanent drawer shell with the real SidebarView subtree on web', async () => {
+    it('renders the authenticated app shell with the real rail and Sessions column on web', async () => {
         const { SidebarNavigator } = await import('./SidebarNavigator');
 
         const screen = await renderScreen(<SidebarNavigator />);
 
         expect(screen.findByTestId('main-view')).toBeTruthy();
+        expect(screen.findByTestId('app-rail')).toBeTruthy();
         const dragSurface = screen.findByTestId('desktop-main-content-drag-surface');
         expect(dragSurface).toBeTruthy();
         expect(dragSurface?.props.onPointerDownCapture).toBeUndefined();
@@ -294,7 +299,7 @@ describe('SidebarNavigator real sidebar render stability', () => {
             const preventDefault = vi.fn();
             mouseDownListener({
                 buttons: 1,
-                clientX: 321,
+                clientX: 377,
                 clientY: 40,
                 preventDefault,
                 target: { closest: vi.fn(() => null) },
@@ -305,14 +310,14 @@ describe('SidebarNavigator real sidebar render stability', () => {
 
             mouseDownListener({
                 buttons: 1,
-                clientX: 319,
+                clientX: 375,
                 clientY: 40,
                 preventDefault: vi.fn(),
                 target: { closest: vi.fn(() => null) },
             } as unknown as MouseEvent);
             mouseDownListener({
                 buttons: 1,
-                clientX: 321,
+                clientX: 377,
                 clientY: 40,
                 preventDefault: vi.fn(),
                 target: { closest: vi.fn(() => ({})) },

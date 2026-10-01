@@ -186,6 +186,20 @@ export function resolveWorkspaceRefRemoval(
  */
 export function applyWorkspaceRefMutationToAccountSettings(
     raw: Readonly<Record<string, unknown>>,
+    mutation: Extract<WorkspaceRefAccountMutation, { kind: 'remove' }>,
+): Readonly<{
+    settings: Record<string, unknown>;
+    value: WorkspaceRefAccountRemovalResult;
+}>;
+export function applyWorkspaceRefMutationToAccountSettings(
+    raw: Readonly<Record<string, unknown>>,
+    mutation: WorkspaceRefAccountMutation,
+): Readonly<{
+    settings: Record<string, unknown>;
+    value: WorkspaceRefAccountMutationResult;
+}>;
+export function applyWorkspaceRefMutationToAccountSettings(
+    raw: Readonly<Record<string, unknown>>,
     mutation: WorkspaceRefAccountMutation,
 ): Readonly<{
     settings: Record<string, unknown>;

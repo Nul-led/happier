@@ -287,7 +287,18 @@ describe('MachinePickerScreen (iOS presentation)', () => {
                 spawnServerId: 'server-a',
             }),
         });
-        const returnedDataId = routerMock.replace.mock.calls.at(-1)?.[0]?.params?.dataId;
+        const returnedRoute = routerMock.replace.mock.calls.at(-1)?.[0];
+        if (typeof returnedRoute !== 'object' || returnedRoute === null || !('params' in returnedRoute)) {
+            throw new Error('Expected the restored Temporary computer selection to replace the route with params');
+        }
+        const returnedParams = returnedRoute.params;
+        if (typeof returnedParams !== 'object' || returnedParams === null || !('dataId' in returnedParams)) {
+            throw new Error('Expected the restored Temporary computer selection to preserve its draft id');
+        }
+        const returnedDataId = returnedParams.dataId;
+        if (typeof returnedDataId !== 'string') {
+            throw new Error('Expected the restored Temporary computer selection to preserve a string draft id');
+        }
         expect(peekTempData(returnedDataId)).toEqual({
             prompt: 'Keep this draft',
             executionTarget: {

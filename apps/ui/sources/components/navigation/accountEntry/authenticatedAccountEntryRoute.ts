@@ -6,7 +6,14 @@ import {
 } from '@/auth/accountDirectory/accountDirectoryNavigation';
 import { normalizeInternalReturnPath } from '@/utils/path/routeUtils';
 
-export const AUTHENTICATED_ACCOUNT_ENTRY_ROUTE = '/setup/wizard' as const;
+/** Sign in with an account service (find your Homes, link this Home, refresh the account). */
+export const AUTHENTICATED_ACCOUNT_ENTRY_ROUTE = '/homes/sign-in' as const;
+
+/**
+ * Where account entry lived before it had its own route. Sign-in returns issued before the move still
+ * land here with `mode=account-entry`; that route redirects them to `AUTHENTICATED_ACCOUNT_ENTRY_ROUTE`.
+ */
+export const LEGACY_ACCOUNT_ENTRY_ROUTE = '/setup/wizard' as const;
 
 export type AuthenticatedAccountEntryRequest = Readonly<{
     service: Readonly<{
@@ -19,13 +26,10 @@ export type AuthenticatedAccountEntryRequest = Readonly<{
 
 export type AuthenticatedAccountEntryHref = Readonly<{
     pathname: typeof AUTHENTICATED_ACCOUNT_ENTRY_ROUTE;
-    params: Readonly<Record<string, string> & {
-        mode: 'account-entry';
-    }>;
+    params: Readonly<Record<string, string>>;
 }>;
 
 const ROUTE_KEYS = new Set([
-    'mode',
     'accountServiceEndpoint',
     'accountServiceIdentity',
     'accountIntent',
@@ -46,7 +50,6 @@ export function parseAuthenticatedAccountEntryRoute(
     params: Readonly<Record<string, string | string[] | undefined>>,
 ): AuthenticatedAccountEntryRequest | null {
     if (Object.keys(params).some((key) => !ROUTE_KEYS.has(key))) return null;
-    if (readSingle(params.mode) !== 'account-entry') return null;
     const returnMarker = readSingle(params.accountServiceReturn);
     if (returnMarker !== null && returnMarker !== '1') return null;
     const parsed = parseAccountServiceRouteInput(params);
@@ -85,11 +88,26 @@ export function buildAuthenticatedAccountEntryHref(
     return {
         pathname: AUTHENTICATED_ACCOUNT_ENTRY_ROUTE,
         params: {
-            mode: 'account-entry',
             accountServiceEndpoint: destination.params.accountServiceEndpoint,
             accountServiceIdentity: destination.params.accountServiceIdentity,
             accountIntent: destination.params.accountIntent,
             accountEntryReturnTo: request.returnTo,
         },
     };
+}
+
+/**
+ * The sign-in route for a request still addressed to the legacy path (`/setup/wizard?mode=account-entry&…`):
+ * the same params without `mode`. `null` when the params are not a legacy account-entry request.
+ */
+export function resolveLegacyAccountEntryRedirect(
+    params: Readonly<Record<string, string | string[] | undefined>>,
+): Readonly<{ pathname: typeof AUTHENTICATED_ACCOUNT_ENTRY_ROUTE; params: Readonly<Record<string, string>> }> | null {
+    if (readSingle(params.mode) !== 'account-entry') return null;
+    const forwarded: Record<string, string> = {};
+    for (const [key, value] of Object.entries(params)) {
+        if (key === 'mode' || typeof value !== 'string') continue;
+        forwarded[key] = value;
+    }
+    return { pathname: AUTHENTICATED_ACCOUNT_ENTRY_ROUTE, params: forwarded };
 }

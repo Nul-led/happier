@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { AgentModelsScreen } from '@/components/settings/agents/AgentModelsScreen';
 import { resolveAgentModelsTargetKey } from '@/agents/catalog/agentSettingsRoutes';
@@ -8,7 +8,7 @@ function one(value: string | string[] | undefined): string {
     return Array.isArray(value) ? value[0] ?? '' : value ?? '';
 }
 
-export default function AgentModelsRoute() {
+export function AgentModelsRoute() {
     const params = useLocalSearchParams<{
         agentId?: string | string[];
         pluginId?: string | string[];
@@ -27,3 +27,6 @@ export default function AgentModelsRoute() {
         />
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { AgentModelsRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={AgentModelsRoute} />; }

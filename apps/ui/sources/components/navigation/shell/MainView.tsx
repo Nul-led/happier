@@ -2,18 +2,18 @@ import * as React from 'react';
 import { View, Pressable } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useIsTablet } from '@/utils/platform/responsive';
-import { usePathname, useRouter } from 'expo-router';
-import { SessionGettingStartedGuidance } from '@/components/sessions/guidance/SessionGettingStartedGuidance';
+import { usePathname, useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { PhoneHomeLogoButton } from './PhoneHomeLogoButton';
+import { HomeHub } from '@/components/hub/HomeHub';
 import { useSessionListStorageKind } from '@/components/sessions/model/useSessionListStorageKind';
 import { SessionsListStorageChrome } from '@/components/sessions/shell/SessionsListStorageChrome';
-import { FABWide } from '@/components/ui/buttons/FABWide';
+import { TabBarNewSessionButton } from '@/components/ui/navigation/TabBarNewSessionButton';
 import { InboxView } from '@/components/navigation/shell/InboxView';
 import { FriendsView } from '@/components/navigation/shell/FriendsView';
 import { SessionsListWrapper } from '@/components/sessions/shell/SessionsListWrapper';
 import { ProjectsListView } from '@/components/projects/ProjectsListView';
 import { ExternalSessionsEmptyState } from '@/components/sessions/shell/ExternalSessionsEmptyState';
 import { Header } from '@/components/navigation/Header';
-import { HeaderLogo } from '@/components/ui/navigation/HeaderLogo';
 import { VoiceSurface } from '@/components/voice/surface/VoiceSurface';
 import { StatusDot } from '@/components/ui/status/StatusDot';
 import { Typography } from '@/constants/Typography';
@@ -23,7 +23,7 @@ import { trackFriendsSearch } from '@/track';
 import { ConnectionStatusControl } from '@/components/navigation/ConnectionStatusControl';
 import { useFriendsEnabled } from '@/hooks/server/useFriendsEnabled';
 import { useFriendsIdentityReadiness } from '@/hooks/server/useFriendsIdentityReadiness';
-import { useAutomationsSupport } from '@/hooks/server/useAutomationsSupport';
+import { useWorkflowsDestinationAccess } from '@/components/workflows/gating/workflowsDestinationAccess';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useInboxAvailable } from '@/hooks/inbox/useInboxAvailable';
 import { Text } from '@/components/ui/text/Text';
@@ -38,10 +38,6 @@ import {
 import { useMainAppTabState } from '@/components/navigation/mobile/chrome/MainAppTabStateProvider';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ActionOperationActivityButton } from '@/components/inbox/actionOperations/ActionOperationActivityButton';
-import {
-    shouldForceFreshNewSessionEntryFromPressEvent,
-    useResolveNewSessionOrdinaryEntryRoute,
-} from '@/components/sessions/new/navigation/newSessionOrdinaryEntryRoute';
 
 
 interface MainViewProps {
@@ -57,8 +53,10 @@ const styles = StyleSheet.create((theme) => ({
         flexBasis: 0,
         flexGrow: 1,
     },
+    // The phone's main screen owns its plane; the session list lies transparent over it.
     phoneContainer: {
         flex: 1,
+        backgroundColor: theme.colors.background.canvas,
     },
     phoneHeaderContent: {
         paddingHorizontal: 16,
@@ -67,6 +65,11 @@ const styles = StyleSheet.create((theme) => ({
         flex: 1,
         flexBasis: 0,
         flexGrow: 1,
+    },
+    sidebarNewSession: {
+        position: 'absolute',
+        right: 12,
+        bottom: 12,
     },
     titleContainer: {
         flex: 1,
@@ -148,41 +151,27 @@ const HeaderTitle = React.memo(({ activeTab }: { activeTab: ActiveTabType }) => 
 // Header right button - varies by tab
 const HeaderRight = React.memo(({ activeTab }: { activeTab: ActiveTabType }) => {
     const router = useRouter();
-    const resolveNewSessionOrdinaryEntryRoute = useResolveNewSessionOrdinaryEntryRoute();
     const { theme } = useUnistyles();
     const isCustomServer = isUsingCustomServer();
     const friendsIdentityReadiness = useFriendsIdentityReadiness();
     const friendsIdentityReady = friendsIdentityReadiness.isReady;
-    const automationsSupport = useAutomationsSupport();
-    const showAutomations = automationsSupport?.enabled !== false;
-    const handleNewSession = React.useCallback((event?: unknown) => {
-        const { draftId, draftOrigin } = resolveNewSessionOrdinaryEntryRoute({
-            forceFresh: shouldForceFreshNewSessionEntryFromPressEvent(event),
-        });
-        router.push({ pathname: '/new', params: { draftId, draftOrigin } });
-    }, [resolveNewSessionOrdinaryEntryRoute, router]);
-
+    const showWorkflows = useWorkflowsDestinationAccess().discoverable;
     if (activeTab === 'sessions') {
         return (
             <View style={styles.headerButtonsRow}>
                 <ActionOperationActivityButton testID="main-header-action-operations" />
-                {showAutomations ? (
+                {showWorkflows ? (
                     <Pressable
-                        onPress={() => router.push('/automations')}
+                        onPress={() => router.push('/workflows')}
                         hitSlop={15}
                         style={styles.headerButton}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('workflows.openCollection')}
                     >
-                        <Icon name="timer" size={20} color={theme.colors.chrome.header.foreground} />
+                        <Icon name="tree-structure" size={20} color={theme.colors.chrome.header.foreground} />
                     </Pressable>
                 ) : null}
-                <Pressable
-                    testID="main-header-start-new-session"
-                    onPress={handleNewSession}
-                    hitSlop={15}
-                    style={styles.headerButton}
-                >
-                    <Icon name="plus" size={29} color={theme.colors.chrome.header.foreground} />
-                </Pressable>
+                {/* New sessions start from the glass "+" beside the tab bar: the one "+". */}
             </View>
         );
     }
@@ -255,16 +244,7 @@ export const MainView = React.memo(({ variant }: MainViewProps) => {
     const { theme } = useUnistyles();
     const { externalSessionsEnabled, storageKind } = useSessionListStorageKind();
     const isTablet = useIsTablet();
-    const router = useRouter();
-    const resolveNewSessionOrdinaryEntryRoute = useResolveNewSessionOrdinaryEntryRoute();
     const pathname = usePathname();
-
-    const handleNewSession = React.useCallback((event?: unknown) => {
-        const { draftId, draftOrigin } = resolveNewSessionOrdinaryEntryRoute({
-            forceFresh: shouldForceFreshNewSessionEntryFromPressEvent(event),
-        });
-        router.push({ pathname: '/new', params: { draftId, draftOrigin } });
-    }, [resolveNewSessionOrdinaryEntryRoute, router]);
 
     if (variant === 'sidebar') {
         const surfaceOwnership = resolveSessionListSurfaceOwnership({
@@ -275,8 +255,8 @@ export const MainView = React.memo(({ variant }: MainViewProps) => {
         });
         const storageChrome = (
             <SessionsListStorageChrome
-                externalSessionsEnabled={externalSessionsEnabled}
                 storageKind={storageKind}
+                column="sessions"
             />
         );
 
@@ -291,8 +271,11 @@ export const MainView = React.memo(({ variant }: MainViewProps) => {
                             surfaceOwnership={surfaceOwnership}
                         />
                     </View>
+                    {/* The sidebar's one "+": the phone's glass button, over the list's bottom-right. */}
+                    <View style={styles.sidebarNewSession}>
+                        <TabBarNewSessionButton placement="sidebar" />
+                    </View>
                 </View>
-                <FABWide onPress={handleNewSession} />
             </>
         );
     }
@@ -363,7 +346,9 @@ const PhoneMainView = React.memo((props: Readonly<{
                     </View>
                 );
             }
-            return <SessionGettingStartedGuidance variant="primaryPane" />;
+            // The empty main pane is the app home hub (it shows the getting-started guidance until a
+            // machine can run a session).
+            return <HomeHub />;
         }
         return (
             <View testID="mainview-tablet-primary-pane-fallback" style={styles.primaryPaneFallback}>
@@ -380,7 +365,7 @@ const PhoneMainView = React.memo((props: Readonly<{
                 <Header
                     title={<HeaderTitle activeTab={headerTab} />}
                     headerRight={() => <HeaderRight activeTab={headerTab} />}
-                    headerLeft={() => <HeaderLogo />}
+                    headerLeft={() => <PhoneHomeLogoButton />}
                     headerContentStyle={styles.phoneHeaderContent}
                     headerShadowVisible={false}
                     headerTransparent={true}

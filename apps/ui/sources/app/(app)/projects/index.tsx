@@ -1,7 +1,9 @@
 import * as React from 'react';
 
-import { ProjectsListView } from '@/components/projects/ProjectsListView';
+import { ProjectsIndexView } from '@/components/projects/ProjectsIndexView';
 
-export default React.memo(() => {
-    return <ProjectsListView />;
+export const WorkspaceRouteBody = React.memo(() => {
+    return <ProjectsIndexView />;
 });
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

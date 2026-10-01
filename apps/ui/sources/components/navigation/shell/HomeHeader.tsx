@@ -8,10 +8,11 @@ import { getServerInfo } from '@/sync/domains/server/serverConfig';
 import { Image } from 'expo-image';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { t } from '@/text';
-import { useAutomationsSupport } from '@/hooks/server/useAutomationsSupport';
+import { useWorkflowsDestinationAccess } from '@/components/workflows/gating/workflowsDestinationAccess';
 import { Text } from '@/components/ui/text/Text';
 import { useConnectionHealth } from '@/components/navigation/connectionStatus/useConnectionHealth';
-import { AppUpdateStatusTag } from '@/components/ui/feedback/AppUpdateStatusTag';
+import { UpdatesPopoverButton } from '@/components/updates/UpdatesPopoverButton';
+import { useSharedUpdatesSummary } from '@/updates/useUpdatesSummary';
 import { Icon } from '@/components/ui/icons/Icon';
 import {
     shouldForceFreshNewSessionEntryFromPressEvent,
@@ -75,15 +76,14 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
 
 export const HomeHeader = React.memo(() => {
     const { theme } = useUnistyles();
-    const automationsSupport = useAutomationsSupport();
-    const showAutomations = automationsSupport?.enabled !== false;
+    const showWorkflows = useWorkflowsDestinationAccess().discoverable;
 
     return (
         <View style={{ backgroundColor: theme.colors.background.canvas }}>
             <Header
                 title={<HeaderTitleWithSubtitle />}
                 headerRight={() => <HeaderRight />}
-                headerLeft={() => <HeaderLeft showAutomations={showAutomations} />}
+                headerLeft={() => <HeaderLeft showWorkflows={showWorkflows} />}
                 headerShadowVisible={false}
                 headerTransparent={true}
             />
@@ -99,7 +99,7 @@ export const HomeHeaderNotAuth = React.memo(() => {
         <Header
             title={<HeaderTitleWithSubtitle subtitle={serverInfo.isCustom ? serverInfo.hostname + (serverInfo.port ? `:${serverInfo.port}` : '') : undefined} />}
             headerRight={() => <HeaderRightNotAuth />}
-            headerLeft={() => <HeaderLeft showAutomations={false} />}
+            headerLeft={() => <HeaderLeft showWorkflows={false} />}
             headerShadowVisible={false}
             headerBackgroundColor={theme.colors.background.canvas}
         />
@@ -124,6 +124,8 @@ function HeaderRight() {
             onPress={handleNewSession}
             hitSlop={15}
             style={styles.headerButton}
+            accessibilityRole="button"
+            accessibilityLabel={t('newSession.title')}
         >
             <Icon name="plus" size={29} color={theme.colors.chrome.header.foreground} />
         </Pressable>
@@ -142,14 +144,17 @@ function HeaderRightNotAuth() {
             onPress={() => router.push('/server')}
             hitSlop={15}
             style={styles.headerButton}
+            accessibilityRole="button"
+            accessibilityLabel={t('server.serverConfiguration')}
         >
             <Icon name="hard-drives" size={24} color={theme.colors.chrome.header.foreground} />
         </Pressable>
     );
 }
 
-function HeaderLeft(props: { showAutomations: boolean }) {
+function HeaderLeft(props: { showWorkflows: boolean }) {
     const router = useRouter();
+    const updates = useSharedUpdatesSummary();
     const styles = stylesheet;
     const { theme } = useUnistyles();
     const logo = (
@@ -163,20 +168,20 @@ function HeaderLeft(props: { showAutomations: boolean }) {
     );
     return (
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <AppUpdateStatusTag
-                testID="home-header-app-update-status-tag"
-                labelVariant="short"
-                fallback={logo}
-            />
-            {props.showAutomations ? (
+            {/* The phone's Updates entry sits where the logo is and pushes Settings › Updates; the
+                logo returns when there is nothing to act on. */}
+            {updates.visible ? (
+                <UpdatesPopoverButton summary={updates} variant="header" testID="home-header-updates-pill" />
+            ) : logo}
+            {props.showWorkflows ? (
                 <Pressable
-                    onPress={() => router.push('/automations')}
+                    onPress={() => router.push('/workflows')}
                     hitSlop={15}
                     style={styles.headerButton}
                     accessibilityRole="button"
-                    accessibilityLabel={t('automations.openA11y')}
+                    accessibilityLabel={t('workflows.openCollection')}
                 >
-                    <Icon name="timer" size={20} color={theme.colors.chrome.header.foreground} />
+                    <Icon name="tree-structure" size={20} color={theme.colors.chrome.header.foreground} />
                 </Pressable>
             ) : null}
         </View>

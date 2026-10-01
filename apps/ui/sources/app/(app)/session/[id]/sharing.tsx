@@ -1,6 +1,7 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
 import { View } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { useOpenSessionCollaboration } from '@/components/sessions/collaboration/useOpenSessionCollaboration';
@@ -23,7 +24,7 @@ import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
  * An unqualified released link stays unqualified so the Session root resolves
  * its Home exactly as it does for every other entry point.
  */
-export default function SessionSharingCompatibilityRoute() {
+export function SessionSharingCompatibilityRoute() {
     const { theme } = useUnistyles();
     const params = useLocalSearchParams<{ id: string; serverId?: string }>();
     const sessionId = normalizeSessionId(params.id);
@@ -47,3 +48,7 @@ export default function SessionSharingCompatibilityRoute() {
         </View>
     );
 }
+
+export { SessionSharingCompatibilityRoute as WorkspaceRouteBody };
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={SessionSharingCompatibilityRoute} />; }

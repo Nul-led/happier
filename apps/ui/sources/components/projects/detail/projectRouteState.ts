@@ -166,6 +166,7 @@ export function buildProjectRouteHref(input: Readonly<{
     activeWorktreeId?: string | null;
     showWorktrees?: boolean;
     sourceSurface?: ProjectDetailsSourceSurface | null;
+    initialResource?: Readonly<{ kind: 'file'; path: string }> | Readonly<{ kind: 'commit'; sha: string }>;
 }>): string {
     const basePath = input.segment
         ? `/projects/${encodeURIComponent(input.workspaceRefId)}/${input.segment}`
@@ -184,6 +185,10 @@ export function buildProjectRouteHref(input: Readonly<{
     }
     if (input.segment === 'details' && input.sourceSurface) {
         queryParams.set('sourceSurface', input.sourceSurface);
+    }
+    if (input.initialResource) {
+        queryParams.set(input.initialResource.kind === 'file' ? 'initialFile' : 'initialCommit',
+            input.initialResource.kind === 'file' ? input.initialResource.path : input.initialResource.sha);
     }
     const query = queryParams.toString();
     if (!query) return basePath;

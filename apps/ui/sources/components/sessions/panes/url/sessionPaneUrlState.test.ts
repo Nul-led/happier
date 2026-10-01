@@ -1,8 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { applySessionPaneUrlState, buildActiveDetailsRouteParams, deriveSessionPaneUrlStateFromScopeState, parseSessionPaneUrlState, reconcileSessionPaneScopeFromUrlState, serializeSessionPaneUrlState } from './sessionPaneUrlState';
+import { applySessionPaneUrlState, buildActiveDetailsRouteParams, createSessionPaneDetailsTab, deriveSessionPaneUrlStateFromScopeState, parseSessionPaneUrlState, reconcileSessionPaneScopeFromUrlState, serializeSessionPaneUrlState } from './sessionPaneUrlState';
 
 describe('sessionPaneUrlState', () => {
+    it('constructs independent route-selected surfaces without writing shared pane selection', () => {
+        const address = { serverId: 'home-a', sessionId: 'same-session' };
+        const first = createSessionPaneDetailsTab({ kind: 'file', path: 'src/first.ts' }, address);
+        const second = createSessionPaneDetailsTab({ kind: 'file', path: 'src/second.ts' }, address);
+        expect(buildActiveDetailsRouteParams([first], first?.key ?? null)).toEqual({ details: 'file', path: 'src/first.ts' });
+        expect(buildActiveDetailsRouteParams([second], second?.key ?? null)).toEqual({ details: 'file', path: 'src/second.ts' });
+        expect(first).toMatchObject({ isPinned: true, isPreview: false, resource: { path: 'src/first.ts' } });
+        const discussion = createSessionPaneDetailsTab({ kind: 'discussion', discussionId: 'discussion-1' }, address);
+        expect(discussion?.resource).toMatchObject({ target: { address, discussionId: 'discussion-1' } });
+        expect(createSessionPaneDetailsTab({ kind: 'discussion', discussionId: 'discussion-1' })).toBeNull();
+        expect(createSessionPaneDetailsTab({ kind: 'file', path: '../private' }, address)).toBeNull();
+        expect(createSessionPaneDetailsTab({ kind: 'scmPullRequest' }, address)?.resource).toEqual({ kind: 'scmPullRequest' });
+        expect(createSessionPaneDetailsTab({ kind: 'board', focusTarget: { kind: 'item', itemId: 'board-item' } }, address)?.resource).toEqual({ kind: 'board', focusTarget: { kind: 'item', itemId: 'board-item' } });
+    });
+
     describe('parseSessionPaneUrlState', () => {
         it('returns null when no pane params are present', () => {
             expect(parseSessionPaneUrlState({})).toBeNull();
@@ -55,6 +70,18 @@ describe('sessionPaneUrlState', () => {
             expect(parseSessionPaneUrlState({ details: 'scmStash' })).toEqual({
                 details: { kind: 'scmStash' },
             });
+        });
+
+        it('reopens the new pull request destination from its link', () => {
+            const parsed = parseSessionPaneUrlState({ details: 'scmPullRequest' });
+            expect(parsed).toEqual({ details: { kind: 'scmPullRequest' } });
+            if (!parsed) throw new Error('Expected the pull request destination to parse');
+            const pane = { openRight: vi.fn(), setRightTab: vi.fn(), openBottom: vi.fn(), setBottomTab: vi.fn(), openDetailsTab: vi.fn() };
+            applySessionPaneUrlState(pane as any, parsed);
+            expect(pane.openDetailsTab).toHaveBeenCalledWith(
+                expect.objectContaining({ key: 'scmPullRequest', kind: 'scmPullRequest', resource: { kind: 'scmPullRequest' } }),
+                { intent: 'pinned' },
+            );
         });
 
         it('parses terminal details target', () => {

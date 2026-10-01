@@ -1,1 +1,4 @@
-export { ProviderConnectionsSettingsScreen as default } from '@/components/settings/providers/ProviderConnectionsSettingsScreen';
+import { ProviderSettingsIndex as WorkspaceRouteBody } from '@/components/settings/providers/ProviderSettingsIndex';
+export { WorkspaceRouteBody };
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

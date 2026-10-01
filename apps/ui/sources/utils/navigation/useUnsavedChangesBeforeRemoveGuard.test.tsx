@@ -2,7 +2,9 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderHook, standardCleanup } from '@/dev/testkit';
+import { renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
+import { DestinationInstanceHost } from '@/components/appShell/workspace/DestinationInstanceHost';
+import { clearActiveUnsavedChangesGuard, runGuardedNavigation } from './runGuardedNavigation';
 
 const preventRemove = vi.hoisted(() => ({
     enabled: false,
@@ -25,16 +27,57 @@ vi.mock('@react-navigation/native', () => ({
     },
 }));
 
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock().module;
+});
+
 describe('useUnsavedChangesBeforeRemoveGuard', () => {
     afterEach(() => {
         standardCleanup();
     });
 
     beforeEach(() => {
+        clearActiveUnsavedChangesGuard();
         preventRemove.enabled = false;
         preventRemove.callback = null;
         preventRemove.committedEnabled = false;
         preventRemove.committedCallback = null;
+    });
+
+    it('guards hosted navigation with only the focused destination and preserves keep-editing/discard', async () => {
+        const { useUnsavedChangesBeforeRemoveGuard } = await import('./useUnsavedChangesBeforeRemoveGuard');
+        const decideA = vi.fn(async () => 'keepEditing' as 'keepEditing' | 'discard');
+        const decideB = vi.fn(async () => 'discard' as const);
+        const closeA = vi.fn();
+        const closeB = vi.fn();
+        const dirtyA = { current: true };
+        const dirtyB = { current: true };
+        function Probe(props: Readonly<{ which: 'a' | 'b' }>) {
+            useUnsavedChangesBeforeRemoveGuard({
+                isDirty: true, isDirtyRef: props.which === 'a' ? dirtyA : dirtyB,
+                requestDecision: props.which === 'a' ? decideA : decideB,
+                onContinue: props.which === 'a' ? closeA : closeB, tag: props.which,
+            });
+            return null;
+        }
+        function Hosts(props: Readonly<{ focused: 'a' | 'b' }>) {
+            return <>{(['a', 'b'] as const).map((which) => <DestinationInstanceHost key={which} tabId={which} ref={{ kind: 'session', params: { id: which, serverId: `home-${which}` } }} pathname={`/session/${which}`} focused={props.focused === which} visible><Probe which={which} /></DestinationInstanceHost>)}</>;
+        }
+        const screen = await renderScreen(<Hosts focused="a" />);
+        const navigate = vi.fn();
+        await act(async () => { expect(await runGuardedNavigation(navigate)).toBe(false); });
+        expect(decideA).toHaveBeenCalledOnce();
+        expect(decideB).not.toHaveBeenCalled();
+        expect(navigate).not.toHaveBeenCalled();
+        expect(preventRemove.enabled).toBe(false);
+        await screen.update(<Hosts focused="b" />);
+        await act(async () => { expect(await runGuardedNavigation(navigate)).toBe(true); });
+        expect(closeA).not.toHaveBeenCalled();
+        expect(closeB).toHaveBeenCalledWith(null);
+        expect(navigate).toHaveBeenCalledOnce();
+        expect(dirtyA.current).toBe(true);
+        expect(dirtyB.current).toBe(false);
     });
 
     it('registers with the navigator removal owner and continues the blocked action after discard', async () => {

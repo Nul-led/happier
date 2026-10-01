@@ -85,8 +85,8 @@ export type BuildPluginSearchProviderSectionsInput = Readonly<{
     locale?: string | null;
     /** Exact admitting Account lifetime; string scope equality cannot replace it. */
     accountLifetime?: ActiveServerAccountScopeLifetime | null;
-    /** Existing projection-generation fence, composed with the exact lifetime. */
-    catalogIsCurrent?: (() => boolean) | null;
+    /** Exact plugin-occurrence fence, composed with the exact Account lifetime. */
+    isOccurrenceCurrent?: ((pluginId: string, occurrenceId: string) => boolean) | null;
     /** Controller-local presentation revision derived from Account retirement. */
     accountLifetimeRevision?: number;
     execute?: PluginSurfaceContributedActionTransport;
@@ -124,11 +124,7 @@ function resolveCurrentProviderScope(
     provider: unknown,
     scopedLaunchFacts: PluginSurfaceScopedLaunchFacts | null | undefined,
 ): PluginSurfaceScopedLaunchFacts | null {
-    const catalogIsCurrent = scopedLaunchFacts?.interactionEnabled === true
-        && scopedLaunchFacts.generation !== null
-        && Number.isFinite(scopedLaunchFacts.generation)
-        && projection.generation === scopedLaunchFacts.generation;
-    if (!catalogIsCurrent) return null;
+    if (scopedLaunchFacts?.interactionEnabled !== true) return null;
 
     if (hasContributionOriginField(provider)) {
         const origin = readPluginUiContributionOrigin(provider);
@@ -136,8 +132,6 @@ function resolveCurrentProviderScope(
             !origin
             || origin.phase !== 'current'
             || origin.interactionEnabled !== true
-            || origin.generation === null
-            || !Number.isFinite(origin.generation)
         ) return null;
         // Explicit Search scope is authoritative; never reuse a provider
         // projected for another Home or machine.
@@ -153,10 +147,6 @@ function resolveCurrentProviderScope(
         return Object.freeze({
             serverId: origin.serverId,
             machineId: origin.machineId,
-            // The dispatcher compares against the UNION projection generation
-            // as its catalog/currentness fence. The member generation remains
-            // on hostOrigin and is selected by the dispatcher for execution.
-            generation: projection.generation,
             interactionEnabled: true,
         });
     }
@@ -180,7 +170,6 @@ function originsMatch(
         && right !== null
         && left.serverId === right.serverId
         && left.machineId === right.machineId
-        && left.generation === right.generation
         && left.executionOrigin !== null
         && right.executionOrigin !== null
         && arePluginMachineExecutionOriginsEqual(left.executionOrigin, right.executionOrigin);
@@ -193,11 +182,6 @@ export function buildPluginSearchProviderSections(
     if (!projection) return [];
     const resolveContributedAction = createPluginUiProjectedActionResolver(projection.actionsById);
     const rowLimit = readProviderRowLimit(input.rowLimit);
-    const scopeIsCurrent = input.accountLifetime || input.catalogIsCurrent
-        ? () => (input.accountLifetime?.isCurrent() ?? true)
-            && (input.catalogIsCurrent?.() ?? true)
-        : undefined;
-
     return Object.freeze(Object.values(projection.searchProvidersById)
         .slice()
         .sort(comparePluginContributionOrder)
@@ -210,6 +194,7 @@ export function buildPluginSearchProviderSections(
             if (!providerScope) return [];
             const queryAction = resolveContributedAction(provider.action);
             if (!isPluginProjectedActionExecutable(queryAction)) return [];
+            if (provider.occurrenceId !== queryAction.occurrenceId) return [];
             if (
                 hasContributionOriginField(provider)
                 && !originsMatch(
@@ -217,6 +202,10 @@ export function buildPluginSearchProviderSections(
                     readPluginUiContributionOrigin(queryAction),
                 )
             ) return [];
+            const scopeIsCurrent = input.accountLifetime || input.isOccurrenceCurrent
+                ? () => (input.accountLifetime?.isCurrent() ?? true)
+                    && (input.isOccurrenceCurrent?.(provider.pluginId, provider.occurrenceId) ?? true)
+                : undefined;
             const sectionId = toSectionId(provider.pluginId, provider.descriptorId);
             const title = resolvePluginUiText({
                 projection,
@@ -340,7 +329,7 @@ export function buildPluginSearchProviderSections(
             return [Object.freeze({
                 id: sectionId,
                 title,
-                resolverKey: `${sectionId}|${providerScope.serverId ?? ''}|${providerScope.machineId ?? ''}|${providerScope.generation ?? ''}|${readPluginUiContributionOrigin(provider)?.generation ?? ''}|account:${input.accountLifetimeRevision ?? 0}`,
+                resolverKey: `${sectionId}|${providerScope.serverId ?? ''}|${providerScope.machineId ?? ''}|${provider.occurrenceId}|${readPluginUiContributionOrigin(provider)?.executionOrigin?.materializationRef.materializationId ?? ''}|account:${input.accountLifetimeRevision ?? 0}`,
                 // Empty query is a UI state, not a wire request.
                 visibleWhen: (value: string) => value.trim().length > 0,
                 resultFiltering: 'provider' as const,

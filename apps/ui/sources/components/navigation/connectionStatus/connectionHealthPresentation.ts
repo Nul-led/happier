@@ -1,5 +1,22 @@
 import type { ConnectionHealth, ConnectionHealthPresentation } from './connectionHealthTypes';
 
+export type MachineConnectionStatusKey = 'connected' | 'disconnected' | 'action_required' | 'unknown';
+
+export function resolveMachineConnectionStatusKey(
+    labelKey: ConnectionHealthPresentation['machineLabelKey'],
+): MachineConnectionStatusKey {
+    switch (labelKey) {
+        case 'status.online':
+            return 'connected';
+        case 'status.offline':
+            return 'disconnected';
+        case 'newSession.noMachinesFound':
+            return 'action_required';
+        case 'status.unknown':
+            return 'unknown';
+    }
+}
+
 type StatusColors = Readonly<{
     connected: string;
     connecting: string;

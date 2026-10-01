@@ -7,7 +7,7 @@ import type {
 } from '@/sync/domains/sessionSystemRecords/repository';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import type { SessionSystemRecordRepository } from '@/sync/domains/sessionSystemRecords/repository';
-import type { SessionStoredContentContext } from '@/sync/encryption/sessionStoredContent';
+import type { SessionStoredContentContext } from '@happier-dev/sync-client';
 import type { SessionBoardCapabilities, SessionBoardSnapshot } from '@/sync/domains/session/board';
 import type { SessionSystemRecordFetchResult } from '@/sync/domains/sessionSystemRecords/transport';
 import type { ServerCredentialAccountScopeResolution } from '@/sync/domains/scope/serverCredentialAccountScope';

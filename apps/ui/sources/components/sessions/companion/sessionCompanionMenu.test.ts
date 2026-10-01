@@ -21,12 +21,10 @@ const shown: SessionCompanionPreferenceV1 = {
 function menu(overrides: Parameters<typeof buildSessionCompanionMenuActions>[0] | null = null) {
     return buildSessionCompanionMenuActions({
         preference: shown,
-        addableItems: [],
         setEdge: () => {},
         setDensity: () => {},
         setCollapsed: () => {},
         hide: () => {},
-        addItem: () => {},
         ...(overrides ?? {}),
     });
 }
@@ -80,42 +78,20 @@ describe('buildSessionCompanionMenuActions', () => {
         expect(ids(actions)).not.toContain('collapse');
     });
 
-    it('lists only readable Board items that are not already in the Companion', () => {
-        const actions = menu({
-            ...menuBase(),
-            addableItems: [
-                { widgetId: 'w1', title: 'Deploy status' },
-                { widgetId: 'w2', title: 'Test matrix' },
-            ],
-        });
+    it('holds only layout choices: adding lives in the one Add to Companion picker', () => {
+        const actions = menu({ ...menuBase(), preference: { ...shown, items: [] } });
 
-        expect(ids(actions)).toContain('add-w1');
-        expect(ids(actions)).toContain('add-w2');
-    });
-
-    it('offers Session Summary only while it is absent', () => {
-        expect(ids(menu({ ...menuBase(), preference: { ...shown, items: [] } }))).toContain('add-summary');
-        expect(ids(menu())).not.toContain('add-summary');
-    });
-
-    it('adds the exact reference the person chose', () => {
-        const addItem = vi.fn();
-        const actions = menu({ ...menuBase(), addItem, addableItems: [{ widgetId: 'w1', title: 'Deploy status' }] });
-        actions.find((action) => action.id === 'add-w1')?.onPress?.();
-
-        expect(addItem).toHaveBeenCalledWith({ kind: 'widget', widgetId: 'w1' });
+        expect(ids(actions).some((id) => id.startsWith('add'))).toBe(false);
     });
 });
 
 function menuBase() {
     return {
         preference: shown,
-        addableItems: [] as readonly Readonly<{ widgetId: string; title: string }>[],
         setEdge: () => {},
         setDensity: () => {},
         setCollapsed: () => {},
         hide: () => {},
-        addItem: () => {},
     };
 }
 
@@ -146,7 +122,9 @@ describe('buildSessionCompanionItemActions', () => {
         });
 
         expect(ids(middle)).toEqual(['move-up', 'move-down', 'remove']);
-        expect(ids(first)).toEqual(['move-down', 'remove']);
+        // At the end of a three-item list, "move to last" is a two-position jump that
+        // "move down" cannot make, so it is reach rather than noise.
+        expect(ids(first)).toEqual(['move-down', 'move-last', 'remove']);
     });
 
     it('adds first/last jumps only once they differ from a single step', () => {
@@ -159,6 +137,13 @@ describe('buildSessionCompanionItemActions', () => {
 
         expect(ids(threeItems)).toEqual(['move-up', 'move-down', 'remove']);
         expect(ids(middleOfFive)).toEqual(['move-up', 'move-down', 'move-first', 'move-last', 'remove']);
+        // Each end of a three-item list gets exactly the one jump that is distinct.
+        expect(ids(buildSessionCompanionItemActions({
+            index: 0, count: 3, moveTo: () => {}, remove: () => {},
+        }))).toEqual(['move-down', 'move-last', 'remove']);
+        expect(ids(buildSessionCompanionItemActions({
+            index: 2, count: 3, moveTo: () => {}, remove: () => {},
+        }))).toEqual(['move-up', 'move-first', 'remove']);
     });
 
     it('jumps to the exact end index through the controller', () => {
@@ -188,6 +173,13 @@ describe('buildSessionCompanionItemActions', () => {
         expect(ids(buildSessionCompanionItemActions({
             index: 0, count: 1, moveTo: () => {}, remove: () => {}, openOnBoard: () => {},
         }))).toContain('open-board');
+    });
+
+    it('offers Manage plugin as recovery for a plugin widget, never Board deletion', () => {
+        const actions = buildSessionCompanionItemActions({
+            index: 0, count: 1, moveTo: () => {}, remove: () => {}, managePlugin: () => {},
+        });
+        expect(ids(actions)).toEqual(['manage-plugin', 'remove']);
     });
 
     it('never marks local removal destructive: the shared record survives', () => {

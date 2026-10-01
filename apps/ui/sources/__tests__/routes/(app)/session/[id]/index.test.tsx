@@ -252,6 +252,25 @@ describe('session route index', () => {
         expect(screen.findAllByType('SessionCockpitShell')).toHaveLength(0);
     });
 
+    it('mounts the session shell when hydration is retrying so retry status and navigation remain available', async () => {
+        hydrateSessionForRouteSpy.mockImplementation((sessionId: string) => ({
+            kind: 'retrying' as const,
+            sessionId,
+            cause: 'network' as const,
+        }));
+        const Route = await import('@/app/(app)/session/[id]');
+
+        const screen = await renderScreen(React.createElement(Route.default));
+
+        expect(screen.findAllByType('ActivitySpinner')).toHaveLength(0);
+        const sessionView = screen.findByType('SessionView' as never);
+        expect(sessionView.props.routeHydrationState).toEqual({
+            kind: 'retrying',
+            sessionId: 'session-1',
+            cause: 'network',
+        });
+    });
+
     it('mounts the session view reactively when the scoped session lands after route hydration started', async () => {
         routeParams.value = { id: 'session-1', serverId: 'server-a' };
         hydrateSessionForRouteSpy.mockImplementation((sessionId: string) => ({

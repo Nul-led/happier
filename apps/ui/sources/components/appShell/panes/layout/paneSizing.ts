@@ -1,16 +1,32 @@
+import {
+    DEFAULT_DETAILS_MIN_PX,
+    DEFAULT_MAIN_MIN_PX,
+    DEFAULT_RIGHT_MIN_PX,
+} from '@/components/ui/panels/paneBreakpoints';
+
+/**
+ * The two side columns are one primitive in two configurations:
+ * - `right`, the sidebar whose content the action rail picks. Widening it stops at the width that
+ *   keeps the main content at its minimum.
+ * - `details`, the wider pane. Widening it past that width turns it into an overlay over the main
+ *   content instead of squeezing it (`overlayWhenWiderThanBudget`).
+ * The threshold is always the main content's minimum width, never a separate number.
+ */
 export const PANE_SIZING_DEFAULTS = {
-    mainMinPx: 420,
+    mainMinPx: DEFAULT_MAIN_MIN_PX,
     mainMinThreePanePx: 320,
     right: {
-        minPx: 260,
+        minPx: DEFAULT_RIGHT_MIN_PX,
         // No global cap: the effective max is derived from the container width minus the main min width
         // (and any other docked pane). This enables user-resizable panes to scale naturally on wide screens.
         maxPx: Number.POSITIVE_INFINITY,
+        overlayWhenWiderThanBudget: false,
     },
     details: {
-        minPx: 320,
+        minPx: DEFAULT_DETAILS_MIN_PX,
         // No global cap: see `right.maxPx`.
         maxPx: Number.POSITIVE_INFINITY,
+        overlayWhenWiderThanBudget: true,
     },
     bottom: {
         minPx: 220,

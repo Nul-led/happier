@@ -241,4 +241,5 @@ describe('useConnectionHealth (endpoint connectivity integration)', () => {
 
         expect(hook.getCurrent().primaryMachineLabel).toBe('beta');
     });
+
 });

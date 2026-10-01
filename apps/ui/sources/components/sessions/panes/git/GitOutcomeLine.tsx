@@ -1,0 +1,359 @@
+import * as React from 'react';
+import { View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
+
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
+import { Icon } from '@/components/ui/icons/Icon';
+import { formatExactCount } from '@/components/ui/navigation/tabBadge/tabBadgeModel';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { hapticsError, hapticsSuccess } from '@/components/ui/theme/haptics';
+import type { ScmWriteOperation, ScmWriteTerminalOperation } from '@/scm/operations/selectScmWriteOperation';
+import { openExternalUrl } from '@/utils/url/openExternalUrl';
+import type { ScmProjectOperationKind } from '@/sync/runtime/orchestration/projectManager';
+import { t } from '@/text';
+
+/** What the pane knew when an operation started, so its outcome can say how much moved (Pushed 3 commits). */
+export type GitOutcomeFacts = Readonly<{
+    ahead: number;
+    behind: number;
+    selectedCount: number;
+    /** Uncommitted changes when the operation started (a dirty pull's reassurance). */
+    changedCount?: number;
+    upstream: string | null;
+}>;
+
+export type GitOutcomeRecovery = Readonly<{
+    /** Read what origin has (a rejected push's recovery). */
+    fetch?: () => void;
+    /** Run the failed action again. */
+    retry?: (action: ScmProjectOperationKind) => void;
+    /** Re-read the working tree (a refresh that failed after a commit landed, or a machine that came back). */
+    refresh?: () => void;
+    /** Bring the conflicted files into view. */
+    showConflicts?: () => void;
+    /** Put this branch on origin (an upstream is required). */
+    publish?: () => void;
+    /**
+     * Pull again with an explicit, one-time choice (orchestrator decisions 1–2): keep uncommitted changes aside first
+     * (highlighted) or let Git decide overlap; rebase (highlighted on feature branches) or merge when both moved.
+     * Absent when the backend cannot honour a policy (`writeRemotePolicies`).
+     */
+    pullWith?: (policy: Readonly<{ dirtyPolicy?: 'autostash' | 'allow_git'; reconcile?: 'rebase' | 'merge' }>) => void;
+    /** The branch is a feature branch (not the repository's default): rebase is the highlighted reconcile. */
+    preferRebase?: boolean;
+}>;
+
+/** A success line stays this long, then fades (Git lab round 3: "the line fades after 6 s or on the next action"). */
+const SUCCESS_LINE_VISIBLE_MS = 6_000;
+
+/** Actions whose progress already lives in the control that started them (the header action, the commit button). */
+const PROGRESS_SHOWN_IN_CONTROL: ReadonlySet<ScmProjectOperationKind> = new Set(['commit', 'push', 'pull', 'fetch', 'create_pr']);
+
+/**
+ * The Git pane's one outcome (Git lab C/S/SX): progress for work that has no control of its own, one quiet line
+ * with a check when a write lands, and — when it fails — one notice where the eye already is, naming the cause
+ * and one recovery. Nothing is a modal. It reads only the project operation owner's projection; the facts
+ * captured when the operation started let it say how much moved.
+ */
+export const GitOutcomeLine = React.memo(function GitOutcomeLine(props: Readonly<{
+    operation: ScmWriteOperation | null;
+    facts: GitOutcomeFacts;
+    machineName: string | null;
+    /** The session's machine answers right now (an unreachable machine is said as such, never as a Git failure). */
+    machineReachable?: boolean;
+    recovery: GitOutcomeRecovery;
+    /** Phones get one light haptic when a write lands and one warning haptic on failure. */
+    haptics: boolean;
+}>) {
+    const { operation } = props;
+    const factsAtStartRef = React.useRef(new Map<string, GitOutcomeFacts>());
+    const [dismissedId, setDismissedId] = React.useState<string | null>(null);
+
+    // Remember what the pane knew when this operation started; its outcome reads it.
+    if (operation && (operation.phase === 'queued' || operation.phase === 'running') && !factsAtStartRef.current.has(operation.id)) {
+        factsAtStartRef.current.clear();
+        factsAtStartRef.current.set(operation.id, props.facts);
+    }
+    const factsAtStart = operation ? factsAtStartRef.current.get(operation.id) ?? null : null;
+
+    const operationId = operation?.id ?? null;
+    const phase = operation?.phase ?? null;
+    const tone = phase === null || phase === 'queued' || phase === 'running' || phase === 'cancelled'
+        ? null
+        : phase === 'succeeded' ? 'success' : 'attention';
+    React.useEffect(() => {
+        if (!operationId || !props.haptics || !tone) return;
+        if (tone === 'success') void hapticsSuccess();
+        else void hapticsError();
+    }, [operationId, props.haptics, tone]);
+
+    React.useEffect(() => {
+        if (phase !== 'succeeded' || !operationId) return;
+        const timer = setTimeout(() => setDismissedId(operationId), SUCCESS_LINE_VISIBLE_MS);
+        return () => clearTimeout(timer);
+    }, [operationId, phase]);
+
+    const dismiss = React.useCallback(() => setDismissedId(operationId), [operationId]);
+    if (!operation || operation.id === dismissedId) return null;
+
+    if (operation.phase === 'queued' || operation.phase === 'running') {
+        if (PROGRESS_SHOWN_IN_CONTROL.has(operation.action)) return null;
+        return (
+            <OutcomeFrame>
+                <SurfaceStateCard
+                    testID="session-git-outcome-running"
+                    size="line"
+                    kind="loading"
+                    title={runningTitle(operation.action)}
+                    accessibilitySemantics="status"
+                />
+            </OutcomeFrame>
+        );
+    }
+    // The person backed out of an ask: nothing to say.
+    if (operation.phase === 'cancelled') return null;
+    if (operation.phase === 'succeeded') {
+        return (
+            <OutcomeFrame>
+                <SuccessLine operation={operation} facts={factsAtStart} />
+            </OutcomeFrame>
+        );
+    }
+    return (
+        <OutcomeFrame>
+            <AttentionNotice
+                operation={operation}
+                machineName={props.machineName}
+                machineReachable={props.machineReachable !== false}
+                upstream={factsAtStart?.upstream ?? props.facts.upstream}
+                facts={factsAtStart}
+                recovery={props.recovery}
+                onDismiss={dismiss}
+            />
+        </OutcomeFrame>
+    );
+});
+
+/** Retained operation results stay still when the pane opens on them. */
+function OutcomeFrame(props: Readonly<{ children: React.ReactNode }>) {
+    return <View style={{ paddingHorizontal: 12, paddingTop: 4, paddingBottom: 6 }}>{props.children}</View>;
+}
+
+function SuccessLine(props: Readonly<{ operation: Extract<ScmWriteTerminalOperation, { phase: 'succeeded' | 'effect_applied_with_warning' }>; facts: GitOutcomeFacts | null }>) {
+    const { theme } = useUnistyles();
+    const copy = successCopy(props.operation, props.facts);
+    return (
+        <SurfaceStateCard
+            testID="session-git-outcome-succeeded"
+            size="line"
+            kind="success"
+            title={copy.title}
+            reason={copy.detail ?? undefined}
+            icon={<Icon name="check-circle" size={16} color={theme.colors.state.success.foreground} />}
+            accessibilitySemantics="status"
+        />
+    );
+}
+
+type AttentionOperation = Exclude<ScmWriteTerminalOperation, { phase: 'succeeded' | 'cancelled' }>;
+type NoticeAction = { label: string; onPress: () => void };
+
+/** One recovery for the outcome, from what the operation owner says can be done next (`nextActions`). */
+/** Two explicit choices the owner asks for (`choose_dirty_policy`, `choose_reconcile`), highlighted one first. */
+function choicesFor(operation: AttentionOperation, recovery: GitOutcomeRecovery): readonly [NoticeAction, NoticeAction] | null {
+    const pullWith = recovery.pullWith;
+    if (!pullWith) return null;
+    const kinds = new Set(operation.outcome.nextActions.map((next) => next.kind));
+    if (kinds.has('choose_dirty_policy')) {
+        return [
+            { label: t('sessionGitPane.flow.choices.keepAsideAndPull'), onPress: () => pullWith({ dirtyPolicy: 'autostash' }) },
+            { label: t('sessionGitPane.flow.choices.pullIfNoOverlap'), onPress: () => pullWith({ dirtyPolicy: 'allow_git' }) },
+        ];
+    }
+    if (kinds.has('choose_reconcile')) {
+        const rebase = { label: t('sessionGitPane.flow.choices.rebase'), onPress: () => pullWith({ reconcile: 'rebase' }) };
+        const merge = { label: t('sessionGitPane.flow.choices.merge'), onPress: () => pullWith({ reconcile: 'merge' }) };
+        return recovery.preferRebase === false ? [merge, rebase] : [rebase, merge];
+    }
+    return null;
+}
+
+function recoveryFor(operation: AttentionOperation, recovery: GitOutcomeRecovery): NoticeAction | null {
+    const retry = recovery.retry && RETRYABLE.has(operation.action) ? () => recovery.retry?.(operation.action) : null;
+    for (const next of operation.outcome.nextActions) {
+        switch (next.kind) {
+            case 'resolve_conflicts':
+                if (recovery.showConflicts) return { label: t('sessionGitPane.flow.recover.showConflicts'), onPress: recovery.showConflicts };
+                break;
+            // Divergence choices (rebase / merge) land with the git-logic pull policies; until then, read what origin has.
+            case 'choose_reconcile':
+                if (recovery.fetch) return { label: t('sessionGitPane.flow.recover.fetch'), onPress: recovery.fetch };
+                break;
+            case 'configure_upstream':
+                if (recovery.publish) return { label: t('sessionGitPane.flow.action.publish'), onPress: recovery.publish };
+                break;
+            case 'refresh':
+                if (recovery.refresh) return { label: t('sessionGitPane.flow.recover.checkAgain'), onPress: recovery.refresh };
+                break;
+            case 'retry':
+                if (retry) return { label: t('sessionGitPane.flow.recover.tryAgain'), onPress: retry };
+                break;
+            case 'open_url': {
+                const url = next.url;
+                return { label: t('sessionGitPane.flow.recover.open'), onPress: () => { void openExternalUrl(url); } };
+            }
+            default:
+                break;
+        }
+    }
+    return null;
+}
+
+function AttentionNotice(props: Readonly<{
+    operation: AttentionOperation;
+    machineName: string | null;
+    machineReachable: boolean;
+    upstream: string | null;
+    facts: GitOutcomeFacts | null;
+    recovery: GitOutcomeRecovery;
+    onDismiss: () => void;
+}>) {
+    const { operation, recovery } = props;
+    const outcome = operation.outcome;
+    const errorCode = 'errorCode' in outcome ? outcome.errorCode : undefined;
+    const machine = operation.machine ?? props.machineName ?? t('sessionGitPane.flow.failed.thisMachine');
+    const target = props.upstream ?? t('sessionGitPane.flow.failed.origin');
+    let title: string;
+    let description: string;
+    let tone: 'warning' | 'neutral' = 'warning';
+    const choices = choicesFor(operation, recovery);
+    let action = choices ? choices[0] : recoveryFor(operation, recovery);
+    let secondaryAction: NoticeAction | null = choices ? choices[1] : null;
+    if (operation.phase === 'effect_applied_with_warning') {
+        // The write happened; something after it did not. Say what landed first.
+        title = operation.action === 'commit' ? t('sessionGitPane.flow.failed.refreshTitle') : successCopy(operation, props.facts).title;
+        description = operation.message || t('sessionGitPane.flow.failed.refreshBody');
+    } else if (operation.phase === 'outcome_unknown') {
+        tone = 'neutral';
+        title = t('sessionGitPane.flow.failed.unknownTitle');
+        description = t('sessionGitPane.flow.failed.unknownBody');
+        action = action ?? (recovery.refresh ? { label: t('sessionGitPane.flow.recover.checkAgain'), onPress: recovery.refresh } : null);
+    } else if (!props.machineReachable) {
+        tone = 'neutral';
+        title = t('sessionGitPane.flow.failed.offlineTitle', { machine });
+        description = t('sessionGitPane.flow.failed.offlineBody');
+        action = recovery.refresh ? { label: t('sessionGitPane.flow.recover.checkAgain'), onPress: recovery.refresh } : null;
+    } else if (operation.phase === 'conflicted' || errorCode === 'CONFLICTING_WORKTREE' || errorCode === 'BRANCH_OPERATION_IN_PROGRESS') {
+        title = t('sessionGitPane.flow.failed.conflictTitle');
+        description = t('sessionGitPane.flow.failed.conflictBody');
+        action = action ?? (recovery.showConflicts ? { label: t('sessionGitPane.flow.recover.showConflicts'), onPress: recovery.showConflicts } : null);
+    } else if (operation.outcome.nextActions.some((next) => next.kind === 'choose_dirty_policy')) {
+        const count = props.facts?.changedCount ?? 0;
+        title = t('sessionGitPane.flow.choices.dirtyTitle', { count, formatted: formatExactCount(count) });
+        description = t('sessionGitPane.flow.choices.dirtyBody');
+    } else if (errorCode === 'REMOTE_NON_FAST_FORWARD' || errorCode === 'REMOTE_FF_ONLY_REQUIRED') {
+        title = t('sessionGitPane.flow.failed.rejectedTitle', { target });
+        description = choices
+            ? (operation.action === 'push' ? t('sessionGitPane.flow.choices.divergedPushBody') : t('sessionGitPane.flow.choices.divergedPullBody'))
+            : t('sessionGitPane.flow.failed.rejectedBody');
+    } else if (errorCode === 'REMOTE_AUTH_REQUIRED') {
+        title = t('sessionGitPane.flow.failed.authTitle', { provider: operation.provider ?? target, machine });
+        description = t('sessionGitPane.flow.failed.authBody', { machine });
+        action = action ?? (recovery.retry && RETRYABLE.has(operation.action) ? { label: t('sessionGitPane.flow.recover.tryAgain'), onPress: () => recovery.retry?.(operation.action) } : null);
+    } else if (errorCode === 'REMOTE_NETWORK_FAILED') {
+        title = t('sessionGitPane.flow.failed.networkTitle', { target });
+        description = t('sessionGitPane.flow.failed.networkBody');
+        action = action ?? (recovery.retry && RETRYABLE.has(operation.action) ? { label: t('sessionGitPane.flow.recover.tryAgain'), onPress: () => recovery.retry?.(operation.action) } : null);
+    } else {
+        title = failedTitle(operation.action);
+        description = operation.message;
+    }
+    return (
+        <View>
+            <AttentionBanner
+                testID={`session-git-outcome-${operation.phase}`}
+                tone={tone}
+                title={title}
+                description={description}
+                action={action}
+                secondaryAction={secondaryAction}
+                announce="alert"
+                onDismiss={props.onDismiss}
+            />
+        </View>
+    );
+}
+
+const RETRYABLE: ReadonlySet<ScmProjectOperationKind> = new Set(['push', 'pull', 'fetch']);
+
+function runningTitle(action: ScmProjectOperationKind): string {
+    switch (action) {
+        case 'branch_switch': return t('sessionGitPane.flow.running.branchSwitch');
+        case 'branch_create': return t('sessionGitPane.flow.running.branchCreate');
+        case 'stash_create': return t('sessionGitPane.flow.running.stashCreate');
+        case 'discard': return t('sessionGitPane.flow.running.discard');
+        case 'revert': return t('sessionGitPane.flow.running.revert');
+        default: return t('sessionGitPane.flow.running.generic');
+    }
+}
+
+function failedTitle(action: ScmProjectOperationKind): string {
+    switch (action) {
+        case 'commit': return t('sessionGitPane.flow.failed.commitTitle');
+        case 'push': return t('sessionGitPane.flow.failed.pushTitle');
+        case 'pull': return t('sessionGitPane.flow.failed.pullTitle');
+        case 'fetch': return t('sessionGitPane.flow.failed.fetchTitle');
+        case 'create_pr': return t('sessionGitPane.flow.failed.pullRequestTitle');
+        default: return t('sessionGitPane.flow.failed.genericTitle');
+    }
+}
+
+function successCopy(
+    operation: Extract<ScmWriteTerminalOperation, { phase: 'succeeded' | 'effect_applied_with_warning' }>,
+    facts: GitOutcomeFacts | null,
+): { title: string; detail: string | null } {
+    const target = facts?.upstream ?? t('sessionGitPane.flow.failed.origin');
+    switch (operation.action) {
+        case 'commit': {
+            const count = facts?.selectedCount ?? 0;
+            return {
+                title: count > 0
+                    ? t('sessionGitPane.flow.done.commitFiles', { count, formatted: formatExactCount(count) })
+                    : t('sessionGitPane.flow.done.commit'),
+                detail: operation.result?.sha ? operation.result.sha.slice(0, 7) : null,
+            };
+        }
+        case 'push': {
+            const count = facts?.ahead ?? 0;
+            return {
+                title: count > 0
+                    ? t('sessionGitPane.flow.done.pushCommits', { count, formatted: formatExactCount(count) })
+                    : t('sessionGitPane.flow.done.push'),
+                detail: t('sessionGitPane.flow.done.upToDate', { target }),
+            };
+        }
+        case 'pull': {
+            const count = facts?.behind ?? 0;
+            const changed = facts?.changedCount ?? 0;
+            return {
+                title: count > 0
+                    ? t('sessionGitPane.flow.done.pullCommits', { count, formatted: formatExactCount(count) })
+                    : t('sessionGitPane.flow.done.pull'),
+                // Git refuses (or stashes and restores exactly) rather than touching uncommitted work, and a pull
+                // that could not restore it reports a conflict instead of success — so a successful pull over
+                // uncommitted changes left them as they were.
+                detail: changed > 0 && operation.phase === 'succeeded'
+                    ? t('sessionGitPane.flow.done.untouched', { count: changed, formatted: formatExactCount(changed) })
+                    : null,
+            };
+        }
+        case 'fetch': return { title: t('sessionGitPane.flow.done.fetch', { target }), detail: null };
+        case 'branch_switch': return { title: t('sessionGitPane.flow.done.branchSwitch'), detail: null };
+        case 'branch_create': return { title: t('sessionGitPane.flow.done.branchCreate'), detail: null };
+        case 'stash_create': return { title: t('sessionGitPane.flow.done.stashCreate'), detail: null };
+        case 'discard': return { title: t('sessionGitPane.flow.done.discard'), detail: null };
+        case 'revert': return { title: t('sessionGitPane.flow.done.revert'), detail: null };
+        case 'create_pr': return { title: t('sessionGitPane.flow.done.pullRequest'), detail: null };
+        default: return { title: t('sessionGitPane.flow.done.generic'), detail: null };
+    }
+}

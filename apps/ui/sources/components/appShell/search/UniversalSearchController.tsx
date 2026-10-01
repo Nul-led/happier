@@ -1,6 +1,7 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { Platform, View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useRouter } from 'expo-router';
 
 import type { MemorySearchHitV1 } from '@happier-dev/protocol';
@@ -8,20 +9,24 @@ import { normalizeMemorySearchSessionId } from '@/sync/domains/memory/applyMemor
 
 import { useAppShellPluginUiProjection } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { useOptionalCurrentUiContextReader } from '@/components/appShell/currentUiContext/CurrentUiContextProvider';
+import { useScopedPluginUiProjection } from '@/components/plugins/projection/useScopedPluginUiProjection';
 import { usePluginSurfaceDestinationNavigationBinding } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
 import type { Command } from '@/components/appShell/commandPalette/types';
 import { Modal } from '@/modal';
 import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
 import { useResolvedSettingsPageCatalog } from '@/components/settings/catalog/runtime/useResolvedSettingsPageCatalog';
 import type { ResolvedSettingsPageNode } from '@/components/settings/catalog/types';
+import { buildSettingsSearchRows, indexSettingsSearchPages } from '@/components/settings/shell/settingsSearchRows';
 import {
     SelectionList,
     createDefaultDynamicSectionCache,
     type SelectionListDynamicSectionCache,
     type SelectionListOption,
+    type SelectionListFilter,
     type SelectionListStep,
 } from '@/components/ui/selectionList';
 import {
+    useAllMachines,
     useAllSessions,
     useSessionListRowsByServerId,
     useSessionOrganizationProjection,
@@ -56,9 +61,8 @@ import { resolveWorkspaceTargetForSession } from '@/sync/domains/session/resolve
 import { findWorkspaceRefByScope } from '@/sync/domains/workspaces/workspaceRefs';
 import { isWorkspaceScopeReachable } from '@/sync/domains/workspaces/workspaceReachability';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
-import { Text } from '@/components/ui/text/Text';
 import { Icon } from '@/components/ui/icons/Icon';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
 import { t } from '@/text';
 import { transcriptSearchUnavailableHint } from './transcriptSearchUnavailableHint';
 import { readSessionListRowsForServerId } from '@/sync/domains/session/listing/sessionListRowStateLookup';
@@ -75,6 +79,7 @@ import {
     findCommandForOptionId,
     type UniversalSearchProjectEntity,
     type UniversalSearchSessionEntity,
+    type UniversalSearchSettingsPageEntity,
     type UniversalSearchSource,
 } from './buildUniversalSearchSections';
 import { buildPluginSearchProviderSections, type PluginSearchActivationOutcome } from './pluginSearchProviderSections';
@@ -101,29 +106,14 @@ import {
     canonicalizeUniversalSearchScopeSeed,
     type UniversalSearchScopeSeed,
 } from './UniversalSearchRuntimeContext';
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 import {
     buildUniversalSearchScopeChoices,
     buildUniversalSearchScopeKeyFromSeed,
 } from './universalSearchScope';
 
-const styles = StyleSheet.create((theme) => ({
+const styles = StyleSheet.create(() => ({
     root: { flex: 1, minHeight: 0, width: '100%' },
-    scopeChip: {
-        maxWidth: 180,
-        minHeight: resolveMinimumInteractiveTargetSize(Platform.OS),
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingHorizontal: 8,
-        borderRadius: 999,
-        backgroundColor: theme.colors.surface.pressedOverlay,
-    },
-    scopeChipLabel: {
-        flexShrink: 1,
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-        fontWeight: '600',
-    },
 }));
 
 type PendingActivation = () => Promise<unknown>;
@@ -166,7 +156,8 @@ function useCurrentPluginAccountLifetime(): Readonly<{
     return { lifetime, revision: identity.current.revision };
 }
 
-function settingsPageById(nodes: readonly ResolvedSettingsPageNode[]): ReadonlyMap<string, ResolvedSettingsPageNode> {
+/** Every catalog page by id, so a settings result stays current only while its page is offered. */
+function settingsPageNodesById(nodes: readonly ResolvedSettingsPageNode[]): ReadonlyMap<string, ResolvedSettingsPageNode> {
     const result = new Map<string, ResolvedSettingsPageNode>();
     const visit = (items: readonly ResolvedSettingsPageNode[]) => {
         for (const item of items) {
@@ -213,14 +204,13 @@ function resolveInitialScope(props: Pick<UniversalSearchControllerProps, 'active
 }
 
 export function UniversalSearchController(props: UniversalSearchControllerProps): React.ReactElement {
+    const { theme } = useUnistyles();
     const [scope, setScope] = React.useState<UniversalSearchScopeSeed>(() => resolveInitialScope(props));
     const [query, setQuery] = React.useState(() => props.initialQuery?.trim() ?? '');
     const [selectedOptionId, setSelectedOptionId] = React.useState<string | null>(null);
     const [sessionInventoryStatus, setSessionInventoryStatus] = React.useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-    const [syncedActiveStep, setSyncedActiveStep] = React.useState<SelectionListStep | null | undefined>(undefined);
     const committedResultRef = React.useRef<UniversalSearchResult | null>(null);
     const committedPluginActivationRef = React.useRef<PendingActivation | null>(null);
-    const committedScopeRef = React.useRef<UniversalSearchScopeSeed | null>(null);
     const profilesGeneration = useServerProfilesGeneration();
     const profiles = React.useMemo(() => listServerProfiles(), [profilesGeneration]);
     const credentialBindings = useServerCredentialAccountScopes(profiles.map(resolveServerProfileScopeId));
@@ -261,7 +251,24 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
         serverId: canonicalScopeServerId ?? '',
         projection: sessionOrganizationProjection,
     }), [canonicalScopeServerId, sessionOrganizationProjection]);
-    const pluginProjection = useAppShellPluginUiProjection();
+    const appShellPluginProjection = useAppShellPluginUiProjection();
+    const scopedPluginProjectionEnabled = canonicalScopeServerId !== null && scope.machineId !== null;
+    const scopedPluginProjection = useScopedPluginUiProjection({
+        serverId: canonicalScopeServerId,
+        machineId: scope.machineId,
+        enabled: scopedPluginProjectionEnabled,
+    });
+    const appShellProjectionMatchesScope = Boolean(
+        canonicalScopeServerId
+        && (appShellPluginProjection.serverId == null
+            || areServerProfileIdentifiersEquivalent(
+                appShellPluginProjection.serverId,
+                canonicalScopeServerId,
+            )),
+    );
+    const pluginProjection = !scopedPluginProjectionEnabled && appShellProjectionMatchesScope
+        ? appShellPluginProjection
+        : scopedPluginProjection;
     const currentUiContextReader = useOptionalCurrentUiContextReader();
     const pluginNavigationBinding = usePluginSurfaceDestinationNavigationBinding();
 
@@ -304,23 +311,37 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
         };
     }, [hasSessionDiscoveryQuery, scope.accountId, scope.serverId, selectedCredentialBinding, selectedCredentialIsCurrent]);
 
+    const machines = useAllMachines();
+    const machineNameById = React.useMemo(() => new Map(
+        machines.flatMap((machine) => {
+            const name = getMachineDisplayName(machine);
+            return name ? [[machine.id, name] as const] : [];
+        }),
+    ), [machines]);
     const sessionEntities = React.useMemo<readonly UniversalSearchSessionEntity[]>(() => {
         if (!scope.serverId || !scope.accountId || !selectedCredentialIsCurrent) return [];
         const canonicalServerId = canonicalScopeServerId!;
         const rows = readSessionListRowsForServerId(sessionListRowsByServerId, canonicalServerId) ?? {};
         return Object.values(rows).map((session) => {
             const metadata = session.metadata;
-            const path = typeof metadata?.path === 'string' ? metadata.path : '';
+            // A no-folder session is a chat, not a project: its private folder is never a label or a scope.
+            const withoutFolder = readSessionDirectoryKind(metadata) === 'managed';
+            const path = !withoutFolder && typeof metadata?.path === 'string' ? metadata.path : '';
             const machineId = typeof metadata?.machineId === 'string' ? metadata.machineId : '';
             const workspace = path && machineId
                 ? findWorkspaceRefByScope(workspaceRefs, { serverId: canonicalServerId, machineId, rootPath: path })
                 : null;
+            // One quiet meta line: the project, then the machine it runs on ("happier · MacBook Pro").
+            const projectLabel = withoutFolder
+                ? t('session.folderless.chats')
+                : workspace?.label?.trim() || path.split(/[\\/]/).filter(Boolean).pop() || '';
+            const subtitle = [projectLabel, machineNameById.get(machineId) ?? ''].filter(Boolean).join(' · ');
             return {
                 sessionId: session.id,
                 serverId: canonicalServerId,
                 accountId: scope.accountId!,
-                title: getSessionName(session),
-                ...(path ? { subtitle: path } : {}),
+                title: getSessionName(session, canonicalServerId),
+                ...(subtitle ? { subtitle } : {}),
                 searchText: buildCanonicalSessionListSearchText({
                     sessionId: session.id,
                     renderable: session,
@@ -336,7 +357,7 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
                 updatedAt: session.updatedAt,
             };
         }).sort((a, b) => b.updatedAt - a.updatedAt);
-    }, [canonicalScopeServerId, scope.accountId, scope.serverId, selectedCredentialIsCurrent, sessionListRowsByServerId, sessionOrganizationListViewState.sessionTagsV1, workspaceRefs]);
+    }, [canonicalScopeServerId, machineNameById, scope.accountId, scope.serverId, selectedCredentialIsCurrent, sessionListRowsByServerId, sessionOrganizationListViewState.sessionTagsV1, workspaceRefs]);
     const sessionNameByTarget = React.useMemo(
         () => new Map(sessionEntities.map((session) => [
             buildUniversalSearchSessionTitleKey(session.accountId, session.serverId, session.sessionId),
@@ -360,11 +381,19 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
             lastOpenedAtMs: workspace.lastOpenedAtMs ?? workspace.createdAtMs,
         })), [scope.accountId, scope.serverId, selectedCredentialIsCurrent, workspaceRefs]);
 
-    const settingsById = React.useMemo(() => settingsPageById(settingsCatalog.tree), [settingsCatalog.tree]);
-    const searchSettingsPages = React.useCallback((value: string) => settingsCatalog.search(value).flatMap((match) => {
-        const page = settingsById.get(match.id);
-        return page ? [{ id: page.id, route: match.route, title: page.title ?? String(page.titleKey ?? page.id), ...(page.subtitle ? { subtitle: page.subtitle } : {}) }] : [];
-    }), [settingsById, settingsCatalog]);
+    const settingsPages = React.useMemo(() => indexSettingsSearchPages(settingsCatalog.tree), [settingsCatalog.tree]);
+    const settingsById = React.useMemo(() => settingsPageNodesById(settingsCatalog.tree), [settingsCatalog.tree]);
+    // One Settings group: the pages the query names, then individual settings, projected by the
+    // same row owner as the settings rail (title + "Page › Section").
+    const searchSettingsPages = React.useCallback((value: string): UniversalSearchSettingsPageEntity[] => {
+        const { pageRows, settingRows } = buildSettingsSearchRows(settingsCatalog.search(value), settingsPages);
+        return [...pageRows, ...settingRows].map((row) => ({
+            id: row.kind === 'setting' ? `setting:${row.id}` : row.id,
+            route: row.route,
+            title: row.title,
+            ...(row.subtitle ? { subtitle: row.subtitle } : {}),
+        }));
+    }, [settingsCatalog, settingsPages]);
 
     const transcript = React.useMemo<UniversalSearchSource>(() => {
         if (!scope.serverId) return { status: 'absent' };
@@ -449,7 +478,7 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
                                     storage.getState().sessionListRowsByServerId,
                                     serverId,
                                 )?.[hit.sessionId];
-                                const freshTitle = freshRow ? getSessionName(freshRow).trim() : '';
+                                const freshTitle = freshRow ? getSessionName(freshRow, serverId).trim() : '';
                                 const capturedTitle = sessionNameByTarget.get(buildUniversalSearchSessionTitleKey(
                                     accountLifetime.accountId,
                                     serverId,
@@ -593,33 +622,30 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
     }, [activeSession?.id, selectedCredentialBinding, workspaceRef?.id, workspaceResolverKey, workspaceScope, workspaceScopeReachable, workspaceSearchAvailable, workspaceUnavailableHint]);
 
     const accountLifetime = pluginAccount.lifetime;
-    const currentPluginGenerationRef = React.useRef<number | null>(
-        pluginProjection.pluginUiProjection?.generation ?? null,
-    );
-    currentPluginGenerationRef.current = pluginProjection.pluginUiProjection?.generation ?? null;
-    const admittedPluginGeneration = pluginProjection.pluginUiProjection?.generation ?? null;
-    const pluginScopeIsCurrent = React.useCallback(() => {
+    const currentPluginProjectionRef = React.useRef(pluginProjection.pluginUiProjection);
+    currentPluginProjectionRef.current = pluginProjection.pluginUiProjection;
+    const pluginScopeIsCurrent = React.useCallback((pluginId: string, occurrenceId: string) => {
+        const current = currentPluginProjectionRef.current;
         return accountLifetime !== null
             && accountLifetime.isCurrent()
-            && admittedPluginGeneration !== null
-            && currentPluginGenerationRef.current === admittedPluginGeneration;
-    }, [accountLifetime, admittedPluginGeneration]);
+            && Object.values(current?.searchProvidersById ?? {}).some((provider) => (
+                provider.pluginId === pluginId && provider.occurrenceId === occurrenceId
+            ));
+    }, [accountLifetime]);
     const pluginSections = React.useMemo(() => buildPluginSearchProviderSections({
         projection: pluginProjection.pluginUiProjection,
         scopedLaunchFacts: {
             serverId: scope.serverId,
             machineId: scope.machineId,
-            generation: pluginProjection.pluginUiProjection?.generation ?? null,
             interactionEnabled: pluginProjection.interactionEnabled,
         },
         accountLifetime,
         accountLifetimeRevision: pluginAccount.revision,
-        catalogIsCurrent: () => admittedPluginGeneration !== null
-            && currentPluginGenerationRef.current === admittedPluginGeneration,
+        isOccurrenceCurrent: pluginScopeIsCurrent,
         readCurrentUiContext: currentUiContextReader?.readCurrentUiContext,
         openSurface: pluginNavigationBinding?.openSurface,
         onCommitActivation: (activate) => { committedPluginActivationRef.current = activate; },
-    }), [accountLifetime, admittedPluginGeneration, currentUiContextReader, pluginAccount.revision, pluginNavigationBinding?.openSurface, pluginProjection, scope.machineId, scope.serverId]);
+    }), [accountLifetime, currentUiContextReader, pluginAccount.revision, pluginNavigationBinding?.openSurface, pluginProjection, pluginScopeIsCurrent, scope.machineId, scope.serverId]);
 
     const accountIdByServerId = React.useMemo(() => new Map(
         [...credentialBindings].map(([serverId, binding]) => [serverId, binding.accountId]),
@@ -632,43 +658,31 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
         readMachineTarget: readMachineControlTargetForSession,
     }), [accountIdByServerId, profiles, sessions, workspaceRefs]);
     const scopeKey = buildUniversalSearchScopeKeyFromSeed(scope);
+    // The scope chip exists only when there is a choice to make. With one Home (and no workspace
+    // scopes) it would restate the obvious, so Search shows no chip at all.
+    const hasScopeChoice = scopeChoices.length > 1;
+    const currentScopeProfile = profiles.find((profile) => areServerProfileIdentifiersEquivalent(profile.id, scope.serverId));
     const currentScopeLabel = scopeChoices.find((choice) => choice.key === scopeKey)?.label
-        ?? profiles.find((profile) => areServerProfileIdentifiersEquivalent(profile.id, scope.serverId))?.name
+        ?? (currentScopeProfile ? resolveHomeDisplayLabel(currentScopeProfile, currentScopeProfile.id) : null)
         ?? scope.rootPath
         ?? '';
-    const scopePickerStep = React.useMemo<SelectionListStep | null>(() => scopeChoices.length > 1 ? ({
-        id: `scope-picker:${scopeKey}`,
-        disableInputFilter: true,
-        inputReadOnly: true,
-        inputPlaceholder: currentScopeLabel,
-        title: currentScopeLabel,
-        sections: [{
-            kind: 'static',
-            id: 'scope-options',
-            options: scopeChoices.map((choice) => ({
-                id: `scope-option:${choice.key}`,
-                label: choice.label,
-                onSelect: () => { committedScopeRef.current = choice.scope; },
-            })),
-        }],
-    }) : null, [currentScopeLabel, scopeChoices, scopeKey]);
-    const scopeControl = React.useMemo(() => currentScopeLabel ? (scopePickerStep ? (
-            <Pressable
-                testID="universal-search:scope"
-                accessibilityRole="button"
-                accessibilityLabel={currentScopeLabel}
-                accessibilityState={{ expanded: syncedActiveStep?.id === scopePickerStep.id }}
-                onPress={() => setSyncedActiveStep(scopePickerStep)}
-                style={styles.scopeChip}
-            >
-                <Text numberOfLines={1} style={styles.scopeChipLabel}>{currentScopeLabel}</Text>
-                <Icon name="caret-down" size={12} />
-            </Pressable>
-        ) : (
-            <View testID="universal-search:scope" style={styles.scopeChip}>
-                <Text numberOfLines={1} style={styles.scopeChipLabel}>{currentScopeLabel}</Text>
-            </View>
-        )) : null, [currentScopeLabel, scopePickerStep, syncedActiveStep?.id]);
+    // The Home (or workspace) scope is a SelectionList filter: one chip beside the field that opens the
+    // choices, the same chip every picker uses.
+    const scopeFilters = React.useMemo<ReadonlyArray<SelectionListFilter> | undefined>(() => hasScopeChoice ? [{
+        id: 'scope',
+        label: t('universalSearch.scopeFilterLabel'),
+        valueLabel: currentScopeLabel,
+        icon: <Icon name="house" size={12} color={theme.colors.text.secondary} />,
+        options: scopeChoices.map((choice) => ({ id: choice.key, label: choice.label })),
+        selectedId: scopeKey,
+        onChange: (choiceKey: string) => {
+            const choice = scopeChoices.find((candidate) => candidate.key === choiceKey);
+            if (!choice) return;
+            setSelectedOptionId(null);
+            setScope(choice.scope);
+        },
+        testID: 'universal-search:scope',
+    }] : undefined, [currentScopeLabel, hasScopeChoice, scopeChoices, scopeKey, theme.colors.text.secondary]);
 
     const sections = React.useMemo(() => buildUniversalSearchSections({
         query,
@@ -688,6 +702,12 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
         inputPlaceholder: t('commandPalette.placeholder'),
         emptyStateLabel: t('selectionList.emptyMatch'),
         sections,
+        // Quiet key hints; SelectionList shows the footer only with a hardware keyboard.
+        footerHints: [
+            { id: 'move', label: '↑↓', description: t('commandPalette.hints.move') },
+            { id: 'open', label: '↵', description: t('commandPalette.hints.open') },
+            { id: 'close', label: 'esc', description: t('commandPalette.hints.close') },
+        ],
     }), [sections]);
 
     const isBuiltInTargetCurrent = React.useCallback((target: UniversalSearchResult['target']) => {
@@ -764,16 +784,6 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
     }, [credentialBindings]);
 
     const handleSelect = React.useCallback((optionId: string, _option: SelectionListOption) => {
-        const nextScope = committedScopeRef.current;
-        committedScopeRef.current = null;
-        if (nextScope) {
-            committedResultRef.current = null;
-            committedPluginActivationRef.current = null;
-            setSelectedOptionId(null);
-            setSyncedActiveStep(null);
-            setScope(nextScope);
-            return;
-        }
         const result = committedResultRef.current;
         const pluginActivation = committedPluginActivationRef.current;
         const command = result || pluginActivation ? null : findCommandForOptionId(props.commands, optionId);
@@ -787,7 +797,7 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
                     readExactSession: readExactSessionForActivation,
                 })
                 : pluginActivation
-                    ? pluginScopeIsCurrent()
+                    ? accountLifetime?.isCurrent() === true
                     : command !== null,
             dismiss: props.onRequestClose,
             activate: async () => {
@@ -814,16 +824,12 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
         });
     }, [isBuiltInTargetCurrent, navigateToSession, openProject, pluginScopeIsCurrent, props.commands, props.onRequestClose, readExactSessionForActivation, router]);
 
-    const handleActiveStepChange = React.useCallback((step: SelectionListStep) => {
-        setSyncedActiveStep(step.id.startsWith('scope-picker:') ? step : undefined);
-    }, []);
-
     if (Platform.OS !== 'web' && props.presentation === 'route') {
-        return <UniversalSearchNativeHost rootStep={rootStep} query={query} onChangeQuery={setQuery} onSelect={handleSelect} onRequestClose={props.onRequestClose} selectedOptionId={selectedOptionId} listAccessibilityLabel={t('tools.names.search')} inputPrefix={scopeControl} dynamicSectionCache={dynamicSectionCache} syncActiveStep={syncedActiveStep} onActiveStepChange={handleActiveStepChange} />;
+        return <UniversalSearchNativeHost rootStep={rootStep} query={query} onChangeQuery={setQuery} onSelect={handleSelect} onRequestClose={props.onRequestClose} selectedOptionId={selectedOptionId} listAccessibilityLabel={t('tools.names.search')} filters={scopeFilters} dynamicSectionCache={dynamicSectionCache} />;
     }
     return (
         <View style={styles.root} testID="universal-search-host">
-            <SelectionList rootStep={rootStep} inputValue={query} onChangeInputValue={setQuery} onSelect={handleSelect} onRequestClose={props.onRequestClose} selectedOptionId={selectedOptionId} listAccessibilityLabel={t('tools.names.search')} inputPrefix={scopeControl} autoFocusInputOnWeb fillAvailableSpace dynamicSectionCache={dynamicSectionCache} syncActiveStep={syncedActiveStep} onActiveStepChange={handleActiveStepChange} />
+            <SelectionList rootStep={rootStep} selectionMark="enter" inputValue={query} onChangeInputValue={setQuery} onSelect={handleSelect} onRequestClose={props.onRequestClose} selectedOptionId={selectedOptionId} listAccessibilityLabel={t('tools.names.search')} filters={scopeFilters} autoFocusInputOnWeb fillAvailableSpace dynamicSectionCache={dynamicSectionCache} />
         </View>
     );
 }

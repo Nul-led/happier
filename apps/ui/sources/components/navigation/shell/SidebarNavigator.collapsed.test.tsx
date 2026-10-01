@@ -207,27 +207,22 @@ vi.mock('@/auth/context/AuthContext', () => ({
   useAuth: () => ({ isAuthenticated: true }),
 }));
 
-vi.mock('./SidebarView', () => ({
-  SidebarView: () => React.createElement('SidebarView', {}, null),
+vi.mock('./appRail/AppRail', () => ({
+  AppRail: () => React.createElement('AppRail', { testID: 'app-rail' }, null),
 }));
 
-vi.mock('./CollapsedSidebarView', () => ({
-  CollapsedSidebarView: (props: any) =>
+vi.mock('./appRail/AppShellColumn', () => ({
+  AppShellColumn: (props: any) => React.createElement('AppShellColumn', props, null),
+}));
+
+vi.mock('./appRail/AppShellTitleStrip', () => ({
+  AppShellTitleStrip: (props: any) =>
     React.createElement(
-      'CollapsedSidebarView',
+      'AppShellTitleStrip',
       props,
-      React.createElement('Pressable', {
-        testID: 'collapsed-sidebar-home-button',
-        onPress: () => props.onExitFocusMode?.(),
-      }),
-      React.createElement(
-        'Pressable',
-        {
-          testID: 'sidebar-expand-button',
-          onPress: () => props.onRequestExpand?.() ?? mockLocalSettingsStore.setSidebarCollapsed(false),
-        },
-        React.createElement('SidebarExpandIcon', {}, null)
-      )
+      props.columnToggleAvailable
+        ? React.createElement('Pressable', { testID: 'app-shell-column-toggle', onPress: props.onToggleColumn })
+        : null,
     ),
 }));
 
@@ -238,6 +233,12 @@ vi.mock('./SidebarIcons', () => ({
 
 function getSidebar(tree: renderer.ReactTestRenderer) {
   return tree.root.findByProps({ testID: 'navigation-sidebar' });
+}
+
+/** The column's laid-out width (its style is the column's own style plus the measured width). */
+function widthOf(node: { props: { style?: unknown } }): number | undefined {
+  const styles = [node.props.style].flat(Infinity as 1) as Array<{ width?: number } | null | undefined>;
+  return styles.reduce<number | undefined>((width, style) => (typeof style?.width === 'number' ? style.width : width), undefined);
 }
 
 function getResizableSidebarPane(tree: renderer.ReactTestRenderer) {
@@ -339,7 +340,7 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
     expect(stopPropagation).toHaveBeenCalledTimes(1);
   }, 60_000);
 
-  it('uses a collapsed sidebar width when sidebarCollapsed is true', async () => {
+  it('hides the column and keeps the rail when sidebarCollapsed is true', async () => {
     act(() => {
       mockLocalSettingsStore.setSidebarCollapsed(true);
     });
@@ -351,8 +352,8 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
       tree = renderer.create(<SidebarNavigator />);
     });
 
-    const sidebar = getSidebar(tree);
-    expect(sidebar.props.style.width).toBe(72);
+    expect(tree.root.findAllByProps({ testID: 'navigation-sidebar' })).toHaveLength(0);
+    expect(tree.root.findAllByType('AppRail' as any)).toHaveLength(1);
   });
 
   it('enables the permanent sidebar when min edge is at least 600px', async () => {
@@ -364,7 +365,7 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
     tree = (await renderScreen(<SidebarNavigator />)).tree;
 
     const sidebar = getSidebar(tree);
-    expect(sidebar.props.style.width).toBeGreaterThan(0);
+    expect(widthOf(sidebar)).toBeGreaterThan(0);
   });
 
   it('hides the permanent sidebar when min edge is below 600px (e.g. landscape phone)', async () => {
@@ -376,6 +377,7 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
     tree = (await renderScreen(<SidebarNavigator />)).tree;
 
     expect(tree.findAllByProps({ testID: 'navigation-sidebar' })).toHaveLength(0);
+    expect(tree.root.findAllByType('AppRail' as any)).toHaveLength(0);
   });
 
   it('keeps the full sidebar when resized down to the minimum width', async () => {
@@ -406,7 +408,7 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
     expect(mockLocalSettingsStore.sidebarWidthPx).toBe(250);
 
     const sidebar = getSidebar(tree);
-    expect(sidebar.props.style.width).toBe(250);
+    expect(widthOf(sidebar)).toBe(250);
   });
 
   it('collapses into compact view when resized narrower again from the minimum width', async () => {
@@ -432,25 +434,44 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
     });
 
     expect(mockLocalSettingsStore.sidebarCollapsed).toBe(true);
-
-    const sidebar = getSidebar(tree);
-    expect(sidebar.props.style.width).toBe(72);
+    expect(tree.root.findAllByProps({ testID: 'navigation-sidebar' })).toHaveLength(0);
+    expect(tree.root.findAllByType('AppRail' as any)).toHaveLength(1);
   });
 
-  it('renders the expand icon button in collapsed sidebar on desktop', async () => {
-    act(() => {
-      mockLocalSettingsStore.setSidebarCollapsed(true);
-    });
+  it("stands the open destination's column beside the page, and none beside a full-page destination", async () => {
     const { SidebarNavigator } = await import('./SidebarNavigator');
-    let tree!: renderer.ReactTestRenderer;
+    const at = async (pathname: string) => {
+      hoistedState.mockPathname = pathname;
+      const tree = (await renderScreen(<SidebarNavigator />)).tree;
+      const column = tree.root.findAllByType('AppShellColumn' as any)[0]?.props.column ?? null;
+      act(() => tree.unmount());
+      return column;
+    };
+    expect(await at('/')).toEqual({ kind: 'builtin', id: 'sessions' });
+    expect(await at('/settings/appearance')).toEqual({ kind: 'builtin', id: 'settings' });
+    expect(await at('/settings/home/srv-1/people')).toEqual({ kind: 'builtin', id: 'settings' });
+    expect(await at('/plugins')).toEqual({ kind: 'builtin', id: 'plugins' });
+    expect(await at('/projects/ws-1')).toEqual({ kind: 'builtin', id: 'projects' });
+    // A full-page destination stands no column: the column slot is not mounted.
+    expect(await at('/search')).toBeNull();
+  });
 
-    tree = (await renderScreen(<SidebarNavigator />)).tree;
+  it('toggles the column from the title strip and keeps the rail', async () => {
+    const { SidebarNavigator } = await import('./SidebarNavigator');
+    const tree = (await renderScreen(<SidebarNavigator />)).tree;
 
-    // CollapsedSidebarView is mocked here, so this can only pin the navigator's own wiring: that
-    // the collapsed rail mounts with its two affordances. Which GLYPH the expand button draws is a
-    // contract of the real component, covered in SidebarIcons.test.tsx and the collapsed-view test.
-    expect(tree.findByProps({ testID: 'sidebar-expand-button' })).toBeDefined();
-    expect(tree.findByProps({ testID: 'collapsed-sidebar-home-button' })).toBeDefined();
+    await act(async () => {
+      await pressTestInstanceAsync(tree.root.findByProps({ testID: 'app-shell-column-toggle' }));
+    });
+    expect(mockLocalSettingsStore.sidebarCollapsed).toBe(true);
+    expect(tree.root.findAllByProps({ testID: 'navigation-sidebar' })).toHaveLength(0);
+    expect(tree.root.findAllByType('AppRail' as any)).toHaveLength(1);
+
+    await act(async () => {
+      await pressTestInstanceAsync(tree.root.findByProps({ testID: 'app-shell-column-toggle' }));
+    });
+    expect(mockLocalSettingsStore.sidebarCollapsed).toBe(false);
+    expect(getSidebar(tree)).toBeDefined();
   });
 
   it('clears scoped focus mode when the current route no longer matches the focused pane scope', async () => {
@@ -468,7 +489,7 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
       scopeId: 'session:s1',
     });
     const sidebar = getSidebar(tree);
-    expect(sidebar.props.style.width).toBeGreaterThan(72);
+    expect(widthOf(sidebar)).toBeGreaterThan(0);
   });
 
   it('can collapse again on the first resize attempt after expanding from compact view', async () => {
@@ -500,7 +521,7 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
       onDragWidthPx(null, null);
     });
 
-    const expandButton = tree.findByProps({ testID: 'sidebar-expand-button' });
+    const expandButton = tree.findByProps({ testID: 'app-shell-column-toggle' });
     await act(async () => {
       await pressTestInstanceAsync(expandButton);
     });
@@ -521,7 +542,7 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
     expect(mockLocalSettingsStore.sidebarCollapsed).toBe(true);
   });
 
-  it('uses the collapsed permanent sidebar when scoped focus mode toggles without remounting', async () => {
+  it('hides the column in scoped focus mode without remounting, and the toggle exits focus mode', async () => {
     hoistedState.mockPathname = '/session/s1';
     const { SidebarNavigator } = await import('./SidebarNavigator');
     let tree!: renderer.ReactTestRenderer;
@@ -532,7 +553,7 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
     const navigator = tree.root.findByType(Stack);
 
     const sidebarBefore = getSidebar(tree);
-    expect(sidebarBefore.props.style.width).toBeGreaterThan(0);
+    expect(widthOf(sidebarBefore)).toBeGreaterThan(0);
 
     await act(async () => {
       mockAppPaneStore.setFocusModeScopeId('session:s1');
@@ -541,12 +562,10 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
     // No remount: toggling focus should not reset session/details state.
     expect(tree.root.findByType(Stack) === navigator).toBe(true);
 
-    const sidebarAfter = getSidebar(tree);
-    expect(sidebarAfter).toBeDefined();
-    expect(sidebarAfter.props.style.width).toBe(72);
-    expect(sidebarAfter.findByType('CollapsedSidebarView' as any).props.focusModeActive).toBe(true);
+    expect(tree.root.findAllByProps({ testID: 'navigation-sidebar' })).toHaveLength(0);
+    expect(tree.root.findAllByType('AppRail' as any)).toHaveLength(1);
 
-    const expandButton = tree.findByProps({ testID: 'sidebar-expand-button' });
+    const expandButton = tree.findByProps({ testID: 'app-shell-column-toggle' });
     await act(async () => {
       await pressTestInstanceAsync(expandButton);
     });
@@ -571,8 +590,8 @@ describe('SidebarNavigator (collapsed sidebar)', () => {
 
     expect(navigator).toBeDefined();
     expect(tree.root.findAllByProps({ testID: 'navigation-sidebar' })).toHaveLength(0);
-    expect(tree.root.findAllByType('SidebarView' as any)).toHaveLength(0);
-    expect(tree.root.findAllByType('CollapsedSidebarView' as any)).toHaveLength(0);
+    expect(tree.root.findAllByType('AppRail' as any)).toHaveLength(0);
+    expect(tree.root.findAllByType('AppShellColumn' as any)).toHaveLength(0);
 
   });
 });

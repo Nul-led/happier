@@ -8,14 +8,13 @@ import type {
     SplitCanvasSplitNode,
 } from './splitCanvasTypes';
 
-let nextGeneratedSplitId = 1;
-
 function clampRatio(ratio: number, minRatio: number, maxRatio: number): number {
     return Math.min(maxRatio, Math.max(minRatio, ratio));
 }
 
 export function createSplitCanvasSplitNode<TLeafPayload>(
     params: Readonly<{
+        id: string;
         axis: SplitCanvasAxis;
         placement: SplitCanvasPlacement;
         targetLeaf: SplitCanvasLeafNode<TLeafPayload>;
@@ -23,7 +22,7 @@ export function createSplitCanvasSplitNode<TLeafPayload>(
         ratio: number;
     }>,
 ): SplitCanvasSplitNode<TLeafPayload> {
-    const splitId = `split:${nextGeneratedSplitId++}`;
+    const splitId = params.id;
     if (params.placement === 'before') {
         return {
             id: splitId,
@@ -92,26 +91,32 @@ export function splitSplitCanvasLeaf<TLeafPayload>(
     }>,
 ): SplitCanvasNode<TLeafPayload> | null {
     if (!node) return null;
-    if (node.kind === 'leaf') {
-        if (node.id !== params.targetLeafId) return node;
-        return createSplitCanvasSplitNode({
-            axis: params.axis,
-            placement: params.placement,
-            targetLeaf: node,
-            newLeaf: params.newLeaf,
-            ratio: params.ratio,
-        });
-    }
-
-    const nextFirst = splitSplitCanvasLeaf(node.first, params);
-    if (nextFirst !== node.first) {
-        return { ...node, first: nextFirst ?? node.first };
-    }
-    const nextSecond = splitSplitCanvasLeaf(node.second, params);
-    if (nextSecond !== node.second) {
-        return { ...node, second: nextSecond ?? node.second };
-    }
-    return node;
+    // Restored trees retain their identities. Allocate against the entire live
+    // tree, including sibling branches, rather than a process-local counter.
+    const ids = new Set([params.newLeaf.id]);
+    const collectIds = (current: SplitCanvasNode<TLeafPayload>): void => {
+        ids.add(current.id);
+        if (current.kind === 'split') {
+            collectIds(current.first);
+            collectIds(current.second);
+        }
+    };
+    collectIds(node);
+    let nextId = 1;
+    while (ids.has(`split:${nextId}`)) nextId++;
+    const id = `split:${nextId}`;
+    const splitLeaf = (current: SplitCanvasNode<TLeafPayload>): SplitCanvasNode<TLeafPayload> => {
+        if (current.kind === 'leaf') {
+            if (current.id !== params.targetLeafId) return current;
+            return createSplitCanvasSplitNode({ id, axis: params.axis, placement: params.placement,
+                targetLeaf: current, newLeaf: params.newLeaf, ratio: params.ratio });
+        }
+        const first = splitLeaf(current.first);
+        if (first !== current.first) return { ...current, first };
+        const second = splitLeaf(current.second);
+        return second !== current.second ? { ...current, second } : current;
+    };
+    return splitLeaf(node);
 }
 
 export function replaceSplitCanvasLeaf<TLeafPayload>(
@@ -276,6 +281,10 @@ export function collectSplitCanvasLeafRects<TLeafPayload>(
         width: 1,
         height: 1,
     },
+    layout?: Readonly<{
+        dividerSizePx: Readonly<Record<SplitCanvasAxis, number>>;
+        resolveRatio: (split: SplitCanvasSplitNode<TLeafPayload>, size: Readonly<{ width: number; height: number }>) => number;
+    }>,
 ): SplitCanvasLeafRect[] {
     if (!node) return [];
     if (node.kind === 'leaf') {
@@ -288,40 +297,44 @@ export function collectSplitCanvasLeafRects<TLeafPayload>(
         }];
     }
 
+    const dividerSize = layout?.dividerSizePx[node.axis] ?? 0;
+    const ratio = layout?.resolveRatio(node, rect) ?? node.ratio;
     if (node.axis === 'row') {
-        const firstWidth = rect.width * node.ratio;
-        const secondWidth = rect.width - firstWidth;
+        const availableWidth = Math.max(0, rect.width - dividerSize);
+        const firstWidth = availableWidth * ratio;
+        const secondWidth = availableWidth - firstWidth;
         return [
             ...collectSplitCanvasLeafRects(node.first, {
                 x: rect.x,
                 y: rect.y,
                 width: firstWidth,
                 height: rect.height,
-            }),
+            }, layout),
             ...collectSplitCanvasLeafRects(node.second, {
-                x: rect.x + firstWidth,
+                x: rect.x + firstWidth + dividerSize,
                 y: rect.y,
                 width: secondWidth,
                 height: rect.height,
-            }),
+            }, layout),
         ];
     }
 
-    const firstHeight = rect.height * node.ratio;
-    const secondHeight = rect.height - firstHeight;
+    const availableHeight = Math.max(0, rect.height - dividerSize);
+    const firstHeight = availableHeight * ratio;
+    const secondHeight = availableHeight - firstHeight;
     return [
         ...collectSplitCanvasLeafRects(node.first, {
             x: rect.x,
             y: rect.y,
             width: rect.width,
             height: firstHeight,
-        }),
+        }, layout),
         ...collectSplitCanvasLeafRects(node.second, {
             x: rect.x,
-            y: rect.y + firstHeight,
+            y: rect.y + firstHeight + dividerSize,
             width: rect.width,
             height: secondHeight,
-        }),
+        }, layout),
     ];
 }
 

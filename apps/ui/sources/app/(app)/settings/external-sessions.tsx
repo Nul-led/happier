@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import ExternalSessionsSettingsView from '@/components/settings/externalSessions/ExternalSessionsSettingsView';
 import { ExternalSessionsBrowseRouteGate } from '@/components/sessions/external/browse/ExternalSessionsBrowseRouteGate';
@@ -85,10 +85,12 @@ const ExternalSessionsSettingsRouteContent = React.memo(function ExternalSession
  * accessible, exitable gate state — never a blank screen — and the Settings
  * children (and therefore their RPCs) mount only once admitted.
  */
-export default React.memo(function ExternalSessionsSettingsRoute() {
+export const WorkspaceRouteBody = React.memo(function ExternalSessionsSettingsRoute() {
     return (
         <ExternalSessionsBrowseRouteGate>
             <ExternalSessionsSettingsRouteContent />
         </ExternalSessionsBrowseRouteGate>
     );
 });
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

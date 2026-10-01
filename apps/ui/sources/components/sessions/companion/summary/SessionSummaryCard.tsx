@@ -1,25 +1,31 @@
 import * as React from 'react';
+import { MeterBar } from '@/components/ui/lists/MeterBar';
 import { I18nManager, Platform, Pressable, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { SurfaceCard } from '@/components/ui/cards/SurfaceCard';
-import { Icon } from '@/components/ui/icons/Icon';
+import { AgentIcon } from '@/agents/registry/AgentIcon';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
-import { StatusPill, type StatusPillVariant } from '@/components/ui/status/StatusPill';
+import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
-import { resolveSessionAwarenessContentLabel } from '@/sync/domains/session/awareness/sessionAwarenessContentLabels';
-import { t } from '@/text';
-import type { SessionState } from '@/utils/sessions/sessionUtils';
-import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { useElapsedTime } from '@/hooks/ui/useElapsedTime';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
+import { useSessionListRelativeNowMs } from '@/hooks/session/sessionListRuntimeClock';
+import { resolveSessionAwarenessContentLabel } from '@/sync/domains/session/awareness/sessionAwarenessContentLabels';
+import type { SessionPendingPermission } from '@/sync/ops/sessionPendingPermissions';
+import type { SessionPermissionAnswer } from '@/sync/ops/sessionPermissionAnswers';
+import { t } from '@/text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 import type { SessionCompanionDensity } from '../state/sessionCompanionPreference';
 import {
-    resolveSessionSummaryRows,
+    resolveSessionSummaryDetailRows,
     type SessionSummaryCardModel,
     type SessionSummaryDestination,
+    type SessionSummaryFact,
     type SessionSummaryRow,
 } from './sessionSummaryProjection';
 import {
@@ -28,23 +34,102 @@ import {
 } from './sessionSummaryApprovalEmphasis';
 
 /**
- * The first-party Session Summary card.
+ * The first-party Session Summary, recomposed as the Companion's live hero (lab CA).
  *
- * Every value comes from the pure projection; this component only renders it and
- * routes each row to the EXISTING owning surface. A row whose destination has no
- * handler renders as quiet text rather than a dead pressable, and the card never
- * mutates Git, approvals, goals or usage inline.
+ * One status line in words with its timer, the ask that is waiting for you with its
+ * answers, three facts and the remaining detail rows. Every value comes from the
+ * pure projection; answers go through the ONE shared permission-answer owner the
+ * caller hands in, and every fact or row opens its EXISTING owning surface. The card
+ * never mutates Git, approvals, goals or usage itself.
  */
 
 export type SessionSummaryDestinationHandlers =
     Partial<Readonly<Record<SessionSummaryDestination, () => void>>>;
 
+export type SessionSummaryAnswerPermission = (
+    request: SessionPendingPermission,
+    answer: SessionPermissionAnswer,
+) => Promise<void>;
+
 const stylesheet = StyleSheet.create((theme) => ({
     root: { gap: 12 },
-    titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    titleWrap: { flex: 1, minWidth: 0, gap: 2 },
-    title: { ...Typography.default('semiBold'), color: theme.colors.text.primary, fontSize: 15 },
-    agent: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 12 },
+    statusBlock: { gap: 1 },
+    statusRow: { flexDirection: 'row', alignItems: 'center', gap: 7, minHeight: 26 },
+    statusWords: {
+        ...Typography.default('semiBold'),
+        color: theme.colors.text.primary,
+        fontSize: 15,
+        lineHeight: 20,
+        flexShrink: 1,
+    },
+    timer: { ...Typography.default(), ...Typography.tabular(), color: theme.colors.text.secondary, fontSize: 13 },
+    grow: { flex: 1 },
+    what: {
+        ...Typography.default(),
+        color: theme.colors.text.secondary,
+        fontSize: 12.5,
+        lineHeight: 17,
+        marginStart: 23,
+    },
+    need: {
+        paddingTop: 10,
+        paddingBottom: 12,
+        paddingHorizontal: 12,
+        borderRadius: 12,
+        backgroundColor: theme.colors.state.warning.background,
+        gap: 2,
+    },
+    needHead: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+    needQuestion: {
+        ...Typography.default('semiBold'),
+        color: theme.colors.text.primary,
+        fontSize: 13.5,
+        lineHeight: 18,
+        flexShrink: 1,
+    },
+    needReason: {
+        ...Typography.default(),
+        color: theme.colors.text.secondary,
+        fontSize: 12.5,
+        lineHeight: 17,
+        marginStart: 22,
+    },
+    needActions: { flexDirection: 'row', alignItems: 'center', gap: 6, marginStart: 22, marginTop: 8 },
+    quietLink: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 12 },
+    done: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 7,
+        minHeight: 36,
+        paddingHorizontal: 12,
+        borderRadius: 12,
+        backgroundColor: theme.colors.state.success.background,
+    },
+    doneText: { ...Typography.default(), color: theme.colors.text.primary, fontSize: 12.5, flexShrink: 1 },
+    doneTime: { ...Typography.default(), color: theme.colors.text.tertiary, fontSize: 12 },
+    facts: { flexDirection: 'row', gap: 6 },
+    fact: {
+        flex: 1,
+        minWidth: 0,
+        alignItems: 'flex-start',
+        gap: 1,
+        paddingVertical: 8,
+        paddingHorizontal: 9,
+        borderRadius: 10,
+        backgroundColor: theme.colors.surface.inset,
+    },
+    factPressed: { backgroundColor: theme.colors.surface.pressed },
+    factValue: { ...Typography.tabular(), ...Typography.default('semiBold'), color: theme.colors.text.primary, fontSize: 15, lineHeight: 19 },
+    factLabel: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 11, lineHeight: 14 },
+    meterTrack: {
+        width: 26,
+        height: 5,
+        borderRadius: 3,
+        marginTop: 5,
+        marginBottom: 7,
+        overflow: 'hidden',
+        backgroundColor: theme.colors.border.default,
+    },
     rows: { gap: 2 },
     row: {
         flexDirection: 'row',
@@ -57,178 +142,373 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     rowPressed: { backgroundColor: theme.colors.surface.pressed },
     rowLabel: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 13, flex: 1, minWidth: 0 },
-    rowLabelLead: { ...Typography.default('semiBold'), color: theme.colors.text.primary },
-    rowValue: { ...Typography.tabular(), color: theme.colors.text.secondary, fontSize: 13 },
-    footer: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    rowValueAction: { ...Typography.default('semiBold'), color: theme.colors.text.primary, fontSize: 13 },
     footerLabel: { ...Typography.default(), color: theme.colors.text.link, fontSize: 13, flex: 1 },
     stale: { ...Typography.default(), color: theme.colors.text.tertiary, fontSize: 12 },
-    staleValue: { opacity: 0.7 },
 }));
 
-/**
- * The pill's own chrome over the canonical presented state. The label and the ordering are
- * already decided by `presentSessionAwarenessV1`, and a state the canonical owner keeps quiet
- * (an idle reachable Session, an archived one) gets no pill here either.
- */
-const SUMMARY_STATUS_PILL_VARIANTS: Readonly<Record<SessionState, StatusPillVariant>> = Object.freeze({
-    failed: 'danger',
-    action_required: 'warning',
-    permission_required: 'warning',
-    thinking: 'info',
-    ready: 'success',
-    pending_input: 'neutral',
-    resuming: 'info',
-    background_active: 'neutral',
-    waiting: 'neutral',
-    disconnected: 'neutral',
-    recoverable_unservable: 'danger',
-    stale: 'neutral',
-    unknown: 'neutral',
-    locked: 'neutral',
-    preparing: 'neutral',
-    repair_needed: 'warning',
-    access_pending: 'neutral',
-    setup_required: 'warning',
-    content_unavailable: 'neutral',
-});
+/** One glyph per detail row kind, so the rows scan by shape before they are read. */
+const SUMMARY_ROW_ICONS = {
+    approvals: 'bell',
+    activity: 'robot',
+    work: 'lightning',
+    workflow: 'lightning',
+    recap: 'article',
+    workspace: 'git-branch',
+    usage: 'chart-line',
+} as const satisfies Record<SessionSummaryRow['kind'], IconName>;
 
-function operationalPresentation(value: SessionSummaryCardModel['status']): Readonly<{
-    label: string;
-    variant: StatusPillVariant;
-}> | null {
-    if (value === null || value.quiet) return null;
-    return { label: value.statusText, variant: SUMMARY_STATUS_PILL_VARIANTS[value.state] };
-}
-
-type RowPresentation = Readonly<{ label: string; value: string | null; stale: boolean }>;
-
-function rowPresentation(row: SessionSummaryRow): RowPresentation {
+function detailRowLabel(row: SessionSummaryRow): string {
     switch (row.kind) {
         case 'approvals':
-            return {
-                label: t('sessionBoard.companion.summary.approvals', { count: row.count }),
-                value: null,
-                stale: false,
-            };
-        case 'activity':
-            return {
-                label: row.title ?? (row.liveCount > 0
-                    ? t('tools.workflowActivityView.agentFraction', {
-                        complete: row.liveCount,
-                        total: row.totalCount,
-                    })
-                    : t('tools.workflowActivityView.agentsCount', { count: row.totalCount })),
-                value: row.statusLabel ?? (row.liveCount > 0 ? t('status.working') : null),
-                stale: false,
-            };
-        case 'work':
-            return { label: row.label, value: null, stale: false };
+            return t('sessionBoard.companion.summary.approvals', { count: row.count });
         case 'workflow':
-            return {
-                label: t('sessionBoard.companion.summary.workflows', { count: row.runCount }),
-                value: null,
-                stale: false,
-            };
+            return t('sessionBoard.companion.summary.workflows', { count: row.runCount });
+        case 'activity':
+            return row.title ?? t('tools.workflowActivityView.agentsCount', { count: row.totalCount });
+        case 'work':
+            return row.label;
+        case 'recap':
+            return row.text;
         case 'workspace':
-            return {
-                label: row.branch ?? row.label,
-                value: row.changedFiles && row.changedFiles > 0
-                    ? t('sessionBoard.companion.summary.changedFiles', { count: row.changedFiles })
-                    : null,
-                stale: false,
-            };
+            return row.branch ?? row.label;
         case 'usage':
+            return t('sessionBoard.companion.summary.contextOnly');
+    }
+}
+
+/** The status sentence under the status words (lab CA "Claude paused before step 4 of 5"). */
+function resolveWhatLine(model: SessionSummaryCardModel): string | null {
+    const agent = model.agentLabel ?? t('sessionCompanion.status.agentFallback');
+    if (model.needsYou && model.progress) {
+        return t('sessionCompanion.status.pausedBeforeStep', { agent, ...model.progress });
+    }
+    if (model.progress && model.status?.state === 'thinking') {
+        return t('sessionCompanion.status.stepOfPlan', model.progress);
+    }
+    const work = model.rows.find((row) => row.kind === 'work');
+    if (work?.kind === 'work') return work.label;
+    const recap = model.rows.find((row) => row.kind === 'recap');
+    return recap?.kind === 'recap' ? recap.text : null;
+}
+
+function formatElapsedClock(seconds: number): string {
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return hours > 0
+        ? `${hours}:${pad(minutes % 60)}:${pad(seconds % 60)}`
+        : `${minutes}:${pad(seconds % 60)}`;
+}
+
+/** The one ticking leaf: only this Text re-renders every second. */
+const ElapsedClock = React.memo(function ElapsedClock(props: Readonly<{ sinceMs: number; testID: string }>) {
+    const seconds = useElapsedTime(props.sinceMs);
+    return <Text testID={props.testID} style={stylesheet.timer}>{formatElapsedClock(seconds)}</Text>;
+});
+
+const SummaryStatus = React.memo(function SummaryStatus(props: Readonly<{
+    model: SessionSummaryCardModel;
+    headerAccessory?: React.ReactNode;
+    testID: string;
+}>) {
+    const { theme } = useUnistyles();
+    const { model } = props;
+    const words = model.needsYou
+        ? t('sessionCompanion.status.waitingForYou')
+        : model.status?.statusText ?? t('sessionBoard.companion.summary.title');
+    const what = resolveWhatLine(model);
+    return (
+        <View style={stylesheet.statusBlock}>
+            <View style={stylesheet.statusRow}>
+                {model.agentId ? (
+                    <AgentIcon agentId={model.agentId} size={15} />
+                ) : (
+                    <Icon name="stack" size={15} color={theme.colors.text.tertiary} />
+                )}
+                <Text
+                    testID={`${props.testID}-status`}
+                    style={stylesheet.statusWords}
+                    numberOfLines={1}
+                    accessibilityRole="header"
+                >
+                    {words}
+                </Text>
+                {model.sinceMs !== null ? (
+                    <ElapsedClock sinceMs={model.sinceMs} testID={`${props.testID}-timer`} />
+                ) : null}
+                <View style={stylesheet.grow} />
+                {props.headerAccessory}
+            </View>
+            {what ? (
+                <Text testID={`${props.testID}-what`} style={stylesheet.what} numberOfLines={2}>{what}</Text>
+            ) : null}
+        </View>
+    );
+});
+
+type AskOutcome = Readonly<{ summary: string; answer: SessionPermissionAnswer; atMs: number }>;
+
+/** How long "✓ Allowed … · just now" stays: until the shared relative clock says it is no longer now. */
+const ANSWERED_JUST_NOW_MS = 60_000;
+
+/**
+ * The waiting ask, answered in place (lab CX): Allow calls the same permission
+ * owner as the chat card, the block folds into one confirmation line, and the chat
+ * card updates from the same Session state in the same frame.
+ */
+const SummaryAsk = React.memo(function SummaryAsk(props: Readonly<{
+    needsYou: NonNullable<SessionSummaryCardModel['needsYou']> | null;
+    offline: boolean;
+    machineName: string | null;
+    answerPermission?: SessionSummaryAnswerPermission;
+    showInChat?: (request: SessionPendingPermission) => void;
+    openApprovals?: () => void;
+    testID: string;
+}>) {
+    const { theme } = useUnistyles();
+    const [inFlight, setInFlight] = React.useState<SessionPermissionAnswer | null>(null);
+    const [failed, setFailed] = React.useState(false);
+    const [outcome, setOutcome] = React.useState<AskOutcome | null>(null);
+    const nowMs = useSessionListRelativeNowMs(outcome !== null);
+    const request = props.needsYou?.request ?? null;
+    const requestId = request?.requestId ?? null;
+    React.useEffect(() => {
+        // A new ask replaces both the confirmation and any failure for the last one.
+        if (requestId === null) return;
+        setFailed(false);
+        setInFlight(null);
+        setOutcome((current) => (current ? null : current));
+    }, [requestId]);
+
+    const answer = React.useCallback((value: SessionPermissionAnswer) => {
+        if (!request || !props.answerPermission || inFlight) return;
+        setInFlight(value);
+        setFailed(false);
+        props.answerPermission(request, value).then(
+            () => {
+                setOutcome({ summary: request.summary, answer: value, atMs: Date.now() });
+                setInFlight(null);
+            },
+            () => {
+                setFailed(true);
+                setInFlight(null);
+            },
+        );
+    }, [inFlight, props, request]);
+
+    if (!request) {
+        if (!outcome || nowMs - outcome.atMs > ANSWERED_JUST_NOW_MS) return null;
+        return (
+            <View testID={`${props.testID}-answered`} style={stylesheet.done} accessibilityRole="text" accessibilityLiveRegion="polite">
+                <Icon
+                    name={outcome.answer === 'deny' ? 'x-circle' : 'check-circle'}
+                    size={15}
+                    color={outcome.answer === 'deny' ? theme.colors.text.secondary : theme.colors.state.success.foreground}
+                />
+                <Text style={stylesheet.doneText} numberOfLines={1}>
+                    {outcome.answer === 'deny'
+                        ? t('sessionCompanion.ask.denied', { summary: outcome.summary })
+                        : t('sessionCompanion.ask.allowed', { summary: outcome.summary })}
+                </Text>
+                <View style={stylesheet.grow} />
+                <Text style={stylesheet.doneTime}>{t('sessionCompanion.ask.justNow')}</Text>
+            </View>
+        );
+    }
+
+    const canAllow = request.answers.includes('allowOnce');
+    const canDeny = request.answers.includes('deny');
+    const answerable = props.answerPermission !== undefined && (canAllow || canDeny);
+    const reason = failed
+        ? t('sessionCompanion.ask.failed')
+        : answerable
+            ? request.command ?? null
+            : props.offline
+                ? (props.machineName
+                    ? t('sessionCompanion.ask.answerWhenBack', { machine: props.machineName })
+                    : t('sessionCompanion.ask.answerWhenSessionBack'))
+                : t('sessionCompanion.ask.notAllowed');
+    const moreCount = props.needsYou?.moreCount ?? 0;
+    return (
+        <View
+            testID={`${props.testID}-ask`}
+            style={stylesheet.need}
+            accessibilityRole="summary"
+            accessibilityLabel={t('sessionCompanion.ask.groupA11y')}
+        >
+            <View style={stylesheet.needHead}>
+                <Icon name="warning" size={15} color={theme.colors.state.warning.foreground} />
+                <Text style={stylesheet.needQuestion} numberOfLines={2}>
+                    {t('sessionCompanion.ask.question', { summary: request.summary })}
+                </Text>
+            </View>
+            {reason ? (
+                <Text testID={`${props.testID}-ask-reason`} style={stylesheet.needReason} numberOfLines={2}>
+                    {reason}
+                </Text>
+            ) : null}
+            <View style={stylesheet.needActions}>
+                <RoundButton
+                    size="small"
+                    testID={`${props.testID}-allow`}
+                    title={t('sessionCompanion.ask.allow')}
+                    disabled={!answerable || !canAllow || inFlight !== null}
+                    loading={inFlight === 'allowOnce'}
+                    onPress={() => answer('allowOnce')}
+                />
+                <RoundButton
+                    size="small"
+                    display="secondary"
+                    testID={`${props.testID}-deny`}
+                    title={t('sessionCompanion.ask.deny')}
+                    disabled={!answerable || !canDeny || inFlight !== null}
+                    loading={inFlight === 'deny'}
+                    onPress={() => answer('deny')}
+                />
+                <View style={stylesheet.grow} />
+                {moreCount > 0 && props.openApprovals ? (
+                    <Pressable accessibilityRole="link" onPress={props.openApprovals} hitSlop={8}>
+                        <Text style={stylesheet.quietLink}>{t('sessionCompanion.ask.moreWaiting', { count: moreCount })}</Text>
+                    </Pressable>
+                ) : props.showInChat ? (
+                    <Pressable
+                        testID={`${props.testID}-show-in-chat`}
+                        accessibilityRole="link"
+                        onPress={() => props.showInChat?.(request)}
+                        hitSlop={8}
+                    >
+                        <Text style={stylesheet.quietLink}>{t('sessionCompanion.ask.showInChat')}</Text>
+                    </Pressable>
+                ) : null}
+            </View>
+        </View>
+    );
+});
+
+const FACT_ICONS = {
+    subagents: 'robot',
+    changes: 'git-branch',
+} as const satisfies Record<Exclude<SessionSummaryFact['kind'], 'context'>, IconName>;
+
+function factPresentation(fact: SessionSummaryFact): Readonly<{ value: string; label: string; opens: string }> {
+    switch (fact.kind) {
+        case 'subagents':
             return {
-                label: row.tokens === null
-                    ? t('sessionBoard.companion.summary.contextOnly')
-                    : t('sessionBoard.companion.summary.tokens', { count: row.tokens }),
-                value: row.contextPercent === null
-                    ? null
-                    : t('sessionBoard.companion.summary.contextPercent', { percent: Math.round(row.contextPercent) }),
-                stale: row.stale,
+                value: t('sessionCompanion.facts.subagentsValue', { live: fact.live, total: fact.total }),
+                label: t('sessionCompanion.facts.subagents'),
+                opens: t('sessionCompanion.facts.opensAgents'),
+            };
+        case 'changes':
+            return {
+                value: String(fact.count),
+                label: t('sessionCompanion.facts.changed'),
+                opens: t('sessionCompanion.facts.opensGit'),
+            };
+        case 'context':
+            return {
+                value: t('sessionCompanion.facts.contextValue', { percent: fact.percent }),
+                label: t('sessionCompanion.facts.context'),
+                opens: t('sessionCompanion.facts.opensUsage'),
             };
     }
 }
 
-const SummaryRow = React.memo(function SummaryRow(props: Readonly<{
+const SummaryFactCell = React.memo(function SummaryFactCell(props: Readonly<{
+    fact: SessionSummaryFact;
+    onPress?: (() => void) | undefined;
+    testID: string;
+}>) {
+    const { theme } = useUnistyles();
+    const presentation = factPresentation(props.fact);
+    const lead = props.fact.kind === 'context' ? (
+        <MeterBar style={stylesheet.meterTrack} tone="neutral" fillFraction={props.fact.percent / 100} height={5}
+            fillColor={theme.colors.text.secondary} trackColor={theme.colors.border.default} />
+    ) : (
+        <Icon name={FACT_ICONS[props.fact.kind]} size={14} color={theme.colors.text.tertiary} />
+    );
+    const body = (
+        <>
+            {lead}
+            <Text style={[stylesheet.factValue, props.fact.kind === 'context' && props.fact.stale ? { opacity: 0.7 } : null]} numberOfLines={1}>
+                {presentation.value}
+            </Text>
+            <Text style={stylesheet.factLabel} numberOfLines={1}>{presentation.label}</Text>
+        </>
+    );
+    const accessibilityLabel = `${presentation.value} ${presentation.label}`;
+    if (!props.onPress) {
+        return <View testID={props.testID} style={stylesheet.fact} accessibilityLabel={accessibilityLabel}>{body}</View>;
+    }
+    return (
+        <Pressable
+            testID={props.testID}
+            accessibilityRole="button"
+            accessibilityLabel={accessibilityLabel}
+            accessibilityHint={presentation.opens}
+            onPress={props.onPress}
+            style={({ pressed }) => [stylesheet.fact, pressed ? stylesheet.factPressed : null]}
+        >
+            {body}
+        </Pressable>
+    );
+});
+
+const DetailRow = React.memo(function DetailRow(props: Readonly<{
     row: SessionSummaryRow;
     onPress?: (() => void) | undefined;
-    emphasized: boolean;
     approvalEmphasisSignal: number;
     reducedMotion: boolean;
     testID: string;
 }>) {
-    const styles = stylesheet;
     const { theme } = useUnistyles();
-    const presentation = rowPresentation(props.row);
+    const label = detailRowLabel(props.row);
     const emphasis = useSharedValue(1);
     React.useEffect(() => {
         if (props.row.kind !== 'approvals' || props.approvalEmphasisSignal === 0) return;
         const motion = resolveSessionSummaryApprovalEmphasisMotion(props.reducedMotion);
         emphasis.value = motion.initialOpacity;
         if (motion.durationMs > 0) {
-            emphasis.value = withTiming(1, {
-                duration: motion.durationMs,
-                easing: motionTokens.easing.standard,
-            });
+            emphasis.value = withTiming(1, { duration: motion.durationMs, easing: motionTokens.easing.standard });
         }
     }, [emphasis, props.approvalEmphasisSignal, props.reducedMotion, props.row.kind]);
     const emphasisStyle = useAnimatedStyle(() => ({ opacity: emphasis.value }));
-    const accessibilityLabel = presentation.value
-        ? `${presentation.label}, ${presentation.value}`
-        : presentation.label;
-
+    const needsYou = props.row.kind === 'approvals';
     const body = (
         <>
-            <Text
-                numberOfLines={1}
-                style={[
-                    styles.rowLabel,
-                    props.emphasized ? styles.rowLabelLead : null,
-                    presentation.stale ? styles.staleValue : null,
-                ]}
-            >
-                {presentation.label}
-            </Text>
-            {presentation.value ? (
-                <Text style={[styles.rowValue, presentation.stale ? styles.staleValue : null]}>
-                    {presentation.value}
-                </Text>
+            <Icon
+                name={SUMMARY_ROW_ICONS[props.row.kind]}
+                size={14}
+                color={needsYou ? theme.colors.state.warning.foreground : theme.colors.text.tertiary}
+            />
+            <Text numberOfLines={1} style={stylesheet.rowLabel}>{label}</Text>
+            {needsYou && props.onPress ? (
+                <Text style={stylesheet.rowValueAction}>{t('sessionBoard.companion.summary.review')}</Text>
             ) : null}
             {props.onPress ? (
-                <Icon
-                    name="caret-right"
-                    size={14}
-                    color={theme.colors.text.tertiary}
-                    mirrored={I18nManager.isRTL}
-                />
+                <Icon name="caret-right" size={14} color={theme.colors.text.tertiary} mirrored={I18nManager.isRTL} />
             ) : null}
         </>
     );
-
-    const row = props.onPress ? (
-        <Pressable
-            testID={props.testID}
-            accessibilityRole="button"
-            accessibilityLabel={accessibilityLabel}
-            onPress={props.onPress}
-            style={({ pressed }) => [
-                styles.row,
-                { minHeight: resolveMinimumInteractiveTargetSize(Platform.OS) },
-                pressed && styles.rowPressed,
-            ]}
-        >
-            {body}
-        </Pressable>
-    ) : (
-        <View style={styles.row} testID={props.testID}>{body}</View>
-    );
     return (
-        <Animated.View
-            style={emphasisStyle}
-            testID={`${props.testID}-emphasis`}
-        >
-            {row}
+        <Animated.View style={emphasisStyle} testID={`${props.testID}-emphasis`}>
+            {props.onPress ? (
+                <Pressable
+                    testID={props.testID}
+                    accessibilityRole="button"
+                    accessibilityLabel={label}
+                    onPress={props.onPress}
+                    style={({ pressed }) => [
+                        stylesheet.row,
+                        { minHeight: resolveMinimumInteractiveTargetSize(Platform.OS) },
+                        pressed && stylesheet.rowPressed,
+                    ]}
+                >
+                    {body}
+                </Pressable>
+            ) : (
+                <View style={stylesheet.row} testID={props.testID}>{body}</View>
+            )}
         </Animated.View>
     );
 });
@@ -240,30 +520,32 @@ export const SessionSummaryCard = React.memo(function SessionSummaryCard(props: 
     destinations?: SessionSummaryDestinationHandlers;
     /** Opens the full Companion, where every omitted row stays reachable. */
     onOpenFullSurface?: () => void;
+    /** The shared permission-answer owner, bound to this exact Session by the caller. */
+    answerPermission?: SessionSummaryAnswerPermission;
+    showPermissionInChat?: (request: SessionPendingPermission) => void;
+    /** The owning machine's name, for "You can answer when … is back". */
+    machineName?: string | null;
+    /** The placement's own controls (reorder, item menu), drawn at the end of the status line. */
+    headerAccessory?: React.ReactNode;
     testID?: string;
 }>) {
     const styles = stylesheet;
     const { theme } = useUnistyles();
     const reducedMotion = useReducedMotionPreference();
     const testID = props.testID ?? 'session-companion-summary';
-    const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
-    // Content/current-realm unavailability is the stronger canonical truth.
-    // Do not pair it with an "Online" or work pill inferred from unreadable facts.
-    const status = props.model.scope === 'exact' && props.model.availability !== 'locked'
-        ? operationalPresentation(props.model.status)
-        : null;
+    const { model } = props;
     const visible = React.useMemo(
-        () => resolveSessionSummaryRows(
-            props.model,
+        () => resolveSessionSummaryDetailRows(
+            model,
             props.presentation === 'full' || !props.onOpenFullSurface
                 ? { kind: 'full' }
                 : { kind: 'card', density: props.density },
         ),
-        [props.density, props.model, props.onOpenFullSurface, props.presentation],
+        [props.density, model, props.onOpenFullSurface, props.presentation],
     );
     const approvalCount = React.useMemo(() => (
-        props.model.rows.find((row) => row.kind === 'approvals')?.count ?? 0
-    ), [props.model.rows]);
+        model.rows.find((row) => row.kind === 'approvals')?.count ?? 0
+    ), [model.rows]);
     const previousApprovalCountRef = React.useRef<number | null>(null);
     const [approvalEmphasisSignal, setApprovalEmphasisSignal] = React.useState(0);
     React.useEffect(() => {
@@ -273,121 +555,100 @@ export const SessionSummaryCard = React.memo(function SessionSummaryCard(props: 
             setApprovalEmphasisSignal((signal) => signal + 1);
         }
     }, [approvalCount]);
-    const identityPress = props.destinations?.sessionInfo;
-    const title = props.model.title ?? t('sessionBoard.companion.summary.untitled');
-    const availabilityLabel = props.model.scope === 'realm_unavailable'
-        ? t('sessionBoard.board.unavailable.reason')
-        : props.model.availability === 'locked'
-        ? resolveSessionAwarenessContentLabel(props.model.encryption) ?? t('status.encryptedUnavailable')
-        : null;
 
-    const identityLines = (
-        <>
-            <Text numberOfLines={1} style={styles.title}>{title}</Text>
-            {props.model.agentLabel ? (
-                <Text numberOfLines={1} style={styles.agent}>{props.model.agentLabel}</Text>
-            ) : null}
-        </>
-    );
+    // Content/current-realm unavailability is the stronger canonical truth: no
+    // status line inferred from facts this viewer cannot read.
+    const exact = model.scope === 'exact' && model.availability !== 'locked';
+    const availabilityLabel = model.scope === 'realm_unavailable'
+        ? t('sessionBoard.board.unavailable.reason')
+        : model.availability === 'locked'
+            ? resolveSessionAwarenessContentLabel(model.encryption) ?? t('status.encryptedUnavailable')
+            : null;
+    const offline = model.status?.state === 'disconnected' || model.status?.state === 'unknown';
 
     return (
-        <SurfaceCard testID={testID} tone="surface" padding="md">
-            {/* A group, not one element: each row below stays individually reachable. */}
-            <View style={styles.root} accessibilityRole="summary">
-                <View style={styles.titleRow}>
-                    {/*
-                      * A heading with nowhere to go is a heading, not a control
-                      * that happens to be off. `disabled` on this element made a
-                      * screen reader announce the session's own name as dimmed
-                      * and unavailable.
-                      */}
-                    {identityPress ? (
-                        <Pressable
-                            testID={`${testID}-identity`}
-                            style={[
-                                styles.titleWrap,
-                                {
-                                    minHeight: minimumInteractiveTargetSize,
-                                    justifyContent: 'center',
-                                },
-                            ]}
-                            accessibilityRole="button"
-                            accessibilityLabel={status ? `${title}, ${status.label}` : title}
-                            onPress={identityPress}
-                        >
-                            {identityLines}
-                        </Pressable>
-                    ) : (
-                        <View
-                            testID={`${testID}-identity`}
-                            style={styles.titleWrap}
-                            accessibilityRole="header"
-                            accessibilityLabel={status ? `${title}, ${status.label}` : title}
-                        >
-                            {identityLines}
-                        </View>
-                    )}
-                    {status ? (
-                        <StatusPill
-                            testID={`${testID}-status`}
-                            label={status.label}
-                            variant={status.variant}
-                            hideDot
-                            labelVariant="micro"
-                        />
-                    ) : null}
+        <View testID={testID} style={styles.root} accessibilityRole="summary">
+            {exact && model.stale ? (
+                // Retained facts stay at full strength under one freshness line (pane-states "Stale").
+                <SurfaceFreshnessLine
+                    testID={`${testID}-freshness`}
+                    reason={offline && props.machineName
+                        ? t('sessionCompanion.freshness.machineOffline', { machine: props.machineName })
+                        : t('sessionBoard.board.stale')}
+                />
+            ) : null}
+            {exact ? (
+                <SummaryStatus model={model} headerAccessory={props.headerAccessory} testID={testID} />
+            ) : props.headerAccessory ? (
+                <View style={styles.statusRow}>
+                    <View style={styles.grow} />
+                    {props.headerAccessory}
                 </View>
+            ) : null}
 
-                {visible.rows.length > 0 ? (
-                    <View style={styles.rows}>
-                        {visible.rows.map((row, index) => (
-                            <SummaryRow
-                                key={row.kind}
-                                row={row}
-                                emphasized={index === 0}
-                                approvalEmphasisSignal={row.kind === 'approvals' ? approvalEmphasisSignal : 0}
-                                reducedMotion={reducedMotion}
-                                testID={`${testID}-row-${row.kind}`}
-                                onPress={props.destinations?.[row.destination]}
-                            />
-                        ))}
-                    </View>
-                ) : null}
+            {exact ? (
+                <SummaryAsk
+                    needsYou={model.needsYou}
+                    offline={offline}
+                    machineName={props.machineName ?? null}
+                    {...(props.answerPermission ? { answerPermission: props.answerPermission } : {})}
+                    {...(props.showPermissionInChat ? { showInChat: props.showPermissionInChat } : {})}
+                    {...(props.destinations?.approvals ? { openApprovals: props.destinations.approvals } : {})}
+                    testID={testID}
+                />
+            ) : null}
 
-                {visible.hiddenCount > 0 && props.onOpenFullSurface ? (
-                    <Pressable
-                        testID={`${testID}-more`}
-                        accessibilityRole="button"
-                        accessibilityLabel={t('sessionBoard.companion.summary.moreDetailsA11y', {
-                            count: visible.hiddenCount,
-                        })}
-                        onPress={props.onOpenFullSurface}
-                        style={({ pressed }) => [
-                            styles.row,
-                            { minHeight: resolveMinimumInteractiveTargetSize(Platform.OS) },
-                            pressed && styles.rowPressed,
-                        ]}
-                    >
-                        <Text style={styles.footerLabel}>{t('sessionBoard.companion.summary.moreDetails')}</Text>
-                        <Icon
-                            name="caret-right"
-                            size={14}
-                            color={theme.colors.text.link}
-                            mirrored={I18nManager.isRTL}
+            {exact && model.facts.length > 0 ? (
+                <View style={styles.facts} testID={`${testID}-facts`}>
+                    {model.facts.map((fact) => (
+                        <SummaryFactCell
+                            key={fact.kind}
+                            fact={fact}
+                            onPress={props.destinations?.[fact.destination]}
+                            testID={`${testID}-fact-${fact.kind}`}
                         />
-                    </Pressable>
-                ) : null}
+                    ))}
+                </View>
+            ) : null}
 
-                {availabilityLabel ? (
-                    <Text testID={`${testID}-availability`} style={styles.stale}>{availabilityLabel}</Text>
-                ) : null}
-                {props.model.stale ? (
-                    <Text style={styles.stale}>{t('sessionBoard.board.stale')}</Text>
-                ) : null}
-                {props.model.availability === 'partial' ? (
-                    <Text style={styles.stale}>{t('sessionBoard.companion.summary.partial')}</Text>
-                ) : null}
-            </View>
-        </SurfaceCard>
+            {exact && visible.rows.length > 0 ? (
+                <View style={styles.rows}>
+                    {visible.rows.map((row) => (
+                        <DetailRow
+                            key={row.kind}
+                            row={row}
+                            approvalEmphasisSignal={row.kind === 'approvals' ? approvalEmphasisSignal : 0}
+                            reducedMotion={reducedMotion}
+                            testID={`${testID}-row-${row.kind}`}
+                            onPress={props.destinations?.[row.destination]}
+                        />
+                    ))}
+                </View>
+            ) : null}
+
+            {exact && visible.hiddenCount > 0 && props.onOpenFullSurface ? (
+                <Pressable
+                    testID={`${testID}-more`}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('sessionBoard.companion.summary.moreDetailsA11y', { count: visible.hiddenCount })}
+                    onPress={props.onOpenFullSurface}
+                    style={({ pressed }) => [
+                        styles.row,
+                        { minHeight: resolveMinimumInteractiveTargetSize(Platform.OS) },
+                        pressed && styles.rowPressed,
+                    ]}
+                >
+                    <Text style={styles.footerLabel}>{t('sessionBoard.companion.summary.moreDetails')}</Text>
+                    <Icon name="caret-right" size={14} color={theme.colors.text.link} mirrored={I18nManager.isRTL} />
+                </Pressable>
+            ) : null}
+
+            {availabilityLabel ? (
+                <Text testID={`${testID}-availability`} style={styles.stale}>{availabilityLabel}</Text>
+            ) : null}
+            {exact && model.availability === 'partial' ? (
+                <Text style={styles.stale}>{t('sessionBoard.companion.summary.partial')}</Text>
+            ) : null}
+        </View>
     );
 });

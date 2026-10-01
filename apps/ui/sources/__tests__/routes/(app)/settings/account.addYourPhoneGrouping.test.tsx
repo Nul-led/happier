@@ -14,10 +14,18 @@ import { createUseSettingMutableMockFromReader } from '@/dev/testkit/mocks/stora
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let windowDimensions: { width: number; height: number } = { width: 1200, height: 800 };
+// What the page asked the modal boundary to show.
+const shownModals = vi.hoisted(() => [] as Array<{ props?: unknown }>);
 let runningOnMac = false;
 
 
 installSessionSettingsEntryModuleMocks({
+    modalModule: async () => {
+        const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+        return createModalModuleMock({
+            spies: { show: ((config: { props?: unknown }) => { shownModals.push(config); return 'modal-id'; }) as never },
+        }).module;
+    },
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
@@ -128,6 +136,7 @@ describe('Settings → Account (grouping)', () => {
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
         resetSessionSettingsEntryState();
+        shownModals.length = 0;
         standardCleanup();
     });
 
@@ -147,7 +156,9 @@ describe('Settings → Account (grouping)', () => {
 
         screen.pressByTestId('settings-account-add-your-phone');
 
-        expect(sessionSettingsEntryState.routerPushSpy).toHaveBeenCalledWith('/settings/add-phone');
+        // The QR opens over the page (no tile here to grow in place); the page stays put.
+        expect(shownModals.map((config) => config.props)).toEqual([{ purpose: 'phone' }]);
+        expect(sessionSettingsEntryState.routerPushSpy).not.toHaveBeenCalledWith('/settings/add-phone');
 
         screen.pressByTestId('settings-account-add-home');
 

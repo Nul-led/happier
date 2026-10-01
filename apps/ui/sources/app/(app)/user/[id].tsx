@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Linking } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Text } from '@/components/ui/text/Text';
 import { useAuth } from '@/auth/context/AuthContext';
 import { getUserProfile, sendFriendRequest, removeFriend } from '@/sync/api/social/apiFriends';
 import { UserProfile, getDisplayName } from '@/sync/domains/social/friendTypes';
@@ -10,7 +9,8 @@ import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Item } from '@/components/ui/lists/Item';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
+import { PageHeader, type PageHeaderMetaFact } from '@/components/ui/layout/PageHeader';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { useHappyAction } from '@/hooks/ui/useHappyAction';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -20,7 +20,7 @@ import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { HappyError } from '@/utils/errors/errors';
 import { getAuthProvider } from '@/auth/providers/registry';
 import { isSafeBadgeUrl } from '@/utils/url/urlSafety';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { Icon } from '@/components/ui/icons/Icon';
 import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
@@ -29,13 +29,6 @@ import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 const USERNAME_PREFIX = '@';
 
 export default function UserProfileScreen() {
-    // Composed at render time: the module-scope stylesheet evaluates once, so a
-    // baked-in `layout.maxWidth` would freeze the user's content-width preference.
-    const headerMaxWidthStyle = useLayoutMaxWidthStyle();
-    const headerContainerStyle = React.useMemo(
-        () => [styles.headerContainer, headerMaxWidthStyle],
-        [headerMaxWidthStyle],
-    );
     const { id } = useLocalSearchParams<{ id: string }>();
     const { credentials } = useAuth();
     const router = useRouter();
@@ -132,140 +125,131 @@ export default function UserProfileScreen() {
         }
     });
 
-    if (isLoading) {
+    if (isLoading || !userProfile) {
+        // The page keeps its identity while the person loads or when they can't be found: the same
+        // header with a placeholder name, then the state where the sections would be.
         return (
-            <View style={styles.loadingContainer}>
-                <ActivitySpinner size="large" color={theme.colors.accent.blue} />
-            </View>
-        );
-    }
-
-    if (!userProfile) {
-        return (
-            <View style={styles.errorContainer}>
-                <Text style={styles.errorText}>{t('errors.userNotFound')}</Text>
-            </View>
+            <ItemList presentation="page">
+                <PageHeader
+                    testID="user-profile.header"
+                    alwaysShowTitle
+                    title={t('detailPages.person.placeholderTitle')}
+                    leading={<Avatar id={id ?? ''} size={48} />}
+                />
+                <ItemGroup surface="none">
+                    {isLoading ? (
+                        <SurfaceStateCard testID="user-profile.loading" kind="loading" title={t('common.loading')} />
+                    ) : (
+                        <SurfaceStateCard testID="user-profile.not-found" kind="unavailable" title={t('errors.userNotFound')} />
+                    )}
+                </ItemGroup>
+            </ItemList>
         );
     }
 
     const displayName = getDisplayName(userProfile);
     const avatarUrl = userProfile.avatar?.url;
 
-    // Determine friend actions based on status
-    const getFriendActions = () => {
+    // What the viewer can do about this friendship. The one forward action is primary; declining or
+    // withdrawing is quiet, and removing an existing friend closes the page as a destructive action.
+    const friendActions: ReadonlyArray<{
+        key: string;
+        title: string;
+        display: 'default' | 'secondary';
+        onPress: () => void;
+        loading: boolean;
+    }> = (() => {
         switch (userProfile.status) {
             case 'friend':
-                return [{
-                    title: t('friends.removeFriend'),
-                    icon: <Icon name="user-minus" size={29} color={theme.colors.state.danger.foreground} />,
-                    onPress: handleRemoveFriend,
-                    loading: removingFriend,
-                }];
+                return [];
             case 'pending':
                 // User has received a friend request
                 return [
-                    {
-                        title: t('friends.acceptRequest'),
-                        icon: <Icon name="check-circle" size={29} color={theme.colors.state.success.foreground} />,
-                        onPress: addFriend,
-                        loading: addingFriend,
-                    },
-                    {
-                        title: t('friends.denyRequest'),
-                        icon: <Icon name="x-circle" size={29} color={theme.colors.state.danger.foreground} />,
-                        onPress: handleRemoveFriend,
-                        loading: removingFriend,
-                    }
+                    { key: 'accept', title: t('friends.acceptRequest'), display: 'default' as const, onPress: addFriend, loading: addingFriend },
+                    { key: 'deny', title: t('friends.denyRequest'), display: 'secondary' as const, onPress: handleRemoveFriend, loading: removingFriend },
                 ];
             case 'requested':
                 // User has sent a friend request
-                return [{
-                    title: t('friends.cancelRequest'),
-                    icon: <Icon name="x" size={29} color={theme.colors.accent.orange} />,
-                    onPress: handleRemoveFriend,
-                    loading: removingFriend,
-                }];
+                return [
+                    { key: 'cancel', title: t('friends.cancelRequest'), display: 'secondary' as const, onPress: handleRemoveFriend, loading: removingFriend },
+                ];
             case 'rejected':
             case 'none':
             default:
-                return [{
-                    title: t('friends.requestFriendship'),
-                    icon: <Icon name="user-plus" size={29} color={theme.colors.accent.blue} />,
-                    onPress: addFriend,
-                    loading: addingFriend,
-                }];
+                return [
+                    { key: 'request', title: t('friends.requestFriendship'), display: 'default' as const, onPress: addFriend, loading: addingFriend },
+                ];
         }
-    };
+    })();
 
-    const friendActions = getFriendActions();
     const sharedSessions = userProfile.status === 'friend' && sharingSupported
-        ? sessions.filter(session => session.owner === userProfile.id)
+        ? sessions.filter(session => session.owner === userProfile.id && typeof session.serverId === 'string')
         : [];
 
+    const headerFacts: PageHeaderMetaFact[] = [
+        { key: 'username', text: `${USERNAME_PREFIX}${userProfile.username}` },
+        ...(userProfile.status === 'friend'
+            ? [{ key: 'friends', text: t('friends.alreadyFriends'), icon: 'check-circle' as const }]
+            : []),
+    ];
+
     return (
-        <ItemList style={{ paddingTop: 0 }}>
-            {/* User Info Header */}
-            <View style={headerContainerStyle}>
-                <View style={styles.profileCard}>
-                    <View style={{ marginBottom: 16 }}>
-                        <Avatar
-                            id={userProfile.id}
-                            size={90}
-                            imageUrl={avatarUrl}
-                            thumbhash={userProfile.avatar?.thumbhash}
-                        />
-                    </View>
-
-                    <Text style={styles.displayName}>{displayName}</Text>
-
-                        <Text style={styles.username}>{USERNAME_PREFIX}{userProfile.username}</Text>
-
-                    {/* Bio */}
-                    {userProfile.bio && (
-                        <Text style={styles.bio}>{userProfile.bio}</Text>
-                    )}
-
-                    {/* Friend Status Badge */}
-                    {userProfile.status === 'friend' && (
-                        <View style={styles.statusBadge}>
-                            <Icon name="check-circle" size={16} color={theme.colors.state.success.foreground} />
-                            <Text style={styles.statusText}>{t('friends.alreadyFriends')}</Text>
-                        </View>
-                    )}
-                </View>
-            </View>
-
-            {/* Actions */}
-            <ItemGroup>
-                {friendActions.map((action, index) => (
-                    <Item
-                        key={index}
-                        title={action.title}
-                        icon={action.icon}
-                        onPress={action.onPress}
-                        loading={action.loading}
-                        showChevron={false}
+        <ItemList presentation="page">
+            <PageHeader
+                testID="user-profile.header"
+                alwaysShowTitle
+                title={displayName}
+                description={userProfile.bio || undefined}
+                meta={headerFacts}
+                leading={(
+                    <Avatar
+                        id={userProfile.id}
+                        size={48}
+                        imageUrl={avatarUrl}
+                        thumbhash={userProfile.avatar?.thumbhash}
                     />
-                ))}
-            </ItemGroup>
+                )}
+                actions={friendActions.length > 0 ? (
+                    <View style={styles.headerActions}>
+                        {friendActions.map((action) => (
+                            <RoundButton
+                                key={action.key}
+                                testID={`user-profile.friendship.${action.key}`}
+                                size="normal"
+                                display={action.display}
+                                title={action.title}
+                                accessibilityLabel={action.title}
+                                loading={action.loading}
+                                onPress={action.onPress}
+                            />
+                        ))}
+                    </View>
+                ) : undefined}
+            />
 
             {/* Sessions shared by this friend */}
             {userProfile.status === 'friend' && sharingSupported && (
-                <ItemGroup title={t('friends.sharedSessions')}>
+                <ItemGroup
+                    title={t('friends.sharedSessions')}
+                    description={t('detailPages.person.sharedSessionsDescription')}
+                >
                     {sharedSessions.length > 0 ? (
-                        sharedSessions.map((session) => (
-                            <Item
-                                key={sessionAddressKey({ serverId: session.serverId, sessionId: session.id })}
-                                title={getSessionName(session)}
-                                subtitle={t('session.sharing.viewOnly')}
-                                icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.accent.blue} />}
-                                onPress={() => void navigateToSession(session.id, { serverId: session.serverId })}
-                            />
-                        ))
+                        sharedSessions.map((session) => {
+                            const serverId = session.serverId;
+                            if (typeof serverId !== 'string') return null;
+                            return (
+                                <Item
+                                    key={sessionAddressKey({ serverId, sessionId: session.id })}
+                                    title={getSessionName(session)}
+                                    icon={<Icon name="chat-circle-dots" />}
+                                    subtitle={t('session.sharing.viewOnly')}
+                                    onPress={() => void navigateToSession(session.id, { serverId })}
+                                />
+                            );
+                        })
                     ) : (
                         <Item
                             title={t('friends.noSharedSessions')}
-                            icon={<Icon name="chat-circle" size={29} color={theme.colors.text.secondary} />}
                             showChevron={false}
                         />
                     )}
@@ -273,7 +257,10 @@ export default function UserProfileScreen() {
             )}
 
             {userProfile.badges?.length ? (
-                <ItemGroup>
+                <ItemGroup
+                    title={t('detailPages.person.linkedAccountsTitle')}
+                    description={t('detailPages.person.linkedAccountsDescription')}
+                >
                     {userProfile.badges.map((badge) => {
                         const provider = getAuthProvider(badge.id);
                         const iconName = provider?.badgeIconName ?? 'link-outline';
@@ -306,95 +293,33 @@ export default function UserProfileScreen() {
                 </ItemGroup>
             ) : null}
 
-            {/* Profile Details */}
-            {/* <ItemGroup>
-                <Item
-                    title={t('profile.firstName')}
-                    detail={userProfile.firstName || '-'}
-                    showChevron={false}
-                />
-                <Item
-                    title={t('profile.lastName')}
-                    detail={userProfile.lastName || '-'}
-                    showChevron={false}
-                />
-                <Item
-                    title={t('profile.username')}
-                    detail={`@${userProfile.username}`}
-                    showChevron={false}
-                />
-                <Item
-                    title={t('profile.status')}
-                    detail={t(`friends.status.${userProfile.status}`)}
-                    showChevron={false}
-                />
-            </ItemGroup> */}
+            {userProfile.status === 'friend' ? (
+                <ItemGroup surface="none">
+                    <View style={styles.closingActions}>
+                        <RoundButton
+                            testID="user-profile.friendship.remove"
+                            size="normal"
+                            display="destructive"
+                            title={t('friends.removeFriend')}
+                            accessibilityLabel={t('friends.removeFriend')}
+                            loading={removingFriend}
+                            onPress={handleRemoveFriend}
+                        />
+                    </View>
+                </ItemGroup>
+            ) : null}
         </ItemList>
     );
 }
 
 const styles = StyleSheet.create((theme) => ({
-    loadingContainer: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: theme.colors.background.canvas,
-    },
-    errorContainer: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: theme.colors.background.canvas,
-        padding: 32,
-    },
-    errorText: {
-        fontSize: 16,
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
-    },
-    headerContainer: {
-        alignSelf: 'center',
-        width: '100%',
-    },
-    profileCard: {
-        alignItems: 'center',
-        paddingVertical: 32,
-        backgroundColor: theme.colors.surface.base,
-        marginTop: 16,
-        borderRadius: 12,
-        marginHorizontal: 16,
-    },
-    displayName: {
-        fontSize: 24,
-        fontWeight: '600',
-        color: theme.colors.text.primary,
-        marginBottom: 4,
-    },
-    username: {
-        fontSize: 16,
-        color: theme.colors.text.secondary,
-        marginBottom: 12,
-    },
-    bio: {
-        fontSize: 14,
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
-        paddingHorizontal: 32,
-        marginBottom: 16,
-    },
-    statusBadge: {
+    headerActions: {
         flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: 'rgba(52, 199, 89, 0.1)',
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 16,
-        marginTop: 8,
+        flexWrap: 'wrap',
+        gap: 8,
     },
-    statusText: {
-        fontSize: 13,
-        color: theme.colors.state.success.foreground,
-        marginLeft: 4,
-        fontWeight: '500',
+    closingActions: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
     },
 }));

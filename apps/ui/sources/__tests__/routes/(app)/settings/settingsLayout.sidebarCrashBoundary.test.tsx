@@ -68,12 +68,6 @@ vi.mock('@/text', async () => {
     return createTextModuleMock({ translate: (key) => key });
 });
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
-
 vi.mock('@/components/navigation/Header', () => ({
     createHeader: () => null,
 }));
@@ -100,14 +94,17 @@ describe('/settings/_layout sidebar crash boundary', () => {
         consoleErrorSpy.mockRestore();
     });
 
-    it('declares the provider index route with the canonical nested screen name', async () => {
+    it('declares the Agents and Providers collections as their nested navigators', async () => {
         declaredScreenNames.length = 0;
         const Layout = (await import('@/app/(app)/settings/_layout')).default;
 
         await renderScreen(React.createElement(Layout));
 
-        expect(declaredScreenNames).toContain('agents/index');
-        expect(declaredScreenNames).toContain('agents/[agentId]');
-        expect(declaredScreenNames).not.toContain('providers');
+        // Each collection owns its screens in its own `_layout` (rail + detail), so the settings
+        // stack declares the collection, never its leaf routes.
+        expect(declaredScreenNames).toContain('agents');
+        expect(declaredScreenNames).toContain('providers');
+        expect(declaredScreenNames).not.toContain('agents/index');
+        expect(declaredScreenNames).not.toContain('agents/[agentId]');
     });
 });

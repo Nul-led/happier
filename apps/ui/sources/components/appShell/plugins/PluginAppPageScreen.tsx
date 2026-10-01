@@ -1,22 +1,22 @@
 import * as React from 'react';
-import { useIsFocused } from '@react-navigation/native';
 import { Platform, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
-import { Stack, useRouter } from 'expo-router';
+import { Stack } from '@/components/appShell/workspace/destinationRoute';
+import { useDestinationFocus, useDestinationRouter, useDestinationVisibility } from '@/components/appShell/workspace/DestinationInstanceHost';
 
+import { DetailsPaneSlotHost } from '@/components/appShell/panes/details/DetailsPaneSlot';
 import { PluginSurfacePlacementHost } from '@/components/plugins/surfaces';
 import { PluginSurfaceFallback } from '@/components/sessions/panes/PluginSurfaceFallback';
 import { PluginSurfaceFocusEligibilityProvider } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
 import { useNativeBackLayerBackHandler } from '@/components/ui/overlays/NativeBackLayerBoundary';
 import { RouteRemovalStepConsumer } from '@/utils/navigation/RouteRemovalStepConsumer';
+import { resolveItemGroupContentHorizontalInsetPx } from '@/components/ui/lists/itemGroupSpacing';
 import { ESCAPE_LAYER_PRIORITIES, useEscapeLayer } from '@/keyboard/escape';
-import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
 import type { BoundPluginSurfaceBinding } from '@/components/plugins/surfaces/boundPluginSurfaceController';
 import { usePluginSurfaceDestinationNavigationBinding } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
 import { resolveSelectedPluginSurfaceLaunchAuthority } from '@/components/plugins/surfaces/pluginSurfaceLaunchAuthority';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { t } from '@/text';
-import { buildPluginDetailRoute } from '@/components/settings/plugins/model/pluginDetailRoute';
+import { buildPluginDetailRoute } from '@/components/settings/plugins/model/pluginsSurfaceRoutes';
 
 import {
     useAppShellPluginUiProjection,
@@ -51,15 +51,29 @@ import {
  * route renders the canonical unavailable surface rather than a blank screen or
  * a redirect that would hide the fact from the user.
  */
+/**
+ * A plugin page is a work surface the plugin composes, like the host's own
+ * list/detail collections (Settings → Agents, Providers), which fill their
+ * page. It takes the host page gutter — the inset page sheets and headers use —
+ * so no page sits flush against the window edge, and the full width, so a
+ * list beside its detail is not squeezed into the reading measure. Reading
+ * content inside a page keeps its own measure (state tiles, prose).
+ */
+const pageContentFrameStyle = {
+    flex: 1,
+    width: '100%',
+    paddingHorizontal: resolveItemGroupContentHorizontalInsetPx(),
+} as const;
+
 export function PluginAppPageScreen(props: Readonly<{
     pluginId: string;
     localId: string;
     /** Canonical plugin-local location; `''` at the page root. */
     subPath: string | null;
 }>): React.ReactElement {
-    const isFocused = useIsFocused();
-    const { theme } = useUnistyles();
-    const router = useRouter();
+    const isFocused = useDestinationFocus();
+    const isVisible = useDestinationVisibility();
+    const router = useDestinationRouter();
     const projection = useAppShellPluginUiProjection();
     const localize = useProjectedPluginLocalizedTextResolver();
     const placements = React.useMemo(
@@ -191,7 +205,7 @@ export function PluginAppPageScreen(props: Readonly<{
     }), [locationOwner, openSurface, pageIsLive]);
     const recoveryAction = React.useMemo(() => ({
         label: t('settingsPlugins.managePlugin'),
-        onPress: () => { router.push(buildPluginDetailRoute(props.pluginId)); },
+        onPress: () => { router.push(buildPluginDetailRoute('settings', props.pluginId)); },
     }), [props.pluginId, router]);
 
     // Addressed by the ROUTE, not by the resolved catalog entry: the launch
@@ -242,8 +256,8 @@ export function PluginAppPageScreen(props: Readonly<{
         return (
             <>
                 <Stack.Screen options={headerOptions} />
-                <View testID="plugin-app-page-establishing" style={{ flex: 1 }}>
-                    <PaneLoadingFallback color={theme.colors.text.secondary} />
+                <View testID="plugin-app-page-establishing" style={pageContentFrameStyle}>
+                    <PluginSurfaceFallback testID="plugin-app-page-loading" state="loading" />
                 </View>
             </>
         );
@@ -282,9 +296,16 @@ export function PluginAppPageScreen(props: Readonly<{
             <RouteRemovalStepConsumer active={isFocused && pageIsLive} consume={consumePageBack} />
             <PluginSurfaceFocusEligibilityProvider
                 active={isFocused}
+                presentationActive={isVisible}
                 currentUiContextActive={isFocused}
             >
-                <View testID="plugin-app-page-host" style={{ flex: 1 }}>
+                {/*
+                    The page's app details pane: a plugin's `DetailsPane` (and a
+                    `Collection` opening its items) renders beside the page in the
+                    same pane every destination uses.
+                */}
+                <DetailsPaneSlotHost testID="plugin-app-page-details">
+                <View testID="plugin-app-page-host" style={pageContentFrameStyle}>
                     <PluginSurfacePlacementHost
                         placement={page.placement}
                         pluginUiProjection={projection.pluginUiProjection}
@@ -300,6 +321,7 @@ export function PluginAppPageScreen(props: Readonly<{
                             && projection.interactionEnabled}
                     />
                 </View>
+                </DetailsPaneSlotHost>
             </PluginSurfaceFocusEligibilityProvider>
         </>
     );

@@ -1137,6 +1137,8 @@ function OAuthProviderReturnBody() {
             const pendingConnect = flow === 'auth'
                 ? null
                 : await TokenStorage.getPendingExternalConnect();
+            const boundConnect = pendingConnect?.provider === providerId ? pendingConnect : null;
+            const connectReturnTo = normalizeInternalReturnPath(boundConnect?.returnTo) ?? '/settings/account';
             const startCustody = flow === 'auth' ? pendingAuthStateForFlow?.value ?? null : pendingConnect;
             const provider = getAuthProvider(
                 providerId,
@@ -1160,6 +1162,7 @@ function OAuthProviderReturnBody() {
                 const message = sanitizeExternalOAuthCallbackError(error, providerName);
                 await Modal.alert(t('common.error'), message);
                 let passwordEnrollmentReturnTo = '/settings/account/security';
+                let authenticationReturnTo = '/';
                 if (flow !== 'auth') {
                     await TokenStorage.clearPendingExternalConnect();
                 } else if (isPasswordEnrollmentReturn) {
@@ -1181,15 +1184,32 @@ function OAuthProviderReturnBody() {
                     }
                 } else if (isFirstKeyReturn) {
                     await TokenStorage.clearPendingExternalAuth();
+                } else {
+                    const pendingAuth = pendingAuthStateForFlow?.value;
+                    if (!pendingAuthStateForFlow?.serverMismatch
+                        && pendingAuth?.provider === providerId
+                        && pendingAuth.teamContinuation) {
+                        authenticationReturnTo = teamSignInReturnPath({
+                            teamId: pendingAuth.teamContinuation.destination.teamId,
+                            carrier: pendingAuth.teamContinuation.homeServerIdentityId,
+                        });
+                        await TokenStorage.clearPendingExternalAuth({
+                            serverUrl: pendingAuth.serverUrl,
+                            serverId: pendingAuth.serverId,
+                            removeExact: pendingAuth,
+                        });
+                    }
                 }
                 safeReplace(
                     flow === 'auth'
                     && !isFirstKeyReturn
                     && !isPasswordEnrollmentReturn
-                        ? '/'
+                        ? authenticationReturnTo
                         : isPasswordEnrollmentReturn
                             ? passwordEnrollmentReturnTo
-                            : '/settings/account',
+                            : flow !== 'auth'
+                                ? connectReturnTo
+                                : '/settings/account',
                 );
                 return;
             }
@@ -1462,10 +1482,6 @@ function OAuthProviderReturnBody() {
             }
 
             // connect flow (default)
-            const boundConnect = pendingConnect && pendingConnect.provider === providerId ? pendingConnect : null;
-            const connectReturnTo = boundConnect
-                ? normalizeInternalReturnPath(boundConnect.returnTo) ?? '/settings/account'
-                : '/settings/account';
             // The continuation names the exact Home whose credential started the
             // connect. Finalize, cancel and the replacement credential all belong
             // to that Home, whichever Home is focused now (TA-R14/TA-R16).

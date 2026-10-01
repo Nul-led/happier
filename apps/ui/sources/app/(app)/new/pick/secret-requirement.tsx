@@ -1,3 +1,4 @@
+import { useAiLaunchProfilesForLegacyUi } from '@/sync/store/useAiLaunchProfiles';
 import React from 'react';
 import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 
@@ -8,7 +9,6 @@ import {
     useSettings,
 } from '@/sync/domains/state/storage';
 import { resolveProfileById } from '@/sync/domains/profiles/profileUtils';
-import { readUiAiLaunchProfilesForLegacyUi } from '@/sync/domains/profiles/aiLaunchProfileCollection';
 import { SecretRequirementScreen, type SecretRequirementModalResult } from '@/components/secrets/requirements';
 import { useSavedSecretsMutable } from '@/components/secrets/useSavedSecretsMutable';
 import { storeTempData } from '@/utils/sessions/tempDataStore';
@@ -70,10 +70,7 @@ export default React.memo(function SecretRequirementPickerScreen() {
     const revertOnCancel = params.revertOnCancel === '1';
 
     const rawProfiles = useSetting('profiles');
-    const profiles = React.useMemo(
-        () => readUiAiLaunchProfilesForLegacyUi(rawProfiles),
-        [rawProfiles],
-    );
+    const profiles = useAiLaunchProfilesForLegacyUi(rawProfiles);
     const [secrets, setSecrets] = useSavedSecretsMutable();
     const [secretBindingsByProfileId, setSecretBindingsByProfileId] = useCurrentSecretBindingsByProfileIdMutable();
     const settings = useSettings() ?? settingsDefaults;

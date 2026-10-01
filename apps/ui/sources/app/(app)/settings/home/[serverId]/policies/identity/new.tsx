@@ -1,10 +1,15 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { Redirect, useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
-import { ManagedIdentityProviderEditorScreen } from '@/components/settings/home/identity/ManagedIdentityProviderEditorScreen';
+import { legacyPoliciesRedirectHref } from '@/components/settings/home/signInProviders/legacyPoliciesRedirect';
+import { homeAdministrationIdentityProviderCreatePath } from '@/components/settings/home/governance/homeAdministrationRoutes';
 
-export default function ManagedIdentityProviderCreateRoute() {
+/** Identity providers moved to Sign-in providers; a link saved before the move still opens the same page. */
+export function LegacyManagedIdentityProviderCreateRoute() {
     const params = useLocalSearchParams<{ serverId?: string | string[] }>();
     const serverId = Array.isArray(params.serverId) ? params.serverId[0] ?? '' : params.serverId ?? '';
-    return <ManagedIdentityProviderEditorScreen serverId={serverId} />;
+    return <Redirect href={legacyPoliciesRedirectHref(homeAdministrationIdentityProviderCreatePath(serverId), params, ['serverId']) as never} />;
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { LegacyManagedIdentityProviderCreateRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={LegacyManagedIdentityProviderCreateRoute} />; }

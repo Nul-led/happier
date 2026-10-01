@@ -255,15 +255,14 @@ export function buildUniversalSearchSections(
     const onCommit = input.onCommitResult;
     const sections: SelectionListSectionDescriptor[] = [];
 
-    // Commands first: they are local, immediate, and the highest-frequency
-    // reason the surface is open. Construction, currentness, availability, i18n
-    // and activation all stay with `buildCommandPaletteCommands`.
+    // Construction, currentness, availability, i18n and activation of commands
+    // all stay with `buildCommandPaletteCommands`.
     const nonRecentCommands = input.commands.filter((command) => command.kind !== 'recentSession');
     const visibleCommands = query.length > 0
         ? nonRecentCommands
         : nonRecentCommands
             .filter((command) => command.emptyQuerySuggested === true);
-    sections.push(...buildCommandPaletteSelectionListSections(visibleCommands));
+    const commandSections = buildCommandPaletteSelectionListSections(visibleCommands);
 
     const sessions = narrowLocalEntities(input.sessions, query, EMPTY_QUERY_RECENT_LIMIT);
     const sessionInventoryHint = query.length > 0
@@ -273,8 +272,8 @@ export function buildUniversalSearchSections(
                 ? t('universalSearch.sessionInventoryIncomplete')
                 : undefined
         : undefined;
-    if (sessions.length > 0 || sessionInventoryHint) {
-        sections.push({
+    const sessionSection: SelectionListSectionDescriptor | null = sessions.length > 0 || sessionInventoryHint
+        ? {
             kind: 'static',
             id: UNIVERSAL_SEARCH_SOURCE_IDS.sessions,
             title: query.length === 0
@@ -299,8 +298,53 @@ export function buildUniversalSearchSections(
                 },
             }, 'chats-circle', onCommit)),
             ...(sessionInventoryHint ? { resultHint: sessionInventoryHint } : {}),
-        });
+        }
+        : null;
+
+    // Settings pages come pre-ranked by the settings catalog's own Fuse owner,
+    // which matches keywords and ancestor titles the row never displays. It is a
+    // local corpus, so it resolves with no debounce; it is provider-filtered so
+    // a keyword-only match is not thrown away by the host matcher.
+    const settingsPages = query.length > 0 ? input.searchSettingsPages(query).slice(0, rowLimit) : [];
+    const settingsSection: SelectionListSectionDescriptor | null = settingsPages.length > 0
+        ? {
+            kind: 'dynamic',
+            id: UNIVERSAL_SEARCH_SOURCE_IDS.settings,
+            title: t('universalSearch.sections.settings'),
+            resolverKey: `${UNIVERSAL_SEARCH_SOURCE_IDS.settings}|${query}`,
+            visibleWhen: (value: string) => value.trim().length > 0,
+            debounceMs: 0,
+            loadingSkeletonRows: 0,
+            resultFiltering: 'provider',
+            showSkeletonsOnFirstLoad: true,
+            resultTransition: 'none',
+            resolve: async () => ({
+                options: settingsPages.map((page) => toOption({
+                    id: page.id,
+                    // Settings pages are host-local: the catalog is the scope.
+                    scopeKey: buildUniversalSearchScopeKey(['settings']),
+                    sourceId: UNIVERSAL_SEARCH_SOURCE_IDS.settings,
+                    kind: 'settingsPage',
+                    title: page.title,
+                    ...(page.subtitle ? { subtitle: page.subtitle } : {}),
+                    target: { kind: 'settingsPage', route: page.route },
+                }, 'sliders-horizontal', onCommit)),
+            }),
+        }
+        : null;
+
+    // One stable group order; a group appears only when it has rows (or a truthful hint).
+    // Empty query: what you had open first, then the suggested commands (Actions, Go to).
+    // With a query: matching commands, then Settings, then Sessions.
+    if (query.length === 0) {
+        if (sessionSection) sections.push(sessionSection);
+        sections.push(...commandSections);
+    } else {
+        sections.push(...commandSections);
+        if (settingsSection) sections.push(settingsSection);
+        if (sessionSection) sections.push(sessionSection);
     }
+
     const projects = narrowLocalEntities(input.projects, query, EMPTY_QUERY_RECENT_LIMIT);
     if (projects.length > 0) {
         sections.push({
@@ -329,40 +373,6 @@ export function buildUniversalSearchSections(
                 },
             }, 'folder-open', onCommit)),
         });
-    }
-
-    // Settings pages come pre-ranked by the settings catalog's own Fuse owner,
-    // which matches keywords and ancestor titles the row never displays. It is a
-    // local corpus, so it resolves with no debounce; it is provider-filtered so
-    // a keyword-only match is not thrown away by the host matcher.
-    if (query.length > 0) {
-        const settingsPages = input.searchSettingsPages(query).slice(0, rowLimit);
-        if (settingsPages.length > 0) {
-            sections.push({
-                kind: 'dynamic',
-                id: UNIVERSAL_SEARCH_SOURCE_IDS.settings,
-                title: t('universalSearch.sections.settings'),
-                resolverKey: `${UNIVERSAL_SEARCH_SOURCE_IDS.settings}|${query}`,
-                visibleWhen: (value: string) => value.trim().length > 0,
-                debounceMs: 0,
-                loadingSkeletonRows: 0,
-                resultFiltering: 'provider',
-                showSkeletonsOnFirstLoad: true,
-                resultTransition: 'none',
-                resolve: async () => ({
-                    options: settingsPages.map((page) => toOption({
-                        id: page.id,
-                        // Settings pages are host-local: the catalog is the scope.
-                        scopeKey: buildUniversalSearchScopeKey(['settings']),
-                        sourceId: UNIVERSAL_SEARCH_SOURCE_IDS.settings,
-                        kind: 'settingsPage',
-                        title: page.title,
-                        ...(page.subtitle ? { subtitle: page.subtitle } : {}),
-                        target: { kind: 'settingsPage', route: page.route },
-                    }, 'sliders-horizontal', onCommit)),
-                }),
-            });
-        }
     }
 
     for (const section of buildDynamicSection({

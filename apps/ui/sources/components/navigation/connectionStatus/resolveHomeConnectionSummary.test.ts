@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveHomeConnectionSummary } from './resolveHomeConnectionSummary';
+import { resolveHomeConnectionSummary, resolveHomeTargetSummary } from './resolveHomeConnectionSummary';
 
 describe('resolveHomeConnectionSummary', () => {
     it('reports the Home as connected while only machine facts need attention', () => {
@@ -66,5 +66,50 @@ describe('resolveHomeConnectionSummary', () => {
             syncErrorKind: 'unknown',
             syncErrorRetryable: false,
         })).toMatchObject({ kind: 'unavailable', action: 'none' });
+    });
+
+    it('uses one truthful summary for secondary Home projection states', () => {
+        expect(resolveHomeTargetSummary({ authStatus: 'signedIn', projectionStatus: 'idle' })).toMatchObject({
+            kind: 'connected',
+            statusLabelKey: 'connectionStatus.summary.connected',
+        });
+        expect(resolveHomeTargetSummary({ authStatus: 'signedIn', projectionStatus: 'loading' })).toMatchObject({
+            kind: 'reconnecting',
+            statusLabelKey: 'connectionStatus.summary.reconnecting',
+        });
+        expect(resolveHomeTargetSummary({ authStatus: 'signedIn', projectionStatus: 'error' })).toMatchObject({
+            kind: 'unavailable',
+            statusLabelKey: 'connectionStatus.summary.unavailable',
+        });
+        expect(resolveHomeTargetSummary({ authStatus: 'signedIn' })).toMatchObject({
+            kind: 'unknown',
+            statusLabelKey: 'status.unknown',
+        });
+    });
+
+    it('keeps signed-out and pending target precedence in the canonical target summary', () => {
+        expect(resolveHomeTargetSummary({
+            authStatus: 'signedOut',
+            projectionStatus: 'idle',
+            pending: true,
+        })).toMatchObject({
+            kind: 'sign_in',
+            statusLabelKey: 'connectionStatus.summary.signInAgain',
+        });
+        expect(resolveHomeTargetSummary({
+            authStatus: 'signedIn',
+            projectionStatus: 'idle',
+            pending: true,
+        })).toMatchObject({
+            kind: 'reconnecting',
+            statusLabelKey: 'connectionStatus.summary.reconnecting',
+        });
+    });
+
+    it('normalizes focused socket observations through the same target owner', () => {
+        expect(resolveHomeTargetSummary({ authStatus: 'signedIn', socketStatus: 'connected' })).toMatchObject({ kind: 'connected' });
+        expect(resolveHomeTargetSummary({ authStatus: 'signedIn', socketStatus: 'connecting' })).toMatchObject({ kind: 'reconnecting' });
+        expect(resolveHomeTargetSummary({ authStatus: 'signedIn', socketStatus: 'disconnected' })).toMatchObject({ kind: 'unavailable' });
+        expect(resolveHomeTargetSummary({ authStatus: 'signedIn', socketStatus: 'idle' })).toMatchObject({ kind: 'unknown' });
     });
 });

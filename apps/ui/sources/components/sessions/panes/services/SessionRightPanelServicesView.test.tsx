@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { FeatureDecision, FeatureId, RuntimeActionExecute } from '@happier-dev/protocol';
@@ -35,6 +36,21 @@ const useFeatureDecisionMock = vi.hoisted(() => vi.fn((featureId: FeatureId, _sc
     scope: { scopeKind: 'runtime' },
 })));
 const modalConfirmMock = vi.hoisted(() => vi.fn(async () => true));
+/**
+ * The public-link consequence sheet (`showLocalServiceExposureSheet`, F0 §3.D) is one `Modal.show`
+ * card that returns the chosen link type and lifetime; answer it with the first of each.
+ */
+const modalShowMock = vi.hoisted(() => vi.fn((config: unknown) => {
+    const props = (config as { props?: {
+        modeChoices: readonly { mode: string }[];
+        ttlChoices: readonly { ttlMs: number }[];
+        onResolve: (decision: { mode: string; ttlMs: number } | null) => void;
+    } }).props;
+    const mode = props?.modeChoices[0];
+    const ttl = props?.ttlChoices[0];
+    props?.onResolve(mode && ttl ? { mode: mode.mode, ttlMs: ttl.ttlMs } : null);
+    return 'modal-id';
+}));
 
 vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: (featureId: FeatureId, scope?: unknown) => useFeatureDecisionMock(featureId, scope),
@@ -44,7 +60,7 @@ vi.mock('@/modal', async () => {
     const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
     return createModalModuleMock({
         confirmResult: true,
-        spies: { confirm: modalConfirmMock },
+        spies: { confirm: modalConfirmMock, show: modalShowMock as never },
     }).module;
 });
 
@@ -172,6 +188,7 @@ describe('SessionRightPanelServicesView', () => {
     beforeEach(() => {
         useFeatureDecisionMock.mockImplementation((featureId: FeatureId): FeatureDecision => enabledDecision(featureId));
         modalConfirmMock.mockClear();
+        modalShowMock.mockClear();
     });
 
     it('passes supplied local service launcher state into the Services pane', async () => {
@@ -261,9 +278,20 @@ describe('SessionRightPanelServicesView', () => {
         );
 
         await pressTestInstanceAsync(
-            screen.findByTestId('session-rightpanel-services-row:inventory:inventory-entry-1-terminate'),
-            'session-rightpanel-services-row:inventory:inventory-entry-1-terminate',
+            screen.findByTestId('session-rightpanel-services-row:inventory:inventory-entry-1-item'),
+            'session-rightpanel-services-row:inventory:inventory-entry-1-item',
         );
+        // Terminate lives in the expanded row's overflow (U-11): drive the action model the canonical
+        // `ItemRowActions` menu was given rather than its portalled popover.
+        const terminate = screen.findAll((node) => Array.isArray(node.props?.actions)
+            && node.props?.overflowTriggerTestID === 'session-rightpanel-services-row:inventory:inventory-entry-1-overflow')
+            .flatMap((node) => node.props.actions as Array<{ id: string; onPress: () => void }>)
+            .find((action) => action.id === 'terminate');
+        expect(terminate).toBeTruthy();
+        await act(async () => {
+            terminate?.onPress();
+            for (let i = 0; i < 8; i += 1) await Promise.resolve();
+        });
 
         expect(runtimeActionExecute).toHaveBeenCalledExactlyOnceWith({
             actionId: 'localServices.actions.terminateDetected',
@@ -458,11 +486,17 @@ describe('SessionRightPanelServicesView', () => {
         );
 
         await pressTestInstanceAsync(
+            screen.findByTestId('session-rightpanel-services-row:preview:session-feed-item'),
+            'session-rightpanel-services-row:preview:session-feed-item',
+        );
+        await pressTestInstanceAsync(
             screen.findByTestId('session-rightpanel-services-row:preview:session-feed-public-preview-target:preview-session-create'),
             'session-rightpanel-services-row:preview:session-feed-public-preview-target:preview-session-create',
         );
 
-        expect(modalConfirmMock).toHaveBeenCalledOnce();
+        for (let i = 0; i < 8; i += 1) await Promise.resolve();
+        // The consequence sheet is the consent (one card, not a confirm plus two prompts).
+        expect(modalShowMock).toHaveBeenCalledOnce();
         expect(runtimeActionExecute).toHaveBeenCalledExactlyOnceWith({
             actionId: 'localServices.publicPreview.create',
             input: {

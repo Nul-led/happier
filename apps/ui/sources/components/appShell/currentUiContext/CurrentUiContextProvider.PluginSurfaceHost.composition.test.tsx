@@ -8,6 +8,7 @@ import type { PluginClientApi } from '@happier-dev/plugin-sdk';
 import type { PluginClientActionHandler } from '@happier-dev/plugin-sdk/actions';
 import type { RenderContext } from '@happier-dev/plugin-sdk/ui';
 import {
+    PluginProjectionV2Schema,
     PluginProjectionInstalledPackageV2Schema,
     PluginProjectedActionV2Schema,
     type PluginMachineExecutionOriginV1,
@@ -15,7 +16,7 @@ import {
 import {
     computePluginUiArtifactSha256DigestV1,
     normalizePluginUiDestinationBindingV1,
-    PluginUiArtifactsManifestEntryV1Schema,
+    PluginUiArtifactsManifestEntryV2Schema,
     type CurrentUiContextSnapshotV1,
     type PluginUiHostApiRequestEnvelopeV1,
     type PluginUiSurfaceContextV1,
@@ -41,7 +42,7 @@ import type {
     PluginReactNativeLoaderBackend,
 } from '@/components/plugins/reactNative/loader';
 import { loadPluginReactNativeBundleExport } from '@/components/plugins/reactNative/loader';
-import { createReactNativeWebLoaderBackend } from '@/components/plugins/reactNative/webLoaderBackend.web';
+import { createPluginUiCommonJsLoaderBackend } from '@/components/plugins/reactNative/commonJsLoaderBackend';
 import {
     EMPTY_PLUGIN_UI_PROJECTION,
     type PluginUiProjectionModel,
@@ -61,6 +62,7 @@ import {
     retireActiveServerAccountScopeLifetime,
 } from '@/sync/domains/scope/activeServerAccountScope';
 import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
+import { switchConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
 
 import {
     CurrentUiContextProvider,
@@ -78,6 +80,8 @@ const accountCredentials = vi.hoisted(() => ({
 const accountServerFetch = vi.hoisted(() => vi.fn<
     typeof import('@/sync/http/client').serverFetch
 >());
+
+const contributionProjectionDescribe = vi.hoisted(() => vi.fn());
 
 const nativeHostLifecycle = vi.hoisted(() => ({
     appState: 'active' as 'active' | 'background',
@@ -149,10 +153,34 @@ vi.mock('@/sync/http/client', async (importOriginal) => {
     };
 });
 
+vi.mock('@/sync/ops/machineContributionRegistryProjection', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/ops/machineContributionRegistryProjection')>()),
+    machineContributionRegistryProjectionDescribe: (...args: unknown[]) => (
+        contributionProjectionDescribe(...args)
+    ),
+    // One daemon answer per case: the per-mount read returns its target slice.
+    machinePluginUiTargetedContributionsRead: async (machineId: string) => {
+        const answer = await contributionProjectionDescribe(machineId) as Readonly<{
+            supported?: boolean;
+            targetedContributions?: unknown;
+            targetedSurfaceMounts?: readonly unknown[];
+        }>;
+        return answer?.supported === true && answer.targetedContributions
+            ? {
+                supported: true,
+                targetedContributions: answer.targetedContributions,
+                targetedSurfaceMounts: answer.targetedSurfaceMounts ?? [],
+            }
+            : { supported: false, reason: 'error' };
+    },
+}));
+
 vi.mock('@/sync/sync', async (importOriginal) => {
     const original = await importOriginal<typeof import('@/sync/sync')>();
     return {
         ...original,
+        syncSwitchServer: async () => undefined,
+        syncRestore: async () => undefined,
         // Credentials are a process boundary. Keep the real Sync owner for
         // every other method while the account-mode request stays deterministic.
         sync: new Proxy(original.sync, {
@@ -308,10 +336,12 @@ const CLIENT_ACTION_ORIGIN: PluginMachineExecutionOriginV1 = Object.freeze({
         materializationId: 'materialization-current-ui-context-client-action',
     }),
 });
+const PLUGIN_OCCURRENCE_ID = 'current-ui-composition-occurrence-a';
 
 const placement = Object.freeze({
     id: 'surfacePlacement:acme.current-ui-composition:notes',
     pluginId: 'acme.current-ui-composition',
+    occurrenceId: PLUGIN_OCCURRENCE_ID,
     serverIdentityId: CLIENT_ACTION_ORIGIN.serverIdentityId,
     materializationRef: CLIENT_ACTION_ORIGIN.materializationRef,
     contributionKind: 'surfacePlacement',
@@ -334,6 +364,7 @@ const projection: PluginUiProjectionModel = {
         'hostedWeb:acme.current-ui-composition:panel': {
             id: 'hostedWeb:acme.current-ui-composition:panel',
             pluginId: 'acme.current-ui-composition',
+            occurrenceId: PLUGIN_OCCURRENCE_ID,
             contributionKind: 'hostedWeb',
             contributionId: 'panel',
             service: { kind: 'sessionEndpoint', endpointIdPath: '/endpointId' },
@@ -359,7 +390,6 @@ const projectionGeneration: number = projection.generation;
 const CLIENT_ACTION_ID = 'read-current-ui-context';
 const CLIENT_ACTION_TARGET = Object.freeze({
     artifactId: 'current-ui-context-client-action',
-    modulePath: './actions/readCurrentUiContext',
     exportName: 'execute',
     platform: 'ios' as const,
 });
@@ -391,6 +421,7 @@ function createMountedClientActionFixture(handler: PluginClientActionHandler): R
     const action = PluginProjectedActionV2Schema.parse({
         id: CLIENT_ACTION_ID,
         pluginId: placement.pluginId,
+        occurrenceId: PLUGIN_OCCURRENCE_ID,
         title: 'Read current UI context',
         scopes: ['global'],
         surfaces: ['ui'],
@@ -399,7 +430,6 @@ function createMountedClientActionFixture(handler: PluginClientActionHandler): R
             target: 'client',
             client: {
                 artifactId: CLIENT_ACTION_TARGET.artifactId,
-                modulePath: CLIENT_ACTION_TARGET.modulePath,
                 exportName: CLIENT_ACTION_TARGET.exportName,
             },
             platforms: [CLIENT_ACTION_TARGET.platform],
@@ -414,38 +444,26 @@ function createMountedClientActionFixture(handler: PluginClientActionHandler): R
         ...action,
         [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: CLIENT_ACTION_ORIGIN_PROJECTION,
     });
-    const artifactGraph = PluginUiArtifactsManifestEntryV1Schema.parse({
-        contributionId: CLIENT_ACTION_TARGET.artifactId,
+    const artifactGraph = PluginUiArtifactsManifestEntryV2Schema.parse({
+        artifactId: CLIENT_ACTION_TARGET.artifactId,
         tier: 'reactNative',
-        platform: CLIENT_ACTION_TARGET.platform,
-        entry: 'react-native/current-ui-context-client-action/ios.bundle',
+        entry: 'react-native/current-ui-context-client-action/entry.cjs.bundle',
         files: [{
-            relativePath: 'react-native/current-ui-context-client-action/ios.bundle',
+            relativePath: 'react-native/current-ui-context-client-action/entry.cjs.bundle',
             digest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
             byteSize: 10,
         }],
         digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        builtWith: { bundler: 'repack', version: '5.2.5' },
-        repack: {
-            containerName: 'current_ui_context_client_action',
-            modulePath: CLIENT_ACTION_TARGET.modulePath,
-            exportName: CLIENT_ACTION_TARGET.exportName,
-        },
-        hostUiApiVersion: '1.0.0',
-        compat: { react: '19.0.0', reactNative: '0.83.4' },
+        builtWith: { bundler: 'esbuild', version: '0.27.2' },
+        executable: { exports: [CLIENT_ACTION_TARGET.exportName] },
+        hostUiApiRange: '^1.0.0',
     });
     const cacheIdentity: PluginReactNativeBundleCacheIdentity = Object.freeze({
         pluginId: placement.pluginId,
         contributionId: CLIENT_ACTION_ID,
+        artifactId: CLIENT_ACTION_TARGET.artifactId,
         artifactDigest: artifactGraph.digest,
-        hostAppVersion: '2.0.0',
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
         platform: CLIENT_ACTION_TARGET.platform,
-        channel: 'internal',
-        nativeCapabilitiesDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        projectionGeneration,
     });
     const fixtureProjection = Object.freeze({
         ...projection,
@@ -457,6 +475,7 @@ function createMountedClientActionFixture(handler: PluginClientActionHandler): R
                 version: '1.2.3',
                 enabled: true,
                 source: { kind: 'localPath', locator: placement.pluginId },
+                immutableGenerationId: 'current-ui-composition-artifact-generation-a',
             }),
         }),
         actionsById: Object.freeze({
@@ -466,6 +485,7 @@ function createMountedClientActionFixture(handler: PluginClientActionHandler): R
             [`reactNativeBundle:${placement.pluginId}:${CLIENT_ACTION_ID}`]: Object.freeze({
                 id: `reactNativeBundle:${placement.pluginId}:${CLIENT_ACTION_ID}`,
                 pluginId: placement.pluginId,
+                occurrenceId: PLUGIN_OCCURRENCE_ID,
                 contributionKind: 'reactNativeBundle' as const,
                 contributionId: CLIENT_ACTION_ID,
                 generatedOwnerKind: 'clientContribution' as const,
@@ -473,7 +493,7 @@ function createMountedClientActionFixture(handler: PluginClientActionHandler): R
                 runtime: Object.freeze({
                     decision: Object.freeze({ state: 'load' }),
                     loadPolicy: Object.freeze({ source: 'installedArtifact' }),
-                    cacheIdentity,
+                    cacheIdentity: Object.freeze({ artifactDigest: artifactGraph.digest }),
                 }),
                 [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: CLIENT_ACTION_ORIGIN_PROJECTION,
             }),
@@ -497,17 +517,18 @@ function createMountedClientActionFixture(handler: PluginClientActionHandler): R
         api.actions.register(CLIENT_ACTION_ID, handler);
     };
     const backend: PluginReactNativeLoaderBackend = Object.freeze({
-        backendId: 'repackScriptManager',
+        backendId: 'commonJs',
         available: true,
         loadInstalledBundle: async () => activate as PluginReactNativeExecutableExport,
     });
     const activation: PluginUiClientExecutableActivation = Object.freeze({
         pluginId: resolvedAction.pluginId,
         ...(resolvedAction.pluginVersion === undefined ? {} : { pluginVersion: resolvedAction.pluginVersion }),
+        hostUiApiRange: resolvedAction.hostUiApiRange,
         contributes: resolvedAction.contributes,
         target: resolvedAction.target,
         executionOrigin: resolvedAction.executionOrigin,
-        projectionGeneration: resolvedAction.projectionGeneration,
+        occurrenceId: PLUGIN_OCCURRENCE_ID,
         cache,
         identity: resolvedAction.cacheIdentity,
         moduleReference: resolvedAction.moduleReference,
@@ -550,6 +571,7 @@ function renderComposedSurface(input: Readonly<{
                     {input.showSurface !== false ? (
                         <PluginSurfacePlacementHost
                             placement={placement}
+                            machineId="machine-current-ui-composition"
                             serverId={input.serverId}
                             pluginUiProjection={input.pluginUiProjection ?? projection}
                             platform="web"
@@ -564,6 +586,11 @@ function renderComposedSurface(input: Readonly<{
     );
 }
 
+async function establishActiveServer(serverId: string): Promise<void> {
+    await setActiveServerId(serverId, { scope: 'device' });
+    await switchConnectionToActiveServer();
+}
+
 async function loadPackedExternalVoiceFixtureRenderSurface(): Promise<(
     context: RenderContext,
 ) => React.ReactElement | null> {
@@ -572,7 +599,7 @@ async function loadPackedExternalVoiceFixtureRenderSurface(): Promise<(
         import.meta.url,
     );
     const artifactBytes = await readFile(new URL(
-        'dist/happier-plugin-ui/react-native-web/voice-runtime-web/entry.mjs.bundle',
+        'dist/happier-plugin-ui/react-native/voice-runtime-web/entry.cjs.bundle',
         fixtureRoot,
     ));
     const bytes = new Uint8Array(artifactBytes);
@@ -580,24 +607,13 @@ async function loadPackedExternalVoiceFixtureRenderSurface(): Promise<(
     const identity: PluginReactNativeBundleCacheIdentity = Object.freeze({
         pluginId: 'acme.packed-voice',
         contributionId: 'voice-runtime-web',
+        artifactId: 'voice-runtime-web',
         artifactDigest: digest,
-        hostAppVersion: '2.0.0',
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.2.0',
-        reactNativeVersion: '0.83.5',
         platform: 'web',
-        channel: 'internal',
-        nativeCapabilitiesDigest: `sha256:${'a'.repeat(64)}`,
-        projectionGeneration: 12,
     });
     const cache = createPluginReactNativeBundleCache();
     cache.putInstalledArtifact({ identity, bytes, format: 'plainJs' });
-    const source = new TextDecoder().decode(bytes);
-    const backend = createReactNativeWebLoaderBackend({
-        importModule: async () => import(
-            /* @vite-ignore */ `data:text/javascript,${encodeURIComponent(source)}#${digest}`
-        ) as Promise<Readonly<{ default?: unknown } & Record<string, unknown>>>,
-    });
+    const backend = createPluginUiCommonJsLoaderBackend();
     const loaded = await loadPluginReactNativeBundleExport({
         cache,
         identity,
@@ -622,6 +638,35 @@ beforeEach(async () => {
     hostedRenderer.responses.length = 0;
     accountCredentials.value = { token: 'acme.current-ui-composition-test-token' };
     accountServerFetch.mockReset();
+    contributionProjectionDescribe.mockReset();
+    contributionProjectionDescribe.mockResolvedValue({
+        supported: true,
+        projection: PluginProjectionV2Schema.parse({
+            v: 2,
+            generation: projectionGeneration,
+            installedPackagesById: {},
+            agentsById: {},
+            actionsById: {},
+            toolsById: {},
+            commandsById: {},
+            resourcesById: {},
+            settingsById: {},
+            familiesById: {},
+            diagnostics: [],
+        }),
+        targetedContributions: {
+            target: {
+                pluginId: placement.pluginId,
+                occurrenceId: PLUGIN_OCCURRENCE_ID,
+                sourceCustody: {
+                    kind: 'development',
+                    registeredRootId: 'current-ui-composition-root',
+                },
+            },
+            points: [],
+        },
+        targetedSurfaceMounts: [],
+    });
     accountServerFetch.mockImplementation(async (path) => {
         if (path !== '/v1/account/encryption') {
             throw new Error(`Unexpected network request: ${path}`);
@@ -659,7 +704,7 @@ describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
             serverUrl: 'https://acme.current-ui-client-action.test',
             name: 'Current UI client Action',
         });
-        await setActiveServerId(profile.id, { scope: 'device' });
+        await establishActiveServer(profile.id);
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'acme.current-ui-client-action-account',
@@ -715,7 +760,7 @@ describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
             serverUrl: 'https://packed-external-voice-current-context.test',
             name: 'Packed external Voice current context',
         });
-        await setActiveServerId(profile.id, { scope: 'device' });
+        await establishActiveServer(profile.id);
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'packed-external-voice-current-context-account',
@@ -801,7 +846,7 @@ describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
         });
         // This test's native host has no tab-scoped server selection, so use
         // the real device-default selection that the Account lifetime reads.
-        await setActiveServerId(profile.id, { scope: 'device' });
+        await establishActiveServer(profile.id);
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'acme.current-ui-composition-account',
@@ -883,7 +928,7 @@ describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
             serverUrl: 'https://acme.current-ui-insertion-disposal.test',
             name: 'Current UI insertion disposal',
         });
-        await setActiveServerId(profile.id, { scope: 'device' });
+        await establishActiveServer(profile.id);
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'acme.current-ui-insertion-disposal-account',
@@ -952,7 +997,7 @@ describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
             serverUrl: 'https://acme.current-ui-strict-composition.test',
             name: 'Current UI StrictMode composition',
         });
-        await setActiveServerId(profile.id, { scope: 'device' });
+        await establishActiveServer(profile.id);
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'acme.current-ui-strict-composition-account',
@@ -988,7 +1033,7 @@ describe('CurrentUiContextProvider + PluginSurfaceHost composition', () => {
             serverUrl: 'https://acme.current-ui-native-composition.test',
             name: 'Current UI native composition',
         });
-        await setActiveServerId(profile.id, { scope: 'device' });
+        await establishActiveServer(profile.id);
         const accountScope = Object.freeze({
             serverId: profile.id,
             accountId: 'acme.current-ui-native-composition-account',

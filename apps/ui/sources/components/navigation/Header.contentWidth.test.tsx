@@ -24,10 +24,6 @@ vi.mock('react-native-unistyles', async () => {
     return createUnistylesMock();
 });
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
 vi.mock('@/utils/platform/responsive', () => ({
     useHeaderHeight: () => 56,
 }));

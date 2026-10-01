@@ -88,7 +88,16 @@ export type SessionBoardDetailsDestination = Readonly<{
  */
 export type SessionBoardItemBoardViewFacts = Readonly<{
     drawnBySelectedBoardView: boolean;
+    /** Generic Board surfaces whose existing body window actually builds this item. */
+    bodyEligibleHosts?: readonly SessionBoardMountHost[];
 }>;
+
+/** Publishes physical body-window facts, never a primary-host decision. */
+export type SessionBoardBodyEligibilityReporter = (
+    host: SessionBoardMountHost,
+    viewId: string,
+    itemIds: ReadonlySet<string>,
+) => () => void;
 
 /**
  * The resolver the mounted Session shell hands to every Board placement.
@@ -160,6 +169,32 @@ export function resolveSessionBoardHostVisibility(
     });
 }
 
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/**
+ * The previous visibility when `next` says the same thing, else `next`. Visibility is re-derived on
+ * every render and keys the Board placement resolver (and through it the Session pane driver
+ * registration), so an equal value must keep its reference.
+ */
+export function retainSessionBoardHostVisibility(
+    previous: SessionBoardHostVisibility | null,
+    next: SessionBoardHostVisibility,
+): SessionBoardHostVisibility {
+    if (
+        previous
+        && previous.foreground === next.foreground
+        && previous.focusedHost === next.focusedHost
+        && previous.detailsShowsGenericBoard === next.detailsShowsGenericBoard
+        && sameStrings(previous.visibleHosts, next.visibleHosts)
+        && sameStrings(previous.detailsExpandedItemIds, next.detailsExpandedItemIds)
+    ) {
+        return previous;
+    }
+    return next;
+}
+
 /**
  * Resolve the executable placement for one exact item.
  *
@@ -188,17 +223,18 @@ export function resolveSessionBoardItemPrimaryMountHost(input: Readonly<{
     // items). An item placed only in another view is drawn by none of them, so none
     // of them can be its live copy — electing one left a visible Companion item inert.
     const genericBoardDrawsItem = input.boardView?.drawnBySelectedBoardView ?? true;
+    const genericBodyEligible = (host: SessionBoardMountHost) => genericBoardDrawsItem
+        && (input.boardView?.bodyEligibleHosts?.includes(host) ?? true);
     // Details is a candidate for THIS item only when a destination that actually draws
     // it is on screen: the generic Board grid, or the item's own expanded tab. A
     // Details pane presenting only `board:item-a` renders nothing for item B, so
     // electing it there left B an inert preview with no live copy anywhere.
-    const detailsDrawsItem = input.itemId === undefined
-        || (input.visibility.detailsShowsGenericBoard && genericBoardDrawsItem)
-        || input.visibility.detailsExpandedItemIds.includes(input.itemId);
     const visibleHosts = input.visibility.visibleHosts.filter((host) => {
         if (host === 'companion') return input.itemVisibleInCompanion;
-        if (host === 'details' || host === 'focusedDetails') return detailsDrawsItem;
-        return genericBoardDrawsItem;
+        if (host === 'details' || host === 'focusedDetails') return input.itemId === undefined
+            || (input.visibility.detailsShowsGenericBoard && genericBodyEligible(host))
+            || input.visibility.detailsExpandedItemIds.includes(input.itemId);
+        return genericBodyEligible(host);
     });
     const focusedHost = input.visibility.focusedHost !== null
         && visibleHosts.includes(input.visibility.focusedHost)

@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { IdentityConnectionDetailScreen } from '@/components/settings/teams/identity/IdentityConnectionDetailScreen';
 import { firstRouteParam } from '@/components/settings/teams/teamRouteParams';
 
-export default function IdentityConnectionDetailRoute() {
+export function IdentityConnectionDetailRoute() {
     const params = useLocalSearchParams<{
         serverId?: string | string[];
         teamId?: string | string[];
@@ -18,6 +18,7 @@ export default function IdentityConnectionDetailRoute() {
             serverId={firstRouteParam(params.serverId)}
             teamId={firstRouteParam(params.teamId)}
             connectionId={firstRouteParam(params.connectionId)}
+            workosPortalReturn={firstRouteParam(params.purpose) === 'workos_admin_portal'}
             testReturn={{
                 purpose: firstRouteParam(params.purpose) || null,
                 resultHandle: firstRouteParam(params.resultHandle) || null,
@@ -26,3 +27,6 @@ export default function IdentityConnectionDetailRoute() {
         />
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { IdentityConnectionDetailRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={IdentityConnectionDetailRoute} />; }

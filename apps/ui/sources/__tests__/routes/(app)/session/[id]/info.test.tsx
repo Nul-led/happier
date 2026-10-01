@@ -25,6 +25,7 @@ import { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import type { ServerCredentialAccountScopeBinding } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -177,6 +178,7 @@ const useHappyActionMock = vi.hoisted(() =>
     vi.fn((fn: any): readonly [boolean, any] => [false, fn] as const),
 );
 const mockResolveAgentIdFromFlavor = vi.fn<(flavor: string | null | undefined) => string | undefined>(() => 'claude');
+const mockGetSessionName = vi.hoisted(() => vi.fn(() => 'name'));
 const useSessionSpy = vi.fn<(sessionId: string) => any>(() => mockSession);
 let mockPluginUiProjection: any = null;
 let mockPluginUiPlatform: 'web' | 'desktop' | 'ios' | 'android' = 'web';
@@ -422,8 +424,8 @@ vi.mock('@/components/sessions/shell/sessionViewStableSession', async (importOri
 });
 vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/domains/scope/useServerCredentialAccountScopes')>();
-    let bindingByServerId: Map<string, ReturnType<typeof createBinding>>;
-    const createBinding = (serverId: string) => {
+    let bindingByServerId: Map<string, ServerCredentialAccountScopeBinding>;
+    const createBinding = (serverId: string): ServerCredentialAccountScopeBinding => {
         const existing = bindingByServerId.get(serverId);
         if (existing) return existing;
         const scope = Object.freeze({ serverId, accountId: 'viewer-account' });
@@ -438,7 +440,7 @@ vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', async (importOr
         bindingByServerId.set(serverId, binding);
         return binding;
     };
-    bindingByServerId = new Map();
+    bindingByServerId = new Map<string, ServerCredentialAccountScopeBinding>();
     return {
         ...actual,
         useServerCredentialAccountScopeBindings: (serverIds: readonly (string | null | undefined)[]) => new Map(
@@ -654,7 +656,8 @@ vi.mock('@/constants/Typography', () => ({
     Typography: new Proxy({}, { get: () => () => ({}) }),
 }));
 vi.mock('@/utils/sessions/sessionUtils', () => ({
-    getSessionName: () => 'name',
+    getSessionName: mockGetSessionName,
+    resolveLockedSessionTitle: (title: string) => title === 'session.untitled' ? 'session.access.lockedTitleFallback' : title,
     useSessionStatus: () => ({
         isConnected: sessionIsConnected,
         statusText: 'Connected',
@@ -672,7 +675,10 @@ vi.mock('@/utils/sessions/terminalSessionDetails', () => ({ getAttachCommandForS
 vi.mock('@/utils/errors/errors', () => ({ HappyError: class HappyError extends Error {} }));
 vi.mock('@/sync/domains/profiles/profileUtils', () => ({ resolveProfileById: () => null }));
 vi.mock('@/components/profiles/profileDisplay', () => ({ getProfileDisplayName: () => 'profile' }));
-vi.mock('@/components/ui/layout/layout', () => ({ layout: { screenPaddingHorizontal: 16 } }));
+vi.mock('@/components/ui/layout/layout', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/components/ui/layout/layout')>()),
+    layout: { screenPaddingHorizontal: 16 },
+}));
 
 describe('/session/[id]/info', () => {
     beforeEach(() => {
@@ -771,6 +777,8 @@ describe('/session/[id]/info', () => {
         useSessionSpy.mockClear();
         mockResolveAgentIdFromFlavor.mockReset();
         mockResolveAgentIdFromFlavor.mockReturnValue('claude');
+        mockGetSessionName.mockReset();
+        mockGetSessionName.mockReturnValue('name');
         vi.clearAllMocks();
         useHappyActionMock.mockReset();
         useHappyActionMock.mockImplementation((fn: any) => [false, fn] as const);
@@ -835,6 +843,36 @@ describe('/session/[id]/info', () => {
         const screen = await renderInfoScreen();
         expect(screen.getTextContent()).not.toContain('common.loading');
         expect(screen.getTextContent()).toContain('name');
+    });
+
+    it('uses the encrypted title and hides private detail/actions for a locked recipient', async () => {
+        mockGetSessionName.mockReturnValue('session.untitled');
+        mockSession = {
+            id: 'session-locked-recipient',
+            serverId: 'server-1',
+            active: false,
+            accessLevel: 'view',
+            access: { role: 'recipient' },
+            encryptionMode: 'e2ee',
+            encryptedContentAvailability: 'encrypted_access_pending',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            seq: 1,
+            metadata: {
+                name: 'private name',
+                host: 'private machine',
+                path: '/private/workspace',
+            },
+        };
+
+        const screen = await renderInfoScreen();
+
+        expect(screen.findByTestId('session-info-header')?.props.title).toBe('session.access.lockedTitleFallback');
+        expect(screen.findByTestId('session-info-menu')).toBeNull();
+        expect(screen.getTextContent()).not.toContain('private machine');
+        expect(screen.getTextContent()).not.toContain('/private/workspace');
+        expect(screen.findByTestId('session-info-new-session-same-setup')).toBeNull();
+        expect(screen.findByTestId('session-info-collaboration')).toBeNull();
     });
 
     it('shows the current exact Machine and an independently readable creation pool after handoff', async () => {
@@ -2521,7 +2559,7 @@ describe('/session/[id]/info', () => {
         expect(safeRouterBackSpy).toHaveBeenCalledTimes(2);
     });
 
-    it('shows loading on the stop and archive rows while their mutations are running', async () => {
+    it('shows loading on the stop and archive buttons while their mutations are running', async () => {
         useHappyActionMock.mockImplementation((fn: any) => [true, fn] as const);
         mockSession = {
             id: 'session-1',
@@ -2536,8 +2574,34 @@ describe('/session/[id]/info', () => {
 
         const screen = await renderInfoScreen();
 
-        expect(screen.findByTestId('sessionInfo.stopSession')?.props.loading).toBe(true);
-        expect(screen.findByTestId('sessionInfo.archiveSession')?.props.loading).toBe(true);
+        // The leave actions are buttons; the pressable host under each carries only the busy state.
+        const control = (testID: string) => screen.root.findAllByProps({ testID })
+            .find((node: any) => 'loading' in (node.props ?? {}));
+        expect(control('sessionInfo.stopSession')?.props.loading).toBe(true);
+        expect(control('sessionInfo.archiveSession')?.props.loading).toBe(true);
+    });
+
+    it('offers rename from the page header menu to a session owner', async () => {
+        mockSession = {
+            id: 'session-1',
+            active: false,
+            accessLevel: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            seq: 1,
+            metadata: {},
+            archivedAt: null,
+        };
+
+        const screen = await renderInfoScreen();
+        await screen.pressByTestIdAsync('session-info-menu.trigger');
+        await screen.pressByTestIdAsync('session-info-rename');
+
+        expect(modalPromptSpy).toHaveBeenCalledWith(
+            'sessionInfo.renameSession',
+            'sessionInfo.renameSessionSubtitle',
+            expect.objectContaining({ confirmText: 'common.save' }),
+        );
     });
 
     it.each(['view', 'edit'] as const)('hides rename quick action for %s shared sessions', async (accessLevel) => {
@@ -2558,6 +2622,8 @@ describe('/session/[id]/info', () => {
             .filter((node: any) => node.props?.title === 'sessionInfo.renameSession');
 
         expect(renameItems).toHaveLength(0);
+        // Rename lives in the page header's ⋯ menu for those who may rename.
+        expect(screen.findByTestId('session-info-menu.trigger')).toBeNull();
     });
 
     it('routes a session owner to remote permission grant management with the current server scope', async () => {

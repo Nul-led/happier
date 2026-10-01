@@ -99,6 +99,10 @@ describe('MachinePickerScreen (back fallback)', () => {
 
         const backButton = options?.headerLeft?.();
         expect(typeof backButton?.props?.onPress).toBe('function');
+        // K2 picker route chrome: the leading control is Cancel (the native title is the only other chrome).
+        const renderedLeading = await renderScreen(backButton as React.ReactElement);
+        expect(renderedLeading.findByTestId('new-session-machine-picker-cancel')?.props.accessibilityLabel)
+            .toBe('common.cancel');
         backButton?.props?.onPress?.();
 
         // The picker's own `selectedId` is not new-session context, so the

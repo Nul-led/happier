@@ -1,7 +1,8 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
 import { View } from 'react-native';
-import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { useIsFocused } from '@react-navigation/native';
+import { useLocalSearchParams, useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { SessionInvalidLinkFallback } from '@/components/sessions/shell/SessionInvalidLinkFallback';
@@ -22,8 +23,9 @@ import { useSessionTerminalAvailability } from '@/components/sessions/terminal/u
 import { SessionFullscreenPaneSafeAreaView } from '@/components/sessions/panes/SessionFullscreenPaneSafeAreaView';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
 
-export default function TerminalScreenRoute() {
+export function TerminalScreenRoute() {
     const router = useRouter();
     const navigation = useNavigation();
     const isFocused = useIsFocused();
@@ -37,7 +39,7 @@ export default function TerminalScreenRoute() {
         routeScope.hydrationOptions,
     );
     const sessionHydrated = isSessionRouteHydrationAvailable(routeHydrationState);
-    const scopeId = createSessionPaneScopeId(sessionId, routeScope.serverId);
+    const scopeId = useDestinationPaneScopeId(createSessionPaneScopeId(sessionId, routeScope.serverId));
     const pane = useAppPaneScope(scopeId);
     const openRight = pane.openRight;
     const closeRight = pane.closeRight;
@@ -147,3 +149,7 @@ export default function TerminalScreenRoute() {
         </SessionFullscreenPaneSafeAreaView>
     );
 }
+
+export { TerminalScreenRoute as WorkspaceRouteBody };
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={TerminalScreenRoute} />; }

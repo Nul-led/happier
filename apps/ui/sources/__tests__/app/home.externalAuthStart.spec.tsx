@@ -2,8 +2,9 @@ import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createExpoRouterMock, createModalModuleMock, flushHookEffects, renderScreen, standardCleanup, type RenderScreenResult } from '@/dev/testkit';
+import { flushHookEffects, renderScreen, standardCleanup, type RenderScreenResult } from '@/dev/testkit';
 import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUtils';
+import type { HomeAuthenticationAction } from '@/auth/capabilities/authMethodCapabilities';
 import type { PendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent.shared';
 import type { getServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
 
@@ -23,10 +24,14 @@ vi.mock('@expo/vector-icons/Ionicons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-const expoRouterMock = createExpoRouterMock({
-    router: { push: vi.fn(), replace: vi.fn() },
+const expoRouterSpies = vi.hoisted(() => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+}));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: expoRouterSpies }).module;
 });
-vi.mock('expo-router', () => expoRouterMock.module);
 
 vi.mock('@react-navigation/native', async () => {
     const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
@@ -61,32 +66,16 @@ vi.mock('@/components/settings/server/useRelayDriftBanner', () => ({
     useRelayDriftBanner: () => null,
 }));
 
+const authEntryActionsMock = vi.hoisted(() => ({ value: [] as HomeAuthenticationAction[] }));
 vi.mock('@/components/account/auth/useAuthEntryOptions', () => ({
     useAuthEntryOptions: () => ({
+        authenticationActions: authEntryActionsMock.value,
+        homeTarget: { kind: 'saved_profile', profileRef: 'server-a' },
+        requestedHomeTarget: { kind: 'saved_profile', profileRef: 'server-a' },
         serverAvailability: 'ready',
+        authEntryUnavailable: false,
         serverUrlForCopy: 'https://relay.example.test',
         showAuthActions: true,
-        showProviderSignup: true,
-        showAnonymousSignup: true,
-        showMtlsLogin: true,
-        showKeylessProviderLogin: true,
-        providerId: 'github',
-        keylessProviderId: 'github',
-        providerSignupTitle: '',
-        providerKeylessTitle: '',
-        anonymousSignupTitle: '',
-        mtlsTitle: '',
-        primaryAction: null,
-        mtlsPrimary: false,
-        keylessPrimary: false,
-        autoRedirect: {
-            enabled: false,
-            providerId: null,
-            toKeyedProvision: false,
-            toKeylessLogin: false,
-            toMtls: false,
-            toLegacySignupProvider: false,
-        },
         retryServerCheck: vi.fn(),
     }),
 }));
@@ -141,7 +130,7 @@ const tauriDesktopState = vi.hoisted(() => ({
     value: false,
 }));
 const serverRuntimeState = vi.hoisted(() => ({
-    serverUrl: 'http://api.example.test',
+    serverUrl: 'https://api.example.test',
     listeners: new Set<(snapshot: { serverId: string; serverUrl: string; generation: number }) => void>(),
 }));
 const invokeDesktopHostSpy = vi.hoisted(() => vi.fn<(command: string, args?: Record<string, unknown>) => Promise<unknown>>(async () => undefined));
@@ -199,7 +188,14 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
         ...actual,
         getResetToDefaultServerId: () => 'cloud-profile',
         getServerProfileById: (serverId: string) => (
-            serverId === 'cloud-profile'
+            serverId === 'server-a'
+                ? {
+                    id: 'server-a',
+                    serverIdentityId: 'server-a',
+                    serverUrl: 'https://api.example.test',
+                    canonicalServerUrl: 'https://api.example.test',
+                }
+                : serverId === 'cloud-profile'
                 ? { id: 'cloud-profile', serverUrl: CLOUD_SERVER_URL }
                 : null
         ),
@@ -210,7 +206,7 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
 
 const tokenStorageMock = vi.hoisted(() => ({
     setPendingExternalAuth: vi.fn(async () => true),
-    clearPendingExternalAuth: vi.fn(async () => undefined),
+    clearPendingExternalAuth: vi.fn(async () => true),
     getAuthAutoRedirectSuppressedUntil: vi.fn(async () => 0),
 }));
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
@@ -259,31 +255,53 @@ vi.mock('@/components/onboarding/unauthShell', () => ({
 }));
 
 vi.mock('@/components/onboarding/preAuth/WelcomeDecisionPanel', () => ({
-    WelcomeDecisionPanel: (props: any) => React.createElement(
-        'WelcomeDecisionPanel',
-        props,
-        React.createElement('ActionButton', {
-            testID: 'welcome-restore',
-            onPress: props.onOpenRestore,
-        }),
-        props.authEntryOptions?.showProviderSignup ? React.createElement('ActionButton', {
-            testID: 'welcome-signup-provider',
-            action: () => props.onCreateAccountViaProvider?.(props.authEntryOptions.providerId),
-        }) : null,
-        React.createElement('ActionButton', {
-            testID: 'welcome-create-account',
-            action: () => props.onLoginWithKeylessProvider?.(props.authEntryOptions?.keylessProviderId ?? 'github'),
-        }),
-    ),
+    WelcomeDecisionPanel: (props: any) => {
+        const requestFor = (actionId: 'provision' | 'login') => {
+            const projected = props.authEntryOptions?.authenticationActions?.find(
+                (candidate: HomeAuthenticationAction) => candidate.action.id === actionId,
+            );
+            const target = props.authEntryOptions?.homeTarget;
+            if (!projected || !target) return undefined;
+            return {
+                ...projected,
+                authority: { purpose: 'home', target },
+                intendedHome: target,
+            };
+        };
+        return React.createElement(
+            'WelcomeDecisionPanel',
+            props,
+            React.createElement('ActionButton', {
+                testID: 'welcome-restore',
+                onPress: props.onOpenRestore,
+            }),
+            React.createElement('ActionButton', {
+                testID: 'welcome-signup-provider',
+                action: () => {
+                    const request = requestFor('provision');
+                    return request ? props.onContinueWithHomeAuthentication?.(request) : undefined;
+                },
+            }),
+            React.createElement('ActionButton', {
+                testID: 'welcome-create-account',
+                action: () => {
+                    const request = requestFor('login');
+                    return request ? props.onContinueWithHomeAuthentication?.(request) : undefined;
+                },
+            }),
+        );
+    },
 }));
 
-const modalMock = createModalModuleMock({
-    spies: {
-        alert: vi.fn(),
-        confirm: vi.fn(async () => true),
-    },
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({
+        spies: {
+            alert: vi.fn(),
+            confirm: vi.fn(async () => true),
+        },
+    }).module;
 });
-vi.mock('@/modal', () => modalMock.module);
 
 const fireAndForgetPromises = vi.hoisted(() => [] as Promise<any>[]);
 vi.mock('@/utils/system/fireAndForget', () => ({
@@ -383,6 +401,11 @@ function mockGithubAuthFeatures(action: 'provision' | 'login', mode: 'keyed' | '
         status: 'ready',
         features: snapshot,
     });
+    authEntryActionsMock.value = [{
+        method: { id: 'github', enabledActions: [{ id: action, mode }] },
+        action: { id: action, mode },
+        execution: { kind: 'oauth', providerId: 'github', mode },
+    }];
 }
 
 afterEach(async () => {
@@ -391,16 +414,17 @@ afterEach(async () => {
     vi.clearAllMocks();
     platformState.os = 'web';
     tauriDesktopState.value = false;
-    serverRuntimeState.serverUrl = 'http://api.example.test';
+    serverRuntimeState.serverUrl = 'https://api.example.test';
     serverRuntimeState.listeners.clear();
     getPendingSetupIntentMock.mockReturnValue(null);
     setPendingSetupIntentMock.mockReset();
+    authEntryActionsMock.value = [];
     delete (globalThis as any).window;
     delete (globalThis as any).document;
 });
 
 describe('Home external auth start', () => {
-    it('records a pending setup intent on first launch for Tauri desktop users', async () => {
+    it('keeps Tauri desktop first launch on Welcome until the user chooses a setup path', async () => {
         tauriDesktopState.value = true;
 
         const Home = await loadHome();
@@ -410,12 +434,8 @@ describe('Home external auth start', () => {
         await renderScreen(<Home />);
         await flushHookEffects({ cycles: 1, turns: 2 });
 
-        expect(setPendingSetupIntentMock).toHaveBeenCalledWith({
-            branch: 'thisComputer',
-            phase: 'pre_auth',
-            relayUrl: 'http://api.example.test',
-        });
-        expect(expoRouterMock.spies.replace).not.toHaveBeenCalledWith('/setup');
+        expect(setPendingSetupIntentMock).not.toHaveBeenCalled();
+        expect(expoRouterSpies.replace).not.toHaveBeenCalledWith('/setup');
     });
 
     it('does not redirect browser-web users into /setup by default', async () => {
@@ -427,7 +447,7 @@ describe('Home external auth start', () => {
         await flushHookEffects({ cycles: 1, turns: 2 });
 
         expect(setPendingSetupIntentMock).not.toHaveBeenCalled();
-        expect(expoRouterMock.spies.replace).not.toHaveBeenCalledWith('/setup');
+        expect(expoRouterSpies.replace).not.toHaveBeenCalledWith('/setup');
     });
 
     it('does not force mobile-native first launch through the desktop setup route', async () => {
@@ -440,7 +460,7 @@ describe('Home external auth start', () => {
         await flushHookEffects({ cycles: 1, turns: 2 });
 
         expect(setPendingSetupIntentMock).not.toHaveBeenCalled();
-        expect(expoRouterMock.spies.replace).not.toHaveBeenCalledWith('/setup');
+        expect(expoRouterSpies.replace).not.toHaveBeenCalledWith('/setup');
     });
 
     it('holds the unauthenticated wizard until a cross-server override settles, then resumes auth actions on the target relay', async () => {
@@ -455,7 +475,7 @@ describe('Home external auth start', () => {
             history: { replaceState: vi.fn() },
         };
 
-        serverRuntimeState.serverUrl = 'http://api.example.test';
+        serverRuntimeState.serverUrl = 'https://api.example.test';
 
         const Home = await loadHome();
         mockGithubAuthFeatures('provision', 'keyed');
@@ -502,7 +522,7 @@ describe('Home external auth start', () => {
         expect(setPendingSetupIntentMock).toHaveBeenLastCalledWith({
             branch: 'thisComputer',
             phase: 'awaiting_auth',
-            relayUrl: 'http://api.example.test',
+            relayUrl: 'https://api.example.test',
         });
     });
 
@@ -539,6 +559,7 @@ describe('Home external auth start', () => {
                 provider: 'github',
                 returnTo: '/',
             }),
+            { serverId: 'server-a', serverUrl: 'https://api.example.test' },
         );
     });
 
@@ -569,12 +590,17 @@ describe('Home external auth start', () => {
                 proof: expect.any(String),
                 secret: expect.any(String),
             }),
+            { serverId: 'server-a', serverUrl: 'https://api.example.test' },
         );
         expect(provider.getExternalAuthUrl).toHaveBeenCalledWith(
             expect.objectContaining({
                 mode: 'keyed',
                 proofHash: expect.any(String),
                 publicKey: expect.any(String),
+            }),
+            expect.objectContaining({
+                target: { serverId: 'server-a', serverUrl: 'https://api.example.test' },
+                request: expect.any(Function),
             }),
         );
 
@@ -606,11 +632,16 @@ describe('Home external auth start', () => {
                 provider: 'github',
                 proof: expect.any(String),
             }),
+            { serverId: 'server-a', serverUrl: 'https://api.example.test' },
         );
         expect(provider.getExternalAuthUrl).toHaveBeenCalledWith(
             expect.objectContaining({
                 mode: 'keyless',
                 proofHash: expect.any(String),
+            }),
+            expect.objectContaining({
+                target: { serverId: 'server-a', serverUrl: 'https://api.example.test' },
+                request: expect.any(Function),
             }),
         );
 
@@ -637,31 +668,34 @@ describe('Home external auth start', () => {
         await flushHookEffects({ cycles: 2, turns: 2 });
 
         const loginButton = findActionButton(screen, 'welcome-create-account');
-        const started = act(async () => {
-            await loginButton.props.action();
+        let started!: Promise<unknown>;
+        act(() => {
+            started = loginButton.props.action();
         });
         await vi.waitFor(() => {
             expect(tokenStorageMock.setPendingExternalAuth).toHaveBeenCalledWith(
                 expect.objectContaining({
                     serverId: 'server-a',
-                    serverUrl: 'http://api.example.test',
+                    serverUrl: 'https://api.example.test',
                 }),
                 {
                     serverId: 'server-a',
-                    serverUrl: 'http://api.example.test',
+                    serverUrl: 'https://api.example.test',
                 },
             );
         });
         serverRuntimeState.serverUrl = 'https://home-b.example.test';
-        releasePending(true);
-        await started;
+        await act(async () => {
+            releasePending(true);
+            await started;
+        });
 
         expect(provider.getExternalAuthUrl).toHaveBeenCalledWith(
             expect.objectContaining({ mode: 'keyless' }),
             expect.objectContaining({
                 target: {
                     serverId: 'server-a',
-                    serverUrl: 'http://api.example.test',
+                    serverUrl: 'https://api.example.test',
                 },
                 request: expect.any(Function),
             }),

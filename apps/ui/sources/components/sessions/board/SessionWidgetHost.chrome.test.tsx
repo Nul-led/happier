@@ -7,10 +7,11 @@ import {
     type SessionSurfaceItemV1,
 } from '@happier-dev/protocol/sessions/board';
 
-import { SURFACE_CARD_PADDING_PX, SURFACE_CARD_RADIUS_PX } from '@/components/ui/cards/SurfaceCard';
+import { HAPPIER_WIDGET_FRAME_METRICS } from '@happier-dev/plugin-ui/presentation';
 import { findGestureByKind } from '@/dev/testkit/mocks/gestureHandler';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import type { SessionBoardItemProjection } from '@/sync/domains/session/board';
+import { registerSessionCompanionDropTarget } from '@/components/sessions/companion/drop/sessionCompanionDropStore';
 
 import {
     resolveSessionBoardDragVisualOffset,
@@ -142,6 +143,83 @@ describe('SessionWidgetHost chrome', () => {
         workletsHarness.pending = [];
     });
 
+    it('keeps Companion dragging off the body and enables it only while a rail can accept it', async () => {
+        const screen = await renderCard({ density: 'compact', onAddToCompanion: vi.fn() });
+        const detectorForTitle = (target = screen) => {
+            let node = target.findHostByTestId('widget-title')?.parent;
+            while (node && String(node.type) !== 'GestureDetector') node = node.parent;
+            return node;
+        };
+        let bodyParent = screen.findHostByTestId('widget-body')?.parent;
+        while (bodyParent && String(bodyParent.type) !== 'GestureDetector') bodyParent = bodyParent.parent;
+        // An enabled RNGH web detector suppresses selection and scrolling on all descendants.
+        expect(bodyParent).toBeNull();
+        expect(detectorForTitle()?.props.gesture.__config.enabled).toBe(false);
+        let unregister: (() => void) | undefined;
+        try {
+            await act(async () => {
+                unregister = registerSessionCompanionDropTarget('session-1', {
+                    measure: async () => ({ x: 800, y: 0, width: 300, height: 800 }),
+                    accept: vi.fn(),
+                });
+            });
+            expect(detectorForTitle()?.props.gesture.__config.enabled).toBe(true);
+            // Media queries are the real platform boundary, not a mocked pointer decision.
+            vi.stubGlobal('window', { matchMedia: (query: string) => ({ matches: query === '(pointer: coarse)' }) });
+            const touchScreen = await renderCard({ density: 'compact', onAddToCompanion: vi.fn() });
+            expect(detectorForTitle(touchScreen)?.props.gesture.__config.enabled).toBe(false);
+            vi.unstubAllGlobals();
+            await act(async () => { unregister?.(); });
+            expect(detectorForTitle()?.props.gesture.__config.enabled).toBe(false);
+        } finally { vi.unstubAllGlobals(); unregister?.(); }
+    });
+
+    it('lets the elected mount decide executability, whatever chrome density asks for', async () => {
+        // `density` is visual chrome. Collapsing it into the mount decision made the
+        // compact sidebar an inert preview even when it was the elected primary host,
+        // so the safe single-mount interaction the sidebar promises was unreachable.
+        const installed: SessionBoardItemProjection = {
+            itemId: 'plugin-widget-1',
+            revision: 'rev-plugin-1',
+            state: {
+                kind: 'ready',
+                item: {
+                    v: 1,
+                    title: 'Review status',
+                    frame: 'card',
+                    height: { mode: 'auto', fallback: 'regular' },
+                    source: {
+                        kind: 'installedSurface',
+                        surface: { pluginId: 'acme.review', localId: 'review-status' },
+                    },
+                } as SessionSurfaceItemV1,
+            },
+        };
+        const available = () => ({ kind: 'available' as const });
+        const elected = await renderCard({
+            item: installed,
+            host: 'sidebar',
+            primaryHost: 'sidebar',
+            density: 'preview',
+            executableCurrentness: 'current',
+            resolveSourceAvailability: available,
+            onOpenHere: vi.fn(),
+        });
+        expect(elected.findHostByTestId('widget-open-here')).toBeNull();
+
+        // Another host owns the executable copy: this one truthfully previews.
+        const retired = await renderCard({
+            item: installed,
+            host: 'sidebar',
+            primaryHost: 'details',
+            density: 'compact',
+            executableCurrentness: 'current',
+            resolveSourceAvailability: available,
+            onOpenHere: vi.fn(),
+        });
+        expect(retired.findHostByTestId('widget-open-here')).not.toBeNull();
+    });
+
     it('names the reorder handle after the item it reorders', async () => {
         const screen = await renderCard({
             onMove: vi.fn(),
@@ -185,8 +263,10 @@ describe('SessionWidgetHost chrome', () => {
             crossViewTarget: true,
         })).toEqual({ x: 12, y: -120 });
 
+        // The move handle's detector: the card's own keep-beside-chat detector is disabled here.
         const detector = screen.tree.root.findAll(
-            (node) => String(node.type) === 'GestureDetector',
+            (node) => String(node.type) === 'GestureDetector'
+                && (node.props as { gesture?: { __config?: { enabled?: boolean } } }).gesture?.__config?.enabled !== false,
             { deep: true },
         )[0];
         const pan = findGestureByKind(
@@ -226,8 +306,10 @@ describe('SessionWidgetHost chrome', () => {
                 ['note-2', { x: 116, y: 0, width: 100, height: 80 }],
             ]),
         });
+        // The move handle's detector: the card's own keep-beside-chat detector is disabled here.
         const detector = screen.tree.root.findAll(
-            (node) => String(node.type) === 'GestureDetector',
+            (node) => String(node.type) === 'GestureDetector'
+                && (node.props as { gesture?: { __config?: { enabled?: boolean } } }).gesture?.__config?.enabled !== false,
             { deep: true },
         )[0];
         const pan = findGestureByKind(
@@ -386,31 +468,28 @@ describe('SessionWidgetHost chrome', () => {
         expect(remove).toHaveBeenCalledTimes(1);
     });
 
-    it('bleeds content to the card edge the card actually draws, at every density', async () => {
-        const observed: Record<string, Record<string, unknown>> = {};
-        for (const density of ['full', 'compact'] as const) {
-            const screen = await renderCard({
-                density,
-                item: noteItem({ frame: 'full_bleed' }),
-            });
-            const body = screen.findHostByTestId('widget-body');
-            observed[density] = ([] as unknown[])
+    it('bleeds full-bleed content to the frame edge at every density, and keeps the inset otherwise', async () => {
+        const insetOf = async (density: 'full' | 'compact', frame: 'card' | 'full_bleed') => {
+            const screen = await renderCard({ density, item: noteItem({ frame }) });
+            const body = screen.findHostByTestId('widget.body');
+            const style = ([] as unknown[])
                 .concat((body?.props as { style?: unknown }).style ?? [])
+                .flat(4)
                 .filter(Boolean)
                 .reduce<Record<string, unknown>>(
                     (accumulator, entry) => ({ ...accumulator, ...(entry as Record<string, unknown>) }),
                     {},
                 );
+            standardCleanup();
+            return style;
+        };
+        for (const density of ['full', 'compact'] as const) {
+            const bleed = await insetOf(density, 'full_bleed');
+            expect(bleed.paddingLeft).toBe(0);
+            expect(bleed.paddingRight).toBe(0);
+            expect(bleed.paddingBottom).toBe(0);
+            const inset = await insetOf(density, 'card');
+            expect(inset.paddingLeft).toBe(HAPPIER_WIDGET_FRAME_METRICS.cardInsetPx);
         }
-
-        // A spacious card and a compact one do not have the same inset, so one
-        // hardcoded offset must overhang on one of them.
-        expect(observed.full!.marginHorizontal).toBe(-SURFACE_CARD_PADDING_PX.md.horizontal);
-        expect(observed.full!.marginBottom).toBe(-SURFACE_CARD_PADDING_PX.md.vertical);
-        expect(observed.compact!.marginHorizontal).toBe(-SURFACE_CARD_PADDING_PX.sm.horizontal);
-        expect(observed.compact!.marginBottom).toBe(-SURFACE_CARD_PADDING_PX.sm.vertical);
-        // …and reaching the edge means clipping to the card's real corner.
-        expect(observed.full!.borderBottomLeftRadius).toBe(SURFACE_CARD_RADIUS_PX);
-        expect(observed.full!.overflow).toBe('hidden');
     });
 });

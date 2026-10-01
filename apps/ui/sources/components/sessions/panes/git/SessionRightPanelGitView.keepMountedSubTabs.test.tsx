@@ -1,21 +1,27 @@
 import * as React from 'react';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import renderer, { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
-import { installSessionDetailsPanelCommonModuleMocks } from '../sessionDetailsPanelTestHelpers';
+
+// Unrelated external Markdown package; fail if this Git path ever invokes it.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: () => { throw new Error('Unexpected streaming Markdown in Git'); },
+}));
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const SLOW_TEST_TIMEOUT_MS = 120_000;
-let activeGitSubTab: 'commit' | 'update' | 'history' = 'commit';
+let activeGitSubTab: 'commit' | 'history' = 'commit';
+let paneLayout: 'unified' | 'tabs' = 'tabs';
 const setActiveGitSubTabSpy = vi.hoisted(() => vi.fn());
 const gitSubTabsBarSpy = vi.hoisted(() => vi.fn());
 const gitCommitTabContentSpy = vi.hoisted(() => vi.fn());
 
 
-installSessionDetailsPanelCommonModuleMocks({
-    reactNative: async () => {
+// Hoist boundaries before any static dependency can cache its real module.
+vi.mock('react-native', async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
             View: (props: any) => React.createElement('View', props, props.children),
@@ -30,18 +36,19 @@ installSessionDetailsPanelCommonModuleMocks({
                 addEventListener: () => ({ remove: () => {} }),
             },
         });
-    },
-    storage: async (importOriginal) => {
+});
+vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
         const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
         return createPartialStorageModuleMock(
             importOriginal,
             {
-                useSetting: () => null,
+                useSetting: (key: string) => key === 'scmGitPaneLayout' ? paneLayout : null,
                 useAllMachines: () => [{ id: 'm1', active: true, activeAt: 1, metadata: { host: 'mbp', homeDir: '/tmp' } }],
                 useProjectForSession: () => null,
                 useProjectSessions: () => [],
                 useMachine: () => ({ online: true }),
                 useSession: () => ({ active: true, metadata: { machineId: 'm1', path: '/repo' } }),
+                useSessionListRenderableWithServerScope: () => createSessionListRenderableSessionFixture({ id: 's1', ...{ active: true, metadata: { host: 'test-machine', machineId: 'm1', path: '/repo' } } }),
                 useSessionProjectScmCommitSelectionPaths: () => [],
                 useSessionProjectScmCommitSelectionPatches: () => [],
                 useSessionProjectScmInFlightOperation: () => null,
@@ -81,13 +88,24 @@ installSessionDetailsPanelCommonModuleMocks({
                 useWorkspaceScmTouchedPathsForSession: () => [],
             },
         );
-    },
-    text: async () => {
+});
+vi.mock('@/text', async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({ translate: (key) => key });
-    },
 });
 
+vi.mock('react-native-unistyles', async () => {
+    const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+    return createUnistylesMock();
+});
+vi.mock('@expo/vector-icons', async () => {
+    const { createExpoVectorIconsMock } = await import('@/dev/testkit/mocks/icons');
+    return createExpoVectorIconsMock();
+});
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock().module;
+});
 vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
     useAppPaneScope: () => ({
         scopeState: {},
@@ -152,17 +170,6 @@ vi.mock('@/components/workspaces/scm/states', () => ({
     SourceControlSessionInactiveState: () => React.createElement('SourceControlSessionInactiveState'),
 }));
 
-// Override only the predicate this suite forces; keep every other export real so
-// `useSessionMachineReachability` can still resolve `resolveSessionMachineReachabilityState`.
-vi.mock('@/components/sessions/model/resolveSessionMachineReachability', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('@/components/sessions/model/resolveSessionMachineReachability')>()),
-    resolveSessionMachineReachability: () => true,
-}));
-
-vi.mock('@/utils/sessions/machineUtils', () => ({
-    isMachineOnline: () => true,
-}));
-
 vi.mock('@/scm/registry/scmUiBackendRegistry', () => {
     const scmUiBackendRegistry = {
         getPluginForSnapshot: () => ({
@@ -194,23 +201,19 @@ vi.mock('./SessionRightPanelGitCommitTabContent', () => ({
     },
 }));
 
-vi.mock('@/components/workspaces/scm/WorkspaceScmUpdateTab', () => ({
-    WorkspaceScmUpdateTab: () => React.createElement('UpdateTab', { testID: 'session-right-panel-git-update-tab' }),
-}));
-
-vi.mock('@/components/workspaces/scm/WorkspaceScmHistoryTab', () => ({
-    WorkspaceScmHistoryTab: () => React.createElement('HistoryTab', { testID: 'session-right-panel-git-history-tab' }),
-}));
+// Owner loading belongs to setup, not an individual interaction's timeout.
+const { SessionRightPanelGitView } = await import('./SessionRightPanelGitView');
 
 describe('SessionRightPanelGitView (keep mounted sub-tabs)', () => {
     beforeEach(() => {
+        paneLayout = 'tabs';
+        activeGitSubTab = 'commit';
         setActiveGitSubTabSpy.mockClear();
         gitSubTabsBarSpy.mockClear();
         gitCommitTabContentSpy.mockClear();
     });
 
     it('mounts inactive sub-tabs only after first activation', async () => {
-        const { SessionRightPanelGitView } = await import('./SessionRightPanelGitView');
 
         activeGitSubTab = 'commit';
         let tree!: renderer.ReactTestRenderer;
@@ -218,7 +221,7 @@ describe('SessionRightPanelGitView (keep mounted sub-tabs)', () => {
 
         expect(tree.findAllByTestId('session-right-panel-git-commit-tab')).toHaveLength(1);
         expect(tree.findAllByTestId('session-right-panel-git-update-tab')).toHaveLength(0);
-        expect(tree.findAllByTestId('session-right-panel-git-history-tab')).toHaveLength(0);
+        expect(tree.findAllHostsByTestId('session-rightpanel-git-surface:history')).toHaveLength(0);
 
         activeGitSubTab = 'history';
         await act(async () => {
@@ -227,27 +230,30 @@ describe('SessionRightPanelGitView (keep mounted sub-tabs)', () => {
 
         expect(tree.findAllByTestId('session-right-panel-git-commit-tab')).toHaveLength(1);
         expect(tree.findAllByTestId('session-right-panel-git-update-tab')).toHaveLength(0);
-        expect(tree.findAllByTestId('session-right-panel-git-history-tab')).toHaveLength(1);
+        expect(tree.findAllHostsByTestId('session-rightpanel-git-surface:history')).toHaveLength(1);
+        const mountedHistory = tree.findHostByTestId('session-rightpanel-git-surface:history');
+        activeGitSubTab = 'commit';
+        await act(async () => {
+            tree.update(<SessionRightPanelGitView sessionId="s1" scopeId="session:s1" />);
+        });
+        expect(tree.findHostByTestId('session-rightpanel-git-surface:history')).toBe(mountedHistory);
     }, SLOW_TEST_TIMEOUT_MS);
 
-    it('keeps the sub-tab definitions stable when the active sub-tab changes', async () => {
-        const { SessionRightPanelGitView } = await import('./SessionRightPanelGitView');
 
-        activeGitSubTab = 'commit';
-        const { tree } = await renderScreen(<SessionRightPanelGitView sessionId="s1" scopeId="session:s1" />);
-        const firstProps = gitSubTabsBarSpy.mock.calls.at(-1)?.[0];
-
-        activeGitSubTab = 'history';
-        await act(async () => {
-            tree.update(<SessionRightPanelGitView sessionId="s1" scopeId="session:s1:history" />);
-        });
-
-        const nextProps = gitSubTabsBarSpy.mock.calls.at(-1)?.[0];
-        expect(nextProps.tabs).toBe(firstProps.tabs);
+    it('offers only Changes and History in Tabs layout, and no sub-tabs in Unified', async () => {
+        const screen = await renderScreen(<SessionRightPanelGitView sessionId="s1" scopeId="session:s1" />);
+        expect(gitSubTabsBarSpy.mock.calls.at(-1)?.[0].tabs).toEqual([
+            { id: 'commit', label: 'sessionGitPane.subTabs.changes' },
+            { id: 'history', label: 'sessionGitPane.subTabs.history' },
+        ]);
+        paneLayout = 'unified';
+        await act(async () => { screen.tree.update(<SessionRightPanelGitView sessionId="s1" scopeId="session:s1:unified" />); });
+        expect(screen.findAllByType('WorkspaceScmSubTabsBar')).toHaveLength(0);
+        expect(screen.findByTestId('session-right-panel-git-commit-tab')).toBeTruthy();
+        expect(screen.tree.findAllHostsByTestId('session-rightpanel-git-surface:history')).toHaveLength(0);
     }, SLOW_TEST_TIMEOUT_MS);
 
     it('keeps commit tab action callbacks stable when switching to another sub-tab', async () => {
-        const { SessionRightPanelGitView } = await import('./SessionRightPanelGitView');
 
         activeGitSubTab = 'commit';
         const { tree } = await renderScreen(<SessionRightPanelGitView sessionId="s1" scopeId="session:s1" />);

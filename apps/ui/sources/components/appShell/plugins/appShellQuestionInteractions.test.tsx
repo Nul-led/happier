@@ -22,7 +22,7 @@ function questionRequest(): Extract<InteractionTransientRequestV1, Readonly<{ ki
         requester: {
             pluginId: 'acme.widgets',
             contributionId: 'run',
-            generationId: 'generation-1',
+            occurrenceId: 'occurrence-1',
             invocationId: 'invocation-1',
         },
         createdAtMs: 100,
@@ -47,7 +47,7 @@ function confirmationRequest(): Extract<InteractionTransientRequestV1, Readonly<
         requester: {
             pluginId: 'acme.widgets',
             contributionId: 'run',
-            generationId: 'generation-1',
+            occurrenceId: 'occurrence-1',
             invocationId: 'invocation-1',
         },
         createdAtMs: 100,
@@ -65,7 +65,7 @@ function approvalRequest(): Extract<InteractionTransientRequestV1, Readonly<{ ki
         requester: {
             pluginId: 'acme.widgets',
             contributionId: 'run',
-            generationId: 'generation-1',
+            occurrenceId: 'occurrence-1',
             invocationId: 'invocation-1',
         },
         createdAtMs: 100,
@@ -400,7 +400,7 @@ describe('app-shell transient interaction presenter', () => {
                 requester: {
                     pluginId: 'acme.voice',
                     contributionId: 'elevenlabs',
-                    generationId: 'generation-1',
+                    occurrenceId: 'occurrence-1',
                     invocationId: 'settings-invocation-1',
                 },
                 signal: new AbortController().signal,
@@ -428,7 +428,7 @@ describe('app-shell transient interaction presenter', () => {
             requester: {
                 pluginId: 'acme.voice',
                 contributionId: 'elevenlabs',
-                generationId: 'generation-1',
+                occurrenceId: 'occurrence-1',
                 invocationId: 'settings-invocation-1',
             },
             signal: new AbortController().signal,

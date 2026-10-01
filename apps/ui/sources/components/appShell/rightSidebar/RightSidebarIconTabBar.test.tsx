@@ -2,8 +2,10 @@ import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { normalizePluginUiDestinationBindingV1 } from '@happier-dev/protocol/plugins/ui';
 
-import { renderScreen } from '@/dev/testkit';
+import { flattenTestStyle, renderScreen } from '@/dev/testkit';
 import type { PluginUiSurfacePlacementProjection } from '@/sync/domains/plugins/ui/projection';
+import { RightSidebarIconTabBar } from './RightSidebarIconTabBar';
+import { getRightSidebarBuiltinTab, resolveRightSidebarTabs } from './rightSidebarTabRegistry';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -28,9 +30,19 @@ vi.mock('@/text', async () => {
 });
 
 describe('RightSidebarIconTabBar', () => {
+    it('moves keyboard selection through enabled tabs and exposes one tab stop', async () => {
+        const onSelectTab = vi.fn();
+        const tabs = resolveRightSidebarTabs({ scope: 'session', presentation: 'mobile' });
+        const screen = await renderScreen(<RightSidebarIconTabBar tabs={tabs} activeTabId="files" onSelectTab={onSelectTab} />);
+        const files = screen.findByTestId('right-sidebar-tab:files');
+        expect(files?.props.tabIndex).toBe(0);
+        const event = { key: 'End', preventDefault: vi.fn() };
+        files?.props.onKeyDown(event);
+        expect(onSelectTab).toHaveBeenLastCalledWith(tabs[tabs.length - 1]!.id);
+        expect(event.preventDefault).toHaveBeenCalled();
+        expect(screen.findByTestId(`right-sidebar-tab:${tabs[tabs.length - 1]!.id}`)?.props.tabIndex).toBe(-1);
+    });
     it('keeps every tab target at least 44 by 44 logical pixels', async () => {
-        const { RightSidebarIconTabBar } = await import('./RightSidebarIconTabBar');
-        const { resolveRightSidebarTabs } = await import('./rightSidebarTabRegistry');
         const tabs = resolveRightSidebarTabs({ scope: 'session', presentation: 'mobile' });
 
         const screen = await renderScreen(
@@ -43,9 +55,9 @@ describe('RightSidebarIconTabBar', () => {
         );
 
         const filesTab = screen.findByTestId('right-sidebar-tab:files');
-        const style = Object.assign({}, ...(Array.isArray(filesTab?.props.style)
-            ? filesTab.props.style.filter(Boolean)
-            : [filesTab?.props.style].filter(Boolean)));
+        const style = flattenTestStyle(typeof filesTab?.props.style === 'function'
+            ? filesTab.props.style({ pressed: false, hovered: false, focused: false })
+            : filesTab?.props.style);
 
         expect(style.width).toBeGreaterThanOrEqual(44);
         expect(style.height).toBeGreaterThanOrEqual(44);
@@ -53,8 +65,6 @@ describe('RightSidebarIconTabBar', () => {
 
     it('renders icon tabs with translated accessibility labels and selected state', async () => {
         const onSelectTab = vi.fn();
-        const { RightSidebarIconTabBar } = await import('./RightSidebarIconTabBar');
-        const { resolveRightSidebarTabs } = await import('./rightSidebarTabRegistry');
         // Browser is a mobile-only sidebar tab after D1; this test exercises the bar's a11y
         // rendering for the Browser/Services tabs, so resolve the mobile tab set that includes both.
         const tabs = resolveRightSidebarTabs({ scope: 'session', terminalTabAvailable: true, presentation: 'mobile' });
@@ -71,11 +81,11 @@ describe('RightSidebarIconTabBar', () => {
         const browserTab = screen.findByTestId('right-sidebar-tab:browser');
         const servicesTab = screen.findByTestId('right-sidebar-tab:services');
 
-        expect(browserTab?.props.accessibilityRole).toBe('tab');
+        expect(browserTab?.props.role ?? browserTab?.props.accessibilityRole).toBe('tab');
         expect(browserTab?.props.accessibilityLabel).toBe('en:browserSurface.title');
-        expect(browserTab?.props.accessibilityState).toEqual({ selected: true, disabled: false });
+        expect(browserTab?.props.accessibilityState).toMatchObject({ selected: true, disabled: false });
         expect(servicesTab?.props.accessibilityLabel).toBe('en:localServices.inventory.title');
-        expect(servicesTab?.props.accessibilityState).toEqual({ selected: false, disabled: false });
+        expect(servicesTab?.props.accessibilityState).toMatchObject({ selected: false, disabled: false });
 
         await screen.pressByTestIdAsync('right-sidebar-tab:services');
         expect(onSelectTab).toHaveBeenCalledWith('services');
@@ -83,8 +93,6 @@ describe('RightSidebarIconTabBar', () => {
 
     it('exposes disabled plugin tabs to assistive tech without selecting them', async () => {
         const onSelectTab = vi.fn();
-        const { RightSidebarIconTabBar } = await import('./RightSidebarIconTabBar');
-        const { getRightSidebarBuiltinTab } = await import('./rightSidebarTabRegistry');
         const pluginId = 'acme.review';
         const binding = normalizePluginUiDestinationBindingV1({
             pluginId,
@@ -99,6 +107,7 @@ describe('RightSidebarIconTabBar', () => {
         const placement = {
             id: `surfacePlacement:${pluginId}:review-panel`,
             pluginId,
+            occurrenceId: `${pluginId}-occurrence`,
             contributionKind: 'surfacePlacement',
             descriptorId: 'review-panel',
             binding,
@@ -135,9 +144,9 @@ describe('RightSidebarIconTabBar', () => {
         );
 
         const pluginTab = screen.findByTestId(`right-sidebar-tab:plugin:${pluginId}:review-panel`);
-        expect(pluginTab?.props.accessibilityRole).toBe('tab');
+        expect(pluginTab?.props.role ?? pluginTab?.props.accessibilityRole).toBe('tab');
         expect(pluginTab?.props.accessibilityLabel).toBe('Review');
-        expect(pluginTab?.props.accessibilityState).toEqual({ selected: false, disabled: true });
+        expect(pluginTab?.props.accessibilityState).toMatchObject({ selected: false, disabled: true });
 
         await screen.pressByTestIdAsync(`right-sidebar-tab:plugin:${pluginId}:review-panel`);
         expect(onSelectTab).not.toHaveBeenCalled();

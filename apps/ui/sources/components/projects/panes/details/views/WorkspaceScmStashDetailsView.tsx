@@ -2,7 +2,13 @@ import * as React from 'react';
 
 import { ScmStashDetailsCore } from '@/components/workspaces/scm/stash/ScmStashDetailsCore';
 import type { ScmStashDetailsAdapter } from '@/components/workspaces/scm/stash/scmStashAdapter';
-import { machineScmStashDrop, machineScmStashList, machineScmStashPop, machineScmStashShow } from '@/sync/ops/scm/machineScm';
+import {
+    machineScmStashApply,
+    machineScmStashDrop,
+    machineScmStashList,
+    machineScmStashPop,
+    machineScmStashShow,
+} from '@/sync/ops/scm/machineScm';
 
 export type WorkspaceScmStashDetailsViewProps = Readonly<{
     scopeId: string;
@@ -21,6 +27,7 @@ export const WorkspaceScmStashDetailsView = React.memo((props: WorkspaceScmStash
         show: (stashRef) => machineScmStashShow(props.machineId, { cwd: props.rootPath, stashRef }, { serverId: props.serverId }),
         pop: (stashRef) => machineScmStashPop(props.machineId, { cwd: props.rootPath, stashRef }, { serverId: props.serverId }),
         drop: (stashRef) => machineScmStashDrop(props.machineId, { cwd: props.rootPath, stashRef }, { serverId: props.serverId }),
+        apply: (stashRef) => machineScmStashApply(props.machineId, { cwd: props.rootPath, stashRef }, { serverId: props.serverId }),
     }), [props.machineId, props.rootPath, props.serverId]);
 
     return (
@@ -28,6 +35,7 @@ export const WorkspaceScmStashDetailsView = React.memo((props: WorkspaceScmStash
             adapter={adapter}
             scopeResetKey={`workspace:${props.workspaceCacheKey}`}
             rootTestId="workspace-scm-stash-details-root"
+            folderLabel={props.rootPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? null}
             onOpenFile={props.onOpenFile}
             onOpenFilePinned={props.onOpenFilePinned}
         />

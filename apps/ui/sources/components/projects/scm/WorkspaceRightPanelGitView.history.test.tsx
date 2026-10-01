@@ -5,6 +5,12 @@ import { act } from 'react-test-renderer';
 import { renderScreen } from '@/dev/testkit';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import type { machineScmLogList } from '@/sync/ops/scm/machineScm';
+import { storage } from '@/sync/domains/state/storage';
+
+// Unrelated external Markdown package; fail if this Git path ever invokes it.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: () => { throw new Error('Unexpected streaming Markdown in Git'); },
+}));
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -76,6 +82,7 @@ vi.mock('./WorkspaceSourceControlView', () => ({
 
 describe('WorkspaceRightPanelGitView (history)', () => {
     it('loads commit history via machine RPC when the history sub-tab is selected', async () => {
+        storage.setState({ settings: { ...storage.getState().settings, scmGitPaneLayout: 'tabs' } });
         machineScmLogListSpy.mockClear();
         scmWriteEnabledMock = true;
         snapshotMock = {

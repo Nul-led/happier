@@ -144,6 +144,11 @@ function accountStorageServices(
         async readCurrent() {
           return Object.freeze({
             generation: 'empty-current-targeted-view',
+            occurrenceId: 'empty-current-targeted-occurrence',
+            sourceCustody: Object.freeze({
+              kind: 'development' as const,
+              registeredRootId: 'triage-proof-root',
+            }),
             contributions: Object.freeze([]) as readonly TContribution[],
           });
         },
@@ -219,7 +224,6 @@ function createTriageVoiceProjection() {
     generation: 7,
     installedPackagesById: {},
     agentsById: {},
-    backendsById: {},
     actionsById: {
       [TRIAGE_ACTION_ID]: projectedAction,
     },
@@ -263,7 +267,11 @@ describe('Triage/GitHub projection and Voice Action source corridors', () => {
       contributor: {
         pluginId: SOURCE.pluginId,
         contributionId: SOURCE.localId,
-        immutableGenerationId: 'github-current',
+        occurrenceId: 'github-current-occurrence',
+        sourceCustody: {
+          kind: 'development',
+          registeredRootId: 'github-triage-proof-root',
+        },
       },
       protocol: {
         id: TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_ID_V1,

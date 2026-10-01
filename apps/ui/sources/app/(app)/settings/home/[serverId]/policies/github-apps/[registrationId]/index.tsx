@@ -1,11 +1,16 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { Redirect, useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
-import { ManagedGitHubAppDetailScreen } from '@/components/settings/home/githubApps/ManagedGitHubAppDetailScreen';
+import { legacyPoliciesRedirectHref } from '@/components/settings/home/signInProviders/legacyPoliciesRedirect';
+import { homeAdministrationGitHubAppPath } from '@/components/settings/home/governance/homeAdministrationRoutes';
 
-export default function ManagedGitHubAppDetailRoute() {
+/** GitHub Apps moved to Sign-in providers; a link saved before the move still opens the same page. */
+export function LegacyManagedGitHubAppDetailRoute() {
     const params = useLocalSearchParams<{ serverId?: string | string[]; registrationId?: string | string[] }>();
     const serverId = Array.isArray(params.serverId) ? params.serverId[0] ?? '' : params.serverId ?? '';
     const registrationId = Array.isArray(params.registrationId) ? params.registrationId[0] ?? '' : params.registrationId ?? '';
-    return <ManagedGitHubAppDetailScreen serverId={serverId} registrationId={registrationId} />;
+    return <Redirect href={legacyPoliciesRedirectHref(homeAdministrationGitHubAppPath(serverId, registrationId), params, ['serverId', 'registrationId']) as never} />;
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { LegacyManagedGitHubAppDetailRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={LegacyManagedGitHubAppDetailRoute} />; }

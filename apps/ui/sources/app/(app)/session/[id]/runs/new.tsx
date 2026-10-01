@@ -1,19 +1,21 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
 import { View } from 'react-native';
-import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { ConstrainedScreenContent } from '@/components/ui/layout/ConstrainedScreenContent';
 import { Text } from '@/components/ui/text/Text';
-import { SessionExecutionRunLauncherView } from '@/components/sessions/runs/launcher/SessionExecutionRunLauncherView';
-import { resolveExecutionRunLauncherIntent } from '@/components/sessions/runs/launcher/executionRunLauncherModel';
+import {
+    resolveExecutionRunLauncherIntent,
+    type ExecutionRunIntent,
+} from '@/components/sessions/runs/launcher/executionRunLauncherModel';
 import { buildScopedSessionRouteHref, createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
 import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForRoute';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import { isSessionRouteHydrationAvailable, isSessionRouteHydrationMissing } from '@/sync/domains/session/sessionRouteHydrationState';
 import { t } from '@/text';
-import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { SessionInteractiveExecutionRunDraftView } from '@/components/sessions/runs/launcher/SessionInteractiveExecutionRunDraftView';
 import {
@@ -31,6 +33,8 @@ function InteractiveExecutionRunDraftRoute(props: Readonly<{
     sessionId: string;
     serverId: string | null;
     draftCorrelationId: string | null;
+    intent: ExecutionRunIntent | null;
+    roleId: string | null;
     onRunStarted: (runId: string, recovery?: Readonly<{ retryInputLocalId: string }>) => void;
 }>) {
     const navigationIntent = React.useMemo(() => props.serverId && props.draftCorrelationId
@@ -50,6 +54,8 @@ function InteractiveExecutionRunDraftRoute(props: Readonly<{
         <SessionInteractiveExecutionRunDraftView
             sessionId={props.sessionId}
             serverId={props.serverId}
+            intent={props.intent}
+            roleId={props.roleId}
             initialText={navigationIntent?.initialText}
             launchOrigin={navigationIntent?.source}
             onRunStarted={props.onRunStarted}
@@ -57,11 +63,10 @@ function InteractiveExecutionRunDraftRoute(props: Readonly<{
     );
 }
 
-export default function SessionNewRunScreen() {
+export function SessionNewRunScreen() {
     const { theme } = useUnistyles();
     const router = useRouter();
-    const navigation = useNavigation();
-    const params = useLocalSearchParams<{ id?: string | string[]; serverId?: string | string[]; intent?: string | string[]; draftCorrelationId?: string | string[] }>();
+    const params = useLocalSearchParams<{ id?: string | string[]; serverId?: string | string[]; intent?: string | string[]; roleId?: string | string[]; draftCorrelationId?: string | string[] }>();
     const routeScope = React.useMemo(() => createSessionRouteServerScope(params as Record<string, unknown>), [params]);
     const sessionId = normalizeSessionId(params.id);
     const routeHydrationState = useHydrateSessionForRoute(sessionId, 'SessionNewRunScreen.hydrate', routeScope.hydrationOptions);
@@ -71,39 +76,24 @@ export default function SessionNewRunScreen() {
     const hasIntentParam = rawIntent !== undefined;
     const initialIntent = resolveExecutionRunLauncherIntent(rawIntent);
     const draftCorrelationId = readSingleRouteParam(params.draftCorrelationId);
-    const parentSessionHref = sessionId
-        ? buildScopedSessionRouteHref({ sessionId, serverId: exactSessionServerId })
-        : '/session';
+    // A start that begins with a role (Second opinion: a review by `second_opinion`).
+    const roleId = readSingleRouteParam(params.roleId);
 
     const screenOptions = React.useMemo(() => ({
         headerShown: true,
-        headerTitle: hasIntentParam
-            ? t('executionRuns.newRun.headerTitle')
+        headerTitle: initialIntent
+            ? t(`executionRuns.newRun.intents.${initialIntent}` as const)
             : t('session.subagents.panel.newAgentConversation'),
         headerBackTitle: t('common.back'),
-    }), [hasIntentParam]);
-    const handleRequestClose = React.useCallback(() => {
-        safeRouterBack({
-            router,
-            navigation,
-            fallbackHref: parentSessionHref,
-        });
-    }, [navigation, parentSessionHref, router]);
+    }), [initialIntent]);
+
+    const unavailable = !sessionId || isSessionRouteHydrationMissing(routeHydrationState);
 
     if (hasIntentParam && initialIntent === null) {
         return (
-            <View style={{ flex: 1, backgroundColor: theme.colors.background?.canvas ?? theme.colors.surface.base }}>
+            <View style={{ flex: 1, padding: 16, backgroundColor: theme.colors.background?.canvas ?? theme.colors.surface.base }}>
                 <Stack.Screen options={screenOptions} />
-                <ConstrainedScreenContent
-                    style={{
-                        flex: 1,
-                        paddingHorizontal: 16,
-                        paddingVertical: 16,
-                        gap: 16,
-                    }}
-                >
-                    <Text style={{ color: theme.colors.text.secondary }}>{t('errors.invalidFormat')}</Text>
-                </ConstrainedScreenContent>
+                <Text style={{ color: theme.colors.text.secondary }}>{t('errors.invalidFormat')}</Text>
             </View>
         );
     }
@@ -119,43 +109,40 @@ export default function SessionNewRunScreen() {
                     gap: 16,
                 }}
             >
-                {!sessionId || isSessionRouteHydrationMissing(routeHydrationState) ? (
+                {unavailable ? (
                     <Text style={{ color: theme.colors.text.primary }}>{t('errors.sessionDeleted')}</Text>
                 ) : !hydrateReady ? (
                     <ActivitySpinner size="small" color={theme.colors.text.secondary} />
                 ) : (
-                    hasIntentParam ? (
-                        <SessionExecutionRunLauncherView
-                            sessionId={sessionId}
-                            serverId={exactSessionServerId}
-                            routeHydrationState={routeHydrationState}
-                            initialIntent={initialIntent ?? 'review'}
-                            presentation="screen"
-                            onRequestClose={handleRequestClose}
-                        />
-                    ) : (
-                        <InteractiveExecutionRunDraftRoute
-                            key={JSON.stringify([
-                                exactSessionServerId
-                                    ? sessionAddressKey({ serverId: exactSessionServerId, sessionId })
-                                    : null,
-                                draftCorrelationId ?? null,
-                            ])}
-                            sessionId={sessionId}
-                            serverId={exactSessionServerId}
-                            draftCorrelationId={draftCorrelationId}
-                            onRunStarted={(runId, recovery) => {
-                                router.replace(buildScopedSessionRouteHref({
-                                    sessionId,
-                                    serverId: exactSessionServerId,
-                                    suffix: `/runs/${encodeURIComponent(runId)}`,
-                                    query: recovery ? { retryInputLocalId: recovery.retryInputLocalId } : undefined,
-                                }));
-                            }}
-                        />
-                    )
+                    <InteractiveExecutionRunDraftRoute
+                        key={JSON.stringify([
+                            exactSessionServerId
+                                ? sessionAddressKey({ serverId: exactSessionServerId, sessionId })
+                                : null,
+                            draftCorrelationId ?? null,
+                            initialIntent,
+                            roleId,
+                        ])}
+                        sessionId={sessionId}
+                        serverId={exactSessionServerId}
+                        draftCorrelationId={draftCorrelationId}
+                        intent={initialIntent}
+                        roleId={roleId}
+                        onRunStarted={(runId, recovery) => {
+                            router.replace(buildScopedSessionRouteHref({
+                                sessionId,
+                                serverId: exactSessionServerId,
+                                suffix: `/runs/${encodeURIComponent(runId)}`,
+                                query: recovery ? { retryInputLocalId: recovery.retryInputLocalId } : undefined,
+                            }));
+                        }}
+                    />
                 )}
             </ConstrainedScreenContent>
         </View>
     );
 }
+
+export { SessionNewRunScreen as WorkspaceRouteBody };
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={SessionNewRunScreen} />; }

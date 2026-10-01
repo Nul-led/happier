@@ -453,7 +453,7 @@ describe('RootLayout stack options', () => {
         }
     }, 60_000);
 
-    it('keeps main tab transitions instant while allowing the desktop settings modal to animate', async () => {
+    it('keeps main tab transitions and the settings destination instant', async () => {
         stubFeatureFetch();
 
         const { default: RootLayout } = await import('@/app/(app)/_layout');
@@ -474,8 +474,8 @@ describe('RootLayout stack options', () => {
             const settingsScreen = tree.root
                 .findAllByType('StackScreen')
                 .find((node) => node.props?.name === 'settings');
-            expect(settingsScreen?.props?.options).toMatchObject({ presentation: 'modal' });
-            expect(settingsScreen?.props?.options?.animation).toBeUndefined();
+            expect(settingsScreen?.props?.options?.presentation).toBeUndefined();
+            expect(settingsScreen?.props?.options).toMatchObject({ animation: 'none' });
         } finally {
             if (tree) {
                 act(() => {

@@ -7,40 +7,20 @@ import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const hydrateSessionSpy = vi.hoisted(() => vi.fn((sessionId: string, reason: string, options?: unknown) => ({
-    kind: 'available' as const,
-    sessionId,
-})));
-const useSessionSpy = vi.hoisted(() => vi.fn<(sessionId: string) => unknown>());
-const useSessionViewShellSessionSpy = vi.hoisted(() => vi.fn<(sessionId: string, serverId?: string | null) => unknown>());
-const runListSpy = vi.hoisted(() => vi.fn<(sessionId: string, request: unknown, options?: unknown) => Promise<{ ok: true; runs: never[] }>>(async () => ({ ok: true, runs: [] })));
-let routeParams: Record<string, string | string[] | undefined> = { id: ['s1', 's2'] };
+const hydrateSessionSpy = vi.hoisted(() => vi.fn());
+const routeParams = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
+const routerMock = createExpoRouterMock({ params: {} });
 
-const routerMock = createExpoRouterMock({
-    params: () => routeParams,
-    router: {
-        push: vi.fn(),
-        back: vi.fn(),
-        replace: vi.fn(),
-        setParams: vi.fn(),
-    },
-});
-
-vi.mock('expo-router', async () => {
-    const actual = await vi.importActual<typeof import('expo-router')>('expo-router');
-    return {
-        ...actual,
-        ...routerMock.module,
-        useFocusEffect: () => {},
-    };
-});
+vi.mock('expo-router', () => ({
+    ...routerMock.module,
+    useLocalSearchParams: () => routeParams.current,
+}));
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
         View: 'View',
         ActivityIndicator: 'ActivityIndicator',
-        Pressable: 'Pressable',
         Platform: { OS: 'web', select: (spec: Record<string, unknown>) => spec.web ?? spec.default },
     });
 });
@@ -50,77 +30,58 @@ vi.mock('react-native-unistyles', async () => {
     return createUnistylesMock();
 });
 
-vi.mock('@expo/vector-icons', () => ({
-    Ionicons: (props: any) => React.createElement('Ionicons', props),
-}));
-
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({ translate: (key: string) => key });
 });
 
+// The retired Runs list must never hydrate or list runs: the Session root owns exact-scope hydration,
+// and the one Agents roster owns the list.
 vi.mock('@/hooks/session/useHydrateSessionForRoute', () => ({
-    useHydrateSessionForRoute: (sessionId: string, reason: string, options?: unknown) =>
-        hydrateSessionSpy(sessionId, reason, options),
+    useHydrateSessionForRoute: hydrateSessionSpy,
 }));
 
-vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
-    sessionExecutionRunList: (sessionId: string, request: unknown, options?: unknown) => runListSpy(sessionId, request, options),
-}));
+vi.mock('@/sync/domains/state/storage', () => createStorageModuleStub({ useIsDataReady: () => true }));
 
-vi.mock('@/hooks/session/useSessionExecutionRunLaunchability', () => ({
-    useSessionExecutionRunLaunchability: () => ({
-        canLaunchExecutionRuns: false,
-        executionRunsBackends: [],
-    }),
-}));
-
-vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
-    useSessionViewShellSession: (sessionId: string, serverId?: string | null) =>
-        useSessionViewShellSessionSpy(sessionId, serverId),
-}));
-
-const storageMock = createStorageModuleStub({
-    useSession: (sessionId: string) => useSessionSpy(sessionId),
-});
-
-vi.mock('@/sync/domains/state/storage', () => storageMock);
-
-describe('session runs route', () => {
+describe('retired session Runs route', () => {
     beforeEach(() => {
         hydrateSessionSpy.mockClear();
-        useSessionSpy.mockReset();
-        useSessionSpy.mockReturnValue({
-            id: 's1',
-            metadata: null,
-        });
-        useSessionViewShellSessionSpy.mockReset();
-        useSessionViewShellSessionSpy.mockReturnValue({ id: 's1', metadata: null });
-        runListSpy.mockClear();
-        routeParams = { id: ['s1', 's2'] };
+        routerMock.spies.replace.mockClear();
+        routerMock.spies.push.mockClear();
     });
 
     afterEach(() => {
         standardCleanup();
     });
 
-    it('normalizes array session ids before hydrating and loading runs', async () => {
+    it('replaces an exact-Home link with the one Agents roster instead of a second run list', async () => {
+        routeParams.current = { id: 's1', serverId: 'home-b' };
         const { default: RunsRoute } = await import('@/app/(app)/session/[id]/runs');
 
-        await renderScreen(<RunsRoute />);
+        const screen = await renderScreen(<RunsRoute />);
 
-        expect(hydrateSessionSpy).toHaveBeenCalledWith('s1', 'SessionRunsScreen.hydrate', undefined);
-        expect(useSessionViewShellSessionSpy).toHaveBeenCalledWith('s1', null);
+        expect(routerMock.spies.replace).toHaveBeenCalledWith('/session/s1?serverId=home-b&right=agents');
+        expect(routerMock.spies.push).not.toHaveBeenCalled();
+        expect(hydrateSessionSpy).not.toHaveBeenCalled();
+        expect(screen.findByTestId('session-runs-screen')).toBeNull();
     });
 
-    it('passes route server scope through hydration and run-list RPCs', async () => {
-        routeParams = { id: 's1', serverId: ['server-route', 'server-ignored'] };
+    it('keeps an unqualified link unqualified so the Session root resolves its Home', async () => {
+        routeParams.current = { id: 's1' };
         const { default: RunsRoute } = await import('@/app/(app)/session/[id]/runs');
 
         await renderScreen(<RunsRoute />);
 
-        expect(hydrateSessionSpy).toHaveBeenCalledWith('s1', 'SessionRunsScreen.hydrate', { serverId: 'server-route' });
-        expect(runListSpy).toHaveBeenCalledWith('s1', {}, { serverId: 'server-route' });
-        expect(useSessionViewShellSessionSpy).toHaveBeenCalledWith('s1', 'server-route');
+        expect(routerMock.spies.replace).toHaveBeenCalledWith('/session/s1?right=agents');
+    });
+
+    it('renders the invalid-link fallback without navigating for an unusable identifier', async () => {
+        routeParams.current = { id: '   ' };
+        const { default: RunsRoute } = await import('@/app/(app)/session/[id]/runs');
+
+        const screen = await renderScreen(<RunsRoute />);
+
+        expect(routerMock.spies.replace).not.toHaveBeenCalled();
+        expect(screen.findByTestId('session-invalid-link')).not.toBeNull();
     });
 });

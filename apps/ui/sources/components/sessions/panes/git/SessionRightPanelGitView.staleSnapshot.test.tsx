@@ -1,8 +1,8 @@
 import * as React from 'react';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
-import { installSessionDetailsPanelCommonModuleMocks } from '../sessionDetailsPanelTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -11,8 +11,8 @@ let mockSnapshot: any = null;
 let mockSnapshotError: { message: string; at: number; errorCode?: string } | null = null;
 const invalidateFromUserAndAwaitMock = vi.hoisted(() => vi.fn(async () => {}));
 
-installSessionDetailsPanelCommonModuleMocks({
-    reactNative: async () => {
+// Hoist boundaries before any static dependency can cache its real module.
+vi.mock('react-native', async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
             View: (props: any) => React.createElement('View', props, props.children),
@@ -21,8 +21,8 @@ installSessionDetailsPanelCommonModuleMocks({
             Platform: { OS: 'web', select: (value: any) => value?.default ?? null },
             AppState: { addEventListener: () => ({ remove: () => {} }) },
         });
-    },
-    storage: async () => {
+});
+vi.mock('@/sync/domains/state/storage', async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
             useSetting: () => null,
@@ -31,6 +31,7 @@ installSessionDetailsPanelCommonModuleMocks({
             useProjectSessions: () => [],
             useMachine: () => ({ online: true }),
             useSession: () => ({ active: true, metadata: { machineId: 'm1', path: '/repo' } }),
+            useSessionListRenderableWithServerScope: () => createSessionListRenderableSessionFixture({ id: 's1', ...{ active: true, metadata: { host: 'test-machine', machineId: 'm1', path: '/repo' } } }),
             useSessionProjectScmCommitSelectionPaths: () => [],
             useSessionProjectScmCommitSelectionPatches: () => [],
             useSessionProjectScmInFlightOperation: () => null,
@@ -40,13 +41,24 @@ installSessionDetailsPanelCommonModuleMocks({
             useSessionRealtimeScmTranscriptConsumer: () => {},
             useWorkspaceScmTouchedPathsForSession: () => [],
         });
-    },
-    text: async () => {
+});
+vi.mock('@/text', async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({ translate: (key) => key });
-    },
 });
 
+vi.mock('react-native-unistyles', async () => {
+    const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+    return createUnistylesMock();
+});
+vi.mock('@expo/vector-icons', async () => {
+    const { createExpoVectorIconsMock } = await import('@/dev/testkit/mocks/icons');
+    return createExpoVectorIconsMock();
+});
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock().module;
+});
 vi.mock('@/modal', async () => {
     const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
     return createModalModuleMock().module;
@@ -100,13 +112,17 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: () => true,
 }));
 
-vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
-    useSessionMachineReachability: () => ({
-        machineReachable: true,
-        machineOnline: true,
-        machineRpcTargetAvailable: true,
-    }),
-}));
+vi.mock('@/components/sessions/model/useSessionMachineReachability', async (importOriginal) => {
+    const { installSessionMachineReachabilityModuleMock } = await import('@/dev/testkit/mocks/sessionMachineReachability');
+    return installSessionMachineReachabilityModuleMock({
+        useSessionMachineReachability: () => ({
+            machineReachable: true,
+            machineOnline: true,
+            machineRpcTargetAvailable: true,
+            machineReachability: 'reachable',
+        }),
+    })(importOriginal);
+});
 
 vi.mock('@/scm/registry/scmUiBackendRegistry', () => {
     const scmUiBackendRegistry = {
@@ -129,14 +145,6 @@ vi.mock('@/scm/scmStatusSync', () => ({
 
 vi.mock('./SessionRightPanelGitCommitTabContent', () => ({
     SessionRightPanelGitCommitTabContent: () => React.createElement('CommitTab', { testID: 'session-right-panel-git-commit-tab' }),
-}));
-
-vi.mock('@/components/workspaces/scm/WorkspaceScmUpdateTab', () => ({
-    WorkspaceScmUpdateTab: () => React.createElement('UpdateTab', { testID: 'session-right-panel-git-update-tab' }),
-}));
-
-vi.mock('@/components/workspaces/scm/WorkspaceScmHistoryTab', () => ({
-    WorkspaceScmHistoryTab: () => React.createElement('HistoryTab', { testID: 'session-right-panel-git-history-tab' }),
 }));
 
 function createSnapshot(isRepo: boolean) {
@@ -168,8 +176,10 @@ function createSnapshot(isRepo: boolean) {
     };
 }
 
+// Owner loading belongs to setup, not an individual interaction's timeout.
+const { SessionRightPanelGitView } = await import('./SessionRightPanelGitView');
+
 async function render() {
-    const { SessionRightPanelGitView } = await import('./SessionRightPanelGitView');
     return renderScreen(<SessionRightPanelGitView sessionId="s1" scopeId="session:s1" />);
 }
 
@@ -198,7 +208,7 @@ describe('SessionRightPanelGitView (stale snapshot)', () => {
         expect(screen.findHostByTestId('session-rightpanel-git-unavailable')).toBeNull();
 
         await screen.pressByTestIdAsync('session-rightpanel-git-stale-action');
-        expect(invalidateFromUserAndAwaitMock).toHaveBeenCalledWith('s1');
+        expect(invalidateFromUserAndAwaitMock).toHaveBeenCalledWith('s1', undefined);
     });
 
     it('surfaces a failing refresh over a cached "not a repository" answer', async () => {
@@ -208,7 +218,7 @@ describe('SessionRightPanelGitView (stale snapshot)', () => {
         const screen = await render();
 
         expect(screen.findHostByTestId('session-rightpanel-git-stale')).not.toBeNull();
-        expect(screen.getTextContent()).toContain('files.notUnderSourceControl');
+        expect(screen.findHostByTestId('scm-not-repository')).not.toBeNull();
     });
 
     it('stays quiet when the snapshot is current', async () => {

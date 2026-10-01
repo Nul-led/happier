@@ -6,10 +6,15 @@ import type { PresentationNotice } from '@/components/sessions/presentation/pres
 
 import {
     HIDDEN_SESSION_COMPANION_PREFERENCE_V1,
+    addSessionCompanionItem,
+    removeSessionCompanionItem,
+    moveSessionCompanionItem,
+    setSessionCompanionItemFrameStyle,
     showSessionCompanion,
     type SessionCompanionPreferenceV1,
 } from '../state/sessionCompanionPreference';
 import type { SessionCompanionController } from '../state/useSessionCompanionController';
+import { canAddSessionCompanionItem } from '../sessionCompanionContentModel';
 import {
     applySessionCompanionMutationWithNotice,
     applySessionPresentationIntent,
@@ -35,9 +40,10 @@ function controllerStub(overrides: Partial<SessionCompanionController> = {}): Se
         setCollapsed: () => null,
         setEdge: (edge) => outcome({ ...preference, edge }),
         setDensity: () => null,
-        addItem: () => null,
-        removeItem: () => null,
-        moveItem: () => null,
+        setItemFrameStyle: (item, style) => outcome(setSessionCompanionItemFrameStyle(preference, item, style)),
+        addItem: (item, index) => outcome(addSessionCompanionItem(preference, item, index)),
+        removeItem: (item) => outcome(removeSessionCompanionItem(preference, item)),
+        moveItem: (item, index) => outcome(moveSessionCompanionItem(preference, item, index)),
         openFullSurface: () => {},
         applyLocalInverse: () => true,
         // The realm-qualified key the canonical preference owner resolves; a published Undo
@@ -48,8 +54,10 @@ function controllerStub(overrides: Partial<SessionCompanionController> = {}): Se
 }
 
 function ports(overrides: Partial<SessionPresentationPorts> = {}): SessionPresentationPorts {
+    const readableItem = overrides.board?.canReadItem ?? (() => true);
     return {
         companion: controllerStub(),
+        canAddCompanionItem: (item) => canAddSessionCompanionItem(item, null, readableItem),
         board: {
             availability: 'ready',
             open: () => ({ status: 'applied', undo: () => {} }),
@@ -69,6 +77,19 @@ function ports(overrides: Partial<SessionPresentationPorts> = {}): SessionPresen
 const intent = (value: CurrentSessionPresentationIntentV1) => value;
 
 describe('applySessionPresentationIntent', () => {
+    it('uses the mounted catalog for additions and permits frame edits/removal of retained unavailable references', () => {
+        const companion = controllerStub();
+        companion.show();
+        const retained = { kind: 'plugin' as const, surface: { pluginId: 'acme.review', localId: 'missing' } };
+        companion.addItem(retained);
+        const owner = ports({ companion });
+        expect(applySessionPresentationIntent(owner, { kind: 'companion.item.add', item: { kind: 'pane', paneId: 'not-a-pane' } })).toEqual({ status: 'invalidTarget' });
+        expect(applySessionPresentationIntent(owner, { kind: 'companion.item.add', item: { kind: 'pane', paneId: 'git' } })).toEqual({ status: 'applied' });
+        expect(applySessionPresentationIntent(owner, { kind: 'companion.item.frameStyle.set', item: retained, frameStyle: 'plain' })).toEqual({ status: 'applied' });
+        expect(companion.preference.items).toContainEqual({ ...retained, frameStyle: 'plain' });
+        expect(applySessionPresentationIntent(owner, { kind: 'companion.item.remove', item: retained })).toEqual({ status: 'applied' });
+        expect(companion.preference.items.some((ref) => ref.kind === 'plugin')).toBe(false);
+    });
     it('reveals an exact Board item only after its Companion preference mutation applied', () => {
         const order: string[] = [];
         const applied = {

@@ -2,16 +2,17 @@ import * as React from 'react';
 import { Platform, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { machineScmDiffCommit } from '@/sync/ops/scm/machineScm';
 import { buildDiffBlocks, buildDiffFileEntries } from '@/components/ui/code/model/diff/diffViewModel';
 import { DiffFilesListView } from '@/components/ui/code/diff/DiffFilesListView';
 import { useSetting } from '@/sync/domains/state/storage';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { WrapLinesToggleButton } from '@/components/ui/code/WrapLinesToggleButton';
 import { DiffPresentationStyleToggleButton } from '@/components/ui/code/diff/DiffPresentationStyleToggleButton';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { DetailsDiffSummaryRow } from '@/components/appShell/panes/details/header/DetailsDiffSummaryRow';
+import { ScmCommitDetailsHeader } from '@/components/workspaces/scm/history/ScmCommitDetailsHeader';
+import { useScmCommitLogEntry } from '@/scm/history/useScmCommitLogEntry';
 
 export type WorkspaceCommitDetailsViewProps = Readonly<{
     scopeId: string;
@@ -32,6 +33,12 @@ export const WorkspaceCommitDetailsView = React.memo((props: WorkspaceCommitDeta
     const [error, setError] = React.useState<string | null>(null);
     const [diff, setDiff] = React.useState('');
 
+    const commitScope = React.useMemo(
+        () => ({ serverId: props.serverId, machineId: props.machineId, rootPath: props.rootPath }),
+        [props.machineId, props.rootPath, props.serverId],
+    );
+    const commitEntry = useScmCommitLogEntry(commitScope, props.sha);
+    const [reloadToken, setReloadToken] = React.useState(0);
     const wrapLines = useSetting('wrapLinesInDiffs') === true;
     const showLineNumbers = useSetting('showLineNumbers') === true;
 
@@ -64,26 +71,24 @@ export const WorkspaceCommitDetailsView = React.memo((props: WorkspaceCommitDeta
         return () => {
             active = false;
         };
-    }, [props.machineId, props.rootPath, props.serverId, props.sha]);
+    }, [props.machineId, props.rootPath, props.serverId, props.sha, reloadToken]);
 
     if (loading) {
-        return (
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 16, gap: 10 }}>
-                <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-                <Text style={{ color: theme.colors.text.secondary, ...Typography.default() }}>
-                    {t('common.loading')}
-                </Text>
-            </View>
-        );
+        return <SurfaceStateCard testID="workspace-commit-details-loading" kind="loading" title={t('surfaceState.opening', { name: props.sha.slice(0, 7) })} />;
     }
 
     if (error) {
+        // Pane-states lab 0: what failed in words and one recovery; the transport text is the diagnostic.
         return (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-                <Text style={{ color: theme.colors.text.secondary, ...Typography.default(), textAlign: 'center' }}>
-                    {error}
-                </Text>
-            </View>
+            <SurfaceStateCard
+                testID="workspace-commit-details-error"
+                kind="error"
+                iconName="git-commit"
+                title={t('files.commitDetails.couldNotOpenTitle', { sha: props.sha.slice(0, 7) })}
+                reason={t('files.commitDetails.couldNotOpenReason')}
+                diagnosticCode={error}
+                action={{ label: t('surfaceState.tryAgain'), onPress: () => setReloadToken((token) => token + 1) }}
+            />
         );
     }
 
@@ -94,12 +99,21 @@ export const WorkspaceCommitDetailsView = React.memo((props: WorkspaceCommitDeta
 
     return (
         <View style={{ flex: 1, minHeight: 0, minWidth: 0, backgroundColor: theme.colors.surface.base }}>
-            {files.length > 0 ? (
-                <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    {Platform.OS === 'web' ? <DiffPresentationStyleToggleButton /> : null}
-                    <WrapLinesToggleButton />
-                </View>
-            ) : null}
+            <ScmCommitDetailsHeader
+                sha={props.sha}
+                commit={commitEntry}
+                actions={files.length > 0 ? (
+                    <>
+                        {Platform.OS === 'web' ? <DiffPresentationStyleToggleButton /> : null}
+                        <WrapLinesToggleButton />
+                    </>
+                ) : null}
+            />
+            <DetailsDiffSummaryRow
+                label={t('detailsSurface.history.filesChanged', { count: files.length })}
+                added={files.reduce((sum, file) => sum + Math.max(0, typeof file.added === 'number' ? file.added : 0), 0)}
+                removed={files.reduce((sum, file) => sum + Math.max(0, typeof file.removed === 'number' ? file.removed : 0), 0)}
+            />
             <DiffFilesListView
                 files={files}
                 expandedKeys={expandedKeys}

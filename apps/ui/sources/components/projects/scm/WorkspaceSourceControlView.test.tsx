@@ -8,6 +8,9 @@ import type { machineScmRemoteFetch, machineScmRemotePull, machineScmRemotePush 
 import type { ScmStashListResponse } from '@happier-dev/protocol';
 
 import { renderScreen } from '@/dev/testkit';
+import { publishActiveReviewFile, readActiveReviewFile, resetActiveReviewFilesForTests } from '@/components/workspaces/scm/review/activeReviewFile';
+import { WorkspaceSourceControlView } from './WorkspaceSourceControlView';
+import { ScmChangeRow } from '@/components/workspaces/scm/changes/ScmChangeRow';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -17,6 +20,7 @@ const removeWorkspaceScmCommitSelectionPatchSpy = vi.fn();
 const clearWorkspaceScmCommitSelectionPathsSpy = vi.fn();
 const clearWorkspaceScmCommitSelectionPatchesSpy = vi.fn();
 const refreshSpy = vi.fn(async () => {});
+const scrollToIndexSpy = vi.fn();
 const setScmRemoteConfirmPolicySpy = vi.fn();
 const modalConfirmSpy = vi.hoisted(() => vi.fn(async () => true));
 const modalAlertAsyncSpy = vi.hoisted(() => vi.fn(async (...args: Parameters<import('@/modal').IModal['alertAsync']>) => {
@@ -126,7 +130,8 @@ vi.mock('react-native', async () => {
 });
 
 vi.mock('@legendapp/list/react-native', () => ({
-    LegendList: (props: any) => {
+    LegendList: React.forwardRef((props: any, ref) => {
+        React.useImperativeHandle(ref, () => ({ scrollToIndex: scrollToIndexSpy }));
         const data = Array.isArray(props.data) ? props.data : [];
         const items = data.map((item: unknown, index: number) => React.createElement(
             'FlatListItem',
@@ -134,7 +139,7 @@ vi.mock('@legendapp/list/react-native', () => ({
             props.renderItem?.({ item, index }),
         ));
         return React.createElement('FlatList', props, props.ListHeaderComponent, ...items);
-    },
+    }),
 }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
@@ -334,6 +339,8 @@ function createLargeChangedFilesSnapshot(count = 30): ScmWorkingSnapshot {
 
 describe('WorkspaceSourceControlView', () => {
     beforeEach(() => {
+        resetActiveReviewFilesForTests();
+        scrollToIndexSpy.mockClear();
         markWorkspaceScmCommitSelectionPathsSpy.mockClear();
         unmarkWorkspaceScmCommitSelectionPathsSpy.mockClear();
         removeWorkspaceScmCommitSelectionPatchSpy.mockClear();
@@ -352,6 +359,27 @@ describe('WorkspaceSourceControlView', () => {
         scmRemoteConfirmPolicySetting = 'always';
         scmPushRejectPolicySetting = 'manual';
         scmWriteEnabledMock = true;
+    });
+
+    it('reveals Review’s active workspace file and routes a list tap to Review only while shown', async () => {
+        workspaceSnapshotMock = createMultiFileSnapshot();
+        commitSelectionPaths = [];
+        commitSelectionPatches = [];
+        scmCommitStrategySetting = 'atomic';
+        const key = 'workspace:server:m1:/repo';
+        const onOpenFile = vi.fn();
+        publishActiveReviewFile(key, { presented: true, activePath: 'src/b.ts' });
+        const screen = await renderScreen(<WorkspaceSourceControlView
+            serverId="server" machineId="m1" rootPath="/repo" onOpenFile={onOpenFile}
+        />);
+        expect(scrollToIndexSpy).toHaveBeenLastCalledWith({ index: 1, animated: true, viewPosition: 0.5 });
+        const row = screen.tree.findAllByType(ScmChangeRow).find((item) => item.props.file.fullPath === 'src/a.ts')!;
+        await act(async () => row.props.onPress());
+        expect(readActiveReviewFile(key).focusRequest?.path).toBe('src/a.ts');
+        expect(onOpenFile).not.toHaveBeenCalled();
+        await act(async () => publishActiveReviewFile(key, { presented: false, activePath: null }));
+        await act(async () => row.props.onPress());
+        expect(onOpenFile).toHaveBeenCalledWith('src/a.ts');
     });
 
     it('renders local changed-file affordances without remote update actions', async () => {

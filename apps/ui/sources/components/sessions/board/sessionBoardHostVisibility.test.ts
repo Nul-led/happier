@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     resolveSessionBoardItemPrimaryMountHost,
     resolveSessionBoardHostVisibility,
+    retainSessionBoardHostVisibility,
     type SessionBoardHostVisibilityFacts,
 } from './sessionBoardHostVisibility';
 
@@ -330,5 +331,33 @@ describe('resolveSessionBoardHostVisibility', () => {
             itemVisibleInCompanion: true,
             itemId: 'item-1',
         })).toBe('companion');
+    });
+});
+
+// The hook re-derives visibility on every render; its value keys the Board placement resolver that
+// the Session pane driver registers with. A fresh-but-equal visibility re-registered the driver on
+// every render, the registry update re-rendered the Session view, and opening a Session looped
+// ("Maximum update depth exceeded").
+describe('retainSessionBoardHostVisibility', () => {
+    it('keeps the previous visibility when the next one says the same thing', () => {
+        const previous = resolveSessionBoardHostVisibility(facts({
+            panes: { detailsOpen: true, detailsFocusModeActive: false, rightOpen: false, rightActiveTabId: null, detailsExpandedItemIds: ['a'] },
+        }));
+        const next = resolveSessionBoardHostVisibility(facts({
+            panes: { detailsOpen: true, detailsFocusModeActive: false, rightOpen: false, rightActiveTabId: null, detailsExpandedItemIds: ['a'] },
+        }));
+        expect(next).not.toBe(previous);
+        expect(retainSessionBoardHostVisibility(previous, next)).toBe(previous);
+    });
+
+    it('takes the next visibility when anything changed', () => {
+        const previous = resolveSessionBoardHostVisibility(facts());
+        const hidden = resolveSessionBoardHostVisibility(facts({ foreground: false }));
+        const sidebar = resolveSessionBoardHostVisibility(facts({
+            panes: { detailsOpen: false, detailsFocusModeActive: false, rightOpen: true, rightActiveTabId: 'board' },
+        }));
+        expect(retainSessionBoardHostVisibility(previous, hidden)).toBe(hidden);
+        expect(retainSessionBoardHostVisibility(previous, sidebar)).toBe(sidebar);
+        expect(retainSessionBoardHostVisibility(null, previous)).toBe(previous);
     });
 });

@@ -69,7 +69,11 @@ export type SessionBoardNoteEditorInput = Readonly<{
     requestRecoveryRefresh?: () => void;
     requestApprovalContinuation?: (request: SessionBoardMutationApprovalRequest) => void;
     actions: SessionBoardActionsPort;
-    onSaved?: (result: SessionBoardMutationResult | null, committedItemRevision: string | null) => void;
+    onSaved?: (
+        result: SessionBoardMutationResult | null,
+        committedItemRevision: string | null,
+        draftSettled: boolean,
+    ) => void;
     /**
      * Flush the markdown surface's debounced edit and return the value it now
      * holds. Save reads the body FROM this canonical editor owner rather than from

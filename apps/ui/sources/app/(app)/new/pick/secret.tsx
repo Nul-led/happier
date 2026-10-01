@@ -16,6 +16,7 @@ import { resolveSpawnServerRouteParam } from '@/components/sessions/new/navigati
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import { useNewSessionPickerRoutePresentation } from '@/components/sessions/new/navigation/newSessionContainedModalScreen';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export default React.memo(function SecretPickerScreen() {
     const { theme } = useUnistyles();
@@ -134,7 +135,7 @@ export default React.memo(function SecretPickerScreen() {
             <Pressable
                 onPress={handleBackPress}
                 hitSlop={10}
-                style={({ pressed }) => ({ marginLeft: 10, padding: 4, opacity: pressed ? 0.7 : 1 })}
+                style={({ pressed }) => ({ marginLeft: 10, padding: 4, opacity: pressed ? motionTokens.press.opacity : 1 })}
                 accessibilityRole="button"
                 accessibilityLabel={t('common.back')}
             >

@@ -130,6 +130,10 @@ vi.mock('@/components/sessions/guidance/useShouldBlockNewSessionWithGettingStart
 vi.mock('@/components/sessions/new/components/NewSessionSimplePanel', () => ({
     NewSessionSimplePanel: () => <View testID="new-session-inner" />,
 }));
+// The embedded (Home) presentation's composer card; the /new route never renders it.
+vi.mock('@/components/sessions/new/components/NewSessionComposerCard', () => ({
+    NewSessionComposerCard: () => null,
+}));
 
 vi.mock('@/components/sessions/new/components/NewSessionWizard', () => ({
     NewSessionWizard: () => <View testID="new-session-inner" />,

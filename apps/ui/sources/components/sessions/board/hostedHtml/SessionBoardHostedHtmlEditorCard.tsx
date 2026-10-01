@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation } from '@/components/appShell/workspace/destinationRoute';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { CodeEditor } from '@/components/ui/code/editor/CodeEditor';
@@ -71,13 +71,7 @@ export function SessionBoardHostedHtmlEditorCard(props: SessionBoardHostedHtmlEd
             keepEditingText: t('common.keepEditing'),
         },
     ), []);
-    const prepareGuard = React.useCallback(async () => {
-        const flushed = await flushHtml();
-        if (typeof flushed === 'string' && flushed !== editor.html) {
-            editor.setHtml(flushed);
-            editor.dirtyRef.current = true;
-        }
-    }, [editor, flushHtml]);
+    const prepareGuard = editor.flushToContinuity;
     const guard = React.useMemo<ActiveUnsavedChangesGuard>(() => ({
         isDirtyRef: editor.dirtyRef,
         requestDecision,

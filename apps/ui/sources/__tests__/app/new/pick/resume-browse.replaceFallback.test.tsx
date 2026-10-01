@@ -15,6 +15,7 @@ import {
     createSupportedClaudeProjection,
     enableReactActEnvironment,
     installPickerCommonModuleMocks,
+    type MachineContributionRegistryProjectionDescribeResult,
 } from './testHarness';
 
 enableReactActEnvironment();
@@ -78,9 +79,6 @@ installPickerCommonModuleMocks({
             useSettings: () => settingsState.value as any,
         }),
     projectionSeam: { describe: machineContributionRegistryProjectionDescribeMock },
-    tempDataStore: {
-        peekTempData: () => ({ machineId: 'machine-2', backendTarget: null, backendNewSessionOptionStateByTargetKey: {} }),
-    },
 });
 
 vi.mock('@/components/sessions/external/browse/ExternalSessionsBrowseScreen', () => ({
@@ -106,10 +104,17 @@ vi.mock('@/sync/store/hooks', () => ({
 
 
 describe('ResumeBrowsePickerScreen replace fallback', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
+        const { clearTempData, storeTempData } = await import('@/utils/sessions/tempDataStore');
+        clearTempData();
+        const dataId = storeTempData({
+            machineId: 'machine-2',
+            backendTarget: null,
+            backendNewSessionOptionStateByTargetKey: {},
+        });
         routeParamsState.value = {
             agentType: 'claude',
-            dataId: 'draft-1',
+            dataId,
             machineId: 'machine-2',
             spawnServerId: 'server-2',
         };
@@ -349,7 +354,7 @@ describe('ResumeBrowsePickerScreen replace fallback', () => {
             machineId: 'machine-plugin-2',
             spawnServerId: 'server-2',
         };
-        let resolveProjection: ((value: unknown) => void) | undefined;
+        let resolveProjection: ((value: MachineContributionRegistryProjectionDescribeResult) => void) | undefined;
         machineContributionRegistryProjectionDescribeMock.mockImplementationOnce(() => new Promise((resolve) => {
             resolveProjection = resolve;
         }));

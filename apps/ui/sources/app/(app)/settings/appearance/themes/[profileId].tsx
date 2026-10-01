@@ -1,1 +1,4 @@
-export { ThemeProfileEditorScreen as default } from '@/components/settings/appearance/themeProfiles';
+import { ThemeProfileEditorScreen as WorkspaceRouteBody } from '@/components/settings/appearance/themeProfiles';
+export { WorkspaceRouteBody };
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

@@ -23,6 +23,12 @@ const rightPaneBuiltinAdapter = {
     defaultDestinationId: 'right',
     render: () => <div />,
 };
+const detailsPaneBuiltinAdapter = {
+    destinationIds: ['details'],
+    defaultDestinationId: 'details',
+    render: () => <div />,
+};
+let mockedScopeOpen = { right: true, details: false };
 
 installAppPaneScopeHostCommonModuleMocks({
     getDimensions: () => ({ width: mockedWindowWidthPx, height: 800 }),
@@ -47,8 +53,8 @@ vi.mock('./AppPaneProvider', () => ({
         state: {
             scopes: {
                 scope1: {
-                    right: { isOpen: true },
-                    details: { isOpen: false },
+                    right: { isOpen: mockedScopeOpen.right },
+                    details: { isOpen: mockedScopeOpen.details },
                     bottom: { isOpen: false, activeTabId: null, selectedDestination: null, tabState: {} },
                 },
             },
@@ -80,12 +86,39 @@ describe('AppPaneScopeHost (docked max widths)', () => {
                 />);
 
         expect(lastProps).not.toBeNull();
-        // When the user-preferred right width cannot fit while keeping the main region usable,
-        // the pane should switch to an overlay instead of forcing a narrow docked layout.
-        expect(lastProps.layout.right).toBe('overlay');
+        // The right sidebar does not opt into the overlay-at-threshold behavior: a preferred width
+        // wider than the budget stays docked and stops where the main content keeps its minimum.
+        expect(lastProps.layout.right).toBe('docked');
         expect(lastProps.layout.details).toBe('hidden');
-        expect(lastProps.rightDockMaxWidthPx).toBe(835);
-        expect(lastProps.rightDockWidthPx).toBe(520);
+        expect(lastProps.rightDockMaxWidthPx).toBe(835 - 420);
+        expect(lastProps.rightDockWidthPx).toBe(835 - 420);
+    });
+
+    it('turns the details pane into an overlay when its preferred width would squeeze the main content', async () => {
+        const { AppPaneScopeHost } = await import('./AppPaneScopeHost');
+        lastProps = null;
+        mockedWindowWidthPx = 835;
+        mockedScopeOpen = { right: false, details: true };
+        mockedSettings = {
+            uiMultiPanePanelsEnabled: true,
+            rightPaneWidthPx: 320,
+            rightPaneWidthBasisPx: 835,
+            detailsPaneWidthPx: 520,
+            detailsPaneWidthBasisPx: 835,
+            bottomPaneHeightPx: 320,
+            bottomPaneHeightBasisPx: 900,
+        };
+
+        await renderScreen(<AppPaneScopeHost
+                    scopeId="scope1"
+                    main={<div />}
+                    detailsPaneBuiltinAdapter={detailsPaneBuiltinAdapter}
+                />);
+
+        expect(lastProps).not.toBeNull();
+        expect(lastProps.layout.details).toBe('overlay');
+        expect(lastProps.detailsDockWidthPx).toBe(520);
+        mockedScopeOpen = { right: true, details: false };
     });
 
     it('allows the docked right pane max width to exceed the legacy 720px cap on wide containers', async () => {

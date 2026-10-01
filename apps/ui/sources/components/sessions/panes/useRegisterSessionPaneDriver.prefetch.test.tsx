@@ -62,6 +62,26 @@ vi.mock('./bottom/SessionBottomPanel', () => {
 });
 
 describe('useRegisterSessionPaneDriver (module prefetch)', () => {
+    it('uses the discovered runtime Home for the mounted pane scope before the route has a server id', async () => {
+        const { useRegisterSessionPaneDriver } = await import('./useRegisterSessionPaneDriver');
+        let scopeId = '';
+        const Probe = () => {
+            scopeId = useRegisterSessionPaneDriver('same-session', null, undefined, {
+                pluginUiProjection: null,
+                pluginBrowserProjection: null,
+                phase: 'current',
+                interactionEnabled: true,
+                machineId: 'machine-a',
+                serverId: 'home-b',
+                platform: 'web',
+            });
+            return React.createElement('Probe');
+        };
+        await renderScreen(<Probe />);
+        expect(scopeId).toBe('session:address:home-b:same-session');
+        expect(registerDriverSpy.mock.calls.at(-1)?.[0].scopeId).toBe(scopeId);
+    });
+
     it('registers distinct pane scopes for the same session id on two Homes', async () => {
         const { useRegisterSessionPaneDriver } = await import('./useRegisterSessionPaneDriver');
         const scopeIds: string[] = [];

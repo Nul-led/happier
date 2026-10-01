@@ -16,8 +16,10 @@ import {
     setSessionCompanionCollapsed,
     setSessionCompanionDensity,
     setSessionCompanionEdge,
+    setSessionCompanionItemFrameStyle,
     showSessionCompanion,
     type SessionCompanionDensity,
+    type SessionCompanionFrameStyle,
     type SessionCompanionEdge,
     type SessionCompanionItemRefV1,
     type SessionCompanionPreferenceV1,
@@ -34,7 +36,7 @@ export type SessionCompanionMutationOutcome = Readonly<{
     applied: SessionCompanionPreferenceV1;
     /** Exact list mutation, when this operation changed item membership/order. */
     itemMutation?: Readonly<{
-        kind: 'added' | 'removed' | 'moved';
+        kind: 'added' | 'removed' | 'moved' | 'frameStyle';
         item: SessionCompanionItemRefV1;
     }>;
 }>;
@@ -45,7 +47,7 @@ function areItemListsEqual(
 ): boolean {
     return first.length === second.length && first.every((item, index) => {
         const other = second[index];
-        return other !== undefined && areSessionCompanionItemsEqual(item, other);
+        return other !== undefined && areSessionCompanionItemsEqual(item, other) && item.frameStyle === other.frameStyle;
     });
 }
 
@@ -61,6 +63,14 @@ export function resolveSessionCompanionLocalInverse(
     outcome: SessionCompanionMutationOutcome,
     current: SessionCompanionPreferenceV1,
 ): SessionCompanionPreferenceV1 | null {
+    if (outcome.itemMutation?.kind === 'frameStyle') {
+        const sameItem = (item: SessionCompanionItemRefV1) => areSessionCompanionItemsEqual(item, outcome.itemMutation!.item);
+        const previous = outcome.previous.items.find(sameItem);
+        const applied = outcome.applied.items.find(sameItem);
+        const live = current.items.find(sameItem);
+        if (!previous || !applied || !live || live.frameStyle !== applied.frameStyle) return null;
+        return setSessionCompanionItemFrameStyle(current, live, previous.frameStyle ?? null);
+    }
     const visibleChanged = outcome.previous.visible !== outcome.applied.visible;
     const collapsedChanged = outcome.previous.collapsed !== outcome.applied.collapsed;
     const edgeChanged = outcome.previous.edge !== outcome.applied.edge;
@@ -90,6 +100,9 @@ export function resolveSessionCompanionLocalInverse(
 
         if (mutation.kind === 'added') {
             if (!currentKeys.includes(itemKey)) return null;
+            const appliedItem = outcome.applied.items.find((item) => sessionCompanionItemKey(item) === itemKey);
+            const currentItem = current.items.find((item) => sessionCompanionItemKey(item) === itemKey);
+            if (appliedItem?.frameStyle !== currentItem?.frameStyle) return null;
             restoredItems = current.items.filter((item) => sessionCompanionItemKey(item) !== itemKey);
         } else if (mutation.kind === 'removed') {
             if (currentKeys.includes(itemKey)) return null;
@@ -98,7 +111,7 @@ export function resolveSessionCompanionLocalInverse(
             if (!currentKeys.includes(itemKey)) return null;
             restoredItems = insertItemAtOriginalNeighbors(
                 current.items.filter((item) => sessionCompanionItemKey(item) !== itemKey),
-                mutation.item,
+                current.items.find((item) => sessionCompanionItemKey(item) === itemKey)!,
                 previousKeys,
             );
         }
@@ -159,7 +172,9 @@ function toStoredCompanionEntry(preference: SessionCompanionPreferenceV1) {
         collapsed: preference.collapsed,
         edge: preference.edge,
         density: preference.density,
-        items: preference.items.map((item) => ({ ...item })),
+        items: preference.items.map((item) => item.kind === 'plugin'
+            ? { ...item, surface: { ...item.surface } }
+            : { ...item }),
     };
 }
 
@@ -177,6 +192,7 @@ export type SessionCompanionController = Readonly<{
     addItem: (item: SessionCompanionItemRefV1, index?: number) => SessionCompanionMutationOutcome | null;
     removeItem: (item: SessionCompanionItemRefV1) => SessionCompanionMutationOutcome | null;
     moveItem: (item: SessionCompanionItemRefV1, toIndex: number) => SessionCompanionMutationOutcome | null;
+    setItemFrameStyle: (item: SessionCompanionItemRefV1, style: SessionCompanionFrameStyle | null) => SessionCompanionMutationOutcome | null;
     openFullSurface: () => void;
     /**
      * Restores an outcome's previous value, or reports `false` when it went stale.
@@ -229,7 +245,10 @@ export function useSessionCompanionController(input: Readonly<{
             const previous = normalizeSessionCompanionPreference(stored);
             const applied = project(previous);
             if (areSessionCompanionPreferencesEqual(previous, applied)) return null;
-            outcome = { previous, applied, ...(itemMutation ? { itemMutation } : {}) };
+            const exactItemMutation = itemMutation?.kind === 'removed'
+                ? { ...itemMutation, item: previous.items.find((item) => areSessionCompanionItemsEqual(item, itemMutation.item)) ?? itemMutation.item }
+                : itemMutation;
+            outcome = { previous, applied, ...(exactItemMutation ? { itemMutation: exactItemMutation } : {}) };
             return toStoredCompanionEntry(applied);
         }, serverId);
         return outcome;
@@ -284,6 +303,10 @@ export function useSessionCompanionController(input: Readonly<{
         moveItem: (item: SessionCompanionItemRefV1, toIndex: number) => applyMutation(
             (current) => moveSessionCompanionItem(current, item, toIndex),
             { kind: 'moved', item },
+        ),
+        setItemFrameStyle: (item: SessionCompanionItemRefV1, style: SessionCompanionFrameStyle | null) => applyMutation(
+            (current) => setSessionCompanionItemFrameStyle(current, item, style),
+            { kind: 'frameStyle', item },
         ),
         openFullSurface,
         applyLocalInverse,

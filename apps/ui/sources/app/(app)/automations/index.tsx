@@ -1,12 +1,11 @@
-import React from 'react';
+import * as React from 'react';
 
-import { AutomationsGate } from '@/components/automations/gating/AutomationsGate';
-import { AutomationsScreen } from '@/components/automations/screens/AutomationsScreen';
+import { Redirect } from '@/components/appShell/workspace/destinationRoute';
 
-export default function AutomationsIndexRoute() {
-    return (
-        <AutomationsGate>
-            <AutomationsScreen />
-        </AutomationsGate>
-    );
+/** Retired: the Automations list is the Workflows destination's column (FIN 04 §3.2). */
+export function AutomationsIndexRoute(): React.ReactElement {
+    return <Redirect href="/workflows" />;
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { AutomationsIndexRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={AutomationsIndexRoute} />; }

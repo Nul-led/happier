@@ -143,6 +143,7 @@ function createRightSidebarProjection(params: Readonly<{
     const placement = {
         id: `surfacePlacement:${params.pluginId}:${params.descriptorId}`,
         pluginId: params.pluginId,
+        occurrenceId: `${params.pluginId}-occurrence`,
         contributionKind: 'surfacePlacement' as const,
         descriptorId: params.descriptorId,
         binding,
@@ -169,7 +170,6 @@ function createDaemonProjection(params: Readonly<{
         generation: model.generation,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -269,6 +269,7 @@ describe('SessionRightPanel (terminal tab)', () => {
                     platform: 'web',
                     clientExecutableActivation: { status: 'ready' },
                     reloadClientExecutables: () => {},
+                    reloadConnectedAccountProjection: () => {},
                 }}
             >
                 <SessionRightPanel sessionId="s1" scopeId="session:s1" />

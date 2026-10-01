@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { act } from 'react-test-renderer';
 import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 
 const routerBackSpy = vi.hoisted(() => vi.fn());
@@ -406,27 +407,21 @@ describe('app stack modal header close buttons', () => {
         });
     });
 
-    it('presents settings as an animated stack modal on web tablet/desktop layouts', async () => {
-        platformState.os = 'web';
-        deviceTypeState.value = 'tablet';
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
+    it('opens settings as a destination of the app shell on tablets and desktops, never as a modal', async () => {
+        for (const os of ['web', 'ios'] as const) {
+            platformState.os = os;
+            deviceTypeState.value = 'tablet';
+            const { default: RootLayout } = await import('@/app/(app)/_layout');
 
-        const screen = await renderScreen(<RootLayout />);
+            const screen = await renderScreen(<RootLayout />);
 
-        const settingsOptions = getStackScreenOptions(screen, 'settings');
-        expect(settingsOptions.presentation).toBe('modal');
-        // Modal mode animates in (not the instant 'none' the phone tab uses).
-        expect(settingsOptions.animation).toBeUndefined();
-    });
-
-    it('presents settings as a contained modal on iOS tablets', async () => {
-        platformState.os = 'ios';
-        deviceTypeState.value = 'tablet';
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
-
-        const screen = await renderScreen(<RootLayout />);
-
-        expect(getStackScreenOptions(screen, 'settings').presentation).toBe('containedModal');
+            const settingsOptions = getStackScreenOptions(screen, 'settings');
+            expect(settingsOptions.presentation).toBeUndefined();
+            expect(settingsOptions.webModalStyle).toBeUndefined();
+            // A rail destination switches in place, like the other destinations.
+            expect(settingsOptions.animation).toBe('none');
+            act(() => screen.tree.unmount());
+        }
     });
 
     it('keeps settings as a non-animated full-screen tab on phones (reached via the bottom tab bar)', async () => {

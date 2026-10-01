@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import type { ReactTestInstance } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import type { AppPaneScopeApi } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import type { SplitCanvasLeafNode, SplitCanvasNode } from '@/components/appShell/splitCanvas/model/splitCanvasTypes';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
@@ -172,6 +172,9 @@ const pane = {
     setDetailsSplitRatio: vi.fn(),
     closeDetailsGroup: vi.fn(),
 } satisfies AppPaneScopeApi;
+
+// Collect the real surface before timed behavior tests; per-test imports use this same module cache.
+await import('./DetailsSplitWorkspace');
 
 describe('DetailsSplitWorkspace', () => {
     beforeEach(() => {

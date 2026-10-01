@@ -2,6 +2,7 @@ import { useSessionCollaborationDestinationAdmitted } from '@/hooks/session/useS
 import { useSessionBoardFeatureEnabled } from '@/components/sessions/board/useSessionBoardFeatureEnabled';
 import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
 import * as React from 'react';
+import { listPendingPermissionRequests } from '@/utils/sessions/sessionUtils';
 import { Platform } from 'react-native';
 
 import { getAgentCore, isBundledAgentId } from '@/agents/catalog/catalog';
@@ -25,6 +26,8 @@ import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactive
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Icon } from '@/components/ui/icons/Icon';
 import { useSessionLateralSwipe } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
+import { SessionCollaborationRailBadge } from '@/components/sessions/collaboration/sessionConversationAttention';
+import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { SessionCockpitLateralReadout } from '../lateralSwipe/SessionCockpitLateralReadout';
 import { useSessionCockpitLateralNavigation } from '../lateralSwipe/useSessionCockpitLateralNavigation';
@@ -61,6 +64,10 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
     const sessionServerId = usePreferredServerIdForSession({ serverId: props.serverId, sessionId: props.sessionId });
     const collaborationAdmitted = useSessionCollaborationDestinationAdmitted(sessionServerId ?? '');
     const sessionSharingAvailable = Boolean(sessionServerId) && collaborationAdmitted;
+    const collaborationTarget = React.useMemo(
+        () => normalizeSessionAddress(sessionServerId, props.sessionId),
+        [props.sessionId, sessionServerId],
+    );
     const boardFeatureEnabled = useSessionBoardFeatureEnabled(sessionServerId);
     // The band's actions are built HERE rather than in the chrome host because a tab is
     // the only element in the band a screen reader can focus, and an action only reaches
@@ -83,8 +90,8 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
         if (actionName === PREVIOUS_SESSION_ACTION) lateralNavigation.navigate('previous');
         else if (actionName === NEXT_SESSION_ACTION) lateralNavigation.navigate('next');
     }, [lateralNavigation]);
-    const session = useSession(props.sessionId);
-    const scmStatus = useSessionProjectScmStatus(props.sessionId);
+    const session = useSession(props.sessionId, props.serverId);
+    const scmStatus = useSessionProjectScmStatus(props.sessionId, props.serverId);
     const gitBadgeMode = useSetting('tabBarGitBadgeMode');
     const openTabsBadgeEnabled = useSetting('tabBarOpenTabsBadgeEnabled');
     const [pinnedSurfaceIds, setPinnedSurfaceIds] = useLocalSettingMutable('sessionCockpitPinnedSurfaceIds');
@@ -99,9 +106,13 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
     // The session's reachable machine target scopes catalog identity resolution;
     // the same owner the Session header uses, so the capsule and the header
     // cannot resolve one session's Agent through two different machines.
-    const reachableMachineTarget = useSessionReachableMachineTarget(props.sessionId);
+    const reachableMachineTarget = useSessionReachableMachineTarget(props.sessionId, props.serverId);
     const agentCore = isBundledAgentId(agentId) ? getAgentCore(agentId) : null;
     const gitBadge = resolveGitTabBadge(gitBadgeMode, scmStatus);
+    const pendingPermissionCount = React.useMemo(
+        () => (session ? listPendingPermissionRequests(session).length : 0),
+        [session],
+    );
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
 
     const catalog = React.useMemo(() => resolveSessionCockpitMobileCatalog({
@@ -141,8 +152,16 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
             if (entry.id === 'companion') {
                 return {
                     id: 'companion',
-                    label: 'Companion',
+                    label: t('sessionBoard.companion.title'),
                     icon: 'stack-simple',
+                    // The Companion holds the ask with its answers (lab CAp): an amber
+                    // dot says something there is waiting, from the canonical pending flag.
+                    ...(pendingPermissionCount > 0
+                        ? {
+                            badge: { kind: 'attention' as const },
+                            accessibilityLabel: t('sessionCompanion.needsYouA11y', { count: pendingPermissionCount }),
+                        }
+                        : {}),
                 };
             }
             return {
@@ -180,6 +199,16 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
             testID: `session-cockpit-more-item:${entry.id}`,
             title: tab.label,
             icon: <Icon name={typeof tab.icon === 'string' ? tab.icon : 'puzzle-piece'} size={18} />,
+            // Collaboration says only news: a dot when someone mentioned you (the rail's dot).
+            ...(entry.id === 'collaboration' && collaborationTarget ? {
+                rightElement: (
+                    <SessionCollaborationRailBadge
+                        target={collaborationTarget}
+                        placement="inline"
+                        testID="session-cockpit-more-fact:collaboration"
+                    />
+                ),
+            } : {}),
             ...(pluginEntry ? {
                 rightElement: (
                     <IconButton

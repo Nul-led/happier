@@ -3,6 +3,8 @@ import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import type { AppPaneScopeApi } from '@/components/appShell/panes/hooks/useAppPaneScope';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { SurfaceStateSizeProvider, useSurfaceStateSize } from '@/components/ui/surfaces/surfaceStateSize';
 import { SplitCanvasHost } from '@/components/appShell/splitCanvas/components/SplitCanvasHost';
 import {
     ModalPaneBoundaryView,
@@ -94,19 +96,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         flex: 1,
         minHeight: 0,
         minWidth: 0,
-    },
-    overlayUnavailable: {
-        flex: 1,
-        minHeight: 0,
-        minWidth: 0,
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingHorizontal: 24,
-    },
-    overlayUnavailableText: {
-        color: theme.colors.text.secondary,
-        fontSize: 13,
-        textAlign: 'center',
     },
 }));
 
@@ -215,6 +204,7 @@ function getDetailsView(pane: AppPaneScopeApi): PaneDetailsStateView {
 }
 
 export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspaceProps) => {
+    const enclosingStateSize = useSurfaceStateSize();
     const styles = stylesheet;
     const details = getDetailsView(props.pane);
     const overlay = details.overlay ?? null;
@@ -410,15 +400,17 @@ export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspacePro
         ? props.renderOverlay(overlay)
         : overlay
             ? (
-                <View testID="details-workspace-overlay-unavailable" style={styles.overlayUnavailable}>
-                    <Text style={styles.overlayUnavailableText}>
-                        {t('session.detailsPanel.unsupportedTab')}
-                    </Text>
-                </View>
+                <SurfaceStateCard
+                    testID="details-workspace-overlay-unavailable"
+                    kind="unavailable"
+                    title={t('session.detailsPanel.unsupportedTab')}
+                />
             )
             : null;
 
     return (
+        // Pane-states lab 0: states in a details tab take the details step; a phone host keeps its own.
+        <SurfaceStateSizeProvider size={enclosingStateSize === 'phone' ? 'phone' : 'details'}>
         <View testID={props.testIds?.root} style={styles.root}>
             <ModalPaneBoundaryView
                 ref={detailsModalBoundary.setUnderlayFocusRef}
@@ -484,5 +476,6 @@ export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspacePro
                 </ModalPaneBoundaryView>
             ) : null}
         </View>
+        </SurfaceStateSizeProvider>
     );
 });

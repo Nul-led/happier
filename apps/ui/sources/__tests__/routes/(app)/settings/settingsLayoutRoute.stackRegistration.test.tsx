@@ -122,6 +122,7 @@ vi.mock('@/utils/platform/platform', () => ({
 
 vi.mock('@/utils/platform/desktopHost', () => ({
     isDesktopHost: () => true,
+    desktopHostKind: () => 'tauri',
 }));
 
 afterEach(() => {
@@ -138,32 +139,21 @@ describe('SettingsLayoutRoute stack registration', () => {
             .map((node) => node.props?.name)
             .filter((name): name is string => typeof name === 'string');
 
-        expect(screenNames).toContain('agents/index');
-        expect(screenNames).not.toContain('providers');
-        expect(screenNames).toContain('agents/[agentId]');
+        expect(screenNames).toContain('agents');
+        expect(screenNames).toContain('providers');
+        // Agent and Provider screens live in their collections' nested navigators.
+        expect(screenNames).not.toContain('agents/[agentId]');
+        expect(screenNames).not.toContain('providers/[connectionId]');
         expect(screenNames).toContain('plugins/index');
         expect(screenNames).toContain('plugins/[pluginId]');
         expect(screenNames).toContain('actions');
         expect(screenNames).toContain('actions/[actionId]');
-        for (const name of [
-            'home/[serverId]/policies',
-            'home/[serverId]/policies/identity/new',
-            'home/[serverId]/policies/identity/[providerId]/index',
-            'home/[serverId]/policies/identity/[providerId]/edit',
-            'home/[serverId]/policies/github-apps/new',
-            'home/[serverId]/policies/github-apps/[registrationId]/index',
-            'home/[serverId]/policies/github-apps/[registrationId]/edit',
-            'teams/[serverId]/[teamId]/authentication',
-            'teams/[serverId]/[teamId]/authentication/new',
-            'teams/[serverId]/[teamId]/authentication/[connectionId]',
-            'teams/[serverId]/[teamId]/authentication/[connectionId]/edit',
-            'teams/[serverId]/[teamId]/authentication/directory',
-            'teams/[serverId]/[teamId]/authentication/directory/[sourceId]',
-            'teams/[serverId]/[teamId]/authentication/github-apps/[registrationId]/index',
-            'teams/[serverId]/[teamId]/authentication/github-apps/[registrationId]/edit',
-        ]) {
-            expect(screenNames).toContain(name);
-        }
+        // Every Home console page lives in the console collection's nested navigator.
+        expect(screenNames).toContain('home/[serverId]');
+        expect(screenNames.some((name) => name.startsWith('home/[serverId]/'))).toBe(false);
+        // Every Team destination lives in the Teams collection's nested navigator.
+        expect(screenNames).toContain('teams');
+        expect(screenNames.some((name) => name.startsWith('teams/'))).toBe(false);
     });
 
     it('refreshes stack chrome translations when the language changes and the route rerenders', async () => {
@@ -175,7 +165,7 @@ describe('SettingsLayoutRoute stack registration', () => {
 
         const screen = await renderScreen(<SettingsLayoutRoute />);
         const readProvidersScreen = () => (
-            screen.findAllByType(Stack.Screen).find((node) => node.props?.name === 'agents/[agentId]')
+            screen.findAllByType(Stack.Screen).find((node) => node.props?.name === 'agents')
         );
         const readIndexScreen = () => (
             screen.findAllByType(Stack.Screen).find((node) => node.props?.name === 'index')

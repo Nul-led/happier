@@ -1,4 +1,6 @@
 import * as React from 'react';
+import { createRequire } from 'node:module';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
@@ -10,13 +12,21 @@ vi.mock('@/text', () => createTextModuleMock());
 
 vi.mock('./summary/useSessionSummaryModel', () => ({
     useSessionSummaryModel: () => ({
+        scope: 'exact' as const,
         title: 'Teams lane 08',
         agentLabel: 'Claude',
-        operational: 'working' as const,
+        agentId: null,
+        status: { state: 'thinking' as const, statusText: 'Working', quiet: false },
         stale: false,
         availability: 'complete' as const,
+        encryption: 'plain' as const,
         identityDestination: 'sessionInfo' as const,
         rows: [],
+        needsYou: null,
+        sinceMs: null,
+        progress: null,
+        plan: null,
+        facts: [],
     }),
 }));
 
@@ -39,6 +49,7 @@ const geometry = {
 };
 vi.mock('react-native', async (importOriginal) => ({
     ...(await importOriginal<Record<string, unknown>>()),
+    Platform: { OS: 'web', select: (options: { web?: unknown; default?: unknown }) => options.web ?? options.default },
     useWindowDimensions: () => ({
         width: 1440,
         height: 900,
@@ -87,6 +98,8 @@ vi.mock('@/sync/domains/state/storage', () => ({
         storageKey: 'server-a account-a session-1',
     }),
     useMutateSessionCompanionPreference: () => mutate,
+    // The Companion's Appearance frame default (Widgets); unset falls back to the placement default.
+    useLocalSetting: () => undefined,
 }));
 
 vi.mock('@/components/sessions/board/SessionWidgetHost', () => ({
@@ -211,6 +224,19 @@ describe('SessionCompanionHost (mounted, desktop/tablet)', () => {
         expect(probe?.props.pointerEvents).toBe('none');
         expect(probe?.props.accessibilityElementsHidden).toBe(true);
         expect(probe?.props.importantForAccessibility).toBe('no-hide-descendants');
+        // Exercise the installed DOM boundary, not the RN test stub: native-only
+        // hidden props do not prevent RN-web descendants from receiving focus.
+        // The shared CJS shim intentionally stubs the bare RN-web specifier.
+        // Resolve its installed View entry to exercise the real DOM adapter.
+        const nodeRequire = createRequire(import.meta.url);
+        const WebView = nodeRequire(nodeRequire.resolve('react-native-web/dist/cjs/exports/View/index.js')) as typeof import('react-native')['View'];
+        const measurementHtml = renderToStaticMarkup(React.createElement(
+            WebView,
+            probe?.props,
+            React.createElement('button', { type: 'button' }, 'Summary destination'),
+        ));
+        expect(measurementHtml).toContain('inert=""');
+        expect(measurementHtml).toContain('aria-hidden="true"');
 
         const card = renderer.findByTestId(
             'session-companion-measurement-content-item-builtin:session_summary',
@@ -223,6 +249,13 @@ describe('SessionCompanionHost (mounted, desktop/tablet)', () => {
         const visibleRail = renderer.findByTestId('session-companion-reserved-rail');
         expect(flattenTestStyle(visibleRail?.props.style).width).toBe(264);
         expect(renderer.findByTestId('session-companion-content')).not.toBeNull();
+        const visibleHtml = renderToStaticMarkup(React.createElement(
+            WebView,
+            visibleRail?.props,
+            React.createElement('button', { type: 'button' }, 'Summary destination'),
+        ));
+        expect(visibleHtml).not.toContain('inert=""');
+        expect(visibleHtml).not.toContain('aria-hidden="true"');
 
         const visibleCard = renderer.findByTestId(
             'session-companion-content-item-builtin:session_summary',

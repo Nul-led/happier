@@ -96,6 +96,8 @@ describe('SessionRightPanelGitCommitTab (keyboard inset)', () => {
             commitAllowed={false}
             commitBlockedMessage={null}
             changedFilesViewMode="repository"
+            sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
+            sessionCheckpointOverlap="unknown"
 
             allRepositoryChangedFiles={[] as any}
             sessionAttributedFiles={[] as any}

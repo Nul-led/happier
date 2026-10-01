@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { I18nManager, View, useWindowDimensions } from 'react-native';
+import { I18nManager, Platform, View, useWindowDimensions, type ViewProps } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import type { SessionPluginRuntimeState } from '@/components/sessions/plugins/useSessionPluginRuntime';
@@ -24,7 +24,9 @@ import {
 } from './presentation/sessionCompanionPresentationAdapter';
 import { useSessionCompanionPlacement } from './layout/useSessionCompanionPlacement';
 import { buildSessionCompanionMenuActions } from './sessionCompanionMenu';
-import { resolveSessionCompanionAddableItems } from './sessionCompanionContentModel';
+import { useSessionCompanionBoardAdd } from './picker/useSessionCompanionBoardAdd';
+import { registerSessionCompanionDropTarget } from './drop/sessionCompanionDropStore';
+import { useMountedSessionBoardController } from '@/components/sessions/board/SessionBoardControllerProvider';
 import { useSessionCompanionController } from './state/useSessionCompanionController';
 import type { SessionSummaryDestinationHandlers } from './summary/SessionSummaryCard';
 import { publishSessionCompanionCardBounds } from './layout/sessionCompanionCardMeasurement';
@@ -65,13 +67,22 @@ const stylesheet = StyleSheet.create((theme) => ({
         paddingEnd: 4,
         paddingTop: 10,
     },
+    // A title, not an eyebrow (lab CA): the column names itself like any pane.
     heading: {
-        ...Typography.eyebrow(),
-        color: theme.colors.text.secondary,
+        ...Typography.default('semiBold'),
+        fontSize: 15,
+        color: theme.colors.text.primary,
         flex: 1,
         minWidth: 0,
     },
 }));
+
+// Native accessibility props keep the measurement rail out of assistive
+// technology on iOS/Android.  On web, the same hidden DOM subtree must also be
+// inert so its real interactive descendants cannot receive focus while the
+// rail is being measured.  Keep one wrapper and one DOM boundary for both
+// platforms; this is presentation state, not a second measurement host.
+const MeasurementRailView = View as React.ComponentType<ViewProps & Pick<React.HTMLAttributes<HTMLElement>, 'inert' | 'aria-hidden'>>;
 
 type SessionCompanionHostProps = Readonly<{
     session: Session;
@@ -83,7 +94,6 @@ type SessionCompanionHostProps = Readonly<{
     openFullSurface: () => void;
     onRevealBoardItem?: (itemId: string) => void;
     onManageBoardItemPlugin?: (itemId: string) => void;
-    onRemoveBoardItem?: (itemId: string) => void;
     summaryDestinations?: SessionSummaryDestinationHandlers;
     paneScopeId: string;
     resolvePrimaryHost: SessionBoardPrimaryMountResolver;
@@ -119,13 +129,32 @@ export const SessionCompanionHost = React.memo(function SessionCompanionHost(
         noticeKeyPrefix,
         ...input,
     }), [controller, noticeKeyPrefix]);
-    const addItem = React.useCallback((item: Parameters<typeof controller.addItem>[0]) => {
-        mutateCompanion({
-            kind: 'companion.item.add',
-            message: t('sessionBoard.companion.notices.added'),
-            apply: (companion) => companion.addItem(item),
+    // The rail is the drop target for a Board card dragged beside the chat (lab CM).
+    // Registered only while the rail itself is shown; the drop reuses the one add path.
+    const railRef = React.useRef<View | null>(null);
+    const railShown = controller.availability === 'ready' && placement.kind === 'reserved_rail';
+    React.useEffect(() => {
+        if (!railShown) return undefined;
+        return registerSessionCompanionDropTarget(props.session.id, {
+            measure: () => new Promise((resolve) => {
+                const node = railRef.current;
+                if (!node) {
+                    resolve(null);
+                    return;
+                }
+                node.measureInWindow((x, y, width, height) => {
+                    resolve(width > 0 && height > 0 ? { x, y, width, height } : null);
+                });
+            }),
+            accept: (widgetId) => {
+                mutateCompanion({
+                    kind: 'companion.item.add',
+                    message: t('sessionBoard.companion.notices.added'),
+                    apply: (companion) => companion.addItem({ kind: 'widget', widgetId }),
+                });
+            },
         });
-    }, [mutateCompanion]);
+    }, [mutateCompanion, props.session.id, railShown]);
     const publishCardBounds = React.useCallback((bounds: Readonly<{ widthPx: number; heightPx: number }>) => {
         publishSessionCompanionCardBounds({
             sessionId: props.session.id,
@@ -136,16 +165,12 @@ export const SessionCompanionHost = React.memo(function SessionCompanionHost(
         }, bounds);
     }, [controller.preference.density, fontScale, props.address.serverId, props.paneScopeId, props.session.id]);
 
-    const board = props.boardBinding?.status === 'ready' ? props.boardBinding.snapshot : null;
-    const addableItems = React.useMemo(() => resolveSessionCompanionAddableItems({
-        snapshot: board,
-        refs: controller.preference.items,
-    }), [board, controller.preference.items]);
+    // Adding reads the ONE mounted Board controller for this exact Session.
+    const addBinding = useSessionCompanionBoardAdd(useMountedSessionBoardController(props.address));
 
     const menuActions = React.useMemo(() => buildSessionCompanionMenuActions({
         preference: controller.preference,
         layoutDirection: I18nManager.isRTL ? 'rtl' : 'ltr',
-        addableItems,
         setEdge: (edge) => { mutateCompanion({
             kind: 'companion.edge.set',
             message: t('sessionBoard.companion.notices.moved'),
@@ -170,15 +195,14 @@ export const SessionCompanionHost = React.memo(function SessionCompanionHost(
             message: t('sessionBoard.companion.notices.hidden'),
             apply: (companion) => companion.hide(),
         }); },
-        addItem,
         openFullSurface: props.openFullSurface,
-    }), [addItem, addableItems, controller.preference, mutateCompanion, props.openFullSurface]);
+    }), [controller.preference, mutateCompanion, props.openFullSurface]);
 
     if (controller.availability !== 'ready') return null;
 
     if (placement.kind === 'measuring_rail') {
         return (
-            <View
+            <MeasurementRailView
                 style={[
                     styles.measurementRail,
                     { width: placement.widthPx, height: placement.heightPx },
@@ -188,6 +212,8 @@ export const SessionCompanionHost = React.memo(function SessionCompanionHost(
                 focusable={false}
                 accessibilityElementsHidden
                 importantForAccessibility="no-hide-descendants"
+                inert={Platform.OS === 'web' ? true : undefined}
+                aria-hidden={Platform.OS === 'web' ? true : undefined}
                 collapsable={false}
             >
                 <SessionCompanionContent
@@ -209,7 +235,7 @@ export const SessionCompanionHost = React.memo(function SessionCompanionHost(
                     testID="session-companion-measurement-content"
                     onMeasuredCardBounds={publishCardBounds}
                 />
-            </View>
+            </MeasurementRailView>
         );
     }
 
@@ -227,6 +253,7 @@ export const SessionCompanionHost = React.memo(function SessionCompanionHost(
         : styles.railAtLeadingEdge;
     return (
         <View
+            ref={railRef}
             style={[styles.rail, borderStyle, { width: placement.widthPx }]}
             testID="session-companion-reserved-rail"
             accessibilityLabel={t('sessionBoard.companion.title')}
@@ -271,7 +298,7 @@ export const SessionCompanionHost = React.memo(function SessionCompanionHost(
                 {...(props.onManageBoardItemPlugin
                     ? { onManageBoardItemPlugin: props.onManageBoardItemPlugin }
                     : {})}
-                {...(props.onRemoveBoardItem ? { onRemoveBoardItem: props.onRemoveBoardItem } : {})}
+                addBinding={addBinding}
                 onOpenFullSurface={props.openFullSurface}
                 presentation="rail"
                 onMeasuredCardBounds={publishCardBounds}

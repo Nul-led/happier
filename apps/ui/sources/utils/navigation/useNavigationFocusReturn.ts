@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from '@/components/appShell/workspace/destinationRoute';
 
 import {
     type FocusReturnTarget,
@@ -164,4 +164,26 @@ export function useNavigationFocusReturn(options: Readonly<{ ready?: boolean }> 
             targetRef: targetRefForTestId,
         },
     ), [capture, targetRefForTestId]);
+}
+
+/**
+ * Focus return for a page that swaps its content in place (a picker pushed inside the same route, so
+ * no screen focus event fires): `capture` remembers the focused control's stable test id before the
+ * swap, and `restore` focuses that control again once the original content is back. A mouse press
+ * leaves no keyboard ring on the restored control; keyboard users land where they were.
+ */
+export function useInPlaceFocusReturn() {
+    const testIdRef = React.useRef<string | null>(null);
+    const capture = React.useCallback(() => {
+        testIdRef.current = readActiveFocusReturnTestId();
+    }, []);
+    const restore = React.useCallback((): boolean => {
+        const testId = testIdRef.current;
+        testIdRef.current = null;
+        const target = testId ? resolveVisibleFocusReturnTarget(testId) : null;
+        if (!target) return false;
+        target.focus();
+        return true;
+    }, []);
+    return React.useMemo(() => ({ capture, restore }), [capture, restore]);
 }

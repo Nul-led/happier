@@ -34,10 +34,20 @@ class DetailsSurfaceRenderBoundary extends React.Component<
 
     render(): React.ReactNode {
         if (this.state.hasError) {
-            return <DetailsSurfaceFallback status="renderer-error" />;
+            return <DetailsSurfaceFallback status="renderer-error" onRetry={() => this.setState({ hasError: false })} />;
         }
         return this.props.children;
     }
+}
+
+function DetailsSurfaceRendererContent(props: Readonly<{
+    renderer: DetailsSurfaceRendererV1;
+    input: Parameters<DetailsSurfaceRendererV1['render']>[0];
+}>): React.ReactElement {
+    const surface = props.renderer.render(props.input);
+    return surface == null
+        ? <DetailsSurfaceFallback status="unsupported" />
+        : <>{surface}</>;
 }
 
 export function DetailsSurfaceHost(props: Readonly<{
@@ -75,20 +85,9 @@ export function DetailsSurfaceHost(props: Readonly<{
         return <DetailsSurfaceFallback status="unsupported" />;
     }
 
-    let surface: React.ReactNode;
-    try {
-        surface = renderer.render(renderInput);
-    } catch {
-        return <DetailsSurfaceFallback status="renderer-error" />;
-    }
-
-    if (surface == null) {
-        return <DetailsSurfaceFallback status="unsupported" />;
-    }
-
     return (
         <DetailsSurfaceRenderBoundary key={`${descriptor.surfaceId}:${renderer.id}`}>
-            {surface}
+            <DetailsSurfaceRendererContent renderer={renderer} input={renderInput} />
         </DetailsSurfaceRenderBoundary>
     );
 }

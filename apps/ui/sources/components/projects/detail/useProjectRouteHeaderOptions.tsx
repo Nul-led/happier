@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Pressable } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { t } from '@/text';

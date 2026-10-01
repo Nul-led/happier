@@ -15,6 +15,7 @@ import {
 import {
     resolveSessionBoardItemPrimaryMountHost,
     resolveSessionBoardHostVisibility,
+    retainSessionBoardHostVisibility,
     type SessionBoardHostVisibility,
     type SessionBoardPlacementPrimaryMountResolver,
 } from './sessionBoardHostVisibility';
@@ -46,8 +47,9 @@ export function useSessionBoardHostVisibility(input: Readonly<{
         paneScopeId: input.paneScopeId,
     });
     const scopeState = pane.scopeState;
+    const previousRef = React.useRef<SessionBoardHostVisibility | null>(null);
 
-    return resolveSessionBoardHostVisibility({
+    const next = resolveSessionBoardHostVisibility({
         foreground,
         panes: scopeState
             ? {
@@ -69,6 +71,13 @@ export function useSessionBoardHostVisibility(input: Readonly<{
         companionPlacement,
         mobileSurface: input.mobileSurface ?? null,
     });
+    // An equal visibility keeps its reference, so the placement resolver below (and the Session
+    // pane driver registered with it) changes only when a placement fact really changed.
+    const visibility = retainSessionBoardHostVisibility(previousRef.current, next);
+    React.useEffect(() => {
+        previousRef.current = visibility;
+    }, [visibility]);
+    return visibility;
 }
 
 export function useSessionBoardPrimaryMountResolver(input: Readonly<{

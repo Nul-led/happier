@@ -4,12 +4,11 @@ import * as React from 'react';
 import { Platform, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { ChangedFilesTreeList } from '@/components/workspaces/files/repositoryTree/ChangedFilesTreeList';
+import { RepositoryTreeToolbar } from '@/components/workspaces/files/repositoryTree/RepositoryTreeToolbar';
+import { RepositoryTreeCreateMenu, type RepositoryTreeCreateMenuItemId } from '@/components/workspaces/files/repositoryTree/RepositoryTreeCreateMenu';
+import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
+import { selectScmChangedFiles } from '@/scm/scmStatusFiles';
 import { SearchResultsList } from '@/components/workspaces/files/repositoryTree/SearchResultsList';
-import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { FileBrowserToolbarIconButton } from '@/components/ui/filesystemBrowser/FileBrowserToolbar';
-import { FilesystemBrowserToolbarChrome, type FilesystemBrowserToolbarAction } from '@/components/ui/filesystemBrowser/FilesystemBrowserToolbarChrome';
-import type { ItemAction } from '@/components/ui/lists/itemActions';
 import type { FileItem } from '@/sync/domains/input/suggestionFile';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -20,7 +19,7 @@ import { searchWorkspaceFiles, workspaceFileSearchCache } from '@/sync/domains/w
 import { workspaceCreateDirectory, workspaceWriteFile } from '@/sync/ops/workspaceFileSystem';
 import { isSafeWorkspaceRelativePath } from '@/utils/path/isSafeWorkspaceRelativePath';
 import { tryBuildWorkspaceCacheKey, type WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
-import { storage, useMachine, useServerScopedMachine, useWorkspaceRepositoryTreeExpandedPaths } from '@/sync/domains/state/storage';
+import { storage, useLocalSetting, useMachine, useServerScopedMachine, useWorkspaceRepositoryTreeExpandedPaths } from '@/sync/domains/state/storage';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import { useWorkspaceScmSnapshotController } from '@/hooks/workspaces/scm/useWorkspaceScmSnapshotController';
 import { useWorkspaceFileTransfers, type WorkspaceUploadEntry } from '@/hooks/workspaces/transfers/useWorkspaceFileTransfers';
@@ -33,16 +32,14 @@ import { nativePickFiles, type NativePickedFile } from '@/utils/files/nativePick
 import { applyWebDirectoryInputAttributes } from '@/utils/files/applyWebDirectoryInputAttributes';
 import { showUploadConflictResolutionDialog } from '@/components/workspaces/files/repositoryTree/showUploadConflictResolutionDialog';
 import { shouldUseRepositoryRootDropTarget } from '@/components/workspaces/files/repositoryTree/shouldUseRepositoryRootDropTarget';
-import { createRepositoryTreeUploadMenuConfig } from '@/components/workspaces/files/repositoryTree/createRepositoryTreeUploadMenuConfig';
 import { promptRepositoryUploadDestination } from '@/components/workspaces/files/repositoryTree/promptRepositoryUploadDestination';
 import { RepositoryTreeRowActionsMenu } from '@/components/workspaces/files/repositoryTree/RepositoryTreeRowActionsMenu';
 import { useWorkspaceRepositoryTreeWebDropState } from '@/hooks/workspaces/files/useWorkspaceRepositoryTreeWebDropState';
 import { useWorkspaceRepositoryTreeRowActions } from '@/hooks/workspaces/files/useWorkspaceRepositoryTreeRowActions';
 import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
-import { useMachineRpcDirectRouteAvailability } from '@/sync/domains/transfers/runtime/useMachineRpcDirectRouteAvailability';
-import { isMachineDaemonFiniteTransferApplicationSupported, isMachineDaemonLegacyTransferRpcEligible } from '@/sync/domains/transfers/runtime/transferRuntime/availability/machineDaemonTransferState';
-import { isMachineFiniteTransferRpcDeclared, resolveMachineCarrierPreselection } from '@/sync/domains/transfers/runtime/transferRuntime/routing/resolveMachineCarrierPreselection';
+import { isMachineDaemonFiniteTransferApplicationSupported } from '@/sync/domains/transfers/runtime/transferRuntime/availability/machineDaemonTransferState';
+import { isMachineFiniteTransferRpcDeclared, readCurrentMachineIrohEndpoint, resolveMachineCarrierPreselection } from '@/sync/domains/transfers/runtime/transferRuntime/routing/resolveMachineCarrierPreselection';
 import { isBrowserIrohHost } from '@/sync/runtime/browserIroh/hostEligibility';
 import {
     isIrohMachineTransferLifecycleAvailable,
@@ -50,8 +47,6 @@ import {
     subscribeIrohMachineTransferLifecycleAvailability,
 } from '@/sync/runtime/nativeIrohTunnels/machineTransferLifecycle';
 import { WorkspaceRepositoryTreeList, type WorkspaceRepositoryTreeWebDropTarget } from './WorkspaceRepositoryTreeList';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { Icon } from '@/components/ui/icons/Icon';
 
 export type WorkspaceRepositoryTreeBrowserViewProps = Readonly<{
     /**
@@ -76,28 +71,18 @@ export type WorkspaceRepositoryTreeBrowserViewProps = Readonly<{
     onWebDropTargetChange?: ((target: WorkspaceRepositoryTreeWebDropTarget) => void) | null;
     webDropHoverPath?: string | null;
     renderRowActions?: React.ComponentProps<typeof WorkspaceRepositoryTreeList>['renderRowActions'];
+    /** The file open in Details: its row stays selected (lab F1). */
+    selectedPath?: string | null;
 }>;
 
-type ToolbarActionId =
-    | 'workspace-repository-tree-filter-changed'
-    | 'workspace-repository-tree-toggle-details'
-    | 'workspace-repository-tree-upload'
-    | 'workspace-repository-tree-create-file'
-    | 'workspace-repository-tree-create-folder'
-    | 'workspace-repository-tree-clear-search'
-    | 'workspace-repository-tree-refresh'
-    | 'workspace-repository-tree-collapse-all'
-    | 'workspace-repository-tree-close';
-
-type ToolbarActionConfig = FilesystemBrowserToolbarAction;
 
 export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRepositoryTreeBrowserViewProps) => {
     const { theme } = useUnistyles();
+    const homeApplicationCarrierEligibility = useLocalSetting('homeApplicationCarrierEligibility');
     const [showChangedOnly, setShowChangedOnly] = React.useState(false);
     const [detailsMode, setDetailsMode] = React.useState(false);
     const [treeReloadNonce, setTreeReloadNonce] = React.useState(0);
     const [treeRootLoading, setTreeRootLoading] = React.useState(false);
-    const [uploadMenuOpen, setUploadMenuOpen] = React.useState(false);
     const [uploadDestinationDir, setUploadDestinationDir] = React.useState('');
 
     // Stabilized on the three FIELDS: several hosts build this prop inline, and the search
@@ -117,18 +102,16 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
     const serverSnapshot = useServerFeaturesSnapshotForServerId(workspaceScope.serverId, {
         enabled: Boolean(workspaceScope.serverId) && machineRpcTargetAvailable,
     });
-    const machineRpcRouteAvailability = useMachineRpcDirectRouteAvailability({
-        serverId: workspaceScope.serverId,
-        remoteMachineId: machineRpcTargetAvailable ? workspaceScope.machineId : null,
-    });
     const nativeMachineCarrierAvailable = React.useSyncExternalStore(
         subscribeIrohMachineTransferLifecycleAvailability,
         isIrohMachineTransferLifecycleAvailable,
         isIrohMachineTransferLifecycleAvailable,
     );
     React.useEffect(() => {
-        void probeIrohMachineTransferLifecycleAvailability();
-    }, []);
+        if (homeApplicationCarrierEligibility !== 'standard_only') {
+            void probeIrohMachineTransferLifecycleAvailability();
+        }
+    }, [homeApplicationCarrierEligibility]);
     const runnerFiniteTransferRpcDeclared = machine?.kind === 'ephemeral_session_runner' && isMachineFiniteTransferRpcDeclared({
         capabilities: machine?.operationProtocolCapabilities,
         revision: machine?.operationProtocolCapabilitiesRevision,
@@ -136,21 +119,20 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
         revokedAt: machine?.revokedAt,
     });
     const transferPreselection = resolveMachineCarrierPreselection({
+        applicationCarrierEligibility: homeApplicationCarrierEligibility,
         serverFeatures: serverSnapshot.status === 'ready' ? serverSnapshot.features : null,
-        targetEndpoint: machine?.daemonState?.peerMediation?.iroh?.endpoint,
+        targetEndpoint: readCurrentMachineIrohEndpoint({
+            capabilities: machine?.operationProtocolCapabilities,
+            revision: machine?.operationProtocolCapabilitiesRevision,
+            active: machine?.active,
+            revokedAt: machine?.revokedAt,
+        }),
         host: isBrowserIrohHost()
             ? { kind: 'browser' }
             : { kind: 'native', lifecycleAvailable: nativeMachineCarrierAvailable },
-        legacyTransferSupported: isMachineDaemonLegacyTransferRpcEligible(machine?.daemonState),
         finiteTransferApplicationSupported: machine?.kind === 'ephemeral_session_runner'
             ? runnerFiniteTransferRpcDeclared
             : isMachineDaemonFiniteTransferApplicationSupported(machine?.daemonState),
-        runnerFiniteTransferRpcDeclared,
-        machineRpcDirectRoute: machineRpcRouteAvailability === 'viable'
-            ? { status: 'viable', checkedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER }
-            : machineRpcRouteAvailability === 'unavailable'
-                ? { status: 'unavailable', checkedAt: 0, expiresAt: 0, failureReason: 'machine_rpc_direct_unavailable' }
-                : { status: 'unknown' },
     });
     const transferActionsAvailable = machineRpcTargetAvailable && transferPreselection.kind !== 'unavailable';
 
@@ -249,7 +231,6 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
     }, [searchQuery, showChangedOnly, treeReloadNonce, workspaceScope]);
 
     const shouldShowSearchResults = !showChangedOnly && searchQuery.trim().length > 0;
-    const canClearSearch = searchQuery.length > 0;
 
     React.useEffect(() => {
         if (shouldShowSearchResults || showChangedOnly) {
@@ -398,32 +379,15 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
         setUploadDestinationDir(nextDestination);
     }, [uploadDestinationDir]);
 
-    const uploadMenuConfig = React.useMemo(() => createRepositoryTreeUploadMenuConfig({
-        uploadActionsAvailable: transferActionsAvailable,
-        isWeb: Platform.OS === 'web',
-    }), [transferActionsAvailable]);
-
-    const uploadMenuItems = React.useMemo(() => [
-        {
-            id: 'repository-tree-upload-destination-select',
-            title: t('settingsAttachments.workspaceDirectory.uploadsDirectory.title'),
-            subtitle: uploadDestinationDir || t('files.projectRoot'),
-            category: t('common.path'),
-            icon: <Icon name="folder-open" size={16} color={theme.colors.text.secondary} />,
-            disabled: !transferActionsAvailable,
-        },
-        ...uploadMenuConfig.items.map((item) => ({
-            id: item.id,
-            title: t(item.titleKey),
-            subtitle: uploadDestinationDir || t('files.projectRoot'),
-            category: t('files.toolbar.upload'),
-            icon: <Icon name={item.iconName} size={16} color={theme.colors.text.secondary} />,
-            disabled: item.disabled,
-        })),
-    ], [theme.colors.text.secondary, transferActionsAvailable, uploadDestinationDir, uploadMenuConfig.items]);
-
-    const onSelectUploadMenuItem = React.useCallback((itemId: string) => {
-        setUploadMenuOpen(false);
+    const onSelectCreateMenuItem = React.useCallback((itemId: RepositoryTreeCreateMenuItemId) => {
+        if (itemId === 'repository-tree-create-file') {
+            createFile();
+            return;
+        }
+        if (itemId === 'repository-tree-create-folder') {
+            createFolder();
+            return;
+        }
         if (!transferActionsAvailable) return;
         if (itemId === 'repository-tree-upload-destination-select') {
             void selectUploadDestination();
@@ -440,7 +404,7 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
             if (Platform.OS !== 'web') return;
             webFolderInputRef.current?.click();
         }
-    }, [selectUploadDestination, startNativeUploads, transferActionsAvailable]);
+    }, [createFile, createFolder, selectUploadDestination, startNativeUploads, transferActionsAvailable]);
 
     const dropZoneHandlers = useWebFileDropZone({
         enabled: transferActionsAvailable && Platform.OS === 'web',
@@ -477,204 +441,7 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
         },
     }), [dropZoneHandlers, webDropState]);
 
-    const toolbarActions = React.useMemo((): ToolbarActionConfig[] => {
-        const actions: ToolbarActionConfig[] = [
-            {
-                id: 'workspace-repository-tree-filter-changed',
-                priority: 1,
-                order: 0,
-                icon: <Icon name="funnel-simple" size={16} color={showChangedOnly ? theme.colors.text.link : theme.colors.text.secondary} />,
-                menuIcon: 'funnel-simple',
-                accessibilityLabel: t('files.toolbar.changedFiles'),
-                selected: showChangedOnly,
-                onPress: () => setShowChangedOnly((prev) => !prev),
-            },
-            {
-                id: 'workspace-repository-tree-toggle-details',
-                priority: 2,
-                order: 1,
-                icon: <Icon name="list" size={16} color={detailsMode ? theme.colors.text.link : theme.colors.text.secondary} />,
-                menuIcon: 'list',
-                accessibilityLabel: t('common.details'),
-                selected: detailsMode,
-                onPress: () => setDetailsMode((v) => !v),
-            },
-            {
-                id: 'workspace-repository-tree-upload',
-                priority: 3,
-                order: 2,
-                icon: <Icon name="cloud-arrow-up" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'cloud-arrow-up',
-                accessibilityLabel: t('files.toolbar.upload'),
-                disabled: !transferActionsAvailable,
-                selected: uploadDestinationDir.length > 0,
-                onPress: () => setUploadMenuOpen(true),
-            },
-            {
-                id: 'workspace-repository-tree-create-file',
-                priority: 5,
-                order: 3,
-                icon: <Icon name="file-text" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'file-text',
-                accessibilityLabel: t('files.createFileA11y'),
-                disabled: !allowCreateActions,
-                onPress: createFile,
-            },
-            {
-                id: 'workspace-repository-tree-create-folder',
-                priority: 6,
-                order: 4,
-                icon: <Icon name="folder" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'folder',
-                accessibilityLabel: t('files.createFolderA11y'),
-                disabled: !allowCreateActions,
-                onPress: createFolder,
-            },
-            {
-                id: 'workspace-repository-tree-refresh',
-                priority: 10,
-                order: 5,
-                icon: treeRootLoading ? (
-                    <ActivitySpinner testID="workspace-repository-tree-refresh-loading" size="small" color={theme.colors.text.secondary} />
-                ) : (
-                    <Icon name="arrows-clockwise" size={16} color={theme.colors.text.secondary} />
-                ),
-                menuIcon: 'arrow-clockwise',
-                accessibilityLabel: t('common.refresh'),
-                onPress: refresh,
-            },
-        ];
-
-        if (expandedPaths.length > 0) {
-            actions.push({
-                id: 'workspace-repository-tree-collapse-all',
-                priority: 0,
-                order: 6,
-                icon: <Icon name="arrows-in" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'arrows-in',
-                accessibilityLabel: t('files.repositoryCollapseAll'),
-                onPress: collapseAll,
-            });
-        }
-
-        if (props.onRequestClose) {
-            actions.push({
-                id: 'workspace-repository-tree-close',
-                priority: 8,
-                order: 7,
-                icon: <Icon name="x" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'x',
-                accessibilityLabel: t('common.close'),
-                onPress: props.onRequestClose,
-            });
-        }
-
-        if (canClearSearch) {
-            actions.push({
-                id: 'workspace-repository-tree-clear-search',
-                priority: 4,
-                order: 8,
-                icon: <Icon name="x" size={16} color={theme.colors.text.secondary} />,
-                menuIcon: 'x',
-                accessibilityLabel: t('files.clearSearchA11y'),
-                onPress: () => setSearchQuery(''),
-            });
-        }
-
-        return actions;
-    }, [
-        allowCreateActions,
-        canClearSearch,
-        collapseAll,
-        createFile,
-        createFolder,
-        detailsMode,
-        expandedPaths.length,
-        props.onRequestClose,
-        refresh,
-        setSearchQuery,
-        showChangedOnly,
-        treeRootLoading,
-        transferActionsAvailable,
-        uploadDestinationDir.length,
-        theme.colors.text.link,
-        theme.colors.text.secondary,
-    ]);
-
-    const buildOverflowItems = React.useCallback((hiddenActions: readonly FilesystemBrowserToolbarAction[]): ItemAction[] => {
-        const hiddenItems = hiddenActions
-            .filter((action) => action.id !== 'workspace-repository-tree-upload')
-            .map((action) => ({
-                id: action.id,
-                title: action.accessibilityLabel,
-                icon: action.menuIcon,
-                onPress: action.onPress,
-                disabled: action.disabled,
-            }));
-        if (!hiddenActions.some((action) => action.id === 'workspace-repository-tree-upload')) {
-            return hiddenItems;
-        }
-
-        const uploadOverflowItems: ItemAction[] = [
-            {
-                id: 'repository-tree-upload-destination-select',
-                title: t('settingsAttachments.workspaceDirectory.uploadsDirectory.title'),
-                icon: 'folder-open',
-                disabled: !transferActionsAvailable,
-                onPress: () => onSelectUploadMenuItem('repository-tree-upload-destination-select'),
-            },
-            ...uploadMenuConfig.items.map((item) => ({
-                id: item.id,
-                title: t(item.titleKey),
-                icon: item.iconName,
-                disabled: item.disabled,
-                onPress: () => onSelectUploadMenuItem(item.id),
-            })),
-        ];
-
-        return [...uploadOverflowItems, ...hiddenItems];
-    }, [onSelectUploadMenuItem, transferActionsAvailable, uploadMenuConfig.items]);
-
-    const renderToolbarIconButton = React.useCallback((action: ToolbarActionConfig) => {
-        if (action.id === 'workspace-repository-tree-upload') {
-            return (
-                <DropdownMenu
-                    key={action.id}
-                    open={uploadMenuOpen}
-                    onOpenChange={setUploadMenuOpen}
-                    items={uploadMenuItems}
-                    onSelect={onSelectUploadMenuItem}
-                    matchTriggerWidth={uploadMenuConfig.matchTriggerWidth}
-                    trigger={({ toggle }) => (
-                        <FileBrowserToolbarIconButton
-                            testID="workspace-repository-tree-upload"
-                            accessibilityLabel={action.accessibilityLabel}
-                            onPress={toggle}
-                            selected={action.selected}
-                            disabled={action.disabled}
-                        >
-                            {action.icon}
-                        </FileBrowserToolbarIconButton>
-                    )}
-                />
-            );
-        }
-
-        return (
-            <FileBrowserToolbarIconButton
-                key={action.id}
-                testID={action.id}
-                accessibilityLabel={action.accessibilityLabel}
-                onPress={action.onPress}
-                selected={action.selected}
-                disabled={action.disabled}
-            >
-                {action.icon}
-            </FileBrowserToolbarIconButton>
-        );
-    }, [onSelectUploadMenuItem, uploadMenuConfig.matchTriggerWidth, uploadMenuItems, uploadMenuOpen]);
-
-    const defaultRenderRowActions = React.useCallback<NonNullable<WorkspaceRepositoryTreeBrowserViewProps['renderRowActions']>>((node) => {
+    const defaultRenderRowActions = React.useCallback<NonNullable<WorkspaceRepositoryTreeBrowserViewProps['renderRowActions']>>((node, control) => {
         if (node.type !== 'file' && node.type !== 'directory') return null;
         const nodeKind: 'file' | 'directory' = node.type === 'file' ? 'file' : 'directory';
         const transferSizeBytes = node.type === 'file' && typeof node.sizeBytes === 'number'
@@ -687,9 +454,25 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                 disableWriteActions={!allowCreateActions}
                 downloadActionsEnabled={transferActionsAvailable && (transferSizeBytes == null || transferSizeBytes >= 0)}
                 onSelect={(itemId) => rowActions.onSelectRowMenuItem({ path: node.path, type: nodeKind }, itemId)}
+                control={control}
             />
         );
     }, [allowCreateActions, rowActions, transferActionsAvailable]);
+
+    // This pane has no header of its own, so its + menu ends the toolbar (the session pane's header carries it).
+    // The one changed-file count, needed only while its chip shows.
+    const changedCount = showChangedOnly && effectiveScmSnapshot?.repo.isRepo === true ? selectScmChangedFiles(effectiveScmSnapshot).length : null;
+    const machineName = machine ? getMachineDisplayName(machine).trim() || null : null;
+    const createMenu = (
+        <RepositoryTreeCreateMenu
+            createEnabled={allowCreateActions}
+            uploadEnabled={transferActionsAvailable}
+            isWeb={Platform.OS === 'web'}
+            uploadDestinationLabel={uploadDestinationDir || t('files.projectRoot')}
+            onSelect={onSelectCreateMenuItem}
+        />
+    );
+    const showAllFiles = React.useCallback(() => setShowChangedOnly(false), []);
 
     const handleWebDropTargetChange = React.useCallback((target: WorkspaceRepositoryTreeWebDropTarget) => {
         webDropState.onDropTargetChange(target);
@@ -699,17 +482,20 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
     return (
         <View style={{ flex: 1 }}>
             {showSearchBar ? (
-                <FilesystemBrowserToolbarChrome
-                    testID="repository-tree-toolbar"
-                    searchTestID="repository-tree-search"
+                <RepositoryTreeToolbar
+                    testIDPrefix="workspace-repository-tree"
                     searchValue={searchQuery}
                     onSearchValueChange={setSearchQuery}
-                    searchPlaceholder={t('files.searchPlaceholder')}
-                    actions={toolbarActions}
-                    buildOverflowItems={buildOverflowItems}
-                    overflowTitle={t('common.moreActions')}
-                    overflowTriggerTestID="repository-tree-toolbar-overflow"
-                    renderActionNode={renderToolbarIconButton}
+                    changedOnly={showChangedOnly}
+                    changedCount={changedCount}
+                    onChangedOnlyChange={setShowChangedOnly}
+                    detailsMode={detailsMode}
+                    onDetailsModeChange={setDetailsMode}
+                    onCollapseAll={!showChangedOnly && expandedPaths.length > 0 ? collapseAll : null}
+                    onRefresh={refresh}
+                    refreshing={treeRootLoading}
+                    trailing={createMenu}
+                    onRequestClose={props.onRequestClose}
                 />
             ) : null}
             {!showChangedOnly && !shouldShowSearchResults ? <RepositoryTreeVisibilityControl mode={visibilityMode} available={gitIgnoreAvailable} onChange={setVisibilityMode} /> : null}
@@ -757,14 +543,6 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                             onFilePress={(file) => props.onOpenFile(file.fullPath)}
                             onFilePressPinned={(file) => (props.onOpenFilePinned ?? props.onOpenFile)(file.fullPath)}
                         />
-                    ) : showChangedOnly && effectiveScmSnapshot?.repo.isRepo === true ? (
-                        <ChangedFilesTreeList
-                            theme={theme}
-                            snapshot={effectiveScmSnapshot}
-                            searchQuery={searchQuery}
-                            onOpenFile={handleTreeOpenFile}
-                            onOpenFilePinned={handleTreeOpenFilePinned}
-                        />
                     ) : (
                         <WorkspaceRepositoryTreeList
                             theme={theme}
@@ -785,6 +563,10 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                             renderRowActions={props.renderRowActions ?? defaultRenderRowActions}
                             showInlineLoadingHeader={false}
                             onRootLoadingChange={setTreeRootLoading}
+                            changedOnly={showChangedOnly}
+                            onShowAllFiles={showAllFiles}
+                            selectedPath={props.selectedPath ?? null}
+                            machineName={machineName}
                         />
                     )}
                     <RepositoryTreeDropOverlay

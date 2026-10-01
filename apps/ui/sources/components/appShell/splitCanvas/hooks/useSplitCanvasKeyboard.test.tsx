@@ -134,13 +134,14 @@ describe('useSplitCanvasKeyboard', () => {
             (globalThis as any).window.dispatchEvent(new (globalThis as any).KeyboardEvent('keydown', {
                 key: 'ArrowRight',
                 altKey: true,
+                ctrlKey: true,
             }));
         });
 
         expect(onFocusAdjacent).toHaveBeenCalledWith('leaf-a', 'right');
     });
 
-    it('routes split-right and split-down commands for the focused leaf', async () => {
+    it('routes workspace split shortcuts for the focused leaf without taking row movement', async () => {
         const onSplit = vi.fn();
         const dispatch = vi.fn();
 
@@ -186,7 +187,11 @@ describe('useSplitCanvasKeyboard', () => {
 
         act(() => {
             (globalThis as any).window.dispatchEvent(new (globalThis as any).KeyboardEvent('keydown', {
-                key: 'Enter',
+                key: 'Backslash',
+                altKey: true,
+            }));
+            (globalThis as any).window.dispatchEvent(new (globalThis as any).KeyboardEvent('keydown', {
+                key: 'Backslash',
                 altKey: true,
                 shiftKey: true,
             }));
@@ -199,6 +204,7 @@ describe('useSplitCanvasKeyboard', () => {
 
         expect(onSplit).toHaveBeenNthCalledWith(1, 'leaf-a', 'right');
         expect(onSplit).toHaveBeenNthCalledWith(2, 'leaf-a', 'down');
+        expect(onSplit).toHaveBeenCalledTimes(2);
     });
 
     it('does not intercept split shortcuts when the consumer cannot split the current leaf', async () => {
@@ -260,7 +266,7 @@ describe('useSplitCanvasKeyboard', () => {
         expect(dispatch).not.toHaveBeenCalled();
     });
 
-    it('does not intercept canvas shortcuts when ctrl or meta modifiers are also pressed', async () => {
+    it('leaves old alt-arrow and meta-modified shortcuts to their owners', async () => {
         const onSplit = vi.fn();
         const onFocusAdjacent = vi.fn();
         const dispatch = vi.fn();
@@ -314,7 +320,6 @@ describe('useSplitCanvasKeyboard', () => {
             (globalThis as any).window.dispatchEvent(new (globalThis as any).KeyboardEvent('keydown', {
                 key: 'ArrowRight',
                 altKey: true,
-                ctrlKey: true,
             }));
             (globalThis as any).window.dispatchEvent(new (globalThis as any).KeyboardEvent('keydown', {
                 key: 'Enter',

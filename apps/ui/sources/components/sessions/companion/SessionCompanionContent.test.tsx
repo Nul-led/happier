@@ -14,13 +14,21 @@ import { createSessionSurfaceNoteDocumentV1 } from '@happier-dev/protocol/sessio
 vi.mock('@/text', () => createTextModuleMock());
 
 const summaryModel = {
+    scope: 'exact' as const,
     title: 'Teams lane 08',
     agentLabel: 'Claude',
-    operational: 'working' as const,
+    agentId: null,
+    status: { state: 'thinking' as const, statusText: 'Working', quiet: false },
     stale: false,
     availability: 'complete' as const,
+    encryption: 'plain' as const,
     identityDestination: 'sessionInfo' as const,
     rows: [] as const,
+    needsYou: null,
+    sinceMs: null,
+    progress: null,
+    plan: null,
+    facts: [] as const,
 };
 vi.mock('./summary/useSessionSummaryModel', () => ({
     useSessionSummaryModel: () => summaryModel,
@@ -52,6 +60,21 @@ import type { SessionCompanionController } from './state/useSessionCompanionCont
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const session = createSessionFixture({ id: 'session-1' });
+
+const installedItem = (itemId: string): SessionBoardItemProjection => ({
+    itemId,
+    revision: 'r1',
+    state: {
+        kind: 'ready',
+        item: {
+            v: 1,
+            title: 'External conversations',
+            frame: 'card',
+            height: { mode: 'auto', fallback: 'regular' },
+            source: { kind: 'installedSurface', surface: { pluginId: 'channels', localId: 'conversations' } },
+        },
+    },
+});
 
 const readyItem = (itemId: string): SessionBoardItemProjection => ({
     itemId,
@@ -174,7 +197,6 @@ describe('SessionCompanionContent (mounted)', () => {
         const callerHostedHtmlRuntime = { serverIdentityId: 'server-identity-a' } as never;
         const openBoard = vi.fn();
         const managePlugin = vi.fn();
-        const removeFromBoard = vi.fn();
 
         const renderer = await renderScreen(
             <SessionCompanionContent
@@ -191,7 +213,6 @@ describe('SessionCompanionContent (mounted)', () => {
                 callerHostedHtmlRuntime={callerHostedHtmlRuntime}
                 onRevealBoardItem={openBoard}
                 onManageBoardItemPlugin={managePlugin}
-                onRemoveBoardItem={removeFromBoard}
                 measurementOnly
                 testID="measurement-content"
             />,
@@ -212,22 +233,20 @@ describe('SessionCompanionContent (mounted)', () => {
         expect(renderer.findByTestId('measurement-content-item-widget:w1-actions')).toBeNull();
         expect(openBoard).not.toHaveBeenCalled();
         expect(managePlugin).not.toHaveBeenCalled();
-        expect(removeFromBoard).not.toHaveBeenCalled();
     });
 
-    it('measures the same compact Summary card the live rail shows, with inert destinations', async () => {
-        // Approvals, activity, work, workspace and usage are all live: more rows than
-        // the compact card budget, exactly the cold-open case that overflowed.
-        const mutableModel = summaryModel as unknown as { rows: readonly unknown[] };
+    it('measures the same Summary the live rail shows, with inert destinations', async () => {
+        const mutableModel = summaryModel as unknown as { rows: readonly unknown[]; facts: readonly unknown[] };
         mutableModel.rows = [
             { kind: 'approvals', count: 2, destination: 'approvals' },
-            { kind: 'activity', liveCount: 1, totalCount: 1, title: null, statusLabel: null, destination: 'workflow' },
-            { kind: 'work', label: 'Ship', status: null, destination: 'work' },
-            { kind: 'workspace', label: 'repo', branch: 'main', changedFiles: 3, destination: 'git' },
-            { kind: 'usage', tokens: 1200, contextPercent: 40, stale: false, destination: 'usage' },
+            { kind: 'workflow', runCount: 1, destination: 'workTab' },
         ];
-        const openFullSurface = vi.fn();
+        mutableModel.facts = [
+            { kind: 'subagents', live: 1, total: 1, destination: 'workTab' },
+            { kind: 'changes', count: 3, destination: 'git' },
+        ];
         const openApprovals = vi.fn();
+        const openGit = vi.fn();
         const renderMeasured = (measurementOnly: boolean) => renderScreen(
             <SessionCompanionContent
                 session={session}
@@ -235,8 +254,7 @@ describe('SessionCompanionContent (mounted)', () => {
                 controller={controller([SESSION_SUMMARY_COMPANION_ITEM])}
                 boardBinding={binding()}
                 resolvePrimaryHost={() => null}
-                summaryDestinations={{ approvals: openApprovals }}
-                onOpenFullSurface={openFullSurface}
+                summaryDestinations={{ approvals: openApprovals, git: openGit }}
                 presentation="rail"
                 measurementOnly={measurementOnly}
                 testID={measurementOnly ? 'measured' : 'live'}
@@ -246,72 +264,51 @@ describe('SessionCompanionContent (mounted)', () => {
             const live = await renderMeasured(false);
             const measured = await renderMeasured(true);
             for (const [renderer, prefix] of [[live, 'live'], [measured, 'measured']] as const) {
-                // Two compact rows plus the overflow, never the uncapped full list.
                 expect(renderer.findByTestId(`${prefix}-summary-row-approvals`)).not.toBeNull();
-                expect(renderer.findByTestId(`${prefix}-summary-row-activity`)).not.toBeNull();
-                expect(renderer.findByTestId(`${prefix}-summary-row-work`)).toBeNull();
-                expect(renderer.findByTestId(`${prefix}-summary-row-usage`)).toBeNull();
-                expect(renderer.findByTestId(`${prefix}-summary-more`)).not.toBeNull();
+                expect(renderer.findByTestId(`${prefix}-summary-fact-changes`)).not.toBeNull();
             }
             // The measured card keeps its shape but nothing in it can navigate.
-            (measured.findByTestId('measured-summary-more')?.props as { onPress?: () => void }).onPress?.();
             (measured.findByTestId('measured-summary-row-approvals')?.props as { onPress?: () => void }).onPress?.();
-            expect(openFullSurface).not.toHaveBeenCalled();
+            (measured.findByTestId('measured-summary-fact-changes')?.props as { onPress?: () => void }).onPress?.();
             expect(openApprovals).not.toHaveBeenCalled();
+            expect(openGit).not.toHaveBeenCalled();
         } finally {
             mutableModel.rows = [];
+            mutableModel.facts = [];
         }
     });
 
-    it('names the Board destination on an inert preview instead of promising the item runs here', async () => {
-        await renderScreen(
-            <SessionCompanionContent
-                session={session}
-                serverId="server-a"
-                controller={controller([{ kind: 'widget', widgetId: 'w1' }])}
-                boardBinding={binding({
-                    itemsById: new Map([['w1', readyItem('w1')]]),
-                    capabilities: { readTranscript: true, editSessionRecords: true },
-                    canEdit: true,
-                })}
-                // Details owns the executable mount, so this placement is a preview.
-                resolvePrimaryHost={() => 'details'}
-                onRevealBoardItem={() => {}}
-            />,
-        );
-
-        // The handler navigates to the Board, so the shared host's default
-        // "Open here" label would promise an activation this control never does.
-        expect(widgetHostProps.mock.calls.at(-1)?.[0]).toMatchObject({
-            openActionLabel: 'sessionBoard.companion.actions.openOnBoard',
-        });
-    });
-
-    it('threads plugin recovery and shared Board removal independently from local Companion removal', async () => {
+    it('draws a widget as a flat section of the column, with one menu and no Board-only controls', async () => {
         const managePlugin = vi.fn();
-        const removeFromBoard = vi.fn();
-        await renderScreen(
+        const openBoard = vi.fn();
+        const renderer = await renderScreen(
             <SessionCompanionContent
                 session={session}
                 serverId="server-a"
                 controller={controller([{ kind: 'widget', widgetId: 'w1' }])}
                 boardBinding={binding({
-                    itemsById: new Map([['w1', readyItem('w1')]]),
+                    itemsById: new Map([['w1', installedItem('w1')]]),
                     capabilities: { readTranscript: true, editSessionRecords: true },
                     canEdit: true,
                 })}
-                resolvePrimaryHost={() => 'companion'}
+                resolvePrimaryHost={() => 'details'}
+                onRevealBoardItem={openBoard}
                 onManageBoardItemPlugin={managePlugin}
-                onRemoveBoardItem={removeFromBoard}
             />,
         );
 
         const mounted = widgetHostProps.mock.calls.at(-1)?.[0] as Record<string, unknown>;
-        (mounted.onManagePlugin as (() => void) | undefined)?.();
-        (mounted.onRemove as (() => void) | undefined)?.();
-
+        expect(mounted).toMatchObject({ frame: 'section', canEdit: false });
+        // The Companion keeps a reference: deleting or editing the shared record, and a
+        // second "open" control beside the menu's, belong to the Board.
+        expect(mounted).not.toHaveProperty('onRemove');
+        expect(mounted).not.toHaveProperty('onOpenHere');
+        const [actionOwner] = renderer.findAll((node) => Array.isArray(node.props?.actions)
+            && node.props?.overflowTriggerTestID === 'session-companion-content-item-widget:w1-actions');
+        const actions = actionOwner?.props.actions as ReadonlyArray<{ id: string; onPress?: () => void }>;
+        expect(actions.map((action) => action.id)).toEqual(['open-board', 'manage-plugin', 'remove']);
+        actions.find((action) => action.id === 'manage-plugin')?.onPress?.();
         expect(managePlugin).toHaveBeenCalledWith('w1');
-        expect(removeFromBoard).toHaveBeenCalledWith('w1');
         expect(removeItem).not.toHaveBeenCalled();
     });
 
@@ -359,6 +356,9 @@ describe('SessionCompanionContent (mounted)', () => {
         );
 
         expect(renderer.findByTestId('session-companion-content-removed-w1')).not.toBeNull();
+        // The one next step drops the local reference; the Board is never touched.
+        await renderer.pressByTestIdAsync('session-companion-content-removed-w1-action');
+        expect(removeItem).toHaveBeenCalledWith({ kind: 'widget', widgetId: 'w1' });
     });
 
     it('keeps an unreachable Board recoverable rather than tombstoning every reference', async () => {
@@ -437,9 +437,6 @@ describe('SessionCompanionContent (mounted)', () => {
         actions.find((action) => action.id === 'open-board')?.onPress?.();
 
         expect(openBoard).toHaveBeenCalledWith('w1');
-        const openFromPreview = widgetHostProps.mock.calls.at(-1)?.[0]?.onOpenHere as (() => void) | undefined;
-        openFromPreview?.();
-        expect(openBoard).toHaveBeenNthCalledWith(2, 'w1');
     });
 
     it('offers one atomic add that seeds the summary and reveals the Companion together', async () => {

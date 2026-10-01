@@ -31,9 +31,6 @@ import {
 import {
     launchPluginSurfaceAction,
 } from '@/components/plugins/surfaces/launchPluginSurfaceAction';
-import {
-    createPluginActionCurrentIntentHandler,
-} from '@/components/plugins/surfaces/pluginSurfaceFeedback';
 import type { PluginSurfaceLaunchAuthority } from '@/components/plugins/surfaces/pluginSurfaceLaunchAuthority';
 import type {
     PluginSurfaceOpenHandler,
@@ -42,6 +39,7 @@ import type {
 import { resolvePluginUiClientExecutablePlatform } from '@/sync/domains/plugins/ui/usePluginUiProjectionCurrentness';
 
 import type { PluginAppPage } from './pluginAppPages';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * Page-header chrome is a host presentation of the admitted app-page metadata,
@@ -88,29 +86,14 @@ export async function dispatchPluginAppPageHeaderAction(input: Readonly<{
         return { ok: false, code: 'unavailable', reason: 'plugin_ui_action_unavailable' };
     }
     const authority = input.actionAuthority;
-    const generation = authority?.generation ?? null;
+    const occurrenceId = authority?.occurrenceId ?? null;
     const machineId = authority?.machineId?.trim() ?? '';
     // A daemon binding is a daemon-target fact, never a blanket action gate.
     // The canonical dispatcher still owns the target result and fail-closed
     // missing-projection outcome after this caller supplies its exact lookup.
-    if (projectedAction?.execution.target === 'daemon' && (generation === null || machineId.length === 0)) {
+    if (projectedAction?.execution.target === 'daemon' && (occurrenceId === null || machineId.length === 0)) {
         return { ok: false, code: 'unavailable', reason: 'plugin_ui_action_unavailable' };
     }
-    const isCurrent = input.isCurrent ?? (() => true);
-    const requestCurrentIntent = projectedAction?.execution.target === 'client'
-        && typeof generation === 'number'
-        ? createPluginActionCurrentIntentHandler({
-            requester: {
-                pluginId: projectedAction.pluginId,
-                contributionId: projectedAction.id,
-                generationId: String(generation),
-                invocationId: `ui-action:${generation}`,
-            },
-            ...(input.signal ? { signal: input.signal } : {}),
-            isCurrent,
-            pluginUiProjection: input.projection,
-        })
-        : undefined;
     const launched = await launchPluginSurfaceAction({
         callerPluginId: input.page.pluginId,
         action: semanticAction.action,
@@ -123,27 +106,23 @@ export async function dispatchPluginAppPageHeaderAction(input: Readonly<{
                 contributedAction: {
                     machineId,
                     serverId: authority?.serverId ?? null,
-                    expectedGeneration: String(generation),
                     ...(input.execute ? { execute: input.execute } : {}),
                 },
             }
             : {}),
         ...(projectedAction?.execution.target === 'client'
-            && typeof generation === 'number'
-            && Number.isInteger(generation)
-            && generation >= 0
+            && occurrenceId !== null
             ? {
                 clientAction: {
-                    projectionGeneration: generation,
                     ...(input.execute ? { execute: input.execute } : {}),
                     openSurface: input.openSurface,
-                    ...(requestCurrentIntent ? { requestCurrentIntent } : {}),
                     ...(input.readCurrentUiContext
                         ? { currentUiContext: input.readCurrentUiContext }
                         : {}),
                 },
             }
             : {}),
+        pluginUiProjection: input.projection,
         ...(input.signal ? { signal: input.signal } : {}),
         ...(input.isCurrent ? { isCurrent: input.isCurrent } : {}),
     });
@@ -192,18 +171,15 @@ export function PluginAppPageHeaderActions(props: Readonly<{
         const locallyCurrent = props.actionAuthority?.accountLifetime?.isCurrent() !== false
             && props.isCurrent?.() !== false;
         if (projectedAction.execution.target === 'client') {
-            const projectionGeneration = props.actionAuthority?.generation;
             return locallyCurrent
-                && typeof projectionGeneration === 'number'
                 && resolvePluginUiClientActionRegistration({
                     action: projectedAction,
-                    projectionGeneration,
                     platform: resolvePluginUiClientExecutablePlatform(),
                 }) !== null;
         }
         return locallyCurrent
-            && props.actionAuthority?.generation !== null
-            && props.actionAuthority?.generation !== undefined
+            && props.actionAuthority?.occurrenceId !== null
+            && props.actionAuthority?.occurrenceId !== undefined
             && (props.actionAuthority?.machineId?.trim().length ?? 0) > 0;
     };
 
@@ -242,7 +218,7 @@ export function PluginAppPageHeaderActions(props: Readonly<{
                             alignItems: 'center',
                             height: minimumInteractiveTargetSize,
                             justifyContent: 'center',
-                            opacity: disabled ? 0.45 : pressed ? 0.7 : 1,
+                            opacity: disabled ? 0.45 : pressed ? motionTokens.press.opacity : 1,
                             width: minimumInteractiveTargetSize,
                         })}
                     >

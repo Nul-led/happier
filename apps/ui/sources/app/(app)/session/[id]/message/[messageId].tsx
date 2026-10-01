@@ -1,5 +1,6 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
-import { useLocalSearchParams, Stack, useRouter } from "expo-router";
+import { useLocalSearchParams, Stack, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { View } from 'react-native';
 import type { ViewStyle } from 'react-native';
 import { useMessage, useResolvedSessionMessageRouteId, useSession, useSessionTranscriptIds } from "@/sync/domains/state/storage";
@@ -63,7 +64,7 @@ function normalizeRouteParam(value: unknown): string {
     return '';
 }
 
-export default React.memo(function SessionMessageRoute() {
+export const WorkspaceRouteBody = React.memo(function SessionMessageRoute() {
     const params = useLocalSearchParams<MessageRouteParams>();
     const routeScope = React.useMemo(() => createSessionRouteServerScope(params as Record<string, unknown>), [params]);
     const sessionId = normalizeSessionId(params.id);
@@ -244,3 +245,5 @@ function SessionMessageRouteLoaded(props: { sessionId: string; messageId: string
         </>
     );
 }
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

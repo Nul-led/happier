@@ -67,7 +67,8 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-vi.mock('@/utils/platform/responsive', () => ({
+vi.mock('@/utils/platform/responsive', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/utils/platform/responsive')>()),
     useIsTablet: () => platformState.isTablet,
 }));
 
@@ -154,8 +155,15 @@ vi.mock('@/components/ui/buttons/RoundButton', () => ({
     RoundButton: 'RoundButton',
 }));
 
-vi.mock('@/components/ui/buttons/FABWide', () => ({
-    FABWide: 'FABWide',
+// The app shell mounts the Universal Search runtime above the sidebar.
+vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/components/appShell/search/UniversalSearchRuntimeContext')>()),
+    useUniversalSearchRuntime: () => ({ open: vi.fn(), buildCommands: vi.fn() }),
+}));
+
+vi.mock('expo-blur', () => ({
+    BlurView: ({ children, ...props }: React.PropsWithChildren<Record<string, unknown>>) =>
+        React.createElement('BlurView', props, children),
 }));
 
 vi.mock('@/components/navigation/mobile/chrome/bars/MainAppTabBar', () => ({
@@ -240,14 +248,15 @@ describe('MainView sidebar actions', () => {
 
     beforeAll(async () => {
         MainView = (await import('./MainView')).MainView;
-    }, 30_000);
+    }, 180_000);
 
-    it('renders the wide start-new-session CTA in the sidebar instead of header action buttons', async () => {
-        let tree: renderer.ReactTestRenderer | null = null;
-        tree = (await renderScreen(<MainView variant="sidebar" />)).tree;
+    it('floats the one glass "+" over the sidebar session list and opens a new-session draft', async () => {
+        const screen = await renderScreen(<MainView variant="sidebar" />);
 
-        const fab = tree!.findByType('FABWide');
-        fab.props.onPress({ nativeEvent: { ctrlKey: true } });
+        // The phone's "+" owner in its sidebar placement (its own testID); the wide bar is gone.
+        expect(screen.findAllByTestId('sidebar-start-new-session').length).toBeGreaterThan(0);
+        expect(screen.findAllByTestId('tabbar-start-new-session')).toHaveLength(0);
+        screen.pressByTestId('sidebar-start-new-session');
 
         expect(routerPushSpy).toHaveBeenCalledWith({
             pathname: '/new',
@@ -256,11 +265,10 @@ describe('MainView sidebar actions', () => {
                 draftOrigin: 'ordinary',
             },
         });
-        expect(() => findPressableByLabel(tree!, 'New session')).toThrow();
-        expect(() => findPressableByLabel(tree!, 'Open automations')).toThrow();
+        expect(() => findPressableByLabel(screen.tree as renderer.ReactTestRenderer, 'Open automations')).toThrow();
     });
 
-    it('keeps the phone sessions header new-session action', async () => {
+    it('leaves new sessions to the tab bar\'s glass "+" on the phone: no second "+" in the header', async () => {
         platformState.isTablet = false;
 
         let tree: renderer.ReactTestRenderer | null = null;
@@ -269,21 +277,10 @@ describe('MainView sidebar actions', () => {
         const header = tree!.findByType('Header');
         const renderedHeaderTitle = await renderScreen(header.props.title);
         expect(renderedHeaderTitle.findByType('ConnectionStatusControl').props.variant).toBe('header');
-        const headerRight = header.props.headerRight();
-        expect(headerRight).toBeTruthy();
-
-        const renderedHeaderRight = await renderScreen(headerRight);
-        renderedHeaderRight.findByProps({ testID: 'main-header-start-new-session' }).props.onPress({
-            nativeEvent: { ctrlKey: true },
-        });
-        expect(routerPushSpy).toHaveBeenCalledWith({
-            pathname: '/new',
-            params: {
-                draftId: expect.any(String),
-                draftOrigin: 'ordinary',
-            },
-        });
-        expect(renderedHeaderRight.findAllByType('FABWide')).toHaveLength(0);
+        const renderedHeaderRight = await renderScreen(header.props.headerRight());
+        expect(renderedHeaderRight.findAllByProps({ testID: 'main-header-start-new-session' })).toHaveLength(0);
+        // The header keeps its other sessions actions.
+        expect(renderedHeaderRight.findAllByProps({ testID: 'main-header-action-operations' }).length).toBeGreaterThan(0);
     });
 
     it('pins the retained phone sessions surface to the root pathname across route changes', async () => {

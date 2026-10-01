@@ -1,9 +1,9 @@
 import * as React from 'react';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SessionResumeProvider } from '@/components/sessions/model/SessionResumeContext';
 import { renderScreen } from '@/dev/testkit';
-import { installSessionDetailsPanelCommonModuleMocks } from '../sessionDetailsPanelTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -17,8 +17,8 @@ let projectPath: string | null = '/repo';
 let activeGitSubTab: 'commit' | 'update' | 'history' = 'commit';
 let snapshotError: { message: string; at: number; errorCode?: string } = { message: 'RPC method not available', at: 1 };
 
-installSessionDetailsPanelCommonModuleMocks({
-    storage: async () => {
+// Hoist boundaries before any static dependency can cache its real module.
+vi.mock('@/sync/domains/state/storage', async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
             useSetting: () => null,
@@ -34,6 +34,7 @@ installSessionDetailsPanelCommonModuleMocks({
                     : [{ id: 'm1', active: false, activeAt: 1, metadata: { host: 'mbp', platform: 'darwin', happyCliVersion: '0', happyHomeDir: '/tmp/.h', homeDir: '/tmp' } }]
             ),
             useSession: () => ({ active: false, metadata: { machineId: 'm1', path: sessionPath } }),
+            useSessionListRenderableWithServerScope: () => createSessionListRenderableSessionFixture({ id: 's1', ...{ active: false, metadata: { host: 'test-machine', machineId: 'm1', path: sessionPath ?? '' } } }),
             useSessionProjectScmCommitSelectionPaths: () => [],
             useSessionProjectScmCommitSelectionPatches: () => [],
             useSessionProjectScmInFlightOperation: () => null,
@@ -43,9 +44,28 @@ installSessionDetailsPanelCommonModuleMocks({
             useWorkspaceScmTouchedPathsForSession: () => [],
             useSessionRealtimeScmTranscriptConsumer: () => {},
         });
-    },
 });
 
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock();
+});
+vi.mock('react-native-unistyles', async () => {
+    const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+    return createUnistylesMock();
+});
+vi.mock('@expo/vector-icons', async () => {
+    const { createExpoVectorIconsMock } = await import('@/dev/testkit/mocks/icons');
+    return createExpoVectorIconsMock();
+});
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock().module;
+});
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock();
+});
 vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
     useAppPaneScope: () => ({
         scopeState: {},
@@ -100,13 +120,17 @@ vi.mock('@/components/sessions/model/sessionResumeRequests', () => ({
     emitSessionResumeRequest: (sessionId: string) => emitSessionResumeRequestSpy(sessionId),
 }));
 
-vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
-    useSessionMachineReachability: () => ({
-        machineReachable,
-        machineOnline: machineReachable,
-        machineRpcTargetAvailable,
-    }),
-}));
+vi.mock('@/components/sessions/model/useSessionMachineReachability', async (importOriginal) => {
+    const { installSessionMachineReachabilityModuleMock } = await import('@/dev/testkit/mocks/sessionMachineReachability');
+    return installSessionMachineReachabilityModuleMock({
+        useSessionMachineReachability: () => ({
+            machineReachable,
+            machineOnline: machineReachable,
+            machineRpcTargetAvailable,
+            machineReachability: machineReachable ? 'reachable' : 'unreachable',
+        }),
+    })(importOriginal);
+});
 
 vi.mock('@/scm/registry/scmUiBackendRegistry', () => {
     const scmUiBackendRegistry = {
@@ -128,6 +152,9 @@ vi.mock('@/scm/scmStatusSync', () => ({
         invalidateFromMutationAndAwait: vi.fn(async () => {}),
     },
 }));
+
+// Owner loading belongs to setup, not an individual interaction's timeout.
+const { SessionRightPanelGitView } = await import('./SessionRightPanelGitView');
 
 describe('SessionRightPanelGitView (snapshot error is typed, never raw)', () => {
     beforeEach(() => {
@@ -152,7 +179,6 @@ describe('SessionRightPanelGitView (snapshot error is typed, never raw)', () => 
             at: 1,
         };
 
-        const { SessionRightPanelGitView } = await import('./SessionRightPanelGitView');
         const screen = await renderScreen(<SessionRightPanelGitView sessionId="s1" scopeId="session:s1" />);
         const text = screen.getTextContent();
 
@@ -171,7 +197,6 @@ describe('SessionRightPanelGitView (snapshot error is typed, never raw)', () => 
             at: 1,
         };
 
-        const { SessionRightPanelGitView } = await import('./SessionRightPanelGitView');
         const screen = await renderScreen(<SessionRightPanelGitView sessionId="s1" scopeId="session:s1" />);
         const text = screen.getTextContent();
 

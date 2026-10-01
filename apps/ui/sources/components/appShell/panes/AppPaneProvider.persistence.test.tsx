@@ -58,6 +58,50 @@ describe('AppPaneProvider persistence', () => {
         setLocalSettingSpy.mockReset();
     });
 
+    it('reveals accepted terminal selections through the matching mounted session driver, never a foreign Home', async () => {
+        const { AppPaneProvider, useAppPaneContext } = await import('./AppPaneProvider');
+        const { useRegisterSessionPaneDriver } = await import('@/components/sessions/panes/useRegisterSessionPaneDriver');
+        const { SessionCockpitChromeRegistryProvider, useSessionCockpitChromeRegister } = await import('@/components/workspaceCockpit/session/SessionCockpitChromeRegistry');
+        const calls: string[] = [];
+        let dispatch: ReturnType<typeof useAppPaneContext>['dispatch'] | undefined;
+        let scopeId = '';
+        function Probe(props: Readonly<{ home: string }>) {
+            const register = useSessionCockpitChromeRegister();
+            const switchSurface = React.useCallback((surface: string) => { calls.push(`${props.home}:${surface}`); }, [props.home]);
+            React.useEffect(() => register({ sessionId: 'same-session', serverId: props.home, activeSurface: 'chat', terminalTabAvailable: true, openDetailsTabCount: 0, switchSurface }), [props.home, register, switchSurface]);
+            scopeId = useRegisterSessionPaneDriver('same-session', 'home-a', undefined, {
+                pluginUiProjection: null, pluginBrowserProjection: null, phase: 'current', interactionEnabled: true,
+                machineId: 'machine-a', serverId: 'home-a', platform: 'ios',
+            });
+            dispatch = useAppPaneContext().dispatch;
+            return null;
+        }
+        const harness = (home: string) => <AppPaneProvider><SessionCockpitChromeRegistryProvider><Probe home={home} /></SessionCockpitChromeRegistryProvider></AppPaneProvider>;
+        const screen = await renderScreen(harness('home-a'));
+        const command = async (command: import('@/components/sessions/terminal/sessionTerminalWorkspace').SessionTerminalWorkspaceCommand) => {
+            await act(async () => { dispatch?.({ type: 'terminalWorkspace', scopeId, command }); });
+        };
+        await command({ type: 'open', terminal: { id: 'shell', target: { kind: 'workspace_shell' } } });
+        expect(calls).toEqual(['home-a:terminal']);
+        calls.length = 0;
+        await command({ type: 'split', terminal: { id: 'rejected', target: { kind: 'workspace_shell' } }, availableWidthPx: 500, minimumTerminalWidthPx: 320 });
+        await command({ type: 'focus', terminalId: 'missing' });
+        expect(calls).toEqual([]);
+        await command({ type: 'split', terminal: { id: 'second', target: { kind: 'workspace_shell' } }, availableWidthPx: 1000, minimumTerminalWidthPx: 320 });
+        await command({ type: 'focus', terminalId: 'shell' });
+        await command({ type: 'focus', terminalId: 'shell' });
+        await command({ type: 'detach', terminalId: 'second', newTabId: 'detached-second' });
+        expect(calls).toEqual(['home-a:terminal', 'home-a:terminal', 'home-a:terminal', 'home-a:terminal']);
+        calls.length = 0;
+        await screen.update(harness('home-b'));
+        await command({ type: 'open', terminal: { id: 'other', target: { kind: 'workspace_shell' } } });
+        await command({ type: 'focus', terminalId: 'shell' });
+        expect(calls).toEqual([]);
+        await screen.update(harness('home-a'));
+        await command({ type: 'focus', terminalId: 'shell' });
+        expect(calls).toEqual(['home-a:terminal']);
+    });
+
     it('hydrates persisted pane scopes from local settings on mount', async () => {
         localSettingsMock = {
             appPaneScopesV1: {

@@ -581,7 +581,7 @@ export const MobileBottomChromeHost = React.memo(function MobileBottomChromeHost
     // Dev's slide presets carry their spring physics inline; reduced motion is applied
     // by the call sites below rather than baked into the config.
     const lateralSpring = React.useMemo<WithSpringConfig>(
-        () => ({ ...slideTransitionTokens.soft.spring }),
+        () => ({ ...slideTransitionTokens.signature.spring.config }),
         [],
     );
     const lateralSwipeProgress = lateralSwipe.progress;
@@ -849,7 +849,7 @@ export const MobileBottomChromeHost = React.memo(function MobileBottomChromeHost
         const animation = Animated.timing(progress, {
             toValue: 1,
             duration: motionTokens.durationMs.base,
-            easing: motionTokens.easing.emphasized,
+            easing: motionTokens.easing.standard,
             useNativeDriver: Platform.OS !== 'web',
         });
         activeChromeAnimationRef.current = animation;

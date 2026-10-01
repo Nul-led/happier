@@ -163,6 +163,7 @@ describe('workspace details surface renderers', () => {
         const placement = {
             id: 'surfacePlacement:com.example.viewer:workspace-file',
             pluginId: 'com.example.viewer',
+            occurrenceId: 'com-example-viewer-occurrence',
             contributionKind: 'surfacePlacement' as const,
             descriptorId: 'workspace-file',
             binding,

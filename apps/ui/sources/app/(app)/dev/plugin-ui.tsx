@@ -57,6 +57,13 @@ import {
 import type { PluginUiHostApi, RenderContext, SurfaceContext } from '@happier-dev/plugin-sdk/ui';
 import { PLUGIN_UI_HOST_API_VERSION_V1 } from '@happier-dev/protocol/plugins/ui';
 import { Ionicons } from '@expo/vector-icons';
+import { CollectionPreviewSample } from '@/components/dev/pluginUi/CollectionPreviewSample';
+import { CorePageAnatomySample, PluginPageAnatomySample } from '@/components/dev/pluginUi/PageAnatomySample';
+import { CoreNavigationColumnSample, PluginNavigationColumnSample } from '@/components/dev/pluginUi/NavigationColumnSample';
+import { appShellColumnSurface } from '@/components/navigation/shell/appRail/appShellColumnSurface';
+import { DetailsPaneSlotHost, useDetailsPaneSlotBinding } from '@/components/appShell/panes/details/DetailsPaneSlot';
+import { projectPluginUiHostPalette } from '@/components/plugins/surfaces/pluginUiThemeProjection';
+import { useLayoutMaxWidth } from '@/components/ui/layout/layout';
 import * as React from 'react';
 import { ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -152,7 +159,11 @@ function useDemoSurfaceContext(): DemoSurfaceContext {
             targetedContributions: {
                 target: {
                     pluginId: 'happier.dev',
-                    immutableGenerationId: 'dev-plugin-ui-shared-presentation',
+                    occurrenceId: 'dev-plugin-ui-shared-presentation',
+                    sourceCustody: {
+                        kind: 'development',
+                        registeredRootId: 'dev-plugin-ui-shared-presentation',
+                    },
                 },
                 points: [],
             },
@@ -254,6 +265,11 @@ function createDemoSurfaceHost(initial: SurfaceContext): DemoSurfaceHost {
         releaseComposerContent: async () => {
             throw new Error('dev surface has no Composer');
         },
+        readSession: async () => null,
+        watchSession: async () => {
+            throw new Error('dev surface has no Session store');
+        },
+        respondToSessionPermission: async () => ({ status: 'refused', reason: 'sessionUnavailable' }),
         publishCurrentUiContext: () => undefined,
         openSurface: async () => undefined,
         replacePageLocation: async () => {
@@ -332,6 +348,9 @@ function Sample({ title, children }: Readonly<{ title: string; children: React.R
 function PluginStateSamples() {
     return (
         <View>
+            <Sample title="Plugin Collection — table, peek, table → split">
+                <CollectionPreviewSample />
+            </Sample>
             <Sample title="Plugin State — loading">
                 <PluginState resource={{ status: 'loading' }} />
             </Sample>
@@ -612,6 +631,33 @@ function PluginSurfaceSamples() {
  * produces it. The host calls it with the render context and mounts the result.
  */
 const renderPluginDemoSurface = defineUiSurface(PluginSurfaceSamples);
+const renderPageAnatomySurface = defineUiSurface(PluginPageAnatomySample);
+const renderNavigationColumnSurface = defineUiSurface(PluginNavigationColumnSample);
+const renderCollectionPaneSurface = defineUiSurface(CollectionPreviewSample);
+
+/**
+ * The Collection preview mounted as a page that has the app details pane (as a plugin page does): its items
+ * open beside it in the same pane every page uses. The binding comes from the surrounding `DetailsPaneSlotHost`.
+ */
+function CollectionBesideDetailsPaneSample(props: Readonly<{ host: DemoSurfaceHost }>) {
+    const { theme } = useUnistyles();
+    const columnMaxWidthPx = useLayoutMaxWidth();
+    const detailsPane = useDetailsPaneSlotBinding();
+    const presentationHost = React.useMemo(() => createPluginUiPrivatePresentationHost(
+        { displayName: 'Happier Dev' },
+        {
+            palette: projectPluginUiHostPalette(theme),
+            pageChrome: { showsTitle: false, columnMaxWidthPx },
+            ...(detailsPane === null ? {} : { detailsPane }),
+        },
+    ), [columnMaxWidthPx, detailsPane, theme]);
+    return React.useMemo(() => {
+        const entry = renderCollectionPaneSurface(props.host.renderContext) as React.ReactElement | null;
+        return entry
+            ? React.cloneElement(entry as React.ReactElement<Record<string, unknown>>, { presentationHost })
+            : null;
+    }, [presentationHost, props.host]);
+}
 
 export default function PluginUiSharedPresentationScreen() {
     const { theme } = useUnistyles();
@@ -637,6 +683,36 @@ export default function PluginUiSharedPresentationScreen() {
             )
             : null;
     }, [host]);
+    // The configuration-page side-by-side mounts its plugin half with the same same-realm facts a
+    // production mount installs (`PluginSurfaceHost`): the host palette and page chrome.
+    const columnMaxWidthPx = useLayoutMaxWidth();
+    const anatomyPresentationHost = React.useMemo(() => createPluginUiPrivatePresentationHost(
+        { displayName: 'Happier Dev' },
+        {
+            palette: projectPluginUiHostPalette(theme),
+            pageChrome: { showsTitle: false, columnMaxWidthPx },
+        },
+    ), [columnMaxWidthPx, theme]);
+    const anatomySurface = React.useMemo(() => {
+        if (!host) return null;
+        const entry = renderPageAnatomySurface(host.renderContext) as React.ReactElement | null;
+        return entry
+            ? React.cloneElement(
+                entry as React.ReactElement<Record<string, unknown>>,
+                { presentationHost: anatomyPresentationHost },
+            )
+            : null;
+    }, [anatomyPresentationHost, host]);
+    const navigationColumnSurface = React.useMemo(() => {
+        if (!host) return null;
+        const entry = renderNavigationColumnSurface(host.renderContext) as React.ReactElement | null;
+        return entry
+            ? React.cloneElement(
+                entry as React.ReactElement<Record<string, unknown>>,
+                { presentationHost: anatomyPresentationHost },
+            )
+            : null;
+    }, [anatomyPresentationHost, host]);
     const corePresentationEnvironment = React.useMemo(
         () => createDemoCorePresentationEnvironment(demoSurface.environment),
         [demoSurface.environment],
@@ -647,6 +723,43 @@ export default function PluginUiSharedPresentationScreen() {
     return (
         <ScrollView style={styles.container} testID="dev-plugin-ui-shared-presentation">
             <View style={styles.content}>
+                <View style={styles.section} testID="dev-plugin-ui-page-anatomy">
+                    <Text style={styles.sectionTitle}>Configuration page anatomy — Happier core | plugin</Text>
+                    <View style={styles.sideBySide}>
+                        <View style={styles.sideColumn}>
+                            <Text style={styles.sampleTitle}>Happier core owners</Text>
+                            <CorePageAnatomySample />
+                        </View>
+                        <View style={styles.sideColumn}>
+                            <Text style={styles.sampleTitle}>Public plugin components</Text>
+                            <View style={styles.pluginPaper}>{anatomySurface}</View>
+                        </View>
+                    </View>
+                </View>
+
+                <View style={styles.section} testID="dev-plugin-ui-navigation-column">
+                    <Text style={styles.sectionTitle}>Navigation column — Happier core | plugin NavigationList</Text>
+                    <View style={styles.columnPair}>
+                        <View testID="dev-navigation-column-core-plane" style={[appShellColumnSurface.column, styles.navigationColumn]}>
+                            <CoreNavigationColumnSample />
+                        </View>
+                        <View testID="dev-navigation-column-plugin-plane" style={[appShellColumnSurface.column, styles.navigationColumn]}>
+                            {navigationColumnSurface}
+                        </View>
+                    </View>
+                </View>
+
+                <View style={styles.section} testID="dev-plugin-ui-collection-pane">
+                    <Text style={styles.sectionTitle}>Collection beside the app details pane</Text>
+                    <View style={styles.collectionPaneFrame}>
+                        {host ? (
+                            <DetailsPaneSlotHost testID="dev-collection-details">
+                                <CollectionBesideDetailsPaneSample host={host} />
+                            </DetailsPaneSlotHost>
+                        ) : null}
+                    </View>
+                </View>
+
                 <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Text — Happier core adapter</Text>
                     <Sample title="Core default">
@@ -770,6 +883,41 @@ const styles = StyleSheet.create((theme) => ({
     },
     sample: {
         gap: 4,
+    },
+    sideBySide: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 16,
+    },
+    sideColumn: {
+        flexGrow: 1,
+        flexShrink: 1,
+        flexBasis: 380,
+        minWidth: 0,
+        gap: 6,
+    },
+    // The plugin half sits on the same paper a core page does.
+    pluginPaper: {
+        backgroundColor: theme.colors.surface.base,
+        paddingBottom: 24,
+        // The mounted surface root fills its host (`flex: 1`); in a row that fill is horizontal, so
+        // the half keeps its content height when the two halves stack on a phone.
+        flexDirection: 'row',
+    },
+    // A page-sized frame, so the pane has a page to sit beside.
+    collectionPaneFrame: {
+        height: 820,
+        backgroundColor: theme.colors.surface.base,
+    },
+    columnPair: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 16,
+    },
+    // A column of the shell's width and a short list's height, on the column's own plane.
+    navigationColumn: {
+        width: 300,
+        height: 260,
     },
     sampleTitle: {
         fontSize: 12,

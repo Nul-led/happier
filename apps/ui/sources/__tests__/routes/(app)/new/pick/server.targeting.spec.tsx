@@ -50,9 +50,13 @@ type ServerSelectionSettings = Pick<
 const routerMock = createRouterMock();
 const navigationMock = createNavigationMock();
 const modalConfirmSpy = vi.hoisted(() => vi.fn(async () => true));
+// A parseable credential: the canonical Home credential resolver binds an
+// Account only from a token whose payload names one.
+const SIGNED_IN_CREDENTIALS = { token: 'e30.eyJzdWIiOiJhY2NvdW50LWFkYSJ9.signature', secret: 's' };
 const tokenCredsSpy = vi.hoisted(() =>
-    vi.fn<(serverUrl: string) => Promise<{ token: string; secret: string } | null>>(async () => ({ token: 't', secret: 's' }))
+    vi.fn<(serverUrl: string) => Promise<{ token: string; secret: string } | null>>(async () => null)
 );
+const refreshFromActiveServerSpy = vi.hoisted(() => vi.fn(async () => {}));
 const setActiveServerAndSwitchSpy = vi.hoisted(() => vi.fn(async (_params: any) => true));
 const refreshMachinesThrottledSpy = vi.hoisted(() => vi.fn(async (_params: any) => undefined));
 
@@ -168,7 +172,8 @@ vi.mock('@react-navigation/native', () => ({
     },
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     getActiveServerSnapshot: () => ({
         serverId: state.activeServerId,
         serverUrl: state.activeServerUrl,
@@ -176,12 +181,20 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         generation: 1,
     }),
     listServerProfiles: () => state.profiles,
+    getServerProfileById: (id: string) => state.profiles.find((profile) => profile.id === id) ?? null,
+    resolveServerProfileScopeIdForIdentifier: (id: string | null | undefined) => String(id ?? '').trim(),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        getCredentialsForServerUrl: tokenCredsSpy,
-    },
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        tokenStorage: { getCredentialsForServerUrl: tokenCredsSpy },
+    });
+});
+
+vi.mock('@/auth/context/AuthContext', () => ({
+    useAuth: () => ({ refreshFromActiveServer: refreshFromActiveServerSpy }),
 }));
 
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
@@ -224,7 +237,7 @@ beforeEach(() => {
     modalConfirmSpy.mockReset();
     modalConfirmSpy.mockResolvedValue(true);
     tokenCredsSpy.mockReset();
-    tokenCredsSpy.mockResolvedValue({ token: 't', secret: 's' });
+    tokenCredsSpy.mockResolvedValue(SIGNED_IN_CREDENTIALS);
     setActiveServerAndSwitchSpy.mockReset();
     refreshMachinesThrottledSpy.mockReset();
     state.localSearchParams = {};
@@ -302,9 +315,8 @@ describe('new-session server picker targeting', () => {
         expect(routerMock.back).not.toHaveBeenCalled();
     });
 
-    it('does not change settings or route params when cancelling a signed-out server selection', async () => {
+    it('routes a signed-out Home to its sign-in without changing global target settings or route params', async () => {
         tokenCredsSpy.mockResolvedValue(null);
-        modalConfirmSpy.mockResolvedValue(false);
 
         state.settings.serverSelectionGroups = [
             {
@@ -328,10 +340,9 @@ describe('new-session server picker targeting', () => {
             await flushHookEffects();
         });
 
-        expect(modalConfirmSpy).toHaveBeenCalledTimes(1);
+        expect(setActiveServerAndSwitchSpy).toHaveBeenCalledWith(expect.objectContaining({ serverId: 'server-b' }));
+        expect(routerMock.replace).toHaveBeenCalledTimes(1);
         expect(navigationMock.dispatch).not.toHaveBeenCalled();
-        expect(routerMock.back).not.toHaveBeenCalled();
-        expect(routerMock.replace).not.toHaveBeenCalled();
         expect(state.settings.serverSelectionActiveTargetKind).toBe('group');
         expect(state.settings.serverSelectionActiveTargetId).toBe('grp-dev');
     });

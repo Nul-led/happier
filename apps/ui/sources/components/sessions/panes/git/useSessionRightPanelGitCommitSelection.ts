@@ -28,6 +28,8 @@ export type UseSessionRightPanelGitCommitSelectionResult = Readonly<{
     toggleCommitSelectionForFile: (file: ScmFileStatus) => void;
     bulkSelectAll: () => void;
     bulkSelectFiles: (files: readonly ScmFileStatus[]) => void;
+    /** Clears just these files from the commit selection (a change group's header checkbox). */
+    bulkDeselectFiles: (files: readonly ScmFileStatus[]) => void;
     bulkSelectNone: () => void;
     disableSelectAll: boolean;
     disableSelectNone: boolean;
@@ -77,7 +79,7 @@ export function useSessionRightPanelGitCommitSelection(
         [input.changedFiles]
     );
 
-    const bulkSelectPaths = React.useCallback((paths: readonly string[], tag: string) => {
+    const bulkSetPaths = React.useCallback((paths: readonly string[], stage: boolean, tag: string) => {
         if (!input.scmWriteEnabled) return;
         fireAndForget(
             applyBulkFileStageAction({
@@ -86,13 +88,21 @@ export function useSessionRightPanelGitCommitSelection(
                 snapshot: input.scmSnapshot,
                 scmWriteEnabled: input.scmWriteEnabled,
                 commitStrategy: input.scmCommitStrategy,
-                stage: true,
+                stage,
                 paths,
                 surface: 'files',
             }),
             { tag }
         );
     }, [input.scmCommitStrategy, input.scmSnapshot, input.scmWriteEnabled, input.sessionId, input.serverId, input.sessionPath]);
+    const bulkSelectPaths = React.useCallback(
+        (paths: readonly string[], tag: string) => bulkSetPaths(paths, true, tag),
+        [bulkSetPaths],
+    );
+
+    const bulkDeselectFiles = React.useCallback((files: readonly ScmFileStatus[]) => {
+        bulkSetPaths(files.map((file) => file.fullPath), false, 'useSessionRightPanelGitCommitSelection.bulkDeselectFiles');
+    }, [bulkSetPaths]);
 
     const bulkSelectAll = React.useCallback(() => {
         bulkSelectPaths(allChangedPaths, 'useSessionRightPanelGitCommitSelection.bulkSelectAll');
@@ -144,6 +154,7 @@ export function useSessionRightPanelGitCommitSelection(
         toggleCommitSelectionForFile,
         bulkSelectAll,
         bulkSelectFiles,
+        bulkDeselectFiles,
         bulkSelectNone,
         disableSelectAll,
         disableSelectNone,

@@ -1,11 +1,11 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { TeamMemberDetailScreen } from '@/components/settings/teams/members/TeamMemberDetailScreen';
 import { TeamMemberEncryptionSection } from '@/components/settings/teams/members/TeamMemberEncryptionSection';
 import { firstRouteParam } from '@/components/settings/teams/teamRouteParams';
 
-export default function TeamMemberDetailRoute() {
+export function TeamMemberDetailRoute() {
     const params = useLocalSearchParams<{
         serverId?: string | string[];
         teamId?: string | string[];
@@ -36,3 +36,6 @@ export default function TeamMemberDetailRoute() {
         />
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { TeamMemberDetailRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={TeamMemberDetailRoute} />; }

@@ -1,9 +1,12 @@
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { SkillBundleSupportingFileEditorScreen } from '@/components/settings/prompts/skills/SkillBundleSupportingFileEditorScreen';
 
-export default function NewSkillSupportingFilePage() {
+export function NewSkillSupportingFilePage() {
     const { id } = useLocalSearchParams<{ id: string }>();
     if (!id) return null;
     return <SkillBundleSupportingFileEditorScreen artifactId={id} path={null} />;
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { NewSkillSupportingFilePage as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={NewSkillSupportingFilePage} />; }

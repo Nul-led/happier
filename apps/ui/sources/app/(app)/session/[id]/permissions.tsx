@@ -1,6 +1,7 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
 import { View } from 'react-native';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { SessionRemotePermissionGrantsView } from '@/components/sessions/permissions/SessionRemotePermissionGrantsView';
 import { createSessionActionTarget } from '@/components/sessions/actions/sessionActionContext';
@@ -14,7 +15,7 @@ import { useProfile, useSession } from '@/sync/domains/state/storage';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
 import { t } from '@/text';
 
-export default function SessionRemotePermissionGrantsScreen() {
+export function SessionRemotePermissionGrantsScreen() {
     const params = useLocalSearchParams<{ id?: string | string[]; serverId?: string | string[] }>();
     const routeScope = React.useMemo(() => createSessionRouteServerScope(params as Record<string, unknown>), [params]);
     const sessionId = normalizeSessionId(params.id);
@@ -91,3 +92,7 @@ export default function SessionRemotePermissionGrantsScreen() {
         </View>
     );
 }
+
+export { SessionRemotePermissionGrantsScreen as WorkspaceRouteBody };
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={SessionRemotePermissionGrantsScreen} />; }

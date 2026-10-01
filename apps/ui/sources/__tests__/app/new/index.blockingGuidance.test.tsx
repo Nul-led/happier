@@ -289,6 +289,10 @@ vi.mock('@/components/sessions/new/hooks/useNewSessionScreenModel', () => ({
 vi.mock('@/components/sessions/new/components/NewSessionSimplePanel', () => ({
     NewSessionSimplePanel: 'NewSessionSimplePanel',
 }));
+// The embedded (Home) presentation's composer card; the /new route never renders it.
+vi.mock('@/components/sessions/new/components/NewSessionComposerCard', () => ({
+    NewSessionComposerCard: 'NewSessionComposerCard',
+}));
 
 vi.mock('@/components/sessions/new/components/NewSessionWizard', () => ({
     NewSessionWizard: (props: Record<string, unknown>) => {

@@ -1,25 +1,5 @@
-import * as React from 'react';
+import { MachineAddDraftScreen } from '@/components/machines/add/MachineAddDraftScreen';
 
-import { useRouter } from 'expo-router';
-
-import { ItemList } from '@/components/ui/lists/ItemList';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Item } from '@/components/ui/lists/Item';
-import { t } from '@/text';
-import { buildMachineSetupWizardHref } from '@/utils/routes/setupWizardHref';
-
-export default function AddMachineRoute() {
-    const router = useRouter();
-    return (
-        <ItemList>
-            <ItemGroup title={t('common.actions')}>
-                <Item
-                    testID="settings.machineSetup.openSetupWizard"
-                    title={t('setupOnboarding.setupNewMachineAction')}
-                    subtitle={t('settings.machineSetupSshMachineSubtitle')}
-                    onPress={() => router.push(buildMachineSetupWizardHref({ action: 'remote', step: 'remote_ssh_setup' }))}
-                />
-            </ItemGroup>
-        </ItemList>
-    );
-}
+export const WorkspaceRouteBody = MachineAddDraftScreen;
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

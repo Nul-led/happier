@@ -4,7 +4,7 @@ import type { ResolvedSettingsPageNode, SettingsPageId } from '@/components/sett
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { readSessionDisplayTitleField } from '@/sync/state/selectors';
 import type { ParameterFreeRouteProjection } from '@/track/parameterFreeRouteProjection';
-import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
+import { readMachineName } from '@/utils/sessions/machineDisplayNames';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { redactVoicePathLikeString } from '@/voice/shared/redactVoicePathLikeData';
 import {
@@ -20,7 +20,7 @@ import type {
 export type CurrentUiNavigation = CurrentUiContextSnapshotV1['navigation'];
 
 type CurrentUiContextSessionTitleSource = Parameters<typeof getSessionName>[0];
-type CurrentUiContextMachineLabelSource = Parameters<typeof getMachineDisplayName>[0];
+type CurrentUiContextMachineLabelSource = Parameters<typeof readMachineName>[0];
 
 type CurrentUiContextFrameworkPrivacy = Readonly<{
     shareSessionSummary: boolean;
@@ -228,7 +228,10 @@ function readPrivacyQualifiedSessionTitle(input: CurrentUiContextCompositionInpu
 
 function readPrivacyQualifiedMachineLabel(input: CurrentUiContextCompositionInput): string | null {
     if (input.privacy?.shareDeviceInventory !== true) return null;
-    return getMachineDisplayName(input.machine);
+    // Agent-facing context keeps the machine's id when it has no name, so the agent can address it.
+    const machine = input.machine;
+    if (!machine) return null;
+    return readMachineName(machine) ?? (machine.id?.trim() || null);
 }
 
 /**

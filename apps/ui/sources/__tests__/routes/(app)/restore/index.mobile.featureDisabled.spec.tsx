@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
     installRestoreRouteCommonModuleMocks,
     resetRestoreRouteTestState,
@@ -35,6 +35,13 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => ({ state: 'disabled' }),
 }));
 
+vi.mock('@/hooks/auth/useScannedAuthUrlProcessor', () => ({
+    useScannedAuthUrlProcessor: () => ({
+        processAuthUrl: vi.fn(),
+        isLoading: false,
+    }),
+}));
+
 vi.mock('@/utils/platform/qrScannerSupport', () => ({
     isWebQrScannerSupported: () => false,
     canUseCurrentDeviceQrScanner: () => true,
@@ -48,16 +55,19 @@ vi.mock('@/components/account/restore/RestoreScanComputerQrView', () => ({
     RestoreScanComputerQrView: () => React.createElement('div', { 'data-testid': 'RestoreScanComputerQrView' }),
 }));
 
+let Screen: typeof import('@/app/(app)/restore/index').default;
+
+beforeAll(async () => {
+    ({ default: Screen } = await import('@/app/(app)/restore/index'));
+}, 120_000);
+
 afterEach(() => {
     resetRestoreRouteTestState();
     vi.restoreAllMocks();
 });
 
 describe('/restore (mobile, feature disabled)', () => {
-    it('renders the scan-desktop restore flow (with fallback actions) when desktop QR scan is disabled', async () => {
-        vi.resetModules();
-        const { default: Screen } = await import('@/app/(app)/restore/index');
-
+    it('renders the scan-desktop restore flow (with fallback actions) when desktop QR scan is disabled', () => {
         let tree: ReactTestRenderer | null = null;
         try {
             act(() => {

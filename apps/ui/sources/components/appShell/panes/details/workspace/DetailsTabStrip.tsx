@@ -1,47 +1,22 @@
 import * as React from 'react';
-import { I18nManager, Image, Platform, Pressable, ScrollView, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-
-import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
-import { PinIcon, PinSlashIcon } from '@/components/sessions/shell/sessionPinIcons';
+import { useUnistyles } from 'react-native-unistyles';
+import { DocumentTabStrip, type DocumentTabPresentation, type DocumentTabStripTestIds } from '@/components/ui/navigation/DocumentTabStrip';
 import { FileIcon } from '@/components/ui/media/FileIcon';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import type { AppPaneScopeApi } from '@/components/appShell/panes/hooks/useAppPaneScope';
+import { DETAILS_TAB_STRIP_METRICS as M } from '@/components/appShell/panes/details/header/detailsTabHeaderMetrics';
 import { t } from '@/text';
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
-import type { AppPaneScopeApi } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import type { DetailsTabState, DetailsWorkspaceGroupView } from './detailsWorkspaceTypes';
-import { Icon, type IconName } from '@/components/ui/icons/Icon';
-import { resolveHappierTabKeySelection } from '@happier-dev/plugin-ui/presentation';
 
-type ScrollPropagationEvent = Readonly<{ stopPropagation?: () => void }>;
-
-export type DetailsTabStripTestIds = Readonly<{
-    tab?: (tabKey: string) => string | null | undefined;
-    tabPin?: (tabKey: string) => string | null | undefined;
-    tabUnpin?: (tabKey: string) => string | null | undefined;
-    tabClose?: (tabKey: string) => string | null | undefined;
-    tabFavicon?: (tabKey: string) => string | null | undefined;
-    tabSpinner?: (tabKey: string) => string | null | undefined;
-}>;
-
-/**
- * Generic, kind-agnostic per-tab leading-glyph presentation. A consumer surface (e.g. the browser
- * `browser-view` tab) supplies a live favicon URL and/or loading flag per tab; the canonical strip
- * renders a spinner while loading, then the favicon, falling back to the per-kind icon. This is the
- * single home for tab leading chrome — the browser no longer ships a bespoke tab strip.
- */
-export type DetailsTabPresentation = Readonly<{
-    faviconUrl?: string | null;
-    isLoading?: boolean;
-}>;
-
+export type DetailsTabStripTestIds = DocumentTabStripTestIds;
+export type DetailsTabPresentation = DocumentTabPresentation;
 export type DetailsTabStripProps = Readonly<{
-    pane: AppPaneScopeApi;
+    pane: Pick<AppPaneScopeApi, 'setActiveDetailsTab' | 'pinDetailsTab' | 'unpinDetailsTab' | 'closeDetailsTab'>;
     group: DetailsWorkspaceGroupView;
     resolveTabIconName?: ((tab: DetailsTabState) => string | null | undefined) | null;
     resolveTabPresentation?: ((tab: DetailsTabState) => DetailsTabPresentation | null | undefined) | null;
+    unsavedTabKeys?: ReadonlySet<string>;
     testIds?: DetailsTabStripTestIds;
 }>;
 
@@ -53,242 +28,31 @@ export function detailsTabPanelNativeId(groupId: string, tabKey: string): string
     return `details-${toTestIdSafeValue(groupId)}-panel-${toTestIdSafeValue(tabKey)}`;
 }
 
-const stylesheet = StyleSheet.create((theme) => ({
-    tabsScroll: {
-        flex: 1,
-        minHeight: 0,
-        minWidth: 0,
-    },
-    tab: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-        maxWidth: 220,
-        marginRight: 8,
-        flexShrink: 0,
-    },
-    tabContent: {
-        flex: 1,
-        minWidth: 0,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-    },
-    tabActive: {
-        backgroundColor: theme.colors.surface.inset,
-    },
-    tabLabel: {
-        flexShrink: 1,
-        fontSize: 12,
-        color: theme.colors.text.secondary,
-        ...Typography.default('semiBold'),
-    },
-    tabLabelActive: {
-        color: theme.colors.text.primary,
-    },
-    tabCopy: {
-        flex: 1,
-        minWidth: 0,
-        gap: 1,
-    },
-    tabSubtitle: {
-        fontSize: 10,
-        color: theme.colors.text.secondary,
-        ...Typography.default(),
-    },
-    tabActions: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-    },
-    tabAction: {
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    favicon: {
-        width: 14,
-        height: 14,
-        borderRadius: 3,
-    },
-}));
-
+/** Details owns resource semantics; DocumentTabStrip owns the shared document chrome. */
 export const DetailsTabStrip = React.memo((props: DetailsTabStripProps) => {
-    const styles = stylesheet;
     const { theme } = useUnistyles();
-    const interactiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
-    const interactiveTargetStyle = React.useMemo(() => ({
-        minWidth: interactiveTargetSize,
-        minHeight: interactiveTargetSize,
-    }), [interactiveTargetSize]);
-    const tabFocusTargetsRef = React.useRef(new Map<string, { focus?: () => void }>());
-    const handleKeyDown = React.useCallback((event: unknown, currentIndex: number) => {
-        const keyboardEvent = event as { nativeEvent?: { key?: unknown }; key?: unknown; preventDefault?: () => void } | null;
-        const key = keyboardEvent?.nativeEvent?.key ?? keyboardEvent?.key;
-        if (typeof key !== 'string') return;
-        const nextIndex = resolveHappierTabKeySelection({
-            tabs: props.group.tabs,
-            key,
-            currentIndex,
-            rtl: I18nManager.isRTL,
-        });
-        if (nextIndex === null) return;
-        keyboardEvent?.preventDefault?.();
-        const nextTab = props.group.tabs[nextIndex];
-        if (!nextTab) return;
-        props.pane.setActiveDetailsTab(nextTab.key);
-        if (nextIndex !== currentIndex) tabFocusTargetsRef.current.get(nextTab.key)?.focus?.();
-    }, [props.group.tabs, props.pane]);
-
-    return (
-        <ScrollView
-            horizontal
-            style={styles.tabsScroll}
-            showsHorizontalScrollIndicator={false}
-            accessibilityRole="tablist"
-            accessibilityLabel={t('common.details')}
-        >
-            {props.group.tabs.map((tab, tabIndex) => {
-                const isActive = props.group.activeTabKey ? tab.key === props.group.activeTabKey : false;
-                const safeTabKey = toTestIdSafeValue(tab.key);
-                const presentation = props.resolveTabPresentation?.(tab) ?? null;
-                const iconName =
-                    props.resolveTabIconName?.(tab)
-                    ?? (
-                        tab.kind === 'commit'
-                            ? 'git-commit'
-                            : tab.kind === 'file'
-                                ? 'file'
-                                : tab.kind === 'scmReview'
-                                    ? 'diff'
-                                    : tab.kind === 'scmStash'
-                                        ? 'archive'
-                                        : tab.kind === 'terminal'
-                                            ? 'terminal'
-                                            : tab.kind === 'executionRunLauncher'
-                                                ? 'play'
-                                                : 'circle'
-                    );
-
-                return (
-                    <View
-                        key={tab.key}
-                        style={[styles.tab, isActive ? styles.tabActive : null]}
-                    >
-                        <Pressable
-                            ref={(target) => {
-                                if (target) tabFocusTargetsRef.current.set(tab.key, target);
-                                else tabFocusTargetsRef.current.delete(tab.key);
-                            }}
-                            onPress={() => props.pane.setActiveDetailsTab(tab.key)}
-                            onKeyDown={(event) => handleKeyDown(event, tabIndex)}
-                            testID={props.testIds?.tab?.(safeTabKey) ?? undefined}
-                            style={[
-                                styles.tabContent,
-                                interactiveTargetStyle,
-                            ]}
-                            accessibilityRole="tab"
-                            accessibilityLabel={t('session.detailsPanel.openTabA11y', { title: tab.title })}
-                            accessibilityState={{ selected: isActive }}
-                            aria-selected={isActive}
-                            nativeID={detailsTabNativeId(props.group.id, tab.key)}
-                            aria-controls={detailsTabPanelNativeId(props.group.id, tab.key)}
-                            tabIndex={isActive ? 0 : -1}
-                        >
-                            {presentation?.isLoading ? (
-                                <ActivitySpinner
-                                    size="small"
-                                    color={theme.colors.text.secondary}
-                                    testID={props.testIds?.tabSpinner?.(safeTabKey) ?? undefined}
-                                />
-                            ) : presentation?.faviconUrl ? (
-                                <Image
-                                    source={{ uri: presentation.faviconUrl }}
-                                    style={styles.favicon}
-                                    testID={props.testIds?.tabFavicon?.(safeTabKey) ?? undefined}
-                                />
-                            ) : tab.kind === 'file' ? (
-                                <FileIcon
-                                    fileName={tab.title}
-                                    size={14}
-                                    testID={`session-details-tab-file-icon-${safeTabKey}`}
-                                />
-                            ) : (
-                                <Icon
-                                    name={iconName as IconName}
-                                    size={14}
-                                    color={theme.colors.text.secondary}
-                                />
-                            )}
-                            <View style={styles.tabCopy}>
-                                <Text
-                                    style={[styles.tabLabel, isActive ? styles.tabLabelActive : null]}
-                                    numberOfLines={1}
-                                >
-                                    {tab.title}
-                                </Text>
-                                {typeof tab.subtitle === 'string' && tab.subtitle.trim().length > 0 ? (
-                                    <Text style={styles.tabSubtitle} numberOfLines={1}>
-                                        {tab.subtitle}
-                                    </Text>
-                                ) : null}
-                            </View>
-                        </Pressable>
-                        <View style={styles.tabActions}>
-                            {tab.isPreview ? (
-                                <Pressable
-                                    onPress={(event: unknown) => {
-                                        if (event && typeof (event as ScrollPropagationEvent).stopPropagation === 'function') {
-                                            (event as ScrollPropagationEvent).stopPropagation?.();
-                                        }
-                                        props.pane.pinDetailsTab(tab.key);
-                                    }}
-                                    testID={props.testIds?.tabPin?.(safeTabKey) ?? undefined}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('session.detailsPanel.pinTabA11y')}
-                                    style={[styles.tabAction, interactiveTargetStyle]}
-                                >
-                                    <PinIcon size={14} color={theme.colors.text.secondary} />
-                                </Pressable>
-                            ) : tab.isPinned ? (
-                                <Pressable
-                                    onPress={(event: unknown) => {
-                                        if (event && typeof (event as ScrollPropagationEvent).stopPropagation === 'function') {
-                                            (event as ScrollPropagationEvent).stopPropagation?.();
-                                        }
-                                        props.pane.unpinDetailsTab(tab.key);
-                                    }}
-                                    testID={props.testIds?.tabUnpin?.(safeTabKey) ?? undefined}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('session.detailsPanel.unpinTabA11y')}
-                                    style={[styles.tabAction, interactiveTargetStyle]}
-                                >
-                                    <PinSlashIcon size={14} color={theme.colors.text.secondary} />
-                                </Pressable>
-                            ) : null}
-                            <Pressable
-                                onPress={(event: unknown) => {
-                                    if (event && typeof (event as ScrollPropagationEvent).stopPropagation === 'function') {
-                                        (event as ScrollPropagationEvent).stopPropagation?.();
-                                    }
-                                    props.pane.closeDetailsTab(tab.key);
-                                }}
-                                testID={props.testIds?.tabClose?.(safeTabKey) ?? undefined}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('session.detailsPanel.closeTabA11y')}
-                                style={[styles.tabAction, interactiveTargetStyle]}
-                            >
-                                <Icon name="x" size={14} color={theme.colors.text.secondary} />
-                            </Pressable>
-                        </View>
-                    </View>
-                );
-            })}
-        </ScrollView>
-    );
+    return <DocumentTabStrip
+        tabs={props.group.tabs}
+        activeTabKey={props.group.activeTabKey}
+        accessibilityLabel={t('common.details')}
+        onActivate={props.pane.setActiveDetailsTab}
+        onPin={props.pane.pinDetailsTab}
+        onUnpin={props.pane.unpinDetailsTab}
+        onClose={props.pane.closeDetailsTab}
+        resolveTabPresentation={props.resolveTabPresentation}
+        unsavedTabKeys={props.unsavedTabKeys}
+        testIds={props.testIds}
+        tabNativeId={(key) => detailsTabNativeId(props.group.id, key)}
+        panelNativeId={(key) => detailsTabPanelNativeId(props.group.id, key)}
+        renderLeadingIcon={(tab, active) => {
+            if (tab.kind === 'file') return <FileIcon fileName={tab.title} size={M.tabGlyphPx}
+                testID={`session-details-tab-file-icon-${toTestIdSafeValue(tab.key)}`} />;
+            const iconName = props.resolveTabIconName?.(tab) ?? ({
+                commit: 'git-commit', scmReview: 'diff', scmStash: 'archive',
+                scmPullRequest: 'git-pull-request', terminal: 'terminal', executionRunLauncher: 'play',
+            }[tab.kind] ?? 'circle');
+            return <Icon name={iconName as IconName} size={M.tabGlyphPx}
+                color={active ? theme.colors.text.primary : theme.colors.text.secondary} />;
+        }}
+    />;
 });

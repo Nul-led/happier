@@ -1,3 +1,4 @@
+import { activeReviewFileKeyForSession, openChangedFileFromList } from '@/components/workspaces/scm/review/activeReviewFile';
 import * as React from 'react';
 import { SessionRightPanelGitCommitTab } from '@/components/sessions/panes/git/SessionRightPanelGitCommitTab';
 import { ScmCommitSelectionToggleButton } from '@/components/sessions/sourceControl/commitSelection/ScmCommitSelectionToggleButton';
@@ -10,7 +11,7 @@ import type { ScmFileStatus } from '@/scm/scmStatusFiles';
 import { filterDirectoryLikeScmFileStatuses } from '@/scm/isDirectoryLikeScmFileStatus';
 import {
     filterPresentableSessionAttributedFiles,
-    getPreferredChangedFilesViewMode,
+    getDefaultChangedFilesViewMode,
     resolveChangedFilesViewMode,
     type ChangedFilesViewMode,
 } from '@/scm/scmAttribution';
@@ -49,19 +50,27 @@ export type SessionRightPanelGitCommitTabContentProps = Readonly<{
     commitSelectionUiEnabled: boolean;
     commitDraftMessage: string;
     onCommitDraftMessageChange: (value: string) => void;
-    onCommitFromMessage: (message: string) => void;
+    /** Resolves with the commit's outcome, so a landed commit can fold into its line (lab GC). */
+    onCommitFromMessage: (message: string) => Promise<Readonly<{ ok: boolean; commitSha?: string | null }>> | undefined;
     commitMessageGeneratorEnabled: boolean;
     onGenerateCommitMessageSuggestion: () => Promise<
         | { ok: true; message: string }
         | { ok: false; error: string }
     >;
-    commitAdjacentPushAction?: React.ComponentProps<typeof SessionRightPanelGitCommitTab>['commitAdjacentPushAction'];
-    showBranchSummary?: boolean;
+    /** The Changes view is the one showing (its sub-tab is active); leaving it retires a fold line. */
+    active?: boolean;
     onOpenFilesSidebar: (revealPath?: string) => void;
     onOpenReviewAllChanges: () => void;
     onOpenStashDetails: () => void;
     openFileInDetails: (fullPath: string) => void;
     openFileInDetailsPinned: (fullPath: string) => void;
+    /** The Unified layout's timeline, under the changes in one scroll. */
+    listFooter?: React.ReactElement | null;
+    /** The finished state when nothing is left to commit. */
+    emptyState?: React.ReactElement | null;
+    scopeAccessory?: React.ReactNode;
+    changesLayout?: 'list' | 'tree';
+    machineId?: string | null;
 }>;
 
 export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRightPanelGitCommitTabContentProps) => {
@@ -71,7 +80,7 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
         () => normalizeSessionAddress(props.serverId, props.sessionId),
         [props.serverId, props.sessionId],
     );
-    const { latestTurnChangeSet, latestTurnScopedChangeSet, sessionChangeSet } = useDerivedSessionChangeSet(sessionAddress);
+    const { latestTurnId, latestTurnChangeSet, latestTurnScopedChangeSet, sessionChangeSet } = useDerivedSessionChangeSet(sessionAddress, props.scmSnapshot?.repo.rootPath);
 
     const [requestedChangedFilesViewMode, setRequestedChangedFilesViewMode] = React.useState<ChangedFilesViewMode | null>(null);
 
@@ -83,6 +92,7 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
 
         searchQuery: '',
         showAllRepositoryFiles: false,
+        latestTurnId,
         latestTurnChangeSet: latestTurnScopedChangeSet,
         latestTurnEvidence: latestTurnChangeSet,
         sessionChangeSet,
@@ -91,6 +101,10 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
     const visibleRepositoryChangedFiles = React.useMemo(
         () => filterDirectoryLikeScmFileStatuses(changed.allRepositoryChangedFiles),
         [changed.allRepositoryChangedFiles],
+    );
+    const currentRepositoryFileByPath = React.useMemo(
+        () => new Map(visibleRepositoryChangedFiles.map((file) => [file.fullPath, file])),
+        [visibleRepositoryChangedFiles],
     );
     const turnAgentReportedFiles = changed.turnAgentReportedFiles ?? [];
     const turnCheckpointFiles = changed.turnCheckpointFiles ?? [];
@@ -117,6 +131,7 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
         toggleCommitSelectionForFile,
         bulkSelectAll,
         bulkSelectFiles,
+        bulkDeselectFiles,
         bulkSelectNone,
         disableSelectAll,
         disableSelectNone,
@@ -131,19 +146,16 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
         changedFiles: visibleRepositoryChangedFiles,
     });
 
-    const [selectionModeUserOn, setSelectionModeUserOn] = React.useState(false);
-    // Selection mode is an explicit opt-in: rows stay free of the per-file "+" until the
-    // user taps "Select files to commit". A non-empty selection always forces it on so a
-    // pending selection can never be silently hidden.
-    const selectionModeActive = commitSelectionUiEnabled && (selectionModeUserOn || repositorySelectedCount > 0);
-    const enterSelectionMode = React.useCallback(() => setSelectionModeUserOn(true), []);
-    const exitSelectionMode = React.useCallback(() => setSelectionModeUserOn(false), []);
+    // Lab G1: the checkbox column is part of every row whenever commit selection is available —
+    // the name-first row has room for it, and the commit card sums what is checked.
+    const selectionModeActive = commitSelectionUiEnabled;
 
     const selectedRepositoryChangedFiles = React.useMemo(() => {
         return visibleRepositoryChangedFiles.filter((file) => isSelectedForCommit(file));
     }, [isSelectedForCommit, visibleRepositoryChangedFiles]);
 
     const showSelectedViewToggle = selectedRepositoryChangedFiles.length > 0;
+
 
     const changedFilesAvailability = React.useMemo(() => ({
         showTurnViewToggle: changed.showTurnViewToggle,
@@ -166,7 +178,9 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
                 ...changedFilesAvailability,
             });
         }
-        return getPreferredChangedFilesViewMode(changedFilesAvailability);
+        // Lab G1: the pane opens on All changes, grouped with this session's changes first; the scoped
+        // views (latest turn, this session, …) stay one choice away in the scope menu.
+        return getDefaultChangedFilesViewMode();
     }, [
         changedFilesAvailability,
         requestedChangedFilesViewMode,
@@ -174,20 +188,22 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
 
     const currentScopeChangedFiles = React.useMemo<readonly ScmFileStatus[]>(() => {
         if (scopedChangedFilesViewMode === 'selected') return selectedRepositoryChangedFiles;
-        if (scopedChangedFilesViewMode === 'turn') {
-            return visibleTurnAttributedFiles.map((entry) => entry.file);
-        }
-        if (scopedChangedFilesViewMode === 'turn_agent_reported') {
-            return visibleTurnAgentReportedFiles.map((entry) => entry.file);
-        }
-        if (scopedChangedFilesViewMode === 'turn_checkpoint') {
-            return visibleTurnCheckpointFiles.map((entry) => entry.file);
-        }
-        if (scopedChangedFilesViewMode === 'session') {
-            return visibleSessionAttributedFiles.map((entry) => entry.file);
-        }
-        return visibleRepositoryChangedFiles;
+        const attributedFiles = scopedChangedFilesViewMode === 'turn'
+            ? visibleTurnAttributedFiles
+            : scopedChangedFilesViewMode === 'turn_agent_reported'
+                ? visibleTurnAgentReportedFiles
+                : scopedChangedFilesViewMode === 'turn_checkpoint'
+                    ? visibleTurnCheckpointFiles
+                    : scopedChangedFilesViewMode === 'session'
+                        ? visibleSessionAttributedFiles
+                        : null;
+        if (!attributedFiles) return visibleRepositoryChangedFiles;
+        return attributedFiles.flatMap((entry) => {
+            const currentFile = currentRepositoryFileByPath.get(entry.file.fullPath);
+            return currentFile ? [currentFile] : [];
+        });
     }, [
+        currentRepositoryFileByPath,
         scopedChangedFilesViewMode,
         selectedRepositoryChangedFiles,
         visibleRepositoryChangedFiles,
@@ -206,6 +222,14 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
     }, [bulkSelectAll, bulkSelectFiles, currentScopeChangedFiles, scopedChangedFilesViewMode]);
 
     const noop = React.useCallback(() => {}, []);
+    const toggleGroupSelection = React.useCallback((files: readonly ScmFileStatus[], select: boolean) => {
+        if (select) bulkSelectFiles(files);
+        else bulkDeselectFiles(files);
+    }, [bulkDeselectFiles, bulkSelectFiles]);
+
+    // Git lab C3/SX: a landed commit is said once, by the pane's outcome line, and lands on the timeline as the
+    // newest node ("just now"); the list simply loses the committed rows.
+    const onCommitFromMessage = props.onCommitFromMessage;
     const noopFile = React.useCallback((_file: ScmFileStatus) => {}, []);
 
     const revealInTree = React.useCallback((fullPath: string) => {
@@ -213,7 +237,10 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
     }, [props.onOpenFilesSidebar]);
 
     const renderTrailingActions = React.useCallback((file: ScmFileStatus) => {
-        const discardEnabled = props.scmWriteEnabled && props.scmSnapshot?.capabilities?.writeDiscard === true;
+        const currentFile = currentRepositoryFileByPath.get(file.fullPath);
+        const discardEnabled = currentFile !== undefined
+            && props.scmWriteEnabled
+            && props.scmSnapshot?.capabilities?.writeDiscard === true;
         return (
             <>
                 <CopiedPill
@@ -231,7 +258,7 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
                         fireAndForget(applyFileDiscardAction({
                             sessionId: props.sessionId, serverId: props.serverId,
                             sessionPath: props.sessionPath,
-                            file,
+                            file: currentFile ?? file,
                             snapshot: props.scmSnapshot,
                             scmWriteEnabled: props.scmWriteEnabled,
                             commitStrategy: props.scmCommitStrategy,
@@ -241,10 +268,11 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
                 />
             </>
         );
-    }, [copyFeedback, props.scmCommitStrategy, props.scmSnapshot, props.scmWriteEnabled, props.sessionId, props.serverId, props.sessionPath, revealInTree]);
+    }, [copyFeedback, currentRepositoryFileByPath, props.scmCommitStrategy, props.scmSnapshot, props.scmWriteEnabled, props.sessionId, props.serverId, props.sessionPath, revealInTree]);
 
     const renderFileActions = React.useCallback((file: ScmFileStatus) => {
-        if (!selectionModeActive || !props.scmWriteEnabled) return null;
+        const currentFile = currentRepositoryFileByPath.get(file.fullPath);
+        if (!currentFile || !selectionModeActive || !props.scmWriteEnabled) return null;
         return (
             <ScmCommitSelectionToggleButton
                 sessionId={props.sessionId}
@@ -253,12 +281,14 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
                 snapshot={props.scmSnapshot}
                 scmWriteEnabled={props.scmWriteEnabled}
                 commitStrategy={props.scmCommitStrategy}
-                file={file}
-                selectedForCommit={isSelectedForCommit(file)}
+                file={currentFile}
+                selectedForCommit={isSelectedForCommit(currentFile)}
                 surface="files"
+                appearance="checkbox"
             />
         );
     }, [
+        currentRepositoryFileByPath,
         selectionModeActive,
         isSelectedForCommit,
         props.scmCommitStrategy,
@@ -268,9 +298,11 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
         props.sessionPath,
     ]);
 
+    // With Review on screen a tap brings the file into Review; otherwise it opens the file.
+    const activeReviewFileKey = activeReviewFileKeyForSession(props.sessionId, props.serverId);
     const onFilePress = React.useCallback((file: ScmFileStatus) => {
-        props.openFileInDetails(file.fullPath);
-    }, [props.openFileInDetails]);
+        openChangedFileFromList(activeReviewFileKey, file.fullPath, props.openFileInDetails);
+    }, [activeReviewFileKey, props.openFileInDetails]);
 
     const onFilePressPinned = React.useCallback((file: ScmFileStatus) => {
         props.openFileInDetailsPinned(file.fullPath);
@@ -325,20 +357,22 @@ export const SessionRightPanelGitCommitTabContent = React.memo((props: SessionRi
             renderFileTrailingActions={renderTrailingActions}
             commitDraftMessage={props.commitDraftMessage}
             onCommitDraftMessageChange={props.onCommitDraftMessageChange}
-            onCommitFromMessage={props.onCommitFromMessage}
+            onCommitFromMessage={onCommitFromMessage}
             commitMessageGeneratorEnabled={props.commitMessageGeneratorEnabled}
             onGenerateCommitMessageSuggestion={props.onGenerateCommitMessageSuggestion}
-            commitAdjacentPushAction={props.commitAdjacentPushAction}
             onClearSelection={commitSelectionUiEnabled && repositorySelectedCount > 0 ? bulkSelectNone : undefined}
-            commitSelectionAvailable={commitSelectionUiEnabled}
+            commitSelectionAvailable={false}
             selectionModeActive={selectionModeActive}
-            onEnterSelectionMode={enterSelectionMode}
-            onExitSelectionMode={exitSelectionMode}
             scmStatusFiles={changed.scmStatusFiles}
-            showBranchSummary={props.showBranchSummary}
+            onToggleGroupSelection={commitSelectionUiEnabled ? toggleGroupSelection : undefined}
             showCommitComposer={props.commitWriteEnabled}
             onOpenReviewAllChanges={props.onOpenReviewAllChanges}
             onOpenStashDetails={props.onOpenStashDetails}
+            listFooter={props.listFooter}
+            emptyState={props.emptyState}
+            scopeAccessory={props.scopeAccessory}
+            changesLayout={props.changesLayout}
+            machineId={props.machineId}
         />
     );
 });

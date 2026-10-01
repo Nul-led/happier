@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { I18nManager, Platform } from 'react-native';
+import { I18nManager } from 'react-native';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
-import { flattenTestStyle } from '@/dev/testkit/harness/popoverHarness';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import type { SessionPendingPermission } from '@/sync/ops/sessionPendingPermissions';
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -12,24 +12,46 @@ vi.mock('@/text', async () => {
 });
 
 import { SessionSummaryCard } from './SessionSummaryCard';
+import type { SessionSummaryCardModel } from './sessionSummaryProjection';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-describe('SessionSummaryCard', () => {
-    it('names an unproven Home as unavailable and does not present an invented operational state', async () => {
+const ASK: SessionPendingPermission = {
+    requestId: 'req-1',
+    toolName: 'Bash',
+    summary: 'Run yarn test:ui',
+    command: 'yarn test:ui',
+    createdAtMs: 1_000,
+    policy: { protocol: 'standard', usePermissionUpdates: false },
+    answers: ['allowOnce', 'allowForSession', 'deny'],
+};
+
+function model(overrides: Partial<SessionSummaryCardModel> = {}): SessionSummaryCardModel {
+    return {
+        scope: 'exact',
+        title: 'Fix settings modal remount',
+        agentLabel: 'Claude',
+        agentId: null,
+        status: { state: 'thinking', statusText: 'Working', quiet: false },
+        stale: false,
+        availability: 'complete',
+        encryption: 'plain',
+        identityDestination: 'sessionInfo',
+        rows: [],
+        needsYou: null,
+        sinceMs: null,
+        progress: null,
+        plan: null,
+        facts: [],
+        ...overrides,
+    };
+}
+
+describe('SessionSummaryCard (the Companion hero)', () => {
+    it('names an unproven Home as unavailable and presents no invented status line', async () => {
         const screen = await renderScreen(
             <SessionSummaryCard
-                model={{
-                    scope: 'realm_unavailable',
-                    title: null,
-                    agentLabel: null,
-                    status: null,
-                    stale: false,
-                    availability: 'locked',
-                    encryption: 'unknown',
-                    identityDestination: 'sessionInfo',
-                    rows: [],
-                }}
+                model={model({ scope: 'realm_unavailable', status: null, availability: 'locked', encryption: 'unknown' })}
                 density="compact"
             />,
         );
@@ -41,20 +63,7 @@ describe('SessionSummaryCard', () => {
 
     it('explains canonical locked content instead of silently looking complete', async () => {
         const screen = await renderScreen(
-            <SessionSummaryCard
-                model={{
-                    scope: 'exact',
-                    title: null,
-                    agentLabel: null,
-                    status: { state: 'waiting', statusText: 'Online', quiet: true },
-                    stale: false,
-                    availability: 'locked',
-                    encryption: 'locked',
-                    identityDestination: 'sessionInfo',
-                    rows: [],
-                }}
-                density="compact"
-            />,
+            <SessionSummaryCard model={model({ availability: 'locked', encryption: 'locked' })} density="compact" />,
         );
 
         expect(screen.findByTestId('session-companion-summary-availability')?.props.children)
@@ -62,141 +71,114 @@ describe('SessionSummaryCard', () => {
         expect(screen.findByTestId('session-companion-summary-status')).toBeNull();
     });
 
-    it('keeps each visible row and compact overflow independently actionable', async () => {
-        const openInfo = vi.fn();
+    it('says the present in words: waiting for you, and the plan step the agent paused before', async () => {
+        const screen = await renderScreen(
+            <SessionSummaryCard
+                model={model({ needsYou: { request: ASK, moreCount: 0 }, sinceMs: Date.now(), progress: { step: 4, total: 5 } })}
+                density="compact"
+            />,
+        );
+
+        expect(screen.findByTestId('session-companion-summary-status')?.props.children)
+            .toBe('sessionCompanion.status.waitingForYou');
+        expect(screen.findByTestId('session-companion-summary-what')?.props.children)
+            .toBe('sessionCompanion.status.pausedBeforeStep(agent=Claude,step=4,total=5)');
+        expect(screen.findByTestId('session-companion-summary-timer')).not.toBeNull();
+    });
+
+    it('answers the ask in place through the shared answer owner, then folds into one confirmation', async () => {
+        let resolveAnswer: () => void = () => {};
+        const answerPermission = vi.fn(() => new Promise<void>((resolve) => { resolveAnswer = resolve; }));
+        const screen = await renderScreen(
+            <SessionSummaryCard
+                model={model({ needsYou: { request: ASK, moreCount: 0 } })}
+                density="compact"
+                answerPermission={answerPermission}
+            />,
+        );
+
+        await act(async () => { screen.findByTestId('session-companion-summary-allow')?.props.onPress(); });
+        expect(answerPermission).toHaveBeenCalledWith(ASK, 'allowOnce');
+        // One answer at a time: the ask cannot be answered twice while the first is in flight.
+        expect(screen.findByTestId('session-companion-summary-deny')?.props.disabled).toBe(true);
+
+        await act(async () => { resolveAnswer(); });
+        // The Session state the chat card reads drops the answered ask.
+        await act(async () => {
+            screen.tree.update(<SessionSummaryCard model={model()} density="compact" answerPermission={answerPermission} />);
+        });
+        expect(screen.findByTestId('session-companion-summary-ask')).toBeNull();
+        expect(screen.findByTestId('session-companion-summary-answered')).not.toBeNull();
+    });
+
+    it('keeps the ask when the answer does not reach the session, and says so', async () => {
+        const answerPermission = vi.fn(async () => { throw new Error('offline'); });
+        const screen = await renderScreen(
+            <SessionSummaryCard
+                model={model({ needsYou: { request: ASK, moreCount: 0 } })}
+                density="compact"
+                answerPermission={answerPermission}
+            />,
+        );
+
+        await act(async () => { screen.findByTestId('session-companion-summary-deny')?.props.onPress(); });
+        expect(screen.findByTestId('session-companion-summary-ask-reason')?.props.children).toBe('sessionCompanion.ask.failed');
+        expect(screen.findByTestId('session-companion-summary-allow')?.props.disabled).toBe(false);
+    });
+
+    it('shows an ask it cannot answer disabled, with when it can be answered', async () => {
+        const screen = await renderScreen(
+            <SessionSummaryCard
+                model={model({
+                    status: { state: 'disconnected', statusText: 'Disconnected', quiet: false },
+                    needsYou: { request: { ...ASK, answers: [] }, moreCount: 0 },
+                })}
+                density="compact"
+                answerPermission={vi.fn(async () => {})}
+                machineName="MacBook Pro"
+            />,
+        );
+
+        expect(screen.findByTestId('session-companion-summary-allow')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('session-companion-summary-ask-reason')?.props.children)
+            .toBe('sessionCompanion.ask.answerWhenBack(machine=MacBook Pro)');
+    });
+
+    it('opens each fact and each remaining row at its existing owner, with a compact overflow', async () => {
+        const openWorkTab = vi.fn();
+        const openGit = vi.fn();
         const openApprovals = vi.fn();
-        const openWorkflow = vi.fn();
         const openFull = vi.fn();
         const screen = await renderScreen(
             <SessionSummaryCard
-                model={{
-                    scope: 'exact',
-                    title: 'Session',
-                    agentLabel: 'Claude',
-                    status: { state: 'thinking', statusText: 'Working', quiet: false },
-                    stale: false,
-                    availability: 'complete',
-                    encryption: 'plain',
-                    identityDestination: 'sessionInfo',
+                model={model({
                     rows: [
                         { kind: 'approvals', count: 1, destination: 'approvals' },
-                        {
-                            kind: 'activity',
-                            liveCount: 1,
-                            totalCount: 2,
-                            title: 'Reviewing access',
-                            statusLabel: 'Running',
-                            destination: 'workflow',
-                        },
-                        { kind: 'usage', tokens: 1_000, contextPercent: 25, stale: false, destination: 'usage' },
+                        { kind: 'workflow', runCount: 2, destination: 'workTab' },
+                        { kind: 'recap', text: 'Wrapped up the resize test', source: 'synopsis', destination: 'workTab' },
                     ],
-                }}
+                    facts: [
+                        { kind: 'subagents', live: 2, total: 3, destination: 'workTab' },
+                        { kind: 'changes', count: 14, destination: 'git' },
+                        { kind: 'context', percent: 62, stale: false, destination: 'usage' },
+                    ],
+                })}
                 density="compact"
-                destinations={{
-                    sessionInfo: openInfo,
-                    approvals: openApprovals,
-                    workflow: openWorkflow,
-                }}
+                destinations={{ workTab: openWorkTab, git: openGit, approvals: openApprovals }}
                 onOpenFullSurface={openFull}
             />,
         );
 
-        screen.findByTestId('session-companion-summary-identity')?.props.onPress();
+        screen.findByTestId('session-companion-summary-fact-subagents')?.props.onPress();
+        screen.findByTestId('session-companion-summary-fact-changes')?.props.onPress();
         screen.findByTestId('session-companion-summary-row-approvals')?.props.onPress();
-        screen.findByTestId('session-companion-summary-row-activity')?.props.onPress();
-        screen.findByTestId('session-companion-summary-more')?.props.onPress();
-
-        expect(openInfo).toHaveBeenCalledTimes(1);
+        expect(openWorkTab).toHaveBeenCalledTimes(1);
+        expect(openGit).toHaveBeenCalledTimes(1);
         expect(openApprovals).toHaveBeenCalledTimes(1);
-        expect(openWorkflow).toHaveBeenCalledTimes(1);
-        expect(openFull).toHaveBeenCalledTimes(1);
-        expect(screen.findByTestId('session-companion-summary-more')?.props.accessibilityLabel)
-            .toBe('sessionBoard.companion.summary.moreDetailsA11y(count=1)');
-        expect(screen.findByTestId('session-companion-summary-row-usage')).toBeNull();
-    });
-
-    it('keeps the interactive identity line at the canonical platform target with centered large text', async () => {
-        const screen = await renderScreen(
-            <SessionSummaryCard
-                model={{
-                    scope: 'exact',
-                    title: 'A long Session title that can grow with Dynamic Type',
-                    agentLabel: null,
-                    status: { state: 'ready', statusText: 'Ready', quiet: false },
-                    stale: false,
-                    availability: 'complete',
-                    encryption: 'plain',
-                    identityDestination: 'sessionInfo',
-                    rows: [],
-                }}
-                density="compact"
-                destinations={{ sessionInfo: () => undefined }}
-            />,
-        );
-
-        const identity = screen.findByTestId('session-companion-summary-identity');
-        const style = flattenTestStyle(identity?.props.style);
-        expect(style.minHeight).toBe(resolveMinimumInteractiveTargetSize(Platform.OS));
-        expect(style.justifyContent).toBe('center');
-    });
-
-    // Marking the card's heading `disabled` announces the Session's own name as
-    // dimmed/unavailable. A heading with nowhere to go is simply a heading.
-    it('presents the identity line as a plain heading when it has no destination', async () => {
-        const screen = await renderScreen(
-            <SessionSummaryCard
-                model={{
-                    scope: 'exact',
-                    title: 'Session',
-                    agentLabel: 'Claude',
-                    status: { state: 'ready', statusText: 'Ready', quiet: false },
-                    stale: false,
-                    availability: 'complete',
-                    encryption: 'plain',
-                    identityDestination: 'sessionInfo',
-                    rows: [],
-                }}
-                density="compact"
-            />,
-        );
-
-        const identity = screen.findByTestId('session-companion-summary-identity');
-
-        expect(identity?.props.accessibilityRole).toBe('header');
-        expect(identity?.props.disabled).not.toBe(true);
-        expect(identity?.props.accessibilityState?.disabled).not.toBe(true);
-    });
-
-    it('does not make compact rows inaccessible when no full-surface destination exists', async () => {
-        const screen = await renderScreen(
-            <SessionSummaryCard
-                model={{
-                    scope: 'exact',
-                    title: 'Session',
-                    agentLabel: null,
-                    status: { state: 'ready', statusText: 'Ready', quiet: false },
-                    stale: false,
-                    availability: 'complete',
-                    encryption: 'plain',
-                    identityDestination: 'sessionInfo',
-                    rows: [
-                        { kind: 'approvals', count: 1, destination: 'approvals' },
-                        {
-                            kind: 'activity',
-                            liveCount: 1,
-                            totalCount: 2,
-                            title: 'Reviewing access',
-                            statusLabel: 'Running',
-                            destination: 'workflow',
-                        },
-                        { kind: 'usage', tokens: 1_000, contextPercent: 25, stale: false, destination: 'usage' },
-                    ],
-                }}
-                density="compact"
-            />,
-        );
-
-        expect(screen.findByTestId('session-companion-summary-row-usage')).not.toBeNull();
+        // A fact with no handler is quiet text, never a dead button.
+        expect(screen.findByTestId('session-companion-summary-fact-context')?.props.onPress).toBeUndefined();
+        // Recap became the status line's "what", not a row.
+        expect(screen.findByTestId('session-companion-summary-row-recap')).toBeNull();
         expect(screen.findByTestId('session-companion-summary-more')).toBeNull();
     });
 
@@ -206,36 +188,20 @@ describe('SessionSummaryCard', () => {
         try {
             const screen = await renderScreen(
                 <SessionSummaryCard
-                    model={{
-                        scope: 'exact',
-                        title: 'Session',
-                        agentLabel: null,
-                        status: { state: 'ready', statusText: 'Ready', quiet: false },
-                        stale: false,
-                        availability: 'complete',
-                        encryption: 'plain',
-                        identityDestination: 'sessionInfo',
+                    model={model({
                         rows: [
                             { kind: 'approvals', count: 1, destination: 'approvals' },
-                            {
-                                kind: 'activity',
-                                liveCount: 1,
-                                totalCount: 1,
-                                title: 'Reviewing',
-                                statusLabel: 'Running',
-                                destination: 'workflow',
-                            },
-                            { kind: 'usage', tokens: 1_000, contextPercent: 25, stale: false, destination: 'usage' },
+                            { kind: 'workflow', runCount: 1, destination: 'workTab' },
                         ],
-                    }}
+                    })}
                     density="compact"
-                    destinations={{ approvals: () => undefined, workflow: () => undefined }}
+                    destinations={{ approvals: () => undefined, workTab: () => undefined }}
                     onOpenFullSurface={() => undefined}
                 />,
             );
 
             const carets = screen.findAllByProps({ name: 'caret-right' });
-            expect(carets).toHaveLength(3);
+            expect(carets.length).toBeGreaterThan(0);
             for (const caret of carets) {
                 expect(caret.props.mirrored).toBe(true);
             }

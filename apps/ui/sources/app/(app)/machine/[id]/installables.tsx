@@ -1,14 +1,13 @@
 import React from 'react';
-import { ScrollView } from 'react-native';
 import { Stack, useLocalSearchParams } from 'expo-router';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { DetectedClisList } from '@/components/machines/DetectedClisList';
+import { ItemList } from '@/components/ui/lists/ItemList';
+import { SegmentedChoiceItem, type SegmentedChoiceOption } from '@/components/ui/lists/SegmentedChoiceItem';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
 import { InstallableDepInstaller } from '@/components/machines/InstallableDepInstaller';
-import { AgentSetupFlow } from '@/components/settings/agents/setup/AgentSetupFlow';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Modal } from '@/modal';
 import { useMachineCapabilitiesCache } from '@/hooks/server/useMachineCapabilitiesCache';
 import { useMachine, useSettingMutable, useSettings } from '@/sync/domains/state/storage';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
@@ -16,19 +15,18 @@ import { getActiveServerId } from '@/sync/domains/server/serverProfiles';
 import { CAPABILITIES_REQUEST_MACHINE_DETAILS } from '@/capabilities/requests';
 import { getInstallablesRegistryEntries, type InstallableAutoUpdateMode } from '@/capabilities/installablesRegistry';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
-import { getResolvedAgentCatalogEntries } from '@/agents/backendCatalog/agentCatalogProjection';
 import { resolveInstallablePolicy, applyInstallablePolicyOverride } from '@happier-dev/protocol/installablesPolicy';
-import { useUnistyles } from 'react-native-unistyles';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
 
-function formatAutoUpdateMode(mode: InstallableAutoUpdateMode): string {
-    if (mode === 'off') return t('machine.installables.autoUpdateModes.off');
-    if (mode === 'notify') return t('machine.installables.autoUpdateModes.notify');
-    return t('machine.installables.autoUpdateModes.auto');
+function buildAutoUpdateModeOptions(): ReadonlyArray<SegmentedChoiceOption<InstallableAutoUpdateMode>> {
+    return [
+        { id: 'off', label: t('machine.installables.autoUpdateModes.off') },
+        { id: 'notify', label: t('machine.installables.autoUpdateModes.notify') },
+        { id: 'auto', label: t('machine.installables.autoUpdateModes.auto') },
+    ];
 }
 
 export default function MachineInstallablesScreen() {
-    const { theme } = useUnistyles();
     const { id: machineId, serverId: serverIdParam } = useLocalSearchParams<{ id: string; serverId?: string }>();
     const machine = useMachine(machineId!);
     const isOnline = !!machine && isMachineOnline(machine);
@@ -51,19 +49,6 @@ export default function MachineInstallablesScreen() {
     const daemonMergedProjectionInputs = daemonMergedProjection.phase === 'ready'
         ? daemonMergedProjection.inputs
         : null;
-
-    const agentEntries = React.useMemo(() => getResolvedAgentCatalogEntries({
-        enabledAgentIds: [],
-        backendEnabledByTargetKey: settings.backendEnabledByTargetKey,
-        acpCatalogSettingsV1: settings.acpCatalogSettingsV1,
-        mergedProviderProjectionById: daemonMergedProjectionInputs?.mergedProviderProjectionById ?? null,
-        mergedBackendProjectionById: daemonMergedProjectionInputs?.mergedBackendProjectionById ?? null,
-    }), [
-        daemonMergedProjectionInputs?.mergedBackendProjectionById,
-        daemonMergedProjectionInputs?.mergedProviderProjectionById,
-        settings.acpCatalogSettingsV1,
-        settings.backendEnabledByTargetKey,
-    ]);
 
     const capabilitiesSnapshot = React.useMemo(() => {
         const snapshot =
@@ -123,33 +108,21 @@ export default function MachineInstallablesScreen() {
 
     const screenTitle = t('machine.installables.screenTitle');
     const screenOptions = React.useMemo(() => ({ title: screenTitle }), [screenTitle]);
+    // Labels come from `t()`, so the options are rebuilt when the language changes.
+    const preferredLanguage = getPreferredLanguage();
+    const autoUpdateModeOptions = React.useMemo(buildAutoUpdateModeOptions, [preferredLanguage]);
 
     return (
         <>
             <Stack.Screen options={screenOptions} />
-            <ScrollView
-                contentContainerStyle={{ paddingBottom: 24 }}
-                style={{ backgroundColor: theme.colors.background.canvas }}
-            >
-                <ItemGroup title={t('machine.installables.aboutGroupTitle')}>
-                    <Item
-                        title={screenTitle}
-                        subtitle={t('machine.installables.aboutSubtitle')}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-
-                <ItemGroup title={t('machine.detectedClis')}>
-                    <DetectedClisList state={detectedCapabilities} layout="stacked" />
-                </ItemGroup>
-
-                <AgentSetupFlow
-                    machineId={machineId ?? null}
-                    serverId={serverId}
-                    projectionCurrent={daemonMergedProjection.phase === 'ready'}
-                    agentEntries={agentEntries}
+            <ItemList presentation="page">
+                <PageHeader
+                    testID="machine-installables-header"
+                    title={screenTitle}
+                    description={t('machine.installables.aboutSubtitle')}
                 />
 
+                {/* Agents and their parts install from the machine's Agents section (lab agent-setup M1). */}
                 {installables.map(({ entry, enabled, status, policy }) => {
                     if (!enabled) return null;
                     return (
@@ -175,22 +148,13 @@ export default function MachineInstallablesScreen() {
                                         showChevron={false}
                                         onPress={() => setPolicyPatch(entry.key, { autoInstallWhenNeeded: !policy.autoInstallWhenNeeded })}
                                     />
-                                    <Item
+                                    <SegmentedChoiceItem<InstallableAutoUpdateMode>
                                         title={t('machine.installables.autoUpdateTitle')}
-                                        subtitle={formatAutoUpdateMode(policy.autoUpdateMode)}
-                                        showChevron={true}
-                                        onPress={() => {
-                                            Modal.alert(
-                                                t('machine.installables.autoUpdatePromptTitle'),
-                                                t('machine.installables.autoUpdatePromptBody'),
-                                                [
-                                                    { text: t('machine.installables.autoUpdateModes.off'), onPress: () => setPolicyPatch(entry.key, { autoUpdateMode: 'off' }) },
-                                                    { text: t('machine.installables.autoUpdateModes.notify'), onPress: () => setPolicyPatch(entry.key, { autoUpdateMode: 'notify' }) },
-                                                    { text: t('machine.installables.autoUpdateModes.auto'), onPress: () => setPolicyPatch(entry.key, { autoUpdateMode: 'auto' }) },
-                                                    { text: t('common.cancel'), style: 'cancel' },
-                                                ],
-                                            );
-                                        }}
+                                        subtitle={t('machine.installables.autoUpdatePromptBody')}
+                                        options={autoUpdateModeOptions}
+                                        value={policy.autoUpdateMode}
+                                        onChange={(next) => setPolicyPatch(entry.key, { autoUpdateMode: next })}
+                                        testIDPrefix={`machine-installables-auto-update-${entry.key}`}
                                     />
                                 </>
                             }
@@ -212,7 +176,7 @@ export default function MachineInstallablesScreen() {
                         />
                     );
                 })}
-            </ScrollView>
+            </ItemList>
         </>
     );
 }

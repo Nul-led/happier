@@ -1,3 +1,4 @@
+import type { DetailsOpenerRegion } from '@/components/ui/panels/paneBreakpoints';
 import type {
     SplitCanvasLeafNode,
     SplitCanvasNode,
@@ -100,6 +101,7 @@ export type DetailsWorkspaceGroupState = Readonly<{
     id: string;
     tabKeys: ReadonlyArray<string>;
     activeTabKey: string | null;
+    mru?: ReadonlyArray<string>;
 }>;
 
 export type DetailsWorkspaceLeafNode = SplitCanvasLeafNode<DetailsWorkspaceLeafPayload>;
@@ -129,6 +131,12 @@ export type PaneDetailsState = Readonly<{
     maximizedGroupId: string | null;
     nextGroupOrdinal: number;
     overlay: DetailsWorkspaceOverlayState | null;
+    /**
+     * The region that last opened a tab here (`'main'` the transcript or rail, `'side'` a side
+     * column's list). The pane layout owner keeps Details off what it was opened from. Absent in
+     * state persisted before it existed; the layout then keeps its width-only decision.
+     */
+    openedFrom?: DetailsOpenerRegion;
 }>;
 
 export type LegacyPaneDetailsState = Readonly<{

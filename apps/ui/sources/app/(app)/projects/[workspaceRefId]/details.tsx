@@ -1,14 +1,17 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useIsFocused } from '@react-navigation/native';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
+import { Stack, useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { ProjectDetailScreen } from '@/components/projects/ProjectDetailScreen';
 import { buildProjectPaneScopeId } from '@/components/projects/detail/projectPaneScope';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
+import { useProjectInitialResource } from '@/components/projects/detail/useProjectInitialResource';
 import { ProjectDetailsMainPanel } from '@/components/projects/detail/ProjectDetailsMainPanel';
 import { useProjectRouteActions } from '@/components/projects/detail/useProjectRouteActions';
+import { useProjectOverviewMode } from '@/components/projects/detail/useProjectOverviewMode';
 import { useProjectRouteHeaderOptions } from '@/components/projects/detail/useProjectRouteHeaderOptions';
 import { ProjectWorktreeRecoveryToast } from '@/components/projects/detail/ProjectWorktreeRecoveryToast';
 import {
@@ -38,7 +41,7 @@ type ProjectDetailsRouteParams = {
     sourceSurface?: string | string[];
 };
 
-export default function ProjectDetailsScreenRoute() {
+export function ProjectDetailsScreenRoute() {
     const params = useLocalSearchParams<ProjectDetailsRouteParams>();
     const workspaceRefId = readProjectRouteStringParam(params.workspaceRefId) ?? '';
     const workspaceRef = useWorkspaceRefById(workspaceRefId);
@@ -69,8 +72,9 @@ function ResolvedProjectDetailsScreenRoute({
         toggleWorkspaceExperience,
     } = useMobileWorkspaceExperienceState();
 
-    const scopeId = buildProjectPaneScopeId(workspaceRef.id);
+    const scopeId = useDestinationPaneScopeId(buildProjectPaneScopeId(workspaceRef.id));
     const pane = useAppPaneScope(scopeId);
+    const initialResourcePending = useProjectInitialResource(pane);
     const detailsState = pane.scopeState?.details ?? null;
     const detailsSelection = React.useMemo(() => resolveFullscreenDetailsRouteSelection({
         detailsTabs: detailsState?.tabs,
@@ -129,6 +133,17 @@ function ResolvedProjectDetailsScreenRoute({
     });
     const replaceOverviewVisibility = routeActions.replaceOverviewVisibility;
     const openTerminal = routeActions.openTerminal;
+    const exitOverviewForDetails = React.useCallback((showOverview: boolean) => {
+        if (!showOverview) replaceOverviewVisibility({ segment: 'details', visible: false });
+    }, [replaceOverviewVisibility]);
+    const { forceOverviewMode } = useProjectOverviewMode({
+        showWorktrees: !cockpitEnabled && showWorktrees && isFocused,
+        onSetShowWorktrees: exitOverviewForDetails,
+        detailsState,
+    });
+    React.useEffect(() => {
+        if (!cockpitEnabled && showWorktrees && isFocused) pane.closeDetails();
+    }, [cockpitEnabled, isFocused, pane.closeDetails, showWorktrees]);
     const buildHref = routeActions.buildHref;
     const handleToggleWorktrees = React.useCallback(() => {
         replaceOverviewVisibility({
@@ -178,7 +193,7 @@ function ResolvedProjectDetailsScreenRoute({
         hydrated: true,
         detailsIsOpen,
         hasDetails,
-        keepRouteWhenEmpty: showWorktrees,
+        keepRouteWhenEmpty: showWorktrees || initialResourcePending,
         keepRouteWhenDetailsClose: showWorktrees,
         onDismissRoute: returnToProject,
         onCloseDetails: pane.closeDetails,
@@ -209,7 +224,7 @@ function ResolvedProjectDetailsScreenRoute({
                         workspaceRef={workspaceRef}
                         activeRootPath={resolvedActiveRootPath}
                         activeWorktreeId={resolvedActiveWorktreeId}
-                        forceOverviewMode={showWorktrees}
+                        forceOverviewMode={forceOverviewMode}
                         onSelectRootPath={setRouteActiveRootPath}
                         onRequestClose={onRequestClose}
                     />
@@ -219,3 +234,6 @@ function ResolvedProjectDetailsScreenRoute({
         </View>
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { ProjectDetailsScreenRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={ProjectDetailsScreenRoute} />; }

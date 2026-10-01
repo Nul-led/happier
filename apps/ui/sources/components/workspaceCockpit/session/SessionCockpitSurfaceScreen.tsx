@@ -3,7 +3,8 @@ import { useSessionBoardFeatureEnabled } from '@/components/sessions/board/useSe
 import * as React from 'react';
 import { BackHandler, Platform, View } from 'react-native';
 import { useIsFocused } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { useDestinationFocus, useDestinationInstanceKey } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUnistyles } from 'react-native-unistyles';
 import type { PluginUiDestinationReferenceV1 } from '@happier-dev/protocol/plugins/ui';
@@ -54,6 +55,10 @@ import { SessionCompanionScreen } from '@/components/sessions/companion/SessionC
 import { SessionPresentedSurfacePresentationTarget } from '@/components/sessions/companion/presentation/SessionPresentedSurfacePresentationTarget';
 import { SessionCompanionRevealPortProvider } from '@/components/sessions/companion/presentation/SessionCompanionRevealPort';
 import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
+import { PaneHeader } from '@/components/appShell/panes/PaneHeader';
+import { SurfaceStateSizeProvider } from '@/components/ui/surfaces/surfaceStateSize';
+import { PaneHeaderSlotProvider, PaneHeaderSlotScope, usePublishedPaneHeaderContent } from '@/components/appShell/panes/paneHeaderSlot';
+import { getRightSidebarTabLabel } from '@/components/appShell/rightSidebar/rightSidebarTabRegistry';
 import { PluginSurfaceFocusEligibilityProvider } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
 import {
     selectPluginDestinationSurfacePlacements,
@@ -69,6 +74,7 @@ import { useSessionMachineTarget } from '@/components/sessions/model/useSessionM
 import { useSessionBoardContinuity } from '@/components/sessions/board/SessionBoardContinuity';
 import { resolvePluginUiRuntimeFormFactor } from '@/components/appShell/panes/layout/resolveMultiPaneDeviceType';
 import { useDeviceType } from '@/utils/platform/responsive';
+import { t } from '@/text';
 import {
     resolveSessionRightTabIdForSurface,
     type SessionMobileSurface,
@@ -77,6 +83,8 @@ import { resolveSessionCockpitMobileCatalog } from './sessionCockpitMobileCatalo
 import { SessionServicesSurfaceScreen } from './SessionServicesSurfaceScreen';
 import { useSessionCockpitSurfaceNavigation } from './SessionCockpitSurfaceNavigation';
 
+// The one Work tab host the desktop sidebar mounts too: the Work view with FIN's Triggers section in its slot.
+const SessionWorkViewWithTriggers = React.lazy(() => import('@/components/workflows/triggers/SessionWorkViewWithTriggers').then((module) => ({ default: module.SessionWorkViewWithTriggers })));
 const SessionCollaborationSurface = React.lazy(() => import('@/components/sessions/collaboration/SessionCollaborationSurface').then((module) => ({ default: module.SessionCollaborationSurface })));
 
 export type SessionCockpitSurfaceScreenProps = Readonly<{
@@ -90,6 +98,8 @@ export type SessionCockpitSurfaceScreenProps = Readonly<{
     terminalTabAvailable?: boolean;
     routeServerId?: string | null;
     routeHydrationState?: SessionRouteHydrationState | null;
+    openWorkStateRequestKey?: number | null;
+    onRequestOpenWorkState?: () => void;
 }>;
 
 const EMPTY_PLUGIN_DESTINATION: PluginUiDestinationReferenceV1 = Object.freeze({
@@ -115,9 +125,14 @@ export const SessionCockpitSurfaceScreen = React.memo((props: SessionCockpitSurf
 
 const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurfaceScreenProps) => {
     const router = useRouter();
-    const { theme } = useUnistyles();
     const deviceType = useDeviceType();
-    const isFocused = useIsFocused();
+    // This native focus belongs to the cockpit's independent scene navigator,
+    // not the outer Expo route. Both owners must admit effects for a hosted scene.
+    const sceneFocused = useIsFocused();
+    const instanceKey = useDestinationInstanceKey();
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- ownership is fixed for this mounted body.
+    const destinationFocused = instanceKey === null ? true : useDestinationFocus();
+    const isFocused = sceneFocused && destinationFocused;
     const pane = useAppPaneScope(props.scopeId);
     const surfaceNavigation = useSessionCockpitSurfaceNavigation();
     const registerCockpitChrome = useSessionCockpitChromeRegister();
@@ -203,6 +218,20 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
             ? entry.tab
             : null;
     }, [mobileCatalog, props.surface]);
+    // A sidebar surface is titled from the tab registry (the desktop header's own label). A plugin tab
+    // gets the same large title; its "+" and live line arrive through plugin-ui `PaneHeaderContent`.
+    const surfaceHeader = React.useMemo(() => {
+        const entry = mobileCatalog.find((candidate) => candidate.id === props.surface);
+        return entry?.owner === 'rightSidebar'
+            ? { slotKey: props.surface, title: getRightSidebarTabLabel(entry.tab) }
+            : null;
+    }, [mobileCatalog, props.surface]);
+    // Companion is a host destination, not a sidebar tab, so it is titled here; its body publishes the
+    // live line and menu (session-tabs lab Cp).
+    const companionSurfaceHeader = React.useMemo(
+        () => ({ slotKey: 'companion', title: t('sessionBoard.companion.title') }),
+        [],
+    );
     const boardPluginRuntime = pluginProjection;
     const boardContinuity = useSessionBoardContinuity(sessionAddress);
     const focusedBoardItemId = boardContinuity?.focusedItemId[0] ?? null;
@@ -326,7 +355,7 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
         switchSurface('board');
     }, [setFocusedBoardItemId, switchSurface]);
 
-    const [openWorkStateRequestKey, setOpenWorkStateRequestKey] = React.useState<number | null>(null);
+    const openWorkStateRequestKey = props.openWorkStateRequestKey ?? null;
 
     // A full-screen Board or Companion is presented without Chat's composer, so it
     // publishes its own current-UI presentation target. Its ports are this Cockpit's
@@ -369,9 +398,9 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
         switchSurface('chat');
     }, [switchSurface]);
     const revealWorkState = React.useCallback(() => {
-        setOpenWorkStateRequestKey((current) => (current ?? 0) + 1);
+        props.onRequestOpenWorkState?.();
         revealChatSurface();
-    }, [revealChatSurface]);
+    }, [props.onRequestOpenWorkState, revealChatSurface]);
     const approvalRequests = useOpenApprovalArtifactsForSession(servicesServerId
         ? { serverId: servicesServerId, sessionId: props.sessionId }
         : null);
@@ -388,11 +417,8 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
         }) as never),
         approvals: openSessionApproval,
         work: revealWorkState,
-        workflow: () => router.push(buildScopedSessionRouteHref({
-            sessionId: props.sessionId,
-            serverId: servicesServerId,
-            suffix: '/runs',
-        }) as never),
+        // Everything the Session leads is one surface: the Work screen beside this one.
+        workTab: () => switchSurface('agents'),
         git: () => switchSurface('git'),
         usage: () => router.push(buildScopedSessionRouteHref({
             sessionId: props.sessionId,
@@ -601,8 +627,8 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
 
     if (props.surface === 'browse') {
         return renderSessionChrome(
-            <SessionCockpitFullscreenSurface screenTestID="session-files-screen" safeAreaPadding={false}>
-                <React.Suspense fallback={<SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}>
+            <SessionCockpitFullscreenSurface screenTestID="session-files-screen" safeAreaPadding={false} header={surfaceHeader}>
+                <React.Suspense fallback={<PaneLoadingFallback />}>
                     <SessionBrowseFilesSurface
                         scopeId={props.scopeId}
                         sessionId={props.sessionId}
@@ -617,8 +643,8 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
 
     if (props.surface === 'git') {
         return renderSessionChrome(
-            <SessionCockpitFullscreenSurface screenTestID="session-git-screen" safeAreaPadding={false}>
-                <React.Suspense fallback={<SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}>
+            <SessionCockpitFullscreenSurface screenTestID="session-git-screen" safeAreaPadding={false} header={surfaceHeader}>
+                <React.Suspense fallback={<PaneLoadingFallback />}>
                     <SessionGitSurface
                         sessionId={props.sessionId}
                         serverId={servicesServerId ?? undefined}
@@ -636,7 +662,7 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
 
     if (props.surface === 'navigation') {
         return renderSessionChrome(
-            <SessionCockpitFullscreenSurface screenTestID="session-transcript-navigation-screen" safeAreaPadding={false}>
+            <SessionCockpitFullscreenSurface screenTestID="session-transcript-navigation-screen" safeAreaPadding={false} header={surfaceHeader}>
                 <SessionTranscriptNavigationPane
                     onRequestClose={revealChatSurface}
                     onRevealTranscript={revealChatSurface}
@@ -648,7 +674,7 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
 
     if (props.surface === 'board' && boardFeatureEnabled) {
         return renderSessionChrome(
-            <SessionCockpitFullscreenSurface screenTestID="session-board-screen" safeAreaPadding={false}>
+            <SessionCockpitFullscreenSurface screenTestID="session-board-screen" safeAreaPadding={false} header={surfaceHeader}>
                 {sessionAddress ? (
                     <SessionCompanionRevealPortProvider
                         address={sessionAddress}
@@ -670,7 +696,7 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
                             onLeaveFocusedItem={() => setFocusedBoardItemId?.(null)}
                         />
                     </SessionCompanionRevealPortProvider>
-                ) : <SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}
+                ) : <PaneLoadingFallback />}
             </SessionCockpitFullscreenSurface>,
         );
     }
@@ -681,7 +707,7 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
     // follows the Home's `sessions.board` decision at the Board owner.
     if (props.surface === 'companion') {
         return renderSessionChrome(
-            <SessionCockpitFullscreenSurface screenTestID="session-companion-screen" safeAreaPadding={false}>
+            <SessionCockpitFullscreenSurface screenTestID="session-companion-screen" safeAreaPadding={false} header={companionSurfaceHeader}>
                 {sessionAddress ? (<>
                     {presentedSurfaceTarget}
                     <SessionCompanionScreen
@@ -692,7 +718,25 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
                         summaryDestinations={companionSummaryDestinations}
                         resolvePrimaryHost={resolveBoardPrimaryHost}
                     />
-                </>) : <SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}
+                </>) : <PaneLoadingFallback />}
+            </SessionCockpitFullscreenSurface>,
+        );
+    }
+
+    // The one Work surface (ORC §3.8, lab `session-P`): the same view the desktop sidebar mounts,
+    // titled and given its "+" by the surface header.
+    if (props.surface === 'agents') {
+        return renderSessionChrome(
+            <SessionCockpitFullscreenSurface screenTestID="session-agents-screen" safeAreaPadding={false} header={surfaceHeader}>
+                <SurfaceStateSizeProvider size="phone">
+                    <React.Suspense fallback={<PaneLoadingFallback />}>
+                        <SessionWorkViewWithTriggers
+                            sessionId={props.sessionId}
+                            scopeId={props.scopeId}
+                            serverId={servicesServerId}
+                        />
+                    </React.Suspense>
+                </SurfaceStateSizeProvider>
             </SessionCockpitFullscreenSurface>,
         );
     }
@@ -703,7 +747,7 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
     if (props.surface === 'collaboration' && sessionSharingAvailable && servicesServerId) {
         return renderSessionChrome(
             <SessionCockpitFullscreenSurface screenTestID="session-collaboration-screen" safeAreaPadding={false}>
-                <React.Suspense fallback={<SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}>
+                <React.Suspense fallback={<PaneLoadingFallback />}>
                     <SessionCollaborationSurface
                         key={sessionAddressKey({ serverId: servicesServerId, sessionId: props.sessionId })}
                         target={{ serverId: servicesServerId, sessionId: props.sessionId }}
@@ -716,7 +760,7 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
     if (props.surface === 'terminal' && terminalTabAvailable) {
         return renderSessionChrome(
             <SessionCockpitFullscreenSurface screenTestID="session-terminal-screen" safeAreaPadding={false}>
-                <React.Suspense fallback={<SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}>
+                <React.Suspense fallback={<PaneLoadingFallback />}>
                     <SessionTerminalSurface
                         sessionId={props.sessionId}
                         scopeId={props.scopeId}
@@ -729,8 +773,8 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
 
     if (props.surface === 'browser') {
         return renderSessionChrome(
-            <SessionCockpitFullscreenSurface screenTestID="session-browser-screen" safeAreaPadding={false}>
-                <React.Suspense fallback={<SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}>
+            <SessionCockpitFullscreenSurface screenTestID="session-browser-screen" safeAreaPadding={false} header={surfaceHeader}>
+                <React.Suspense fallback={<PaneLoadingFallback />}>
                     <BrowserMobileSurfaceScreen
                         sessionId={props.sessionId}
                         scopeId={`${props.scopeId}:browser`}
@@ -743,14 +787,16 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
 
     if (props.surface === 'services') {
         return renderSessionChrome(
-            <SessionCockpitFullscreenSurface screenTestID="session-services-screen" safeAreaPadding={false}>
-                <React.Suspense fallback={<SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}>
-                    <SessionServicesSurfaceScreen
-                        sessionId={props.sessionId}
-                        serverId={props.routeServerId}
-                        onOpenServiceInBrowser={openServiceInBrowser}
-                    />
-                </React.Suspense>
+            <SessionCockpitFullscreenSurface screenTestID="session-services-screen" safeAreaPadding={false} header={surfaceHeader}>
+                <SurfaceStateSizeProvider size="phone">
+                    <React.Suspense fallback={<PaneLoadingFallback />}>
+                        <SessionServicesSurfaceScreen
+                            sessionId={props.sessionId}
+                            serverId={props.routeServerId}
+                            onOpenServiceInBrowser={openServiceInBrowser}
+                        />
+                    </React.Suspense>
+                </SurfaceStateSizeProvider>
             </SessionCockpitFullscreenSurface>,
         );
     }
@@ -761,14 +807,14 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
             return renderSessionChrome(
                 <SessionCockpitFullscreenSurface screenTestID="session-plugin-screen-unavailable" safeAreaPadding={false}>
                     {projectionEstablishing
-                        ? <SessionCockpitLoadingFallback color={theme.colors.text.secondary} />
+                        ? <PaneLoadingFallback />
                         : <PluginReactNativeUnavailable diagnostics={['plugin_destination_unavailable']} />}
                 </SessionCockpitFullscreenSurface>,
             );
         }
         return renderSessionChrome(
-                <SessionCockpitFullscreenSurface screenTestID={`session-plugin-screen-${pluginMobileTab.id}`} safeAreaPadding={false}>
-                    <React.Suspense fallback={<SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}>
+                <SessionCockpitFullscreenSurface screenTestID={`session-plugin-screen-${pluginMobileTab.id}`} safeAreaPadding={false} header={surfaceHeader}>
+                    <React.Suspense fallback={<PaneLoadingFallback />}>
                         <PluginSurfaceFocusEligibilityProvider active={isFocused}>
                             <PluginSurfacePlacementHost
                                 placement={pluginMobileTab.placement}
@@ -801,13 +847,15 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
     );
 });
 
-const SessionCockpitLoadingFallback = React.memo((props: Readonly<{ color: string }>) => {
-    return <PaneLoadingFallback color={props.color} paddingTop={0} showTypographyMetrics={false} />;
-});
 
 const SessionCockpitFullscreenSurface = React.memo((props: Readonly<{
     screenTestID: string;
     safeAreaPadding?: boolean;
+    /**
+     * The surface's large title, with the live line and next step its body publishes through the
+     * pane header slot (the same content the desktop sidebar's header shows for that tab).
+     */
+    header?: Readonly<{ slotKey: string; title: string }> | null;
     children: React.ReactNode;
 }>) => {
     const { theme } = useUnistyles();
@@ -822,9 +870,17 @@ const SessionCockpitFullscreenSurface = React.memo((props: Readonly<{
     // slides away on dismiss. Then zero the height for descendants so nested scroll
     // content doesn't reserve it a second time. `bottomChromeHeight` is 0 when the
     // bar is hidden, collapsing the reservation.
-    const body = safeAreaPaddingEnabled ? props.children : (
+    const content = props.header ? (
+        <PaneHeaderSlotProvider>
+            <SessionCockpitSurfaceHeader slotKey={props.header.slotKey} title={props.header.title} testID={`${props.screenTestID}:header`} />
+            <PaneHeaderSlotScope slotKey={props.header.slotKey}>
+                <View style={{ flex: 1, minHeight: 0, minWidth: 0 }}>{props.children}</View>
+            </PaneHeaderSlotScope>
+        </PaneHeaderSlotProvider>
+    ) : props.children;
+    const body = safeAreaPaddingEnabled ? content : (
         <SessionCockpitBottomChromeHeightContext.Provider value={0}>
-            {props.children}
+            {content}
         </SessionCockpitBottomChromeHeightContext.Provider>
     );
 
@@ -844,3 +900,16 @@ const SessionCockpitFullscreenSurface = React.memo((props: Readonly<{
         </View>
     );
 });
+
+function SessionCockpitSurfaceHeader(props: Readonly<{ slotKey: string; title: string; testID: string }>) {
+    const published = usePublishedPaneHeaderContent(props.slotKey);
+    return (
+        <PaneHeader
+            size="large"
+            testID={props.testID}
+            title={props.title}
+            line={published?.line ?? null}
+            actions={published?.action}
+        />
+    );
+}

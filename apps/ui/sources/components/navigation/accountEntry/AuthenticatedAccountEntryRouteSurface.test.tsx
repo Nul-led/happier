@@ -208,7 +208,7 @@ describe('AuthenticatedAccountEntryRouteSurface', () => {
             endpointUrl: request.service.endpointUrl,
             endpointServerIdentityId: request.service.serverIdentityId,
             entryIntent: request.intent,
-            returnTo: '/setup/wizard',
+            returnTo: '/homes/sign-in',
             accountEntryReturnTo: request.returnTo,
         }));
         expect(linking.openURL).toHaveBeenCalledWith('https://oauth.example.test/start');
@@ -246,10 +246,10 @@ describe('AuthenticatedAccountEntryRouteSurface', () => {
         if (!continuation) throw new Error('Expected Account Service continuation');
         const reportResult = continuation.props.onResult;
         await act(async () => reportResult({ kind: 'home_entered' }));
-        expect(onExit).toHaveBeenCalledWith(request.returnTo);
+        expect(onExit).toHaveBeenCalledWith(request.returnTo, { kind: 'home_entered' });
     });
 
-    it.each(['account_connected', 'home_entered', 'home_enrolled', 'home_linked'] as const)(
+    it.each(['home_entered', 'home_linked'] as const)(
         'exits immediately when a consumed OAuth return is already terminal: %s',
         async (kind) => {
             const onExit = vi.fn();
@@ -259,10 +259,55 @@ describe('AuthenticatedAccountEntryRouteSurface', () => {
             );
 
             await vi.waitFor(() => expect(onExit).toHaveBeenCalledTimes(1));
-            expect(onExit).toHaveBeenCalledWith(request.returnTo);
+            expect(onExit).toHaveBeenCalledWith(request.returnTo, { kind });
             expect(screen.findAllByType('AccountServiceContinuation')).toHaveLength(0);
         },
     );
+
+    it.each(['account_connected', 'home_enrolled'] as const)(
+        'presents a completed result whose next action still belongs to the invoking surface: %s',
+        async (kind) => {
+            const onExit = vi.fn();
+            oauthReturn.consume.mockResolvedValue({ kind: 'consumed', input: { intent: request.intent }, result: { kind } });
+            const screen = await renderScreen(
+                <AuthenticatedAccountEntryRouteSurface request={request} routeParams={{ accountServiceReturn: '1' }} onExit={onExit} />,
+            );
+
+            await vi.waitFor(() => expect(screen.findByType('AccountServiceContinuation')).toBeTruthy());
+            expect(onExit).not.toHaveBeenCalled();
+        },
+    );
+
+    it('keeps a visible continuation when the host re-renders with a new onExit and equal route params', async () => {
+        // Hosts pass an inline onExit and expo-router hands out a fresh params
+        // object on every render; neither may abort or re-consume the return.
+        const signals: AbortSignal[] = [];
+        oauthReturn.consume.mockImplementation(async (_params: unknown, options: { signal: AbortSignal }) => {
+            signals.push(options.signal);
+            return { kind: 'consumed', input: { intent: request.intent }, result: { kind: 'account_connected' } };
+        });
+        const firstExit = vi.fn();
+        const screen = await renderScreen(
+            <AuthenticatedAccountEntryRouteSurface request={request}
+                routeParams={{ mode: 'account-entry', accountServiceReturn: '1' }} onExit={firstExit} />,
+        );
+        await vi.waitFor(() => expect(screen.findByType('AccountServiceContinuation')).toBeTruthy());
+
+        const nextExit = vi.fn();
+        await screen.update(
+            <AuthenticatedAccountEntryRouteSurface request={request}
+                routeParams={{ mode: 'account-entry', accountServiceReturn: '1' }} onExit={nextExit} />,
+        );
+
+        expect(oauthReturn.consume).toHaveBeenCalledTimes(1);
+        expect(signals[0]?.aborted).toBe(false);
+        const continuation = screen.findByType('AccountServiceContinuation');
+        if (!continuation) throw new Error('Expected the continuation to survive the host re-render');
+        await act(async () => continuation.props.onBack());
+        // The latest host callback owns the exit.
+        expect(nextExit).toHaveBeenCalledWith(request.returnTo, { kind: 'account_connected' });
+        expect(firstExit).not.toHaveBeenCalled();
+    });
 
     it('carries the exact prior continuation result into direct Home authentication', async () => {
         const input = {

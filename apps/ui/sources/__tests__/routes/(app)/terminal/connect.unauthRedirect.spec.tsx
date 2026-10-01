@@ -81,7 +81,7 @@ async function activateServer(serverUrl: string) {
 
 function setWindowLocation(href: string, sessionStorage: Storage) {
     const url = new URL(href);
-    (globalThis as typeof globalThis & { window: Window }).window = {
+    vi.stubGlobal('window', {
         location: {
             hash: url.hash,
             pathname: url.pathname,
@@ -90,7 +90,7 @@ function setWindowLocation(href: string, sessionStorage: Storage) {
         },
         history: { replaceState: vi.fn() },
         sessionStorage,
-    } as unknown as Window;
+    });
 }
 
 describe('TerminalConnectScreen unauthenticated redirect', () => {

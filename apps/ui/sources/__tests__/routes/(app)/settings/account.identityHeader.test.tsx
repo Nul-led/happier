@@ -169,7 +169,9 @@ describe('Settings → Account identity header', () => {
         boundary.holdSecurityRead = true;
         const screen = await renderAccount();
 
-        expect(screen.findByTestId('settings-account-recovery-key-loading')).not.toBeNull();
+        // Reserved by a quiet placeholder announced as busy; no row prints a "Loading…" value.
+        expect(screen.findHostByTestId('settings-account-recovery-key-loading')?.props.accessibilityState).toEqual({ busy: true });
+        expect(screen.getTextContent()).not.toContain('common.loading');
         expect(identityHeader(screen).facts).not.toContain('ndToEndEncrypted');
     });
 

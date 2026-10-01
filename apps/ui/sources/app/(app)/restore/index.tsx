@@ -12,7 +12,9 @@ import { LEGACY_PAIRING_UPDATE_REQUIRED_RESTORE_ROUTE_PARAM } from '@/auth/pairi
 import {
     consumeHomeQrInviteRestoreHandoff,
     HOME_QR_INVITE_RESTORE_ROUTE_PARAM,
+    parseHomeQrInviteDeepLink,
 } from '@/auth/pairing/pairingUrl';
+import type { HomeQrInviteV2 } from '@happier-dev/protocol';
 import {
     HOME_QR_ENTRY_INTENT_ROUTE_PARAM,
     parseHomeQrEntryIntentRouteParam,
@@ -24,6 +26,8 @@ export default function RestoreIndex() {
         pairingHandoff?: string | string[];
         legacyPairingUpdateRequired?: string | string[];
         entryIntent?: string | string[];
+        provider?: string | string[];
+        reason?: string | string[];
     }>>();
     const routedEntryIntent = parseHomeQrEntryIntentRouteParam(
         params[HOME_QR_ENTRY_INTENT_ROUTE_PARAM],
@@ -42,7 +46,22 @@ export default function RestoreIndex() {
     const initialPairingLink = routedPairingLink && routedEntryIntent
         ? routedPairingLink
         : null;
+    // A reverse-direction invite makes this device the approver: it links the new
+    // device to its Home rather than adding or restoring a Home here. The routed
+    // link seeds the chrome; the embedded scanner then reports the direction of the
+    // invite it is actually processing (including one scanned or pasted in place).
+    const [inviteDirection, setInviteDirection] = React.useState<HomeQrInviteV2['direction'] | null>(() => (
+        initialPairingLink
+            ? parseHomeQrInviteDeepLink(initialPairingLink)?.invite.direction ?? null
+            : null
+    ));
+    const approvesRequesterDevice = inviteDirection === 'requester_displays';
     const [navigationLocked, setNavigationLocked] = React.useState(false);
+    const restoreRedirectReason = Array.isArray(params.reason) ? params.reason[0] : params.reason;
+    const restoreRedirectProvider = Array.isArray(params.provider) ? params.provider[0] : params.provider;
+    const hasProviderRestoreRedirect = restoreRedirectReason === 'provider_already_linked'
+        && typeof restoreRedirectProvider === 'string'
+        && restoreRedirectProvider.trim().length > 0;
     const handleBack = React.useCallback(() => {
         if (navigationLocked) return;
         safeRouterBack({
@@ -83,15 +102,20 @@ export default function RestoreIndex() {
                 testID="restore-wizard"
                 stepIndex={1}
                 stepCount={3}
+                showProgress={!approvesRequesterDevice}
                 title={t(
-                    entryIntent === 'add_home'
-                        ? 'setupOnboarding.addHomeTitle'
-                        : 'setupOnboarding.authRestoreTitle',
+                    approvesRequesterDevice
+                        ? 'connect.approveNewDeviceTitle'
+                        : entryIntent === 'add_home'
+                            ? 'setupOnboarding.addHomeTitle'
+                            : 'setupOnboarding.authRestoreTitle',
                 )}
                 subtitle={t(
-                    entryIntent === 'add_home'
-                        ? 'setupOnboarding.addHomeSubtitle'
-                        : 'setupOnboarding.authRestoreSubtitle',
+                    approvesRequesterDevice
+                        ? 'connect.approveNewDeviceSubtitle'
+                        : entryIntent === 'add_home'
+                            ? 'setupOnboarding.addHomeSubtitle'
+                            : 'setupOnboarding.authRestoreSubtitle',
                 )}
                 onBack={handleBack}
                 backDisabled={navigationLocked}
@@ -100,9 +124,11 @@ export default function RestoreIndex() {
                 <View testID="restore-route-content">
                     <RestoreIndexEmbedded
                         entryIntent={entryIntent}
+                        initialView={hasProviderRestoreRedirect ? 'qr' : undefined}
                         onBack={handleBack}
                         initialPairingLink={initialPairingLink}
                         onNavigationLockChange={setNavigationLocked}
+                        onInviteDirectionChange={setInviteDirection}
                     />
                 </View>
             </WizardModalShell>

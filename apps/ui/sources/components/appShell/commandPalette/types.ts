@@ -7,6 +7,8 @@ import type { IconName } from '@/components/ui/icons/Icon';
  */
 export interface Command {
     id: string;
+    /** Commands already governed by an Action keep that Action's caller policy. */
+    actionSpecId?: string;
     /** Construction-owned semantic used by Search to avoid duplicate empty-state recents. */
     kind?: 'recentSession';
     /** Intentionally useful before the user has entered a Search query. */

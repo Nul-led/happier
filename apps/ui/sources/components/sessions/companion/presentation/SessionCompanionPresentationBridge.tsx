@@ -12,6 +12,7 @@ import { resolveActiveSessionBoardViewId } from '@/sync/domains/session/board';
 import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { useSessionCompanionController } from '../state/useSessionCompanionController';
+import { canAddSessionCompanionItem } from '../sessionCompanionContentModel';
 import {
     applySessionPresentationIntent,
     buildSessionPresentationNoticeKeyPrefix,
@@ -151,11 +152,12 @@ export const SessionCompanionPresentationBridge = React.memo(
         ): CurrentSessionPresentationIntentResultV1 => applySessionPresentationIntent({
             companion: controller,
             board,
+            canAddCompanionItem: (item) => canAddSessionCompanionItem(item, mountedBoard?.pluginRuntime ?? null, board.canReadItem),
             returnToChat,
             openFullSurface: props.openFullSurface,
             publishNotice: publishPresentationNotice,
             noticeKeyPrefix: buildSessionPresentationNoticeKeyPrefix(address, sessionId),
-        }, intent), [address, board, controller, props.openFullSurface, returnToChat, sessionId]);
+        }, intent), [address, board, controller, mountedBoard?.pluginRuntime, props.openFullSurface, returnToChat, sessionId]);
 
         const applierRef = props.applierRef;
         React.useEffect(() => {

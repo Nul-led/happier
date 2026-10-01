@@ -210,7 +210,7 @@ installNavigationShellCommonModuleMocks({
         return createTextModuleMock({ translate: (key) => key });
     },
     storage: async () => {
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+        const { createStorageModuleStub, createLiveStorageStoreMock } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
             useArtifacts: () => [],
             useFriendRequests: () => [],
@@ -430,9 +430,9 @@ installNavigationShellCommonModuleMocks({
                         metadata: { displayName: 'Rebound workstation', host: 'workstation.local' },
                     }
                     : null,
-            storage: {
-                getState: () => storageState,
-            },
+            // These fixtures expose changing getters, rather than an immutable
+            // Zustand snapshot. Read them live instead of caching the first case.
+            storage: createLiveStorageStoreMock(() => storageState),
         });
     },
 });
@@ -480,9 +480,6 @@ vi.mock('@/components/ui/cards/UserCard', () => ({
     UserCard: 'UserCard',
 }));
 
-vi.mock('@/components/ui/feedback/UpdateBanner', () => ({
-    UpdateBanner: 'UpdateBanner',
-}));
 
 vi.mock('@/components/account/RecoveryKeyReminderBanner', () => ({
     RecoveryKeyReminderBanner: 'RecoveryKeyReminderBanner',
@@ -626,6 +623,12 @@ describe('InboxView session attention', () => {
         const { InboxView } = await import('./InboxView');
 
         const tree = (await renderScreen(<InboxView />)).tree;
+        // A finished result to read lives in the Inbox's Updates view (ORC R-10, lab `inbox-I1`).
+        const updatesTab = tree.findByTestId('inbox.view:updates');
+        if (!updatesTab) throw new Error('Expected the Inbox Updates view tab.');
+        await renderer.act(async () => {
+            updatesTab.props.onPress?.();
+        });
         const lateResultItem = tree.findAllByType('Item')
             .find((item) => item.props.title === 'Global Voice late result');
         expect(lateResultItem).toBeDefined();

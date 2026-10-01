@@ -1,18 +1,17 @@
 import React from 'react';
-import { View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
 import { useAcceptedFriends, useFriendRequests, useRequestedFriends } from '@/sync/domains/state/storage';
 import { UserCard } from '@/components/ui/cards/UserCard';
 import { t } from '@/text';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useRequireFriendsEnabled } from '@/hooks/friends/useRequireFriendsEnabled';
 import { RequireFriendsIdentityForFriends } from '@/components/friends/RequireFriendsIdentityForFriends';
-import { Text } from '@/components/ui/text/Text';
+import { Item } from '@/components/ui/lists/Item';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
 
 
-export default function FriendsManageScreen() {
+export function FriendsManageScreen() {
     const enabled = useRequireFriendsEnabled();
     const router = useRouter();
     const friends = useAcceptedFriends();
@@ -23,12 +22,16 @@ export default function FriendsManageScreen() {
 
     return (
         <RequireFriendsIdentityForFriends>
-            <ItemList style={{ paddingTop: 0 }}>
-                {/* Friend Requests Section */}
+            <ItemList presentation="page">
+                <PageHeader
+                    title={t('navigation.friends')}
+                    description={t('detailPages.friendsManage.description')}
+                />
+
                 {friendRequests.length > 0 && (
                     <ItemGroup
-                        title={t('friends.pendingRequests')}
-                        style={styles.groupStyle}
+                        title={t('detailPages.friendsManage.requestsTitle')}
+                        description={t('detailPages.friendsManage.requestsDescription')}
                     >
                         {friendRequests.map((friend) => (
                             <UserCard
@@ -40,11 +43,10 @@ export default function FriendsManageScreen() {
                     </ItemGroup>
                 )}
 
-                {/* Sent Requests Section */}
                 {requestedFriends.length > 0 && (
                     <ItemGroup
-                        title={t('friends.requestPending')}
-                        style={styles.groupStyle}
+                        title={t('detailPages.friendsManage.sentTitle')}
+                        description={t('detailPages.friendsManage.sentDescription')}
                     >
                         {requestedFriends.map((friend) => (
                             <UserCard
@@ -56,17 +58,12 @@ export default function FriendsManageScreen() {
                     </ItemGroup>
                 )}
 
-                {/* Friends List Section */}
                 <ItemGroup
-                    title={t('friends.myFriends')}
-                    style={styles.groupStyle}
+                    title={t('detailPages.friendsManage.friendsTitle')}
+                    description={friends.length > 0 ? t('detailPages.friendsManage.friendsDescription') : undefined}
                 >
                     {friends.length === 0 ? (
-                        <View style={styles.emptyState}>
-                            <Text style={styles.emptyText}>
-                                {t('friends.noFriendsYet')}
-                            </Text>
-                        </View>
+                        <Item title={t('friends.noFriendsYet')} showChevron={false} />
                     ) : (
                         friends.map((friend) => (
                             <UserCard
@@ -81,18 +78,6 @@ export default function FriendsManageScreen() {
         </RequireFriendsIdentityForFriends>
     );
 }
-
-const styles = StyleSheet.create((theme) => ({
-    groupStyle: {
-        marginBottom: 16,
-    },
-    emptyState: {
-        alignItems: 'center',
-        padding: 32,
-    },
-    emptyText: {
-        fontSize: 16,
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
-    },
-}));
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { FriendsManageScreen as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={FriendsManageScreen} />; }

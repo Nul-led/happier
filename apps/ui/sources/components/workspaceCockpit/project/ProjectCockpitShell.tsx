@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 
 import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
 import { ProjectDetailsMainPanel } from '@/components/projects/detail/ProjectDetailsMainPanel';
@@ -14,6 +13,8 @@ import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback'
 import { useServicesOpenInBrowser } from '@/components/sessions/localServices/useServicesOpenInBrowser';
 import { useProjectSurfaceActions } from '@/components/projects/detail/useProjectSurfaceActions';
 import { useProjectSurfaceController } from '@/components/projects/detail/useProjectSurfaceController';
+import { useProjectOverviewMode } from '@/components/projects/detail/useProjectOverviewMode';
+import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { useProjectRouteSurfaceSync } from '@/components/projects/detail/useProjectRouteSurfaceSync';
 import type { ProjectMobileSurface } from './projectCockpitState';
 
@@ -28,13 +29,24 @@ type ProjectCockpitShellProps = Readonly<{
 }>;
 
 export const ProjectCockpitShell = React.memo((props: ProjectCockpitShellProps) => {
-    const { theme } = useUnistyles();
+    const pane = useAppPaneScope(props.scopeId);
     const { navigateToSurface } = useProjectSurfaceController({
         scopeId: props.scopeId,
         workspaceRef: props.workspaceRef,
         activeRootPath: props.activeRootPath,
         activeWorktreeId: props.activeWorktreeId,
     });
+    const exitOverviewForDetails = React.useCallback((showOverview: boolean) => {
+        if (!showOverview) navigateToSurface('tabs');
+    }, [navigateToSurface]);
+    const { forceOverviewMode } = useProjectOverviewMode({
+        showWorktrees: props.surface === 'overview' && props.isFocused,
+        onSetShowWorktrees: exitOverviewForDetails,
+        detailsState: pane.scopeState?.details,
+    });
+    React.useEffect(() => {
+        if (props.surface === 'overview' && props.isFocused) pane.closeDetails();
+    }, [pane.closeDetails, props.isFocused, props.surface]);
     useProjectRouteSurfaceSync({
         scopeId: props.scopeId,
         workspaceRef: props.workspaceRef,
@@ -85,7 +97,7 @@ export const ProjectCockpitShell = React.memo((props: ProjectCockpitShellProps) 
     if (props.surface === 'browse') {
         return (
             <View testID="project-files-screen" style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
-                <React.Suspense fallback={<ProjectCockpitLoadingFallback color={theme.colors.text.secondary} />}>
+                <React.Suspense fallback={<PaneLoadingFallback />}>
                     <ProjectBrowseFilesSurface
                         scopeId={props.scopeId}
                         scope={workspaceScope}
@@ -100,7 +112,7 @@ export const ProjectCockpitShell = React.memo((props: ProjectCockpitShellProps) 
     if (props.surface === 'git') {
         return (
             <View testID="project-git-screen" style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
-                <React.Suspense fallback={<ProjectCockpitLoadingFallback color={theme.colors.text.secondary} />}>
+                <React.Suspense fallback={<PaneLoadingFallback />}>
                     <ProjectGitSurface
                         scopeId={props.scopeId}
                         serverId={props.workspaceRef.serverId}
@@ -123,7 +135,7 @@ export const ProjectCockpitShell = React.memo((props: ProjectCockpitShellProps) 
     if (props.surface === 'terminal') {
         return (
             <View testID="project-terminal-screen" style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
-                <React.Suspense fallback={<ProjectCockpitLoadingFallback color={theme.colors.text.secondary} />}>
+                <React.Suspense fallback={<PaneLoadingFallback />}>
                     <ProjectTerminalSurface
                         scopeId={props.scopeId}
                         workspaceRefId={props.workspaceRef.id}
@@ -139,7 +151,7 @@ export const ProjectCockpitShell = React.memo((props: ProjectCockpitShellProps) 
     if (props.surface === 'browser') {
         return (
             <View testID="project-browser-screen" style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
-                <React.Suspense fallback={<ProjectCockpitLoadingFallback color={theme.colors.text.secondary} />}>
+                <React.Suspense fallback={<PaneLoadingFallback />}>
                     <ProjectRightPanelBrowserView workspaceRefId={props.workspaceRef.id} scopeId={`${props.scopeId}:browser`} />
                 </React.Suspense>
             </View>
@@ -149,7 +161,7 @@ export const ProjectCockpitShell = React.memo((props: ProjectCockpitShellProps) 
     if (props.surface === 'services') {
         return (
             <View testID="project-services-screen" style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
-                <React.Suspense fallback={<ProjectCockpitLoadingFallback color={theme.colors.text.secondary} />}>
+                <React.Suspense fallback={<PaneLoadingFallback />}>
                     <ProjectRightPanelServicesView
                         machineId={props.workspaceRef.machineId}
                         serverId={props.workspaceRef.serverId}
@@ -168,13 +180,10 @@ export const ProjectCockpitShell = React.memo((props: ProjectCockpitShellProps) 
                 scopeId={props.scopeId}
                 activeRootPath={props.activeRootPath}
                 activeWorktreeId={props.activeWorktreeId}
-                forceOverviewMode={props.surface === 'overview'}
+                forceOverviewMode={forceOverviewMode}
                 onSelectRootPath={props.onSelectRootPath}
             />
         </View>
     );
 });
 
-const ProjectCockpitLoadingFallback = React.memo((props: Readonly<{ color: string }>) => {
-    return <PaneLoadingFallback color={props.color} paddingTop={0} showTypographyMetrics={false} />;
-});

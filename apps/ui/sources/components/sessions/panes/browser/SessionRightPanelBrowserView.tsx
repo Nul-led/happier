@@ -1,137 +1,23 @@
 import * as React from 'react';
 
-import { BrowserSurfaceHost } from '@/components/browser/surfaces';
-import {
-    useBrowserSurfaceHostProps,
-    type BrowserSurfaceHostPropsInput,
-} from '@/components/browser/surfaces/useBrowserSurfaceHostProps';
-import { useSessionMachineTarget } from '@/components/sessions/model/useSessionMachineTarget';
-import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
-import { useBrowserDaemonControlTransport } from '@/sync/domains/browser/control';
-import { useSessionBrowserContextRuntimeContext } from '@/components/sessions/browser/sessionBrowserContextRuntime';
-import { useSessionBrowserRecordingRuntime } from '@/components/sessions/browser/sessionBrowserRecordingRuntime';
-import { createManagedChromiumBrowserAnnotationCaptureProvider } from '@/sync/domains/browser/context';
+import { BrowserMobileSurfaceScreen } from '@/components/browser/surfaces/BrowserMobileSurfaceScreen';
 import type { PluginUiProjectionCurrentness } from '@/sync/domains/plugins/ui/usePluginUiProjectionCurrentness';
-import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 
+/**
+ * The session right panel's Browser tab. It is the same host as the phone Browser tab (H-UX F-21:
+ * one session browser composition): the details-workspace tab engine with the launchpad as its
+ * new-tab page, the session's browser context, recording and plugin projection, and the pane's
+ * admitted machine target.
+ */
 export function SessionRightPanelBrowserView(props: Readonly<{
     sessionId: string;
-    overrides?: Partial<BrowserSurfaceHostPropsInput>;
-    /**
-     * The Session shell's already-admitted plugin projection. Browser target
-     * identity remains public presentation context; host effects use only these
-     * explicit current execution facts.
-     */
+    /** The Session shell's already-admitted plugin projection (and so its machine target). */
     pluginProjection?: PluginUiProjectionCurrentness;
 }>): React.ReactElement {
-    const hasOverrideMachineId = props.overrides !== undefined
-        && Object.prototype.hasOwnProperty.call(props.overrides, 'machineId');
-    const hasOverrideServerId = props.overrides !== undefined
-        && Object.prototype.hasOwnProperty.call(props.overrides, 'serverId');
-    const hasAdmittedPluginProjection = props.pluginProjection !== undefined;
-    const preferredServerId = usePreferredServerIdForSession({
-        serverId: hasOverrideServerId
-            ? props.overrides?.serverId
-            : props.pluginProjection?.serverId,
-        sessionId: props.sessionId,
-    }, !hasOverrideServerId || props.overrides?.serverId != null);
-    const sessionBrowserContextRuntime = useSessionBrowserContextRuntimeContext();
-    // A driver-rendered Session pane already carries the AppPane-admitted
-    // target. Direct Browser routes omit it and retain their incumbent lookup;
-    // an explicit null from a stale pane scope stays unavailable.
-    const serverId = hasOverrideServerId
-        ? props.overrides?.serverId ?? null
-        : hasAdmittedPluginProjection
-            ? props.pluginProjection?.serverId ?? null
-            : preferredServerId;
-    const machineTarget = useSessionMachineTarget(
-        hasOverrideServerId && !serverId ? null : props.sessionId,
-        serverId,
-    );
-    const machineId = hasOverrideMachineId
-        ? props.overrides?.machineId ?? null
-        : hasAdmittedPluginProjection
-            ? props.pluginProjection?.machineId ?? null
-            : machineTarget?.machineId ?? null;
-    const hostProps = useBrowserSurfaceHostProps({
-        scope: 'sessionSidebar',
-        sessionId: props.sessionId,
-        ...props.overrides,
-        machineId,
-        serverId,
-        pluginUiProjection: props.pluginProjection?.pluginUiProjection,
-        pluginBrowserProjection: props.pluginProjection?.pluginBrowserProjection,
-    });
-    // W2-A-1 / A3: supply the real UI→daemon control transport so a daemon-authoritative
-    // (chromiumSidecar/streamedBrowserSurface) view dispatches reload/stop/navigate through the
-    // daemon control broker instead of returning `browser_control_route_unavailable`.
-    const sendDaemonCommand = useBrowserDaemonControlTransport({
-        machineId,
-        serverId,
-    });
-    const managedAnnotationCaptureProvider = React.useMemo(() => {
-        if (!machineId) return null;
-        return createManagedChromiumBrowserAnnotationCaptureProvider({
-            machineId,
-            serverId,
-        });
-    }, [machineId, serverId]);
-    const browserRecordingRuntime = useSessionBrowserRecordingRuntime({
-        enabled: true,
-        scopeKey: createSessionPaneScopeId(props.sessionId, serverId),
-        sessionId: props.sessionId,
-        machineId,
-        serverId,
-    });
-    const browserContext = React.useMemo(() => {
-        const shellContext = sessionBrowserContextRuntime?.browserShellContext;
-        if (!shellContext) return undefined;
-        if (!managedAnnotationCaptureProvider) return shellContext;
-        return {
-            ...shellContext,
-            annotationCaptureProvider: managedAnnotationCaptureProvider,
-            managedAnnotationCaptureProvider: true,
-        };
-    }, [managedAnnotationCaptureProvider, sessionBrowserContextRuntime?.browserShellContext]);
-    const pluginBrowserActionContext = React.useMemo(() => {
-        if (!props.pluginProjection) {
-            return undefined;
-        }
-        return {
-            machineId: props.pluginProjection.machineId,
-            serverId: props.pluginProjection.serverId,
-            sessionId: props.sessionId,
-        };
-    }, [
-        props.pluginProjection?.machineId,
-        props.pluginProjection?.serverId,
-        props.sessionId,
-    ]);
-
     return (
-        <BrowserSurfaceHost
-            browserSessionId={hostProps.browserSessionId}
-            platform={hostProps.platform}
-            initialBrowserState={hostProps.initialBrowserState}
-            surfaceKey={hostProps.surfaceKey}
-            presentationSlotId={hostProps.presentationSlotId}
-            keepAliveAboveRouter
-            visible
-            active
-            launchpadRows={hostProps.launchpadRows}
-            launchpadRefreshStatus={hostProps.launchpadRefreshStatus}
-            launchpadRefreshError={hostProps.launchpadRefreshError}
-            localServicePreviewState={hostProps.localServicePreviewState}
-            localServicePreviewServerId={hostProps.localServicePreviewServerId}
-            onLifecycleChange={hostProps.onLifecycleChange}
-            sendDaemonCommand={sendDaemonCommand}
-            browserContext={browserContext}
-            browserRecording={browserRecordingRuntime?.browserShellRecording ?? null}
-            pluginUiProjection={props.pluginProjection?.pluginUiProjection}
-            pluginUiInteractionEnabled={props.pluginProjection?.phase === 'current'
-                && props.pluginProjection?.interactionEnabled === true}
-            pluginBrowserProjection={props.pluginProjection?.pluginBrowserProjection}
-            pluginBrowserActionContext={pluginBrowserActionContext}
+        <BrowserMobileSurfaceScreen
+            sessionId={props.sessionId}
+            pluginProjection={props.pluginProjection}
             testID="session-rightpanel-browser"
         />
     );

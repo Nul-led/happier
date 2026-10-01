@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { TeamGroupCreateScreen } from '@/components/settings/teams/groups/TeamGroupCreateScreen';
 import { firstRouteParam } from '@/components/settings/teams/teamRouteParams';
 
-export default function TeamGroupCreateScreenRoute() {
+export function TeamGroupCreateScreenRoute() {
     const params = useLocalSearchParams<{ serverId?: string | string[]; teamId?: string | string[] }>();
     return (
         <TeamGroupCreateScreen
@@ -13,3 +13,6 @@ export default function TeamGroupCreateScreenRoute() {
         />
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { TeamGroupCreateScreenRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={TeamGroupCreateScreenRoute} />; }

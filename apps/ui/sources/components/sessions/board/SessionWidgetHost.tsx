@@ -1,9 +1,10 @@
 import * as React from 'react';
-import { View } from 'react-native';
+import { Platform, Pressable, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
-import { Gesture } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { scheduleOnRN } from 'react-native-worklets';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
 
 import type {
     SessionBoardItemWidth,
@@ -11,12 +12,8 @@ import type {
 } from '@happier-dev/protocol/sessions/board';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
-import {
-    SURFACE_CARD_PADDING_PX,
-    SURFACE_CARD_RADIUS_PX,
-    SurfaceCard,
-    type SurfaceCardPadding,
-} from '@/components/ui/cards/SurfaceCard';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { WidgetFrame, type WidgetFrameStyle } from '@/components/widgets/frame/WidgetFrame';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
@@ -27,6 +24,7 @@ import {
     type CallerHostedHtmlRuntime,
 } from '@/components/ui/surfaces/hostedHtml/HostedHtmlSurfaceAdapter';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
+import { isHoverCapablePrimaryPointer } from '@/utils/platform/webMobileHeuristics';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
@@ -39,8 +37,15 @@ import {
 } from '@/sync/domains/session/board';
 
 import { SessionBoardDeclarativeContent } from './SessionBoardDeclarativeContent';
-import { InstalledSessionWidgetSurface } from '@/components/sessions/widgets/InstalledSessionWidgetSurface';
-import { resolveSessionWidgetProvenance } from '@/components/sessions/widgets/sessionWidgetPresentation';
+import { InstalledWidgetSurface } from '@/components/widgets/InstalledWidgetSurface';
+import { resolveBoardWidgetProvenance } from '@/components/widgets/boardWidgetProvenance';
+import {
+    beginSessionCompanionDrag,
+    endSessionCompanionDrag,
+    hasSessionCompanionDropTarget,
+    moveSessionCompanionDrag,
+    useSessionCompanionDropTargetAvailable,
+} from '@/components/sessions/companion/drop/sessionCompanionDropStore';
 import type { SessionPluginRuntimeState } from '@/components/sessions/plugins/useSessionPluginRuntime';
 import type { SessionBoardHostActionBinding } from './sessionBoardHostActions';
 import {
@@ -63,7 +68,7 @@ import {
     type SessionBoardItemRect,
     type SessionBoardViewDropDwell,
 } from './SessionBoardItemMoveHandle';
-import { buildSessionBoardItemActions } from './sessionBoardItemMenu';
+import { buildSessionBoardItemActions, type SessionBoardItemMenuInput } from './sessionBoardItemMenu';
 
 /**
  * The ONE durable Board item shell.
@@ -177,35 +182,62 @@ export type SessionWidgetHostProps = Readonly<{
     onHeadingFocusHandled?: (requestId: number) => void;
     /** Host-specific truthful navigation label (for example, Open in Details). */
     openActionLabel?: string;
+    /** This viewer keeps the item beside chat; the card carries a small Companion mark. */
+    inCompanion?: boolean;
+    /**
+     * `section` places the item in the Companion column (lab F1): the Companion's metrics, with a
+     * Board glyph in the meta slot saying the record lives on the Board.
+     */
+    frame?: 'card' | 'section';
+    /**
+     * Card or plain, already resolved by the placement (the item's override, else the surface's
+     * Appearance default). Absent: the placement's default (Board card, Companion plain).
+     */
+    frameStyle?: WidgetFrameStyle;
+    /** The item just arrived while the viewer was looking: the frame's one-shot ring. */
+    fresh?: boolean;
+    /**
+     * The Board's shared per-placement frame override and the Board's Appearance default, for the
+     * ⋯ menu's Show/Hide frame. Present only where the viewer may edit the Board layout.
+     */
+    frameOverride?: SessionBoardItemMenuInput['frame'];
+    /** A placement's own controls (reorder, its item menu), drawn at the end of the header line. */
+    headerAccessory?: React.ReactNode;
+    /**
+     * A read-only monitor card (the compact sidebar) is itself the way onto the Board: the whole
+     * card opens the item where it is edited.
+     */
+    onPressCard?: () => void;
     testID?: string;
 }>;
 
 const stylesheet = StyleSheet.create((theme) => ({
-    header: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        paddingBottom: 8,
-    },
     titleWrap: {
-        flex: 1,
+        flexShrink: 1,
         minWidth: 0,
     },
+    // The frame's title and source steps (the same as every widget frame), drawn here because the
+    // Board's title is also a rename field and a drag handle.
     title: {
         ...Typography.default('semiBold'),
-        fontSize: 15,
+        ...happierPageTextMetrics('sectionTitle'),
         color: theme.colors.text.primary,
     },
     titleInput: {
         ...Typography.default('semiBold'),
-        fontSize: 15,
+        ...happierPageTextMetrics('sectionTitle'),
         color: theme.colors.text.primary,
         paddingVertical: 2,
     },
     provenance: {
         ...Typography.default(),
-        fontSize: 12,
-        color: theme.colors.text.secondary,
+        ...happierPageTextMetrics('meta'),
+        color: theme.colors.text.tertiary,
+    },
+    controls: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
     },
     body: {
         minHeight: 0,
@@ -219,35 +251,16 @@ const stylesheet = StyleSheet.create((theme) => ({
 }));
 
 /**
- * Full-bleed content reaches the card's real edge.
- *
- * The inset is read from the card that is actually drawn rather than assumed, so
- * a compact placement does not overhang by the difference between two padding
- * steps, and the bottom corners clip to the card's own radius instead of
- * squaring off over it.
- */
-function fullBleedBodyStyle(padding: SurfaceCardPadding) {
-    const inset = SURFACE_CARD_PADDING_PX[padding];
-    return {
-        marginHorizontal: -inset.horizontal,
-        marginBottom: -inset.vertical,
-        borderBottomLeftRadius: SURFACE_CARD_RADIUS_PX,
-        borderBottomRightRadius: SURFACE_CARD_RADIUS_PX,
-        overflow: 'hidden' as const,
-    };
-}
-
-/**
  * A widget's source line. For an installed surface it names the real plugin and
  * contribution, so two plugin widgets on one Board stay distinguishable while
- * loading, updating and unavailable — see `sessionWidgetPresentation`.
+ * loading, updating and unavailable — see `widgetPresentation`.
  */
 function itemProvenance(
     item: SessionBoardItemProjection,
     runtime: SessionPluginRuntimeState | undefined,
-): ReturnType<typeof resolveSessionWidgetProvenance> | null {
+): ReturnType<typeof resolveBoardWidgetProvenance> | null {
     if (item.state.kind !== 'ready') return null;
-    return resolveSessionWidgetProvenance(
+    return resolveBoardWidgetProvenance(
         item.state.item.source,
         runtime?.pluginUiProjection ?? null,
     );
@@ -305,6 +318,7 @@ export function resolveSessionBoardDragVisualOffset(input: Readonly<{
 
 export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactElement {
     const styles = stylesheet;
+    const { theme } = useUnistyles();
     const testID = props.testID ?? `session-board-item-${props.item.itemId}`;
     const [hostedFrameReportedHeight, setHostedFrameReportedHeight] = React.useState<number | null>(null);
     React.useLayoutEffect(() => {
@@ -487,6 +501,57 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
             props.onDragActivityChange,
             props.onDragTranslation,
         ]);
+    // Keep beside your chat (lab CM, desktop web): a compact Board card the viewer can add to
+    // the Companion may be dragged onto the Companion rail. The menu's "Add to Companion"
+    // stays the canonical path; this is the same add, reached by hand. The detector is always
+    // mounted (stable topology) and enabled only where the drag can land.
+    const companionDropTargetAvailable = useSessionCompanionDropTargetAvailable(props.sessionId);
+    const keepDragAvailable = isHoverCapablePrimaryPointer()
+        && companionDropTargetAvailable
+        && props.density === 'compact'
+        && props.onAddToCompanion !== undefined
+        && props.inCompanion !== true;
+    const keepDragActive = React.useRef(false);
+    const beginKeepDrag = React.useCallback(() => {
+        if (!hasSessionCompanionDropTarget(props.sessionId)) return;
+        keepDragActive.current = true;
+        dragging.value = withTiming(1, { duration: liftDurationMs });
+        beginSessionCompanionDrag(props.sessionId, props.item.itemId);
+    }, [dragging, liftDurationMs, props.item.itemId, props.sessionId]);
+    const moveKeepDrag = React.useCallback((x: number, y: number, translationX: number, translationY: number) => {
+        if (!keepDragActive.current) return;
+        dragX.value = translationX;
+        dragY.value = translationY;
+        moveSessionCompanionDrag(props.sessionId, x, y);
+    }, [dragX, dragY, props.sessionId]);
+    const endKeepDrag = React.useCallback((x: number, y: number, succeeded: boolean) => {
+        if (!keepDragActive.current) return;
+        keepDragActive.current = false;
+        // The rail accepts the drop through the Companion's own add path.
+        endSessionCompanionDrag(props.sessionId, succeeded ? { x, y } : null);
+        dragging.value = withTiming(0, { duration: liftDurationMs });
+        dragX.value = liftDurationMs === 0 ? 0 : withSpring(0);
+        dragY.value = liftDurationMs === 0 ? 0 : withSpring(0);
+    }, [dragX, dragY, dragging, liftDurationMs, props.sessionId]);
+    const keepGesture = React.useMemo(() => Gesture.Pan()
+        .enabled(keepDragAvailable)
+        .minDistance(8)
+        .onStart(() => {
+            'worklet';
+            scheduleOnRN(beginKeepDrag);
+        })
+        .onUpdate((event) => {
+            'worklet';
+            scheduleOnRN(moveKeepDrag, event.absoluteX, event.absoluteY, event.translationX, event.translationY);
+        })
+        .onEnd((event, success) => {
+            'worklet';
+            scheduleOnRN(endKeepDrag, event.absoluteX, event.absoluteY, success);
+        })
+        .onFinalize(() => {
+            'worklet';
+            scheduleOnRN(endKeepDrag, 0, 0, false);
+        }), [beginKeepDrag, endKeepDrag, keepDragAvailable, moveKeepDrag]);
     const dragStyle = useAnimatedStyle(() => ({
         position: 'relative',
         zIndex: dragging.value > 0 ? 20 : 0,
@@ -528,12 +593,25 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
 
     const title = resolveSessionBoardItemTitle(state);
     const provenance = itemProvenance(props.item, props.pluginRuntime);
+    // One header grammar at every density (F1): mark · title · source · meta · controls.
+    const section = props.frame === 'section';
+    // The monitor card opens on the Board from its heading (kind + title). Only the heading presses:
+    // the card also holds its own menu and body controls, and a pressable card around them would
+    // nest one button inside another.
+    const onPressCard = props.onPressCard;
+    const TitleFrame = (onPressCard ? Pressable : View) as React.ComponentType<React.ComponentProps<typeof Pressable>>;
+    const titleFrameProps = onPressCard ? {
+        testID: `${testID}-open`,
+        onPress: onPressCard,
+        accessibilityRole: 'button' as const,
+        accessibilityLabel: provenance ? `${title}, ${provenance.label}` : title,
+    } : {};
     // A fresh literal here made an equivalent context a new value on every parent render —
     // a same-item auto-height report was enough — which retired the mounted frame's Host API
     // bridge under an unchanged document. The mount's lifetime belongs to its identity, so
     // this value only changes when one of the facts it actually carries changes.
     const hostedHtmlSurfaceContext = React.useMemo(() => ({
-        kind: 'sessionWidget' as const,
+        kind: 'widget' as const,
         sessionId: props.sessionId,
         itemId: props.item.itemId,
         recordRevision: props.item.revision,
@@ -576,6 +654,7 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
         // last, rather than as the one control drawn louder than every
         // constructive one beneath every card.
         onRemove: presentation.kind === 'content' ? props.onRemove : undefined,
+        frame: props.frameOverride,
     }), [
         beginRename,
         presentation.kind,
@@ -596,6 +675,7 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
         props.onAddToCompanion,
         props.onRemoveFromCompanion,
         props.onUnpin,
+        props.frameOverride,
         props.width,
         renameEnabled,
         state,
@@ -708,10 +788,13 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
                     // A Session projection that has not hydrated yet is that
                     // component's own loading state; naming it here would report
                     // an installed, projected widget as an unsupported renderer.
-                    <InstalledSessionWidgetSurface
+                    <InstalledWidgetSurface
                         testID={testID}
-                        sessionId={props.sessionId}
-                        {...(props.session ? { session: props.session } : {})}
+                        target={{
+                            kind: 'session',
+                            sessionId: props.sessionId,
+                            ...(props.session ? { session: props.session } : {}),
+                        }}
                         recordRevision={props.item.revision}
                         source={state.item.source}
                         {...(state.item.input === undefined ? {} : { input: state.item.input })}
@@ -773,150 +856,199 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
 
     const previewAction = presentation.kind === 'preview' ? presentation.actionKind : null;
 
-    const cardPadding: SurfaceCardPadding = state.kind === 'ready' && state.item.frame === 'frameless'
-        ? 'none'
-        : props.density === 'full' ? 'md' : 'sm';
+    // Frameless and full-bleed items reach the frame's real edge; the card clips them to its corner.
+    const bodyReachesEdge = state.kind === 'ready'
+        && (state.item.frame === 'frameless' || state.item.frame === 'full_bleed');
+    const placement = section ? 'companion' as const : 'board' as const;
+    const frameStyle = props.frameStyle ?? (section ? 'plain' : 'card');
+
+    const moveHandle = props.density === 'full'
+        && ((props.onMove && (props.canMoveBefore || props.canMoveAfter))
+            || (props.onMoveToView && (props.moveDestinations?.length ?? 0) > 0)) ? (
+            <SessionBoardItemMoveHandle
+                testID={`${testID}-move-handle`}
+                gesture={moveGesture}
+                onMove={props.onMove ?? (() => undefined)}
+                {...(props.onMoveAnchored ? { onMoveAnchored: props.onMoveAnchored } : {})}
+                itemId={props.item.itemId}
+                {...(props.orderedMoveItemIds ? { orderedItemIds: props.orderedMoveItemIds } : {})}
+                canMoveBefore={props.canMoveBefore === true}
+                canMoveAfter={props.canMoveAfter === true}
+                // Its own name, not the Board-views strip beside it:
+                // borrowing that label tells a screen-reader user
+                // they are on an entirely different control.
+                accessibilityLabel={t('sessionBoard.item.reorderA11y', { title })}
+                itemTitle={title}
+                onCancelPointerDrag={cancelPointerDrag}
+                {...(props.moveDestinations ? { moveDestinations: props.moveDestinations } : {})}
+                {...(props.onMoveToView ? { onMoveToView: props.onMoveToView } : {})}
+                {...(props.movePosition !== undefined && props.moveTotal !== undefined
+                    ? { position: props.movePosition, total: props.moveTotal }
+                    : {})}
+            />
+        ) : null;
+
+    const heading = (
+        <GestureDetector gesture={keepGesture}>
+            <TitleFrame style={styles.titleWrap} {...titleFrameProps}>
+                {renameEnabled && draftTitle !== null ? (
+                    <TextInput
+                        testID={`${testID}-title-input`}
+                        style={styles.titleInput}
+                        value={draftTitle}
+                        autoFocus
+                        accessibilityLabel={t('sessionBoard.item.renameA11y')}
+                        onChangeText={setDraftTitle}
+                        onSubmitEditing={commitRename}
+                        onBlur={commitRename}
+                        onKeyPress={(event) => {
+                            if (event.nativeEvent.key === 'Escape') setDraftTitle(null);
+                        }}
+                    />
+                ) : (
+                    <Text
+                        ref={headingRef}
+                        testID={`${testID}-title`}
+                        style={styles.title}
+                        tabIndex={-1}
+                        numberOfLines={1}
+                        accessibilityRole="header"
+                        accessibilityLabel={props.width
+                            ? t('sessionBoard.item.a11yLabelWithWidth', {
+                                title,
+                                width: t(`sessionBoard.width.${props.width}`),
+                            })
+                            : title}
+                        {...(renameEnabled ? { onPress: beginRename } : {})}
+                    >
+                        {title}
+                    </Text>
+                )}
+            </TitleFrame>
+        </GestureDetector>
+    );
+
+    // Shown at every density, including an inert preview: the source IS most of what a preview
+    // says, and it is the only thing that tells two plugin widgets apart. The visible name may
+    // clip (or leave first when the frame narrows); the announced one keeps the exact identity.
+    const source = provenance ? (
+        <Text
+            testID={`${testID}-provenance`}
+            style={styles.provenance}
+            numberOfLines={1}
+            accessibilityLabel={provenance.accessibilityLabel}
+        >
+            {provenance.label}
+        </Text>
+    ) : undefined;
+
+    // The meta slot says where else the widget lives: a section outside the Board carries a quiet
+    // Board glyph, and a Board card the viewer keeps beside chat carries the Companion's.
+    const meta = section ? (
+        <View
+            testID={`${testID}-on-board-mark`}
+            accessibilityRole="image"
+            accessibilityLabel={provenance
+                ? t('sessionCompanion.picker.onTheBoard', { source: provenance.label })
+                : t('sessionBoard.companion.actions.openOnBoard')}
+        >
+            <Icon name="squares-four" size={13} color={theme.colors.text.tertiary} />
+        </View>
+    ) : props.inCompanion ? (
+        <View
+            testID={`${testID}-companion-mark`}
+            accessibilityRole="image"
+            accessibilityLabel={t('sessionBoard.companion.inCompanionA11y')}
+        >
+            <Icon name="stack" size={13} color={theme.colors.text.tertiary} />
+        </View>
+    ) : null;
+
+    const controls = moveHandle || itemActions.length > 0 || props.headerAccessory ? (
+        <View style={styles.controls}>
+            {moveHandle}
+            {itemActions.length > 0 ? (
+                <ItemRowActions
+                    title={title}
+                    actions={itemActions}
+                    compactThreshold={Number.POSITIVE_INFINITY}
+                    overflowTriggerTestID={`${testID}-actions`}
+                    overflowTriggerAccessibilityLabel={t('common.moreActions')}
+                    iconSize={18}
+                    gap={8}
+                />
+            ) : null}
+            {props.headerAccessory}
+        </View>
+    ) : null;
 
     return (
         <Animated.View style={dragStyle}>
-        <SurfaceCard
-            testID={testID}
-            tone={props.density === 'preview' ? 'muted' : 'surface'}
-            padding={cardPadding}
-        >
             {/*
               * No `accessible` wrapper here. Collapsing the card into one element
               * would hide Remove, the action menu, the renderer's own controls and
-              * the content itself from assistive technology; the heading below
+              * the content itself from assistive technology; the heading
               * supplies the grouping relationship instead.
               */}
-            <View>
-                <View style={styles.header}>
-                    {props.density === 'full'
-                    && ((props.onMove && (props.canMoveBefore || props.canMoveAfter))
-                        || (props.onMoveToView && (props.moveDestinations?.length ?? 0) > 0)) ? (
-                        <SessionBoardItemMoveHandle
-                            testID={`${testID}-move-handle`}
-                            gesture={moveGesture}
-                            onMove={props.onMove ?? (() => undefined)}
-                            {...(props.onMoveAnchored ? { onMoveAnchored: props.onMoveAnchored } : {})}
-                            itemId={props.item.itemId}
-                            {...(props.orderedMoveItemIds ? { orderedItemIds: props.orderedMoveItemIds } : {})}
-                            canMoveBefore={props.canMoveBefore === true}
-                            canMoveAfter={props.canMoveAfter === true}
-                            // Its own name, not the Board-views strip beside it:
-                            // borrowing that label tells a screen-reader user
-                            // they are on an entirely different control.
-                            accessibilityLabel={t('sessionBoard.item.reorderA11y', { title })}
-                            itemTitle={title}
-                            onCancelPointerDrag={cancelPointerDrag}
-                            {...(props.moveDestinations ? { moveDestinations: props.moveDestinations } : {})}
-                            {...(props.onMoveToView ? { onMoveToView: props.onMoveToView } : {})}
-                            {...(props.movePosition !== undefined && props.moveTotal !== undefined
-                                ? { position: props.movePosition, total: props.moveTotal }
-                                : {})}
-                        />
-                    ) : null}
-                    <View style={styles.titleWrap}>
-                        {renameEnabled && draftTitle !== null ? (
-                            <TextInput
-                                testID={`${testID}-title-input`}
-                                style={styles.titleInput}
-                                value={draftTitle}
-                                autoFocus
-                                accessibilityLabel={t('sessionBoard.item.renameA11y')}
-                                onChangeText={setDraftTitle}
-                                onSubmitEditing={commitRename}
-                                onBlur={commitRename}
-                                onKeyPress={(event) => {
-                                    if (event.nativeEvent.key === 'Escape') setDraftTitle(null);
-                                }}
-                            />
-                        ) : (
-                            <Text
-                                ref={headingRef}
-                                testID={`${testID}-title`}
-                                style={styles.title}
-                                tabIndex={-1}
-                                numberOfLines={props.density === 'full' ? 2 : 1}
-                                accessibilityRole="header"
-                                accessibilityLabel={props.width
-                                    ? t('sessionBoard.item.a11yLabelWithWidth', {
-                                        title,
-                                        width: t(`sessionBoard.width.${props.width}`),
-                                    })
-                                    : title}
-                                {...(renameEnabled ? { onPress: beginRename } : {})}
+            <WidgetFrame
+                testID={testID}
+                frameStyle={frameStyle}
+                placement={placement}
+                mark={sessionWidgetMark(state)}
+                title={heading}
+                {...(source ? { source } : {})}
+                meta={meta}
+                menu={controls}
+                fresh={props.fresh === true}
+                bodyStyle={bodyReachesEdge ? FULL_BLEED_BODY : undefined}
+                body={{
+                    kind: 'content',
+                    children: (
+                        <>
+                            <View
+                                testID={`${testID}-body`}
+                                style={[styles.body, resolvedHeight ? { height: resolvedHeight.height } : null]}
                             >
-                                {title}
-                            </Text>
-                        )}
-                        {/*
-                          * Shown at every density, including an inert preview: the
-                          * source line IS most of what a preview says, and it is the
-                          * only thing that tells two plugin widgets apart.
-                          */}
-                        {provenance ? (
-                            <Text
-                                testID={`${testID}-provenance`}
-                                style={styles.provenance}
-                                numberOfLines={1}
-                                // The visible line may clip; the announced one keeps the
-                                // exact plugin identity when display names collide.
-                                accessibilityLabel={provenance.accessibilityLabel}
-                            >
-                                {provenance.label}
-                            </Text>
-                        ) : null}
-                    </View>
-                    {itemActions.length > 0 ? (
-                        <ItemRowActions
-                            title={title}
-                            actions={itemActions}
-                            compactThreshold={Number.POSITIVE_INFINITY}
-                            overflowTriggerTestID={`${testID}-actions`}
-                            overflowTriggerAccessibilityLabel={t('common.moreActions')}
-                            iconSize={18}
-                            gap={8}
-                        />
-                    ) : null}
-                </View>
-                <View
-                    testID={`${testID}-body`}
-                    style={[
-                        styles.body,
-                        resolvedHeight ? { height: resolvedHeight.height } : null,
-                        state.kind === 'ready' && state.item.frame === 'full_bleed'
-                            ? fullBleedBodyStyle(cardPadding)
-                            : null,
-                    ]}
-                >
-                    {body}
-                </View>
-                {previewAction === 'openHere' ? (
-                    <View style={styles.actions}>
-                        <RoundButton
-                            size="small"
-                            display="inverted"
-                            testID={`${testID}-open-here`}
-                            title={props.openActionLabel ?? actionLabel('openHere')}
-                            onPress={() => runAction('openHere')}
-                        />
-                    </View>
-                ) : null}
-                {/*
-                  * Removal is NOT drawn here. It is the card's one destructive
-                  * operation and it lives last in the action menu with every
-                  * other card operation; as a standing button it was the only
-                  * always-visible control on a card whose constructive actions
-                  * all sat behind an overflow, which reads as an invitation to
-                  * delete.
-                  */}
-            </View>
-        </SurfaceCard>
+                                {body}
+                            </View>
+                            {previewAction === 'openHere' ? (
+                                <View style={styles.actions}>
+                                    <RoundButton
+                                        size="small"
+                                        display="inverted"
+                                        testID={`${testID}-open-here`}
+                                        title={props.openActionLabel ?? actionLabel('openHere')}
+                                        onPress={() => runAction('openHere')}
+                                    />
+                                </View>
+                            ) : null}
+                        </>
+                    ),
+                }}
+            />
+            {/*
+              * Removal is NOT drawn here. It is the card's one destructive
+              * operation and it lives last in the action menu with every
+              * other card operation; as a standing button it was the only
+              * always-visible control on a card whose constructive actions
+              * all sat behind an overflow, which reads as an invitation to
+              * delete.
+              */}
         </Animated.View>
     );
 }
+
+/** The widget's mark in the frame header: what kind of thing it is, by its source. */
+function sessionWidgetMark(state: SessionBoardItemProjection['state']): IconName {
+    if (state.kind !== 'ready') return 'squares-four';
+    switch (state.item.source.kind) {
+        case 'declarative': return 'note';
+        case 'hostedHtml': return 'squares-four';
+        case 'installedSurface': return 'puzzle-piece';
+    }
+}
+
+const FULL_BLEED_BODY = Object.freeze({ paddingLeft: 0, paddingRight: 0, paddingBottom: 0 });
 
 // The `density` prop already expresses full / compact / inert-preview, so the
 // three named wrappers were dead indirection over one shell and are gone. Hosts

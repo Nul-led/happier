@@ -52,7 +52,10 @@ vi.mock('@/sync/domains/session/awareness/sessionAwareness', () => ({
 }));
 
 vi.mock('@/sync/domains/state/storage', () => ({
-    useSession: (_id: string) => liveSessionRow.current,
+    useSession: (_id: string, serverId?: string | null) => {
+        const row = liveSessionRow.current as Session | null;
+        return !serverId || row?.serverId === serverId ? row : null;
+    },
     useOpenApprovalArtifactsForSession: (target: { serverId: string; sessionId: string } | null | undefined) => {
         approvalSessionTargets.push(target);
         return [];
@@ -85,6 +88,9 @@ vi.mock('@/components/sessions/agents/presentation/sessionAgentActivityPresentat
     }),
 }));
 vi.mock('@/text', () => ({ t: (key: string) => key }));
+// The synopsis reader is the System Record transport (a server boundary); the Recap's own resolution
+// is covered in sessionRecap.test.ts.
+vi.mock('@/sync/ops/sessionSynopsis', () => ({ observeSessionSynopses: () => () => {} }));
 
 import { SESSION_LIST_RELATIVE_TIME_CLOCK_INTERVAL_MS } from '@/hooks/session/sessionListRuntimeClock';
 import { useSessionSummaryModel } from './useSessionSummaryModel';
@@ -140,6 +146,15 @@ describe('useSessionSummaryModel', () => {
         // A row for another Home is never substituted for the exact Session this card describes.
         liveSessionRow.current = { id: 'session-1', serverId: 'home-other', activeAt: 500_000 };
         await hook.rerender();
+        expect(awarenessSessions.at(-1)).toBe(shellSession);
+        await hook.unmount();
+    });
+
+    it('does not borrow an unqualified same-id live row for a different Home', async () => {
+        const shellSession = { id: 'same-session-id', activeAt: 1_000 } as Session;
+        liveSessionRow.current = { id: 'same-session-id', activeAt: 90_000, runtimeActivityActiveCount: 3 };
+
+        const hook = await renderHook(() => useSessionSummaryModel({ session: shellSession, serverId: 'home-b' }));
         expect(awarenessSessions.at(-1)).toBe(shellSession);
         await hook.unmount();
     });
@@ -226,7 +241,7 @@ describe('useSessionSummaryModel', () => {
             totalCount: 3,
             title: 'Reviewing access',
             statusLabel: 'running',
-            destination: 'workflow',
+            destination: 'workTab',
         });
         await hook.unmount();
     });

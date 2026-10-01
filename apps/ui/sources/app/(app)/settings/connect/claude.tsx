@@ -1,7 +1,7 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
-export default function ClaudeConnectRedirect() {
+export function ClaudeConnectRedirect() {
   const router = useRouter();
 
   React.useEffect(() => {
@@ -10,4 +10,6 @@ export default function ClaudeConnectRedirect() {
 
   return null;
 }
-
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { ClaudeConnectRedirect as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={ClaudeConnectRedirect} />; }

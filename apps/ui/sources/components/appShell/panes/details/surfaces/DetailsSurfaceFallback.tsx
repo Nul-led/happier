@@ -1,56 +1,54 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
-
-import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { resolveReasonCopy } from '@/sync/domains/surfaces/copy/resolveReasonCopy';
 import { t } from '@/text';
 import type { DetailsSurfaceStatusV1 } from './types';
-import { Icon } from '@/components/ui/icons/Icon';
 
 export type DetailsSurfaceFallbackStatus = DetailsSurfaceStatusV1 | 'unsupported' | 'renderer-error';
 
-function fallbackTestId(status: DetailsSurfaceFallbackStatus): string {
-    return `details-surface-fallback-${status}`;
-}
-
-function fallbackLabel(status: DetailsSurfaceFallbackStatus): string {
+function fallbackCopy(status: DetailsSurfaceFallbackStatus, reason?: string | null): Readonly<{
+    kind: 'loading' | 'unavailable' | 'error';
+    title: string;
+    explanation?: string;
+}> {
     if (status === 'pending') {
-        return t('common.loading');
+        return { kind: 'loading', title: t('common.loading') };
     }
-    return t('session.detailsPanel.unsupportedTab');
+    if (status === 'renderer-error') {
+        return { kind: 'error', title: t('common.requestFailed') };
+    }
+    if (status === 'unsupported' || status === 'available') {
+        return { kind: 'unavailable', title: t('session.detailsPanel.unsupportedTab') };
+    }
+    if (status === 'missing' || reason === 'resource_missing') {
+        return { kind: 'unavailable', title: t('errors.fileNotFound') };
+    }
+    if (status === 'disabled') {
+        return { kind: 'unavailable', title: t('common.disabled') };
+    }
+    if (status === 'stale') {
+        return { kind: 'unavailable', title: t('common.unavailable') };
+    }
+    return { kind: 'unavailable', title: t('common.unavailable') };
 }
 
 export function DetailsSurfaceFallback(props: Readonly<{
     status: DetailsSurfaceFallbackStatus;
     reason?: string | null;
+    onRetry?: () => void;
 }>): React.ReactElement {
-    const { theme } = useUnistyles();
+    const copy = fallbackCopy(props.status, props.reason);
+    const destinationReason = props.reason?.startsWith('details_destination_')
+        ? resolveReasonCopy({ reasonCode: props.reason, kind: 'pluginRuntime' }).body
+        : null;
     return (
-        <View
-            testID={fallbackTestId(props.status)}
-            style={{
-                flex: 1,
-                minHeight: 0,
-                minWidth: 0,
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: 24,
-            }}
-        >
-            <Icon name="info" size={16} color={theme.colors.text.secondary} />
-            <Text
-                style={{
-                    marginTop: 10,
-                    color: theme.colors.text.secondary,
-                    fontSize: 13,
-                    ...Typography.default(),
-                    textAlign: 'center',
-                    maxWidth: 520,
-                }}
-            >
-                {fallbackLabel(props.status)}
-            </Text>
-        </View>
+        <SurfaceStateCard
+            testID={`details-surface-fallback-${props.status}`}
+            kind={copy.kind}
+            title={copy.title}
+            reason={destinationReason ?? copy.explanation}
+            diagnosticCode={props.reason}
+            action={props.onRetry ? { label: t('common.retry'), onPress: props.onRetry } : undefined}
+        />
     );
 }

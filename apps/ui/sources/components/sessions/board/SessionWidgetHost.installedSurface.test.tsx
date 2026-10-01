@@ -15,7 +15,7 @@ import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import type { SessionPluginRuntimeState } from '@/components/sessions/plugins/useSessionPluginRuntime';
 import { normalizePluginUiProjection } from '@/sync/domains/plugins/ui/projection';
 import type { SessionBoardItemProjection, SessionBoardMountHost } from '@/sync/domains/session/board';
-import { selectSessionWidgetCandidates } from '@/components/sessions/widgets/sessionWidgetCatalog';
+import { selectWidgetCandidates } from '@/components/widgets/widgetCatalog';
 
 import { SessionWidgetHost } from './SessionWidgetHost';
 import { createSessionBoardSourceAvailabilityResolver } from './sessionBoardItemPresentation';
@@ -156,7 +156,7 @@ function projection(options: Readonly<{
         pluginId: SURFACE.pluginId,
         surfaceId: SURFACE.localId,
         rendererId: 'review-native',
-        role: 'sessionWidget',
+        role: 'widget',
         target: { kind: 'session' },
     });
     if (!binding) throw new Error('fixture must use an admitted inline binding');
@@ -271,9 +271,9 @@ describe('SessionWidgetHost installed surface placements', () => {
         state.session = createSessionFixture({ id: 'session-1' });
     });
 
-    it('mounts the maintained emitted public-authoring sessionWidget through the real candidate and host path', async () => {
+    it('mounts the maintained emitted public-authoring widget through the real candidate and host path', async () => {
         const pluginUiProjection = publicAuthoringProjection();
-        const candidate = selectSessionWidgetCandidates(pluginUiProjection).find(
+        const candidate = selectWidgetCandidates(pluginUiProjection, 'session').find(
             (value) => value.surface.pluginId === publicAuthoringManifest.id
                 && value.surface.localId === 'review-status-widget',
         );
@@ -323,7 +323,7 @@ describe('SessionWidgetHost installed surface placements', () => {
                 pluginId: publicAuthoringManifest.id,
                 descriptorId: 'review-status-widget',
             },
-            inlineMount: { role: 'sessionWidget', presentation: 'content' },
+            inlineMount: { role: 'widget', presentation: 'content' },
             launchInput: { view: 'summary' },
         });
 
@@ -591,7 +591,7 @@ describe('SessionWidgetHost installed surface placements', () => {
             { deep: true },
         );
         const codes = cards.map((node) => (node.props as { diagnosticCode: string }).diagnosticCode);
-        expect(codes).toContain('session_widget_session_hydrating');
+        expect(codes).toContain('widget_session_hydrating');
         expect(codes).not.toContain('session_board_renderer_missing');
     });
 
@@ -609,7 +609,7 @@ describe('SessionWidgetHost installed surface placements', () => {
             { deep: true },
         );
         const codes = cards.map((node) => (node.props as { diagnosticCode: string }).diagnosticCode);
-        expect(codes).toContain('session_widget_projection_establishing');
+        expect(codes).toContain('widget_projection_establishing');
         expect(codes).not.toContain('plugin_unavailable');
     });
 });

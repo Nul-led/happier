@@ -28,9 +28,17 @@ const LAYOUT: SessionBoardLayoutV1 = {
     tabs: [{ id: 'overview', title: 'Overview', items: [] }],
 } as SessionBoardLayoutV1;
 
-function readySnapshot(canEdit = true): SessionBoardSnapshot {
+const TWO_VIEW_LAYOUT: SessionBoardLayoutV1 = {
+    v: 1,
+    tabs: [
+        { id: 'overview', title: 'Overview', items: [] },
+        { id: 'release', title: 'Release', items: [] },
+    ],
+} as SessionBoardLayoutV1;
+
+function readySnapshot(canEdit = true, layout: SessionBoardLayoutV1 = LAYOUT): SessionBoardSnapshot {
     return projectSessionBoard({
-        layout: { revision: 'rev-layout', outcome: { status: 'ready', value: LAYOUT } },
+        layout: { revision: 'rev-layout', outcome: { status: 'ready', value: layout } },
         items: new Map(),
         capabilities: { readTranscript: true, editSessionRecords: canEdit },
         freshness: 'fresh',
@@ -70,11 +78,12 @@ async function mountController(input: Readonly<{
     installedWidgetsAvailable?: boolean;
     canEdit?: boolean;
     actions?: SessionBoardActionsPort;
+    layout?: SessionBoardLayoutV1;
 }> = {}) {
     return await renderHook(() => useSessionBoardController({
         sessionId: 'session-1',
         serverId: 'home-1',
-        binding: binding(readySnapshot(input.canEdit ?? true)),
+        binding: binding(readySnapshot(input.canEdit ?? true, input.layout)),
         actions: input.actions ?? recordingActions().port,
         ...(input.installedWidgetsAvailable === undefined
             ? {}
@@ -94,21 +103,6 @@ describe('Board Add: installed plugin widgets', () => {
 
         const readOnly = await mountController({ installedWidgetsAvailable: true, canEdit: false });
         expect(readOnly.getCurrent().addIntents).toEqual([]);
-    });
-
-    it('opens the picker without writing anything', async () => {
-        const actions = recordingActions();
-        const hook = await mountController({ installedWidgetsAvailable: true, actions: actions.port });
-        expect(hook.getCurrent().installedWidgetPickerOpen).toBe(false);
-
-        await hook.getCurrent().run({ kind: 'add', intent: 'fromPlugins' });
-        await hook.rerender();
-        expect(hook.getCurrent().installedWidgetPickerOpen).toBe(true);
-        expect(actions.upserts).toHaveLength(0);
-
-        hook.getCurrent().closeInstalledWidgetPicker();
-        await hook.rerender();
-        expect(hook.getCurrent().installedWidgetPickerOpen).toBe(false);
     });
 
     it('creates the item and its first placement in ONE aggregate mutation', async () => {
@@ -135,20 +129,6 @@ describe('Board Add: installed plugin widgets', () => {
         expect(Object.keys(created.item.source)).toEqual(['kind', 'surface']);
         expect(Object.keys(created.item.source.kind === 'installedSurface' ? created.item.source.surface : {}))
             .toEqual(['pluginId', 'localId']);
-    });
-
-    it('closes the picker when the creation is submitted', async () => {
-        const actions = recordingActions();
-        const hook = await mountController({ installedWidgetsAvailable: true, actions: actions.port });
-        await hook.getCurrent().run({ kind: 'add', intent: 'fromPlugins' });
-        await hook.rerender();
-        await hook.getCurrent().run({
-            kind: 'item.addInstalled',
-            surface: { pluginId: 'acme.review', localId: 'review-status-widget' },
-            title: 'Review status',
-        });
-        await hook.rerender();
-        expect(hook.getCurrent().installedWidgetPickerOpen).toBe(false);
     });
 
     it('refuses to create while writes are blocked', async () => {

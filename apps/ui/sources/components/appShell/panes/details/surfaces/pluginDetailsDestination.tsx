@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { I18nManager, Platform, Pressable, ScrollView, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
-import { resolveHappierTabKeySelection } from '@happier-dev/plugin-ui/presentation';
+import { resolveHappierTabKeySelection, resolveHappierFocusRingVisible } from '@happier-dev/plugin-ui/presentation';
 import {
     isPluginUiDestinationBindingAdmittedAtRuntimeV1,
     PluginUiInstanceKeyV1Schema,
@@ -69,6 +69,7 @@ import type {
     DetailsSurfaceRenderInputV1,
     DetailsSurfaceRendererV1,
 } from './types';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * The only durable identity for a qualified plugin details destination.
@@ -196,7 +197,6 @@ export function createPluginDetailsDestinationLaunchScopeFacts(input: Readonly<{
     return Object.freeze({
         serverId: input.mount.serverId ?? null,
         machineId: input.mount.machineId ?? null,
-        generation: input.projection?.generation ?? null,
         interactionEnabled: input.mount.projectionPhase === 'current'
             && input.mount.projectionInteractionEnabled === true,
     });
@@ -1064,7 +1064,7 @@ const viewerChoiceStylesheet = StyleSheet.create((theme) => ({
         }) as object),
     },
     choicePressed: {
-        opacity: 0.84,
+        opacity: motionTokens.press.opacitySubtle,
     },
     choiceSelected: {
         backgroundColor: theme.colors.surface.base,
@@ -1186,7 +1186,7 @@ export function PluginDetailsViewerChoiceChrome(props: Readonly<{
                                     candidate.selected ? styles.choiceSelected : null,
                                     disabled ? styles.choiceDisabled : null,
                                     !disabled && interactionState.pressed ? styles.choicePressed : null,
-                                    webState.focused === true ? styles.choiceFocused : null,
+                                    resolveHappierFocusRingVisible(webState.focused) ? styles.choiceFocused : null,
                                 ];
                             }}
                         >

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ScrollView, useWindowDimensions, View, type LayoutChangeEvent } from 'react-native';
+import { Animated, ScrollView, useWindowDimensions, View, type LayoutChangeEvent } from 'react-native';
 import { useSharedValue } from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -8,13 +8,18 @@ import type {
     SessionSurfaceItemV1,
 } from '@happier-dev/protocol/sessions/board';
 
+import { usePaneHeaderSlotContent } from '@/components/appShell/panes/paneHeaderSlot';
+import { IconButton } from '@/components/ui/buttons/IconButton';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { SurfaceCard } from '@/components/ui/cards/SurfaceCard';
 import { EmptyState } from '@/components/ui/empty/EmptyState';
+import { motionTokens, resolveInPlaceMorphTiming } from '@/components/ui/motion/motionTokens';
+import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
+import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import type { ItemAction } from '@/components/ui/lists/itemActions';
-import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { SurfaceStateCard, type SurfaceStateAction } from '@/components/ui/surfaces/SurfaceStateCard';
 import { Text } from '@/components/ui/text/Text';
 import { SearchHeader } from '@/components/ui/forms/SearchHeader';
 import { Typography } from '@/constants/Typography';
@@ -42,16 +47,21 @@ import {
     SessionBoardViewStrip,
     sessionBoardViewTabNativeId,
 } from './SessionBoardViewStrip';
+import { isSpanNearViewport, quantizeScrollOffset, resolveNearViewportWindow } from '@/components/widgets/nearViewport';
 import type { SessionBoardItemRect } from './SessionBoardItemMoveHandle';
+import { useWidgetFrameSurfaceDefault } from '@/components/widgets/frame/useWidgetFrameStyle';
+import type { WidgetFrameStyle } from '@/components/widgets/frame/WidgetFrame';
+import { resolveWidgetFrameStyle } from '@/components/widgets/frame/widgetFrameStyle';
 import { SessionWidgetHost, type SessionWidgetDensity } from './SessionWidgetHost';
+import { useSessionBoardArrivals } from './useSessionBoardArrivals';
+import { BoardWidgetAddPopover } from '@/components/widgets/add/BoardWidgetAddPopover';
+import type { WidgetCandidate } from '@/components/widgets/widgetCatalog';
+import type { SessionBoardBodyEligibilityReporter } from './sessionBoardHostVisibility';
 import type { CallerHostedHtmlRuntime } from '@/components/ui/surfaces/hostedHtml/HostedHtmlSurfaceAdapter';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionBoardHostActionBinding } from './sessionBoardHostActions';
 import type { SessionPluginRuntimeState } from '@/components/sessions/plugins/useSessionPluginRuntime';
-import type {
-    SessionBoardAddIntent,
-    SessionBoardController,
-} from './useSessionBoardController';
+import type { SessionBoardController } from './useSessionBoardController';
 import { useMountedSessionBoardContinuity } from './SessionBoardContinuity';
 import {
     captureSessionBoardPresentationPosition,
@@ -157,6 +167,7 @@ export type SessionBoardSurfaceProps = Readonly<{
     host: SessionBoardMountHost;
     /** Resolves the executable placement for each exact item. */
     resolvePrimaryHost: SessionBoardPrimaryMountResolver;
+    onBodyEligibilityChange?: SessionBoardBodyEligibilityReporter;
     density: SessionWidgetDensity;
     /** One column on mobile and in the compact sidebar; the semantic grid elsewhere. */
     layout: 'grid' | 'single';
@@ -196,8 +207,8 @@ export type SessionBoardSurfaceProps = Readonly<{
     header?: React.ReactNode;
     /** Retained in-place editor; it stays mounted through refresh/offline/conflict. */
     editor?: React.ReactNode;
-    /** The installed-widget Add picker, rendered in the same in-place slot. */
-    picker?: React.ReactNode;
+    /** The Board's current-Session widget candidates, offered by the Add popover's From plugins. */
+    addCandidates?: readonly WidgetCandidate[];
     /** Viewer-local tab hosts used only by the incumbent modal focus-return owner. */
     onViewFocusTargetChange?: (viewId: string, target: FocusReturnTarget) => void;
     /** Surviving Board-view action control when the source tab disappears. */
@@ -206,13 +217,21 @@ export type SessionBoardSurfaceProps = Readonly<{
 }>;
 
 const DEFAULT_HEIGHT_BOUNDS = Object.freeze({ min: 96, max: 720 });
+const NO_ADD_CANDIDATES: readonly WidgetCandidate[] = Object.freeze([]);
 
-const ADD_INTENT_LABEL_KEY: Readonly<Record<SessionBoardAddIntent, Parameters<typeof t>[0]>> = Object.freeze({
-    note: 'sessionBoard.add.note',
-    interactiveView: 'sessionBoard.add.interactiveView',
-    fromPlugins: 'sessionBoard.add.fromPlugins',
-    askAgent: 'sessionBoard.empty.editor.askAgent',
-});
+function BodyEligibility(props: Readonly<{
+    host: SessionBoardMountHost;
+    viewId: string;
+    itemIdsKey: string;
+    report: SessionBoardBodyEligibilityReporter;
+}>): null {
+    React.useLayoutEffect(() => props.report(
+        props.host,
+        props.viewId,
+        new Set(props.itemIdsKey ? props.itemIdsKey.split('\u001f') : []),
+    ), [props.host, props.viewId, props.itemIdsKey, props.report]);
+    return null;
+}
 
 function boardStateCard(
     snapshot: SessionBoardSnapshot,
@@ -277,29 +296,69 @@ function boardStateCard(
 }
 
 /**
- * The one Add affordance, drawn wherever the person can add.
- *
- * It renders only the intents whose producer exists in this build. A source with
- * no producer is absent from the menu rather than present and inert.
+ * The one Add affordance, drawn wherever the person can add: it opens the shared widget Add
+ * popover (lab `cwidgets` G1, Gallery | List), which offers only the intents whose producer exists
+ * in this build. A source with no producer is absent rather than present and inert.
  */
 function AddControls(props: Readonly<{
     controller: SessionBoardController;
     testID: string;
+    /** `header`: the pane header's trailing + (the phone Board); `row`: the in-body Add button. */
+    variant?: 'row' | 'header';
+    sessionId: string;
+    session?: Session;
+    candidates: readonly WidgetCandidate[];
+    pluginRuntime?: SessionPluginRuntimeState;
 }>): React.ReactElement | null {
-    const intents = props.controller.addIntents;
-    if (intents.length === 0) return null;
+    const { theme } = useUnistyles();
+    const anchorRef = React.useRef<View | null>(null);
+    const [open, setOpen] = React.useState(false);
+    const close = React.useCallback(() => setOpen(false), []);
+    if (props.controller.addIntents.length === 0) return null;
+    const toggle = () => setOpen((value) => !value);
+    const popover = (
+        <BoardWidgetAddPopover
+            open={open}
+            anchorRef={anchorRef}
+            onRequestClose={close}
+            controller={props.controller}
+            sessionId={props.sessionId}
+            {...(props.session ? { session: props.session } : {})}
+            candidates={props.candidates}
+            {...(props.pluginRuntime ? { pluginRuntime: props.pluginRuntime } : {})}
+            testID={`${props.testID}-add-popover`}
+        />
+    );
+    if (props.variant === 'header') {
+        return (
+            <View testID={`${props.testID}-add`} ref={anchorRef} collapsable={false}>
+                <IconButton
+                    testID={`${props.testID}-add-trigger`}
+                    iconName="plus"
+                    variant="plain"
+                    selected={open}
+                    accessibilityLabel={t('common.add')}
+                    tooltip={t('common.add')}
+                    onPress={toggle}
+                />
+                {popover}
+            </View>
+        );
+    }
     return (
         <View style={stylesheet.addRow} testID={`${props.testID}-add`}>
-            {intents.map((intent, index) => (
+            <View ref={anchorRef} collapsable={false}>
                 <RoundButton
-                    key={intent}
                     size="small"
-                    {...(index === 0 ? {} : { display: 'inverted' as const })}
-                    testID={`${props.testID}-add-${intent}`}
-                    title={t(ADD_INTENT_LABEL_KEY[intent])}
-                    onPress={() => { void props.controller.run({ kind: 'add', intent }); }}
+                    testID={`${props.testID}-add-trigger`}
+                    title={t('common.add')}
+                    leading={<Icon name="plus" size={16} color={theme.colors.button.primary.tint} />}
+                    accessibilityLabel={t('common.add')}
+                    expanded={open}
+                    onPress={toggle}
                 />
-            ))}
+            </View>
+            {popover}
         </View>
     );
 }
@@ -421,6 +480,58 @@ function ViewActions(props: Readonly<{
     );
 }
 
+/**
+ * The empty Board's first steps (lab ST): Ask the agent leads — it only drafts a sentence into this
+ * Session's composer and sends nothing, so even the read-only sidebar may offer it — and Add a note
+ * is the quiet second way wherever the placement may write.
+ */
+function emptyBoardActions(
+    controller: SessionBoardController,
+    mutationControls: boolean,
+): Readonly<{ action?: SurfaceStateAction; secondaryAction?: SurfaceStateAction }> {
+    const askAgent: SurfaceStateAction | null = controller.addIntents.includes('askAgent')
+        ? { label: t('sessionBoard.empty.editor.askAgent'), onPress: () => { void controller.run({ kind: 'add', intent: 'askAgent' }); } }
+        : null;
+    const addNote: SurfaceStateAction | null = mutationControls && controller.addIntents.includes('note')
+        ? { label: t('sessionBoard.empty.editor.addNote'), onPress: () => { void controller.run({ kind: 'add', intent: 'note' }); } }
+        : null;
+    if (askAgent) return addNote ? { action: askAgent, secondaryAction: addNote } : { action: askAgent };
+    return addNote ? { action: addNote } : {};
+}
+
+/**
+ * The Board's signature (lab B): a card opened from the sidebar grows into its place on the Details
+ * Board — the in-place morph timeline Home's setup tiles and the Share panel use — and under reduced
+ * motion it simply cross-fades in.
+ */
+function BoardItemArrival(props: Readonly<{ children: React.ReactNode }>): React.ReactElement {
+    const reducedMotion = useReducedMotionPreference();
+    const progress = React.useRef(new Animated.Value(0)).current;
+    React.useEffect(() => {
+        const timing = resolveInPlaceMorphTiming(reducedMotion);
+        const animation = Animated.timing(progress, {
+            toValue: 1,
+            duration: timing.clockMs,
+            easing: motionTokens.easing.standard,
+            useNativeDriver: true,
+        });
+        animation.start();
+        return () => animation.stop();
+    }, [progress, reducedMotion]);
+    return (
+        <Animated.View
+            style={{
+                opacity: progress,
+                ...(reducedMotion ? {} : {
+                    transform: [{ scale: progress.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }],
+                }),
+            }}
+        >
+            {props.children}
+        </Animated.View>
+    );
+}
+
 export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.ReactElement {
     const styles = stylesheet;
     const { theme } = useUnistyles();
@@ -435,6 +546,12 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
     // shared Board. Only `navigationOnly` also changes the projection itself;
     // a retained tab keeps its density, layout and selected view untouched.
     const mutationControls = props.navigationOnly !== true && props.retained !== true;
+    // One subscription to the Board's Appearance default on this device; each card resolves against it.
+    const boardFrameDefault = useWidgetFrameSurfaceDefault('board');
+    // A card that arrives while this Board is on screen gets the frame's one-shot ring (lab WA).
+    const arrivals = useSessionBoardArrivals(
+        snapshot && snapshot.layoutState.kind === 'ready' && !snapshot.incomplete ? [...snapshot.itemsById.keys()] : null,
+    );
     const continuity = useMountedSessionBoardContinuity();
     const heightBounds = props.heightBounds ?? DEFAULT_HEIGHT_BOUNDS;
     const [gridWidth, setGridWidth] = React.useState(0);
@@ -538,6 +655,52 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
         });
     }, [continuity, presentationKey]);
 
+    // The sidebar monitor and the phone Board speak through the one pane header (lab B/Bp): who sees
+    // the Board and how much is on it, then the likeliest next step — Open board from the read-only
+    // sidebar, + (the Add chooser) on the phone. Details has no pane header and keeps its own row.
+    const headerHost = props.host === 'sidebar' || props.host === 'mobileCockpit';
+    const snapshotPresent = snapshot !== null;
+    // An empty Board says only who sees it (lab ST); the count appears once there is something to count.
+    const widgetCount = snapshot && snapshot.layoutState.kind === 'ready' && !snapshot.incomplete && snapshot.itemsById.size > 0
+        ? snapshot.itemsById.size
+        : null;
+    const headerIconColor = theme.colors.text.secondary;
+    const headerLine = React.useMemo(() => (!headerHost || !snapshotPresent ? null : {
+        leading: <Icon name="users" size={13} color={headerIconColor} />,
+        segments: [
+            t('sessionBoard.sidebar.sharedWithEveryone'),
+            ...(widgetCount === null ? [] : [t('sessionBoard.sidebar.widgetCount', { count: widgetCount })]),
+        ],
+    }), [headerHost, headerIconColor, snapshotPresent, widgetCount]);
+    const onOpenBoardDetails = props.onOpenBoardDetails;
+    // What the Add popover offers beyond the controller's intents: this Session's exact projection
+    // (for the live previews) and the Board's one current-Session candidate list.
+    const addSource = React.useMemo(() => ({
+        sessionId: props.sessionId,
+        ...(props.session ? { session: props.session } : {}),
+        candidates: props.addCandidates ?? NO_ADD_CANDIDATES,
+        ...(props.pluginRuntime ? { pluginRuntime: props.pluginRuntime } : {}),
+    }), [props.addCandidates, props.pluginRuntime, props.session, props.sessionId]);
+    const headerAction = React.useMemo(() => {
+        if (props.host === 'sidebar') {
+            return onOpenBoardDetails ? (
+                <IconButton
+                    testID={`${testID}-header-open-board`}
+                    iconName="arrows-out"
+                    variant="plain"
+                    accessibilityLabel={t('sessionBoard.sidebar.openBoard')}
+                    tooltip={t('sessionBoard.sidebar.openBoard')}
+                    onPress={onOpenBoardDetails}
+                />
+            ) : null;
+        }
+        if (props.host === 'mobileCockpit' && mutationControls && snapshotPresent) {
+            return <AddControls controller={controller} testID={testID} variant="header" {...addSource} />;
+        }
+        return null;
+    }, [addSource, controller, mutationControls, onOpenBoardDetails, props.host, snapshotPresent, testID]);
+    usePaneHeaderSlotContent(React.useMemo(() => ({ line: headerLine, action: headerAction }), [headerAction, headerLine]));
+
     if (!snapshot) {
         return <View style={styles.root} testID={testID} />;
     }
@@ -553,11 +716,25 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
 
     // Offline and stale are explained, never faked: the last content the person
     // loaded stays on screen and the freshness line says why it may be behind.
-    const freshnessLabel = snapshot.reachability === 'offline'
-        ? t('sessionBoard.board.offline')
-        : snapshot.freshness === 'stale'
-            ? t('sessionBoard.board.stale')
-            : null;
+    // Nothing retained is never a stale line over an empty body (pane-states): it is a state card.
+    const hasRetainedContent = snapshot.itemsById.size > 0;
+    const offline = snapshot.reachability === 'offline';
+    const freshnessLabel = !hasRetainedContent
+        ? null
+        : offline
+            ? t('sessionBoard.board.offline')
+            : snapshot.freshness === 'stale'
+                ? t('sessionBoard.board.stale')
+                : null;
+    const offlineEmptyCard = offline && !hasRetainedContent ? (
+        <SurfaceStateCard
+            testID={`${testID}-offline`}
+            kind="unavailable"
+            iconName="cloud-slash"
+            title={t('sessionBoard.board.offlineEmpty')}
+            accessibilitySemantics="status"
+        />
+    ) : null;
 
     const boardEmpty = isSessionBoardEmpty(snapshot);
     const placements = activeView?.placements ?? [];
@@ -596,25 +773,26 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
     };
 
     /**
-     * Which cards build their body.
+     * Which cards build their body: the shared near-viewport rule
+     * (`components/widgets/nearViewport`), which Home uses too.
      *
      * Opening a Board must not instantiate every document, hosted surface and
-     * plugin frame it holds, so a card outside a near-viewport window draws its
-     * chrome and waits. Nothing here is an invented budget: the window is one
-     * measured viewport of overscan either side of the scroll position, and an
-     * item that has not been laid out yet is placed by the surface's own
-     * minimum card height (`heightBounds.min`), which is a sound lower bound on
-     * where ordinal `n` can start. Before the ScrollView reports its height the
-     * platform window height stands in for it, so the very first frame is
-     * bounded too.
+     * plugin frame it holds, so a card outside the window draws its chrome and
+     * waits. The quantum is the surface's own minimum card height
+     * (`heightBounds.min`), which is also a sound lower bound on where an
+     * unmeasured card at row `n` can start. Before the ScrollView reports its
+     * height the platform window height stands in for it, so the very first
+     * frame is bounded too.
      *
      * Card chrome always renders, so an offscreen card keeps its title, menu and
      * accessibility identity; only the expensive content waits.
      */
     const bodyWindowQuantum = Math.max(1, heightBounds.min);
-    const bodyWindowViewport = measuredViewportHeight > 0 ? measuredViewportHeight : windowHeight;
-    const bodyWindowTop = bodyWindowTopOffset - bodyWindowViewport;
-    const bodyWindowBottom = bodyWindowTopOffset + bodyWindowQuantum + (bodyWindowViewport * 2);
+    const bodyWindow = resolveNearViewportWindow({
+        windowTopOffset: bodyWindowTopOffset,
+        viewportHeight: measuredViewportHeight > 0 ? measuredViewportHeight : windowHeight,
+        quantum: bodyWindowQuantum,
+    });
     // The grid wraps, so the unmeasured estimate is placed by ROW, not by ordinal: three
     // `compact` cards share a row at the twelve-column tier, and reading the third one as
     // three rows down pushes cards the person can see out of the window.
@@ -629,12 +807,27 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
         rects: Map<string, SessionBoardItemRect>;
         contentStartY: number;
     }>): boolean => {
-        if (bodyWindowViewport <= 0) return true;
         const rect = input.rects.get(input.itemId);
-        if (!rect) return input.row * bodyWindowQuantum <= bodyWindowBottom;
-        const top = input.contentStartY + rect.y;
-        return top + rect.height >= bodyWindowTop && top <= bodyWindowBottom;
+        return isSpanNearViewport(bodyWindow, rect
+            ? { top: input.contentStartY + rect.y, height: rect.height }
+            : { top: input.row * bodyWindowQuantum });
     };
+    // One eligibility result drives both lazy body rendering and the shared shell
+    // resolver. A card whose body is deferred cannot suppress a visible Companion.
+    const bodyEligibleItemIds = new Set([
+        ...visiblePlacements.filter((placement, ordinal) => isItemBodyNearViewport({
+            itemId: placement.itemId,
+            row: placementRowIndexes[ordinal] ?? ordinal,
+            rects: placementRects.current,
+            contentStartY: gridContentY.current,
+        })).map((placement) => placement.itemId),
+        ...visibleRecovered.filter((itemId, index) => isItemBodyNearViewport({
+            itemId,
+            row: recoveredRowBase + index,
+            rects: recoveredRects.current,
+            contentStartY: recoveredSectionY.current + recoveredRowsY.current,
+        })),
+    ]);
 
     // Item recovery navigation comes from the same controller that answers for the
     // Board-level card above, so an item and its Board can never disagree about
@@ -664,6 +857,9 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
         const movable = placementIndex < 0
             ? null
             : { before: placementIndex > 0, after: placementIndex < placements.length - 1 };
+        // The placement's frame override is shared (stored with the Board layout, like width); it
+        // wins over this device's Appearance default for the Board.
+        const frameOverride = placementIndex < 0 ? null : placements[placementIndex]?.frameStyle ?? null;
         const moveDestinations = !placed ? [] : snapshot.views
             .filter((candidate) => !candidate.synthetic
                 && candidate.id !== activeView?.id
@@ -690,6 +886,19 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                     props.pluginRuntime,
                 )}
                 width={width}
+                frameStyle={resolveWidgetFrameStyle({ placement: 'board', surfaceDefault: boardFrameDefault, override: frameOverride })}
+                {...(arrivals.has(itemId) ? { fresh: true } : {})}
+                {...(mutationControls && placed && controller.supports('item.frameStyle')
+                    ? {
+                        frameOverride: {
+                            surfaceDefault: boardFrameDefault,
+                            override: frameOverride,
+                            onSet: (frameStyle: WidgetFrameStyle | null) => {
+                                void controller.run({ kind: 'item.frameStyle', itemId, frameStyle });
+                            },
+                        },
+                    }
+                    : {})}
                 heightBounds={heightBounds}
                 {...(deferBody ? { deferBody: true } : {})}
                 {...(controller.headingFocusRequest?.itemId === itemId
@@ -793,6 +1002,10 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                     }
                     : {})}
                 {...(props.navigationOnly ? { openActionLabel: t('sessionBoard.sidebar.openInDetails') } : {})}
+                {...(props.companionItemIds?.has(itemId) ? { inCompanion: true } : {})}
+                {...(props.navigationOnly && props.onOpenItemHere
+                    ? { onPressCard: () => props.onOpenItemHere?.(itemId) }
+                    : {})}
                 {...(mutationControls && controller.supports('item.managePlugin')
                     ? { onManagePlugin: () => { void controller.run({ kind: 'item.managePlugin', itemId }); } }
                     : {})}
@@ -824,12 +1037,14 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                     </View>
                 ) : null}
                 <ScrollView style={styles.scroll} testID={`${testID}-focused-scroll`}>
-                    <View style={styles.single}>
-                        {props.editor ? (
-                            <View testID={`${testID}-focused-editor`}>{props.editor}</View>
-                        ) : null}
-                        {renderItem(focusedItemId, 'full', true, focusedItem)}
-                    </View>
+                    <BoardItemArrival>
+                        <View style={styles.single}>
+                            {props.editor ? (
+                                <View testID={`${testID}-focused-editor`}>{props.editor}</View>
+                            ) : null}
+                            {renderItem(focusedItemId, 'full', true, focusedItem)}
+                        </View>
+                    </BoardItemArrival>
                 </ScrollView>
             </View>
         );
@@ -837,6 +1052,11 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
 
     return (
         <View style={styles.root} testID={testID}>
+            {!props.retained && !layoutCard && activeView && props.onBodyEligibilityChange ? (
+                <BodyEligibility host={props.host} viewId={activeView.id}
+                    itemIdsKey={[...bodyEligibleItemIds].join('\u001f')}
+                    report={props.onBodyEligibilityChange} />
+            ) : null}
             {props.header}
             {mutationControls ? <MutationRecoveryNotice controller={controller} testID={testID} /> : null}
             <View
@@ -890,11 +1110,13 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                 </Text>
             ) : null}
             {freshnessLabel ? (
-                <Text testID={`${testID}-freshness`} style={styles.freshness} accessibilityLiveRegion="polite">
-                    {freshnessLabel}
-                </Text>
+                <SurfaceFreshnessLine
+                    testID={`${testID}-freshness`}
+                    reason={freshnessLabel}
+                    tone={offline ? 'warning' : 'neutral'}
+                />
             ) : null}
-            {layoutCard ?? (
+            {layoutCard ?? offlineEmptyCard ?? (
                 <ScrollView
                     ref={scrollRef}
                     {...(snapshot.views.length > 1
@@ -927,23 +1149,11 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                         capturePresentationPosition(event.nativeEvent.contentOffset.y);
                         // Quantized by one minimum card height so a flick advances the
                         // body window once per card rather than once per frame.
-                        const nextWindowTop = Math.max(0, Math.floor(
-                            event.nativeEvent.contentOffset.y / bodyWindowQuantum,
-                        ) * bodyWindowQuantum);
+                        const nextWindowTop = quantizeScrollOffset(event.nativeEvent.contentOffset.y, bodyWindowQuantum);
                         setBodyWindowTopOffset((current) => (current === nextWindowTop ? current : nextWindowTop));
                     }}
                 >
-                    {props.navigationOnly && props.onOpenBoardDetails ? (
-                        <View style={styles.addRow}>
-                            <RoundButton
-                                size="small"
-                                display="inverted"
-                                testID={`${testID}-open-details`}
-                                title={t('sessionBoard.sidebar.openInDetails')}
-                                onPress={props.onOpenBoardDetails}
-                            />
-                        </View>
-                    ) : null}
+                    {/* The sidebar's Open board lives in the pane header, not in a body row. */}
                     {props.host === 'mobileCockpit' && !boardEmpty ? (
                         <SearchHeader
                             testID={`${testID}-search`}
@@ -952,7 +1162,7 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                             placeholder={t('sessionBoard.mobile.searchPlaceholder')}
                         />
                     ) : null}
-                    {props.editor ?? props.picker}
+                    {props.editor}
                     {/*
                       * An open editor or picker owns the interaction layer of an
                       * EMPTY Board: its invitation controls are not simultaneously
@@ -965,24 +1175,37 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                       * typography and font-scale behaviour every other empty surface
                       * in Happier already has.
                       */}
-                    {boardEmpty ? (props.editor ?? props.picker ? null : (
-                        <EmptyState
-                            testID={`${testID}-empty`}
-                            icon={<Icon name="squares-four" size={32} color={theme.colors.text.secondary} />}
-                            title={snapshot.canEdit
-                                ? t('sessionBoard.empty.editor.title')
-                                : t('sessionBoard.empty.viewer.title')}
-                            subtitle={snapshot.canEdit
-                                ? t('sessionBoard.empty.editor.description')
-                                : t('sessionBoard.empty.viewer.description')}
-                            {...(mutationControls && controller.addIntents.length > 0
-                                ? { action: <AddControls controller={controller} testID={testID} /> }
-                                : {})}
-                        />
+                    {boardEmpty ? (props.editor ? null : (
+                        <>
+                            {/*
+                              * The card offers the two first steps (Ask the agent, Add a note); any
+                              * other Add source stays reachable through the one Add chooser, which on
+                              * the phone lives in the pane header.
+                              */}
+                            {mutationControls
+                                && props.host !== 'mobileCockpit'
+                                && controller.addIntents.some((intent) => intent !== 'note' && intent !== 'askAgent')
+                                ? <AddControls controller={controller} testID={testID} {...addSource} />
+                                : null}
+                            <SurfaceStateCard
+                                testID={`${testID}-empty`}
+                                kind="empty"
+                                iconName="squares-four"
+                                title={snapshot.canEdit
+                                    ? t('sessionBoard.empty.editor.title')
+                                    : t('sessionBoard.empty.viewer.title')}
+                                reason={snapshot.canEdit
+                                    ? t('sessionBoard.empty.editor.description')
+                                    : t('sessionBoard.empty.viewer.description')}
+                                {...emptyBoardActions(controller, mutationControls)}
+                            />
+                        </>
                     )) : (
                         <>
-                            {/* The Add affordance stays reachable once content exists. */}
-                            {mutationControls ? <AddControls controller={controller} testID={testID} /> : null}
+                            {/* The Add affordance stays reachable once content exists (phone: in the header). */}
+                            {mutationControls && props.host !== 'mobileCockpit'
+                                ? <AddControls controller={controller} testID={testID} {...addSource} />
+                                : null}
                             {visiblePlacements.length === 0 && visibleRecovered.length === 0 ? (
                                 <EmptyState
                                     testID={`${testID}-empty-view`}
@@ -1004,14 +1227,9 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                                     style={props.layout === 'grid' ? styles.grid : styles.single}
                                     onLayout={onGridLayout}
                                 >
-                                                    {visiblePlacements.map((placement, ordinal) => {
+                                    {visiblePlacements.map((placement) => {
                                         const width = itemWidthFor(placement.width);
-                                        const deferBody = !isItemBodyNearViewport({
-                                            itemId: placement.itemId,
-                                            row: placementRowIndexes[ordinal] ?? ordinal,
-                                            rects: placementRects.current,
-                                            contentStartY: gridContentY.current,
-                                        });
+                                        const deferBody = !bodyEligibleItemIds.has(placement.itemId);
                                         return (
                                             <View
                                                 key={placement.itemId}
@@ -1049,7 +1267,7 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                                         style={styles.single}
                                         onLayout={(event) => { recordSectionOrigin(recoveredRowsY, event.nativeEvent.layout.y); }}
                                     >
-                                        {visibleRecovered.map((itemId, index) => (
+                                        {visibleRecovered.map((itemId) => (
                                             <View
                                                 key={itemId}
                                                 testID={`${testID}-recovered-row-${itemId}`}
@@ -1063,12 +1281,7 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                                                   * hundred unplaced documents must not instantiate all of
                                                   * them, so these rows pass through the same body window.
                                                   */}
-                                                {renderItem(itemId, 'full', false, undefined, !isItemBodyNearViewport({
-                                                    itemId,
-                                                    row: recoveredRowBase + index,
-                                                    rects: recoveredRects.current,
-                                                    contentStartY: recoveredSectionY.current + recoveredRowsY.current,
-                                                }))}
+                                                {renderItem(itemId, 'full', false, undefined, !bodyEligibleItemIds.has(itemId))}
                                                 {mutationControls && controller.supports('item.pin') ? (
                                                     <View style={styles.addRow}>
                                                         <RoundButton

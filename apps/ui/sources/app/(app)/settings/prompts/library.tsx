@@ -1,6 +1,8 @@
 import React from 'react';
-import { Redirect } from 'expo-router';
+import { Redirect } from '@/components/appShell/workspace/destinationRoute';
 
-export default React.memo(function PromptLibraryLegacyRoute() {
+export const WorkspaceRouteBody = React.memo(function PromptLibraryLegacyRoute() {
     return <Redirect href={'/(app)/settings/prompts' as any} />;
 });
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

@@ -4,6 +4,8 @@ import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
+import { useSurfaceStateSize } from '@/components/ui/surfaces/surfaceStateSize';
+import { ProjectRightPanel } from './ProjectRightPanel';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -74,14 +76,15 @@ vi.mock('@/components/projects/files/WorkspaceRepositoryTreeBrowserView', () => 
 }));
 
 vi.mock('@/components/projects/scm/WorkspaceRightPanelGitView', () => ({
-    WorkspaceRightPanelGitView: () => React.createElement('WorkspaceRightPanelGitViewStub'),
+    WorkspaceRightPanelGitView: () => {
+        return React.createElement('WorkspaceRightPanelGitViewStub', { stateSize: useSurfaceStateSize() });
+    },
 }));
 
 describe('ProjectRightPanel', () => {
     it('does not render a close affordance when the parent screen does not provide one', async () => {
         deviceTypeMock = 'desktop';
         routerReplaceSpy.mockClear();
-        const { ProjectRightPanel } = await import('./ProjectRightPanel');
 
         const workspaceRef = {
             id: 'wr_1',
@@ -101,6 +104,8 @@ describe('ProjectRightPanel', () => {
         );
 
         expect(screen.tree.findByType('WorkspaceRightPanelGitViewStub')).toBeTruthy();
+        expect(screen.tree.findByType('WorkspaceRightPanelGitViewStub').props.stateSize).toBe('pane');
+        expect(screen.findHostByTestId('project-rightpanel-header')).not.toBeNull();
         expect(screen.tree.findAll((node) => node.props?.testID === 'project-rightpanel-close')).toHaveLength(0);
     });
 
@@ -109,7 +114,6 @@ describe('ProjectRightPanel', () => {
         routerReplaceSpy.mockClear();
         appPaneScopeMock.openRight.mockClear();
         appPaneScopeMock.setRightTab.mockClear();
-        const { ProjectRightPanel } = await import('./ProjectRightPanel');
 
         const workspaceRef = {
             id: 'wr_1',
@@ -131,6 +135,7 @@ describe('ProjectRightPanel', () => {
         );
 
         const filesTab = screen.tree.findByProps({ testID: 'project-rightpanel-tab:files' });
+        expect(screen.tree.findByType('WorkspaceRightPanelGitViewStub').props.stateSize).toBe('phone');
         await act(async () => {
             filesTab.props.onPress();
         });
@@ -146,7 +151,6 @@ describe('ProjectRightPanel', () => {
         routerReplaceSpy.mockClear();
         appPaneScopeMock.openRight.mockClear();
         appPaneScopeMock.setRightTab.mockClear();
-        const { ProjectRightPanel } = await import('./ProjectRightPanel');
 
         const workspaceRef = {
             id: 'wr_1',

@@ -27,8 +27,45 @@ import {
     mapDetailsWorkspaceAxisToSplitCanvasAxis,
 } from './detailsWorkspaceSplitCanvas';
 import { arePaneStateJsonValuesEqual } from '../../model/paneStateStructuralEquality';
+import {
+    activateGroupTab,
+    closeGroupTab,
+    insertGroupTab,
+    moveGroupTab,
+    removeGroupPreviewTabs,
+    replaceGroupTabId,
+    setGroupTabPinned,
+    type TabGroupState,
+} from '@/components/appShell/workspace/tabGroups/tabGroupTransitions';
 
 const ROOT_GROUP_ID = 'group:1';
+
+function asTabGroup(group: DetailsWorkspaceGroupState): TabGroupState {
+    return {
+        id: group.id,
+        tabIds: group.tabKeys,
+        activeTabId: group.activeTabKey,
+        mru: group.mru ?? [],
+    };
+}
+
+function asDetailsGroup(group: TabGroupState): DetailsWorkspaceGroupState {
+    return {
+        id: group.id,
+        tabKeys: group.tabIds,
+        activeTabKey: group.activeTabId,
+        mru: group.mru,
+    };
+}
+
+function asGroupTab(tab: DetailsTabState) {
+    return { id: tab.key, pinned: tab.isPinned, preview: tab.isPreview };
+}
+
+function withPinnedState(tab: DetailsTabState, pinned: boolean): DetailsTabState {
+    const disposition = setGroupTabPinned(asGroupTab(tab), pinned);
+    return { ...tab, isPinned: disposition.pinned, isPreview: disposition.preview };
+}
 
 export function createEmptyPaneDetailsState(): PaneDetailsState {
     return {
@@ -56,14 +93,6 @@ function extractGroupOrdinal(groupId: string): number {
 
 function getFirstGroupId(details: Readonly<Pick<PaneDetailsState, 'root'>>): string | null {
     return listDetailsWorkspaceGroupIds(details.root)[0] ?? null;
-}
-
-function findLastDifferent(values: ReadonlyArray<string>, excludedValue: string): string | null {
-    for (let index = values.length - 1; index >= 0; index -= 1) {
-        const value = values[index];
-        if (value && value !== excludedValue) return value;
-    }
-    return null;
 }
 
 function findGroupIdByTabKey(details: PaneDetailsState, tabKey: string): string | null {
@@ -125,13 +154,11 @@ function removePreviewTabsFromGroup(
     const group = getOwnDetailsWorkspaceRecordEntry(details.groupsById, groupId);
     if (!group) return details;
 
-    const removedKeys = group.tabKeys.filter((tabKey) => {
-        if (tabKey === exceptTabKey) return false;
-        return getOwnDetailsWorkspaceRecordEntry(details.tabsByKey, tabKey)?.isPreview === true;
-    });
+    const groupTabs = Object.fromEntries(Object.entries(details.tabsByKey).map(([id, tab]) => [id, asGroupTab(tab)]));
+    const previewResult = removeGroupPreviewTabs(asTabGroup(group), groupTabs, exceptTabKey);
+    const removedKeys = previewResult.removedTabIds;
     if (removedKeys.length === 0) return details;
 
-    const removedKeySet = new Set(removedKeys);
     const nextTabState = { ...details.tabState } as Record<string, unknown>;
     const nextTabsByKey = { ...details.tabsByKey } as Record<string, DetailsTabState>;
     for (const key of removedKeys) {
@@ -144,17 +171,7 @@ function removePreviewTabsFromGroup(
         tabsByKey: nextTabsByKey,
         groupsById: {
             ...details.groupsById,
-            [groupId]: {
-                ...group,
-                tabKeys: group.tabKeys.filter((tabKey) => !removedKeySet.has(tabKey)),
-                activeTabKey:
-                    group.activeTabKey && removedKeySet.has(group.activeTabKey)
-                        ? findLastDifferent(
-                            group.tabKeys.filter((tabKey) => !removedKeySet.has(tabKey)),
-                            '',
-                        )
-                        : group.activeTabKey,
-            },
+            [groupId]: asDetailsGroup(previewResult.group),
         },
     };
 }
@@ -255,10 +272,7 @@ export function applyOpenDetailsTab(
             },
             groupsById: {
                 ...details.groupsById,
-                [existingGroupId]: {
-                    ...existingGroup,
-                    activeTabKey: params.tab.key,
-                },
+                [existingGroupId]: asDetailsGroup(activateGroupTab(asTabGroup(existingGroup), params.tab.key)),
             },
         });
     }
@@ -285,11 +299,7 @@ export function applyOpenDetailsTab(
         },
         groupsById: {
             ...details.groupsById,
-            [targetGroupId]: {
-                ...group,
-                tabKeys: [...group.tabKeys, nextTab.key],
-                activeTabKey: nextTab.key,
-            },
+            [targetGroupId]: asDetailsGroup(insertGroupTab(asTabGroup(group), nextTab.key)),
         },
     });
 }
@@ -370,24 +380,13 @@ export function applyReplaceDetailsTab(
 
     const nextGroupsById = Object.fromEntries(
         Object.entries(details.groupsById).map(([groupId, group]) => {
-            const seen = new Set<string>();
-            const tabKeys: string[] = [];
-            for (const tabKey of group.tabKeys) {
-                if (groupId !== sourceGroupId && (tabKey === params.tabKey || tabKey === nextTab.key)) {
-                    continue;
-                }
-                const nextKey = groupId === sourceGroupId && tabKey === params.tabKey
-                    ? nextTab.key
-                    : tabKey;
-                if (seen.has(nextKey)) continue;
-                seen.add(nextKey);
-                tabKeys.push(nextKey);
+            if (groupId !== sourceGroupId) {
+                let otherGroup = asTabGroup(group);
+                if (otherGroup.tabIds.includes(params.tabKey)) otherGroup = closeGroupTab(otherGroup, params.tabKey);
+                if (otherGroup.tabIds.includes(nextTab.key)) otherGroup = closeGroupTab(otherGroup, nextTab.key);
+                return [groupId, asDetailsGroup(otherGroup)];
             }
-            return [groupId, {
-                ...group,
-                tabKeys,
-                activeTabKey: group.activeTabKey === params.tabKey ? nextTab.key : group.activeTabKey,
-            }];
+            return [groupId, asDetailsGroup(replaceGroupTabId(asTabGroup(group), params.tabKey, nextTab.key))];
         }),
     ) as Record<string, DetailsWorkspaceGroupState>;
 
@@ -429,11 +428,7 @@ export function applyPinDetailsTab(details: PaneDetailsState, tabKey: string): P
         ...details,
         tabsByKey: {
             ...details.tabsByKey,
-            [tabKey]: {
-                ...tab,
-                isPinned: true,
-                isPreview: false,
-            },
+            [tabKey]: withPinnedState(tab, true),
         },
     };
 }
@@ -447,23 +442,17 @@ export function applyUnpinDetailsTab(detailsState: PaneDetailsState, tabKey: str
     if (!groupId || !tab || !group) return detailsState;
 
     let details = removePreviewTabsFromGroup(detailsState, groupId, tabKey);
+    const retainedGroup = getOwnDetailsWorkspaceRecordEntry(details.groupsById, groupId) ?? group;
     details = {
         ...details,
         focusedGroupId: groupId,
         tabsByKey: {
             ...details.tabsByKey,
-            [tabKey]: {
-                ...tab,
-                isPinned: false,
-                isPreview: true,
-            },
+            [tabKey]: withPinnedState(tab, false),
         },
         groupsById: {
             ...details.groupsById,
-            [groupId]: {
-                ...group,
-                activeTabKey: tabKey,
-            },
+            [groupId]: asDetailsGroup(activateGroupTab(asTabGroup(retainedGroup), tabKey)),
         },
     };
     return cleanupDetailsState(details);
@@ -556,7 +545,8 @@ export function applyCloseDetailsTab(detailsState: PaneDetailsState, tabKey: str
     delete nextTabsByKey[tabKey];
     delete nextTabState[tabKey];
 
-    const nextTabKeys = group.tabKeys.filter((key) => key !== tabKey);
+    const nextGroup = closeGroupTab(asTabGroup(group), tabKey);
+    const nextTabKeys = nextGroup.tabIds;
     let nextGroupsById = { ...detailsState.groupsById } as Record<string, DetailsWorkspaceGroupState>;
     let nextDetails: PaneDetailsState = {
         ...detailsState,
@@ -572,14 +562,7 @@ export function applyCloseDetailsTab(detailsState: PaneDetailsState, tabKey: str
             leafId: groupId,
         });
     } else {
-        nextGroupsById = setOwnDetailsWorkspaceRecordEntry<DetailsWorkspaceGroupState>(nextGroupsById, groupId, {
-            ...group,
-            tabKeys: nextTabKeys,
-            activeTabKey:
-                group.activeTabKey === tabKey
-                    ? (nextTabKeys[group.tabKeys.indexOf(tabKey) - 1] ?? nextTabKeys[group.tabKeys.indexOf(tabKey)] ?? nextTabKeys.at(-1) ?? null)
-                    : group.activeTabKey,
-        });
+        nextGroupsById = setOwnDetailsWorkspaceRecordEntry<DetailsWorkspaceGroupState>(nextGroupsById, groupId, asDetailsGroup(nextGroup));
         nextDetails = { ...nextDetails, groupsById: nextGroupsById };
     }
 
@@ -600,10 +583,7 @@ export function applySetActiveDetailsTab(detailsState: PaneDetailsState, tabKey:
         ...detailsState,
         groupsById: {
             ...detailsState.groupsById,
-            [groupId]: {
-                ...group,
-                activeTabKey: tabKey,
-            },
+            [groupId]: asDetailsGroup(activateGroupTab(asTabGroup(group), tabKey)),
         },
     }, {
         type: 'focusLeaf',
@@ -660,37 +640,30 @@ export function applyMoveDetailsTabToGroup(
     const movingTab = getOwnDetailsWorkspaceRecordEntry(detailsState.tabsByKey, params.tabKey);
     if (!movingTab) return detailsState;
 
-    let details = detailsState;
-    if (movingTab.isPreview) {
-        details = removePreviewTabsFromGroup(details, params.targetGroupId, params.tabKey);
-    }
-
+    const details = detailsState;
     const sourceGroup = getOwnDetailsWorkspaceRecordEntry(details.groupsById, sourceGroupId);
     const targetGroup = getOwnDetailsWorkspaceRecordEntry(details.groupsById, params.targetGroupId);
     if (!sourceGroup || !targetGroup) return detailsState;
 
+    const groupTabs = Object.fromEntries(Object.entries(details.tabsByKey).map(([id, tab]) => [id, asGroupTab(tab)]));
+    const moved = moveGroupTab(asTabGroup(sourceGroup), asTabGroup(targetGroup), asGroupTab(movingTab), groupTabs);
+    const replacedPreviewTabIds = new Set(moved.replacedPreviewTabIds);
+    const nextTabsByKey = Object.fromEntries(Object.entries(details.tabsByKey).filter(([id]) => !replacedPreviewTabIds.has(id)));
+    const nextTabState = Object.fromEntries(Object.entries(details.tabState).filter(([id]) => !replacedPreviewTabIds.has(id)));
+
     let nextGroupsById = { ...details.groupsById } as Record<string, DetailsWorkspaceGroupState>;
-    nextGroupsById = setOwnDetailsWorkspaceRecordEntry<DetailsWorkspaceGroupState>(nextGroupsById, sourceGroupId, {
-        ...sourceGroup,
-        tabKeys: sourceGroup.tabKeys.filter((tabKey) => tabKey !== params.tabKey),
-        activeTabKey:
-            sourceGroup.activeTabKey === params.tabKey
-                ? findLastDifferent(sourceGroup.tabKeys, params.tabKey)
-                : sourceGroup.activeTabKey,
-    });
-    nextGroupsById = setOwnDetailsWorkspaceRecordEntry<DetailsWorkspaceGroupState>(nextGroupsById, params.targetGroupId, {
-        ...targetGroup,
-        tabKeys: [...targetGroup.tabKeys.filter((tabKey) => tabKey !== params.tabKey), params.tabKey],
-        activeTabKey: params.tabKey,
-    });
+    nextGroupsById = setOwnDetailsWorkspaceRecordEntry<DetailsWorkspaceGroupState>(nextGroupsById, sourceGroupId, asDetailsGroup(moved.source));
+    nextGroupsById = setOwnDetailsWorkspaceRecordEntry<DetailsWorkspaceGroupState>(nextGroupsById, params.targetGroupId, asDetailsGroup(moved.target));
 
     let nextDetails: PaneDetailsState = {
         ...details,
+        tabsByKey: nextTabsByKey,
+        tabState: nextTabState,
         groupsById: nextGroupsById,
         focusedGroupId: params.targetGroupId,
     };
 
-    if (getOwnDetailsWorkspaceRecordEntry(nextGroupsById, sourceGroupId)?.tabKeys.length === 0) {
+    if (moved.source.tabIds.length === 0) {
         delete nextGroupsById[sourceGroupId];
         nextDetails = applyDetailsWorkspaceSplitCanvasAction(nextDetails, {
             type: 'closeLeaf',

@@ -15,7 +15,7 @@ import {
   standardCleanup,
 } from '@/dev/testkit';
 import { registerStorageStateReader } from '@/sync/domains/state/storageStateReaderBridge';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionMessages } from '@/sync/store/domains/messages';

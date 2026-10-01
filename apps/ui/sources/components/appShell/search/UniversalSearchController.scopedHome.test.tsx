@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import type { SelectionListProps } from '@/components/ui/selectionList';
 import type { SessionOrganizationProjection } from '@/sync/domains/session/organization/types';
+import {
+    EMPTY_PLUGIN_UI_PROJECTION,
+    type PluginUiProjectionModel,
+} from '@/sync/domains/plugins/ui/projection';
 
 const harness = vi.hoisted(() => ({
     selectionListProps: null as SelectionListProps | null,
@@ -33,7 +37,16 @@ const harness = vi.hoisted(() => ({
     }>,
     homeCredentialMutationListeners: new Set<(event: { kind: 'credentials_set' | 'credentials_removed'; serverId: string; serverUrl: string }) => void>(),
     portableIdentity: false,
+    singleHome: false,
+    settingsCatalog: { tree: [], search: () => [] } as { tree: readonly unknown[]; search: (query: string) => readonly unknown[] },
     sessionOrganizationProjection: null as SessionOrganizationProjection | null,
+    appShellPluginProjection: null as PluginUiProjectionModel | null,
+    scopedPluginProjections: new Map<string, PluginUiProjectionModel>(),
+    scopedPluginProjectionCalls: [] as Array<Readonly<{
+        machineId?: string | null;
+        serverId?: string | null;
+        enabled?: boolean;
+    }>>,
     activeAccountLifetime: null as null | {
         scope: { serverId: string; accountId: string };
         isCurrent(): boolean;
@@ -70,15 +83,36 @@ vi.mock('@/hooks/session/useNavigateToSession', () => ({
 
 vi.mock('@/components/projects/useOpenProject', () => ({ useOpenProject: () => vi.fn(() => true) }));
 vi.mock('@/components/settings/catalog/runtime/useResolvedSettingsPageCatalog', () => ({
-    useResolvedSettingsPageCatalog: () => ({ tree: [], search: () => [] }),
+    useResolvedSettingsPageCatalog: () => harness.settingsCatalog,
 }));
 vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
     useAppShellPluginUiProjection: () => ({
-        pluginUiProjection: null,
-        serverId: null,
-        machineId: null,
-        interactionEnabled: false,
+        pluginUiProjection: harness.appShellPluginProjection,
+        serverId: harness.appShellPluginProjection ? 'home-a' : null,
+        machineId: harness.appShellPluginProjection ? 'machine-a' : null,
+        interactionEnabled: harness.appShellPluginProjection !== null,
     }),
+}));
+vi.mock('@/components/plugins/projection/useScopedPluginUiProjection', () => ({
+    useScopedPluginUiProjection: (params: Readonly<{
+        machineId?: string | null;
+        serverId?: string | null;
+        enabled?: boolean;
+    }>) => {
+        harness.scopedPluginProjectionCalls.push(params);
+        const projection = params.enabled === false
+            ? null
+            : harness.scopedPluginProjections.get(`${params.serverId ?? ''}:${params.machineId ?? ''}`) ?? null;
+        return {
+            pluginUiProjection: projection,
+            pluginBrowserProjection: null,
+            phase: projection ? 'current' : 'unavailable',
+            interactionEnabled: projection !== null,
+            serverId: params.serverId ?? null,
+            machineId: params.machineId ?? null,
+            platform: 'web',
+        };
+    },
 }));
 vi.mock('@/components/appShell/currentUiContext/CurrentUiContextProvider', () => ({
     useOptionalCurrentUiContextReader: () => null,
@@ -88,6 +122,7 @@ vi.mock('@/components/plugins/surfaces/pluginSurfaceDestinationNavigation', () =
 }));
 
 vi.mock('@/sync/store/hooks', () => ({
+    useAllMachines: () => [],
     useAllSessions: () => [{
         id: 'session-b',
         serverId: harness.portableIdentity ? 'local-home-b' : 'home-b',
@@ -164,6 +199,7 @@ vi.mock('@/sync/domains/state/storageStore', () => ({
     storage: { getState: () => ({ sessions: { 'session-b': { id: 'session-b', serverId: harness.portableIdentity ? 'local-home-b' : 'home-b' } } }) },
 }));
 vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
+    getActiveServerAccountScope: () => ({ serverId: 'home-a', accountId: 'account-1' }),
     captureActiveServerAccountScopeLifetime: () => {
         harness.activeAccountLifetime ??= {
             scope: { serverId: 'home-a', accountId: 'account-1' },
@@ -235,6 +271,8 @@ vi.mock('@/sync/domains/memory/searchDaemonMemory', () => ({ searchDaemonMemory:
 vi.mock('@/sync/ops/sessionMachineTarget', () => ({ readMachineControlTargetForSession: () => null }));
 vi.mock('@/hooks/server/useServerProfilesGeneration', () => ({ useServerProfilesGeneration: () => 1 }));
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
+    // The Home display-name owner reads a user-given name; these fixtures name every Home.
+    readServerProfileHomeName: (profile: { name?: string }) => profile.name?.trim() || null,
     getActiveServerSnapshot: () => ({
         serverId: 'home-a',
         serverUrl: 'https://home-a.example.test',
@@ -242,7 +280,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         isSelectionExplicit: true,
     }),
     listServerProfiles: () => [
-        { id: 'home-a', name: 'Home A', serverUrl: 'https://home-a.example.test' },
+        ...(harness.singleHome ? [] : [{ id: 'home-a', name: 'Home A', serverUrl: 'https://home-a.example.test' }]),
         harness.portableIdentity
             ? { id: 'local-home-b', serverIdentityId: 'home-b', name: 'Home B', serverUrl: 'https://home-b.example.test' }
             : { id: 'home-b', name: 'Home B', serverUrl: 'https://home-b.example.test' },
@@ -256,12 +294,52 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         || (harness.portableIdentity && [left, right].sort().join(':') === 'home-b:local-home-b'),
 }));
 
+function pluginSearchProjection(input: Readonly<{
+    pluginId: string;
+    title: string;
+    generation: number;
+}>): PluginUiProjectionModel {
+    const providerId = `searchProvider:${input.pluginId}:entries`;
+    return Object.freeze({
+        ...EMPTY_PLUGIN_UI_PROJECTION,
+        generation: input.generation,
+        searchProvidersById: Object.freeze({
+            [providerId]: Object.freeze({
+                id: providerId,
+                pluginId: input.pluginId,
+                contributionKind: 'searchProvider' as const,
+                descriptorId: 'entries',
+                identity: Object.freeze({ pluginId: input.pluginId, localId: 'entries' }),
+                action: Object.freeze({ pluginId: input.pluginId, localId: 'search' }),
+            }),
+        }),
+        actionsById: Object.freeze({
+            [`${input.pluginId}/search`]: Object.freeze({
+                id: 'search',
+                pluginId: input.pluginId,
+                title: input.title,
+                icon: 'action',
+                scopes: ['global'],
+                surfaces: ['ui'],
+                execution: { target: 'daemon' },
+                dangerLevel: 'safe',
+                available: true,
+            }),
+        }),
+    }) as PluginUiProjectionModel;
+}
+
 afterEach(() => {
     harness.selectionListProps = null;
     harness.sessionListRows = [];
     harness.homeCredentialMutationListeners.clear();
     harness.portableIdentity = false;
+    harness.singleHome = false;
+    harness.settingsCatalog = { tree: [], search: () => [] };
     harness.sessionOrganizationProjection = null;
+    harness.appShellPluginProjection = null;
+    harness.scopedPluginProjections.clear();
+    harness.scopedPluginProjectionCalls = [];
     harness.activeAccountLifetime = null;
     harness.featureEnabled = { search: true, 'memory.search': false };
     vi.clearAllMocks();
@@ -586,12 +664,14 @@ describe('UniversalSearchController exact Home scope', () => {
             serverId: 'home-b',
             accountId: 'account-1',
         }));
-        option?.onSelect?.();
-        harness.selectionListProps?.onSelect?.(option!.id, option!);
-        await vi.waitFor(() => expect(harness.navigateToSession).toHaveBeenCalledWith('session-b', {
-            serverId: 'home-b',
-            query: { jumpSeq: 5 },
-        }));
+        await act(async () => {
+            option?.onSelect?.();
+            harness.selectionListProps?.onSelect?.(option!.id, option!);
+            await vi.waitFor(() => expect(harness.navigateToSession).toHaveBeenCalledWith('session-b', {
+                serverId: 'home-b',
+                query: { jumpSeq: 5 },
+            }));
+        });
     });
 
     it('keeps a contextual Home B seed through query, result identity, and canonical scoped activation while Home A is focused', async () => {
@@ -634,15 +714,60 @@ describe('UniversalSearchController exact Home scope', () => {
         }));
         expect(option?.id).toContain('home-b');
 
-        option?.onSelect?.();
-        harness.selectionListProps?.onSelect?.(option!.id, option!);
-        await vi.waitFor(() => {
-            expect(harness.navigateToSession).toHaveBeenCalledWith('session-b', {
-                serverId: 'home-b',
-                query: { jumpSeq: 7 },
+        await act(async () => {
+            option?.onSelect?.();
+            harness.selectionListProps?.onSelect?.(option!.id, option!);
+            await vi.waitFor(() => {
+                expect(harness.navigateToSession).toHaveBeenCalledWith('session-b', {
+                    serverId: 'home-b',
+                    query: { jumpSeq: 7 },
+                });
             });
         });
         expect(harness.fetchAllSessionMetadata).not.toHaveBeenCalled();
+    });
+
+    it('uses Home B plugin providers from the selected scope while Home A is focused', async () => {
+        harness.appShellPluginProjection = pluginSearchProjection({
+            pluginId: 'acme.home-a',
+            title: 'Home A entities',
+            generation: 11,
+        });
+        harness.scopedPluginProjections.set(
+            'home-b:machine-b',
+            pluginSearchProjection({
+                pluginId: 'acme.home-b',
+                title: 'Home B entities',
+                generation: 22,
+            }),
+        );
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialQuery="needle"
+                initialScope={{
+                    accountId: 'account-1',
+                    serverId: 'home-b',
+                    sessionId: null,
+                    machineId: 'machine-b',
+                    rootPath: null,
+                }}
+                activeSessionId="ambient-session-a"
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        expect(harness.scopedPluginProjectionCalls).toContainEqual({
+            serverId: 'home-b',
+            machineId: 'machine-b',
+            enabled: true,
+        });
+        const sectionIds = harness.selectionListProps?.rootStep.sections.map((section) => section.id) ?? [];
+        expect(sectionIds).toContain('plugin-search:acme.home-b:entries');
+        expect(sectionIds).not.toContain('plugin-search:acme.home-a:entries');
     });
 
     it('uses the freshly hydrated exact Session title instead of duplicating the transcript excerpt', async () => {
@@ -679,7 +804,86 @@ describe('UniversalSearchController exact Home scope', () => {
         expect(result.options[0]?.subtitle).toBe('Matching transcript excerpt');
     });
 
-    it('keeps the result query out of the scope picker and returns to the root after choosing a scope', async () => {
+    it('lists settings results as one group, pages first, each row with the path the settings rail shows', async () => {
+        harness.settingsCatalog = {
+            tree: [{
+                id: 'root',
+                title: 'Settings',
+                keywords: [],
+                children: [
+                    { id: 'appearance', title: 'Appearance', subtitle: 'Theme, density and fonts', route: '/settings/appearance', keywords: [], children: [
+                        { id: 'terminal', title: 'Terminal', route: '/settings/appearance/terminal', keywords: [] },
+                    ] },
+                ],
+            }],
+            // The catalog ranks a setting above a page; Search still shows pages first.
+            search: () => [
+                { id: 'appearance', route: '/settings/appearance?setting=appearance.theme', setting: { anchor: 'appearance.theme', title: 'Theme', path: ['Appearance'] } },
+                { id: 'terminal', route: '/settings/appearance/terminal' },
+            ],
+        };
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialQuery="the"
+                initialScope={{ accountId: 'account-1', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        const sections = harness.selectionListProps?.rootStep.sections ?? [];
+        const settingsSections = sections.filter((section) => section.id === 'settings');
+        expect(settingsSections).toHaveLength(1);
+        const settings = settingsSections[0];
+        if (!settings || settings.kind !== 'dynamic') throw new Error('Settings section missing');
+        const resolved = await settings.resolve('the', new AbortController().signal);
+        expect(resolved.options.map((option) => [option.label, option.subtitle])).toEqual([
+            ['Terminal', 'Appearance'],
+            ['Theme', 'Appearance'],
+        ]);
+    });
+
+    it('shows no scope chip when the only scope is the current Home', async () => {
+        harness.singleHome = true;
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialScope={{ accountId: 'account-1', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        expect(harness.selectionListProps).not.toBeNull();
+        expect(harness.selectionListProps?.filters ?? []).toHaveLength(0);
+    });
+
+    it('names the scope chip by the Home display name when there are several Homes', async () => {
+        const { UniversalSearchController } = await import('./UniversalSearchController');
+
+        await renderScreen(
+            <UniversalSearchController
+                commands={[]}
+                initialScope={{ accountId: 'account-1', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null }}
+                activeSessionId={null}
+                presentation="modal"
+                onRequestClose={vi.fn()}
+            />,
+        );
+
+        const scopeFilter = harness.selectionListProps?.filters?.find((filter) => filter.id === 'scope');
+        if (!scopeFilter) throw new Error('Scope filter missing from Search');
+        expect(scopeFilter.valueLabel).toBe('Home B');
+    });
+
+    it('keeps the result query when the scope filter changes the Home', async () => {
         const { UniversalSearchController } = await import('./UniversalSearchController');
 
         await renderScreen(
@@ -694,31 +898,19 @@ describe('UniversalSearchController exact Home scope', () => {
         );
 
         expect(harness.selectionListProps?.rootStep.sections.some((section) => section.id === 'scope')).toBe(false);
-        const scopeControl = harness.selectionListProps?.inputPrefix;
-        if (!React.isValidElement<{ testID?: string; onPress?: () => void; accessibilityState?: { expanded?: boolean } }>(scopeControl)) {
-            throw new Error('Scope control missing from Search input');
-        }
-        expect(scopeControl.props.testID).toBe('universal-search:scope');
-        expect(scopeControl.props.accessibilityState?.expanded).toBe(false);
-        await act(async () => {
-            scopeControl.props.onPress?.();
-        });
-        const pickerStep = harness.selectionListProps?.syncActiveStep;
-        expect(pickerStep?.disableInputFilter).toBe(true);
-        if (!pickerStep) throw new Error('Scope picker step missing');
-        expect(harness.selectionListProps?.syncActiveStep).toBe(pickerStep);
-
-        const nextScope = pickerStep.sections
-            .flatMap((section) => section.kind === 'static' ? section.options : [])
-            .find((option) => option.id.includes('home-a'));
+        // The scope is a filter chip: choosing another Home changes the scope, not the query.
+        const scopeFilter = harness.selectionListProps?.filters?.find((filter) => filter.id === 'scope');
+        if (!scopeFilter) throw new Error('Scope filter missing from Search');
+        expect(scopeFilter.testID).toBe('universal-search:scope');
+        const nextScope = scopeFilter.options?.find((option) => option.id.includes('home-a'));
         expect(nextScope).toBeDefined();
         await act(async () => {
-            nextScope?.onSelect?.();
-            harness.selectionListProps?.onSelect?.(nextScope!.id, nextScope!);
+            scopeFilter.onChange?.(nextScope!.id);
         });
 
         expect(harness.selectionListProps?.inputValue).toBe('needle');
-        expect(harness.selectionListProps?.syncActiveStep).toBeNull();
+        expect(harness.selectionListProps?.filters?.find((filter) => filter.id === 'scope')?.selectedId)
+            .toBe(nextScope!.id);
     });
 
     it('invalidates the Home transcript resolver identity when that Home credential mutates', async () => {
@@ -800,12 +992,14 @@ describe('UniversalSearchController exact Home scope', () => {
         const option = resolved.options[0];
 
         expect(option).toBeTruthy();
-        option?.onSelect?.();
-        harness.selectionListProps?.onSelect?.(option!.id, option!);
-        await vi.waitFor(() => {
-            expect(harness.navigateToSession).toHaveBeenCalledWith('session-b', {
-                serverId: 'home-b',
-                query: { jumpSeq: 9 },
+        await act(async () => {
+            option?.onSelect?.();
+            harness.selectionListProps?.onSelect?.(option!.id, option!);
+            await vi.waitFor(() => {
+                expect(harness.navigateToSession).toHaveBeenCalledWith('session-b', {
+                    serverId: 'home-b',
+                    query: { jumpSeq: 9 },
+                });
             });
         });
     });

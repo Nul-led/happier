@@ -1,11 +1,11 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 import type { PluginUiDestinationReferenceV1 } from '@happier-dev/protocol/plugins/ui';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
-import { PluginSurfacePlacementHost } from '@/components/plugins/surfaces';
-import { PluginSurfaceFocusEligibilityProvider } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
+import { PaneHeader } from '@/components/appShell/panes/PaneHeader';
+import { usePaneActionRail, usePaneActionRailRightPaneHiddenByDetails } from '@/components/appShell/panes/PaneActionRailContext';
+import { PaneHeaderSlotScope, PaneHeaderSlotProvider } from '@/components/appShell/panes/paneHeaderSlot';
 import type { BoundPluginSurfaceBinding } from '@/components/plugins/surfaces/boundPluginSurfaceController';
 import type { PluginSurfaceHostActionExecute } from '@/components/plugins/surfaces/pluginSurfaceActionDispatch';
 import {
@@ -14,10 +14,10 @@ import {
     usePluginSurfacePaneLaunch,
     usePluginSurfacePaneLaunchScope,
 } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
-import { Text } from '@/components/ui/text/Text';
 import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { SurfaceStateSizeProvider } from '@/components/ui/surfaces/surfaceStateSize';
 import { PluginReactNativeUnavailable } from '@/components/plugins/reactNative/PluginReactNativeUnavailable';
-import { Typography } from '@/constants/Typography';
 import { getPreferredLanguage, t } from '@/text';
 import type { LocalServicePreviewPlatform } from '@/sync/domains/local/services/preview/url';
 import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
@@ -25,8 +25,13 @@ import type { PluginUiProjectionPhase } from '@/sync/domains/plugins/ui/usePlugi
 import { selectPluginRightSidebarTabPlacements } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
 import { useAppShellPluginUiProjection } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { createPluginLocalizedTextResolver } from '@/sync/domains/plugins/ui/i18n';
+import { AppRightSidebarTabSurface, useAppRightSidebarTabs } from './appRightSidebarTabs';
 import { RightSidebarIconTabBar } from './RightSidebarIconTabBar';
+import { RightSidebarActionRail } from './RightSidebarActionRail';
+import { RightSidebarPaneHeader } from './RightSidebarPaneHeader';
+import { toggleRightSidebarTab } from './rightSidebarActions';
 import {
+    getRightSidebarTabLabel,
     resolveRightSidebarTabSelection,
     resolveRightSidebarTabs,
 } from './rightSidebarTabRegistry';
@@ -58,6 +63,8 @@ export type AppScopeRightSidebarProps = Readonly<{
     platform?: LocalServicePreviewPlatform;
     interactionEnabled?: boolean;
     executeAction?: PluginSurfaceHostActionExecute;
+    /** It stands in a page's pane: a header names the open panel and closes the sidebar. */
+    closable?: boolean;
     testID?: string;
 }>;
 
@@ -77,18 +84,19 @@ const EMPTY_PLUGIN_DESTINATION: PluginUiDestinationReferenceV1 = Object.freeze({
  */
 export function AppScopeRightSidebar(props: AppScopeRightSidebarProps): React.ReactElement | null {
     const inheritedPaneLaunchScope = usePluginSurfacePaneLaunchScope();
+    const content = <PaneHeaderSlotProvider><AppScopeRightSidebarContent {...props} /></PaneHeaderSlotProvider>;
     return inheritedPaneLaunchScope
-        ? <AppScopeRightSidebarContent {...props} />
+        ? content
         : (
             <PluginSurfacePaneLaunchScope>
-                <AppScopeRightSidebarContent {...props} />
+                {content}
             </PluginSurfacePaneLaunchScope>
         );
 }
 
 function AppScopeRightSidebarContent(props: AppScopeRightSidebarProps): React.ReactElement | null {
-    const { theme } = useUnistyles();
     const pane = useAppPaneScope(props.scopeId);
+    const hasActionRail = usePaneActionRail();
     const scopeState = pane.scopeState;
     const pluginProjection = useAppShellPluginUiProjection();
     const projection = props.pluginUiProjection !== undefined
@@ -179,7 +187,83 @@ function AppScopeRightSidebarContent(props: AppScopeRightSidebarProps): React.Re
         destination: activePlacement?.binding.destination ?? EMPTY_PLUGIN_DESTINATION,
         ...(activeInstanceKey === undefined ? {} : { instanceKey: activeInstanceKey }),
     });
-    const selectTab = React.useCallback((tabId: string) => {
+    const selectTab = useAppRightSidebarTabChooser(props.scopeId, tabs);
+    // The app shell owns every app-target navigation registration, including
+    // this container's, so a plugin's first `openSurface` can reach the sidebar
+    // before its route is entered. This leaf is presentation-only.
+    const appTargetBinding = usePluginSurfaceDestinationNavigationBinding();
+
+    const binding = React.useMemo<BoundPluginSurfaceBinding>(() => ({
+        ...(appTargetBinding ? { openSurface: appTargetBinding.openSurface } : {}),
+        ...(props.executeAction ? { executeHostAction: props.executeAction } : {}),
+    }), [appTargetBinding, props.executeAction]);
+
+    if (
+        tabs.length === 0
+        && (
+            tabSelection.kind === 'none'
+            || (tabSelection.kind === 'unavailable' && tabSelection.reason === 'right_sidebar_destination_unavailable')
+        )
+    ) {
+        return (
+            <SurfaceStateSizeProvider size="pane">
+                <SurfaceStateCard testID={props.testID} kind="empty" title={t('pluginSurfaces.appScopeRightSidebar.empty')} />
+            </SurfaceStateSizeProvider>
+        );
+    }
+
+    return (
+        <View testID={props.testID} style={{ flex: 1 }}>
+            {activeTab ? (
+                <RightSidebarPaneHeader
+                    testID={`${props.testID ?? 'app-scope-right-sidebar'}.header`}
+                    tabs={tabs}
+                    activeTabId={resolvedActiveTabId}
+                    onClose={props.closable ? pane.closeRight : undefined}
+                />
+            ) : props.closable ? (
+                <PaneHeader
+                    testID={`${props.testID ?? 'app-scope-right-sidebar'}.header`}
+                    title={activeTab ? getRightSidebarTabLabel(activeTab) : t('pluginSurfaces.hostRenderer.descriptorPanel.untitled')}
+                    onClose={pane.closeRight}
+                />
+            ) : null}
+            {!hasActionRail ? <RightSidebarIconTabBar
+                tabs={tabs}
+                activeTabId={resolvedActiveTabId ?? ''}
+                onSelectTab={selectTab}
+                testIDPrefix="app-scope-right-sidebar-tab"
+            /> : null}
+            <View style={{ flex: 1 }}>
+                <SurfaceStateSizeProvider size="pane">
+                {tabSelection.kind === 'none' ? (
+                    <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ flex: 1 }} />
+                ) : tabSelection.kind === 'unresolved' ? (
+                    <PaneLoadingFallback />
+                ) : tabSelection.kind === 'unavailable' ? (
+                    <PluginReactNativeUnavailable diagnostics={[tabSelection.reason]} />
+                ) : activePlacement ? (
+                    <PaneHeaderSlotScope slotKey={activeTab!.id}>
+                        <AppRightSidebarTabSurface
+                            placement={activePlacement}
+                            facts={{ pluginUiProjection: projection, machineId, serverId, platform, interactionEnabled }}
+                            binding={binding}
+                            launchInput={activePaneLaunch?.input}
+                            mountInstanceKey={activeInstanceKey}
+                        />
+                    </PaneHeaderSlotScope>
+                ) : <PluginReactNativeUnavailable diagnostics={['plugin_destination_unavailable']} />}
+                </SurfaceStateSizeProvider>
+            </View>
+        </View>
+    );
+}
+
+/** The strip and desktop rail share the same deliberate-selection and input-retirement owner. */
+function useAppRightSidebarTabChooser(scopeId: string, tabs: readonly RightSidebarTabDefinition[]): (tabId: string) => void {
+    const pane = useAppPaneScope(scopeId);
+    const paneLaunchStore = usePluginSurfacePaneLaunchScope()?.store;
+    return React.useCallback((tabId: string) => {
         const tab = tabs.find((candidate) => candidate.id === tabId) ?? null;
         if (!tab || tab.disabledReason) {
             return;
@@ -195,86 +279,30 @@ function AppScopeRightSidebarContent(props: AppScopeRightSidebarProps): React.Re
         // A deliberate tab choice has no launch argument. The generic store is
         // one bounded handoff slot, so no prior plugin input can revive when a
         // user returns to this selection later.
-        paneLaunchStore.retire();
+        paneLaunchStore?.retire();
     }, [pane, paneLaunchStore, tabs]);
-    // The app shell owns every app-target navigation registration, including
-    // this container's, so a plugin's first `openSurface` can reach the sidebar
-    // before its route is entered. This leaf is presentation-only: it renders
-    // the selection the app-lifetime owner recorded and never installs a
-    // resolver of its own.
-    const appTargetBinding = usePluginSurfaceDestinationNavigationBinding();
+}
 
-    // §3.1: this sidebar supplies only the facts it owns. Identity, scope,
-    // addressability, the host-ActionSpec front door, the resource snapshot
-    // authority and every method's lifetime belong to the bound controller inside
-    // `PluginSurfacePlacementHost`; this mount adds only its own destination
-    // selector (and, for tests, the canonical executor to inject).
-    const binding = React.useMemo<BoundPluginSurfaceBinding>(() => ({
-        ...(appTargetBinding ? { openSurface: appTargetBinding.openSurface } : {}),
-        ...(props.executeAction ? { executeHostAction: props.executeAction } : {}),
-    }), [appTargetBinding, props.executeAction]);
-
-    // The selection owner distinguishes an ordinary empty sidebar from a
-    // restored/deep-linked plugin destination whose catalog is still
-    // establishing or has now become unavailable. Do not erase that user
-    // intent merely because no tab entry is presently renderable.
-    if (
-        tabs.length === 0
-        && (
-            tabSelection.kind === 'none'
-            || (
-                tabSelection.kind === 'unavailable'
-                && tabSelection.reason === 'right_sidebar_destination_unavailable'
-            )
-        )
-    ) {
-        return (
-            <View testID={props.testID} style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-                <Text style={{ color: theme.colors.text.secondary, fontSize: 13, ...Typography.default(), textAlign: 'center' }}>
-                    {t('pluginSurfaces.appScopeRightSidebar.empty')}
-                </Text>
-            </View>
-        );
-    }
-
-    return (
-        <View testID={props.testID} style={{ flex: 1 }}>
-            <RightSidebarIconTabBar
-                tabs={tabs}
-                activeTabId={resolvedActiveTabId ?? ''}
-                onSelectTab={selectTab}
-                testIDPrefix="app-scope-right-sidebar-tab"
-            />
-            <View style={{ flex: 1 }}>
-                {tabSelection.kind === 'none' ? (
-                    <View
-                        pointerEvents="none"
-                        accessibilityElementsHidden
-                        importantForAccessibility="no-hide-descendants"
-                        style={{ flex: 1 }}
-                    />
-                ) : tabSelection.kind === 'unresolved' ? (
-                    <PaneLoadingFallback color={theme.colors.text.secondary} />
-                ) : tabSelection.kind === 'unavailable' ? (
-                    <PluginReactNativeUnavailable diagnostics={[tabSelection.reason]} />
-                ) : activePlacement ? (
-                    <PluginSurfaceFocusEligibilityProvider active>
-                        <PluginSurfacePlacementHost
-                            placement={activePlacement}
-                            pluginUiProjection={projection}
-                            machineId={machineId}
-                            serverId={serverId}
-                            platform={platform}
-                            projectionInteractionEnabled={interactionEnabled}
-                            binding={binding}
-                            launchInput={activePaneLaunch?.input}
-                            mountInstanceKey={scopeState?.right.selectedDestination?.kind === 'plugin'
-                                ? scopeState.right.selectedDestination.instanceKey
-                                : undefined}
-                        />
-                    </PluginSurfaceFocusEligibilityProvider>
-                ) : <PluginReactNativeUnavailable diagnostics={['plugin_destination_unavailable']} />}
-            </View>
-        </View>
-    );
+/** The desktop App rail uses the same catalog and persisted selection as its fallback strip. */
+export function AppScopeRightSidebarActionRail(props: Readonly<{ scopeId: string }>): React.ReactElement {
+    const pane = useAppPaneScope(props.scopeId);
+    const rightPaneHiddenByDetails = usePaneActionRailRightPaneHiddenByDetails();
+    const tabs = useAppRightSidebarTabs();
+    const { phase } = useAppShellPluginUiProjection();
+    const selection = resolveRightSidebarTabSelection<string>({
+        activeTabId: pane.scopeState?.right.activeTabId,
+        selectedDestination: pane.scopeState?.right.selectedDestination ?? null,
+        tabs,
+        projectionPhase: phase,
+        scope: 'app',
+    });
+    const selectTab = useAppRightSidebarTabChooser(props.scopeId, tabs);
+    return <RightSidebarActionRail testID="app-scope-right-sidebar-action-rail" testIDPrefix="app-scope-right-sidebar-rail" actions={tabs.map((tab) => ({
+        id: tab.id,
+        label: getRightSidebarTabLabel(tab),
+        icon: tab.icon,
+        active: pane.scopeState?.right.isOpen === true && !rightPaneHiddenByDetails && selection.kind === 'available' && selection.tab.id === tab.id,
+        disabled: Boolean(tab.disabledReason),
+        onPress: () => toggleRightSidebarTab(pane, tab.id, selection.kind === 'available' ? selection.tab.id : null, selectTab, rightPaneHiddenByDetails),
+    }))} />;
 }

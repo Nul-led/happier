@@ -15,7 +15,6 @@ import {
     type PluginSurfaceContributedActionTransport,
 } from '@/components/plugins/surfaces/pluginSurfaceActionDispatch';
 import {
-    createPluginActionCurrentIntentHandler,
 } from '@/components/plugins/surfaces/pluginSurfaceFeedback';
 import type { PluginSurfaceDestinationNavigationBinding } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
 import type { machinePluginStructuredMessageActionExecute } from '@/sync/ops/machineContributionRegistryProjection';
@@ -29,14 +28,14 @@ export type AppShellPluginUiActionExecute = (
 
 function invocationError(
     code: string,
-    identity: Readonly<{ pluginId: string; contributionId: string; generation: string }>,
+    identity: Readonly<{ pluginId: string; contributionId: string; occurrenceId: string }>,
 ): PluginError {
     return new PluginError({
         code,
         details: {
             pluginId: identity.pluginId,
             contributionId: identity.contributionId,
-            generation: identity.generation,
+            occurrenceId: identity.occurrenceId,
         },
     });
 }
@@ -77,7 +76,7 @@ export function composeAppShellInvocationSignal(
 export function createAppShellPluginUiInvocationHost(input: Readonly<{
     pluginId: string;
     contributionId: string;
-    generation: string;
+    occurrenceId: string;
     machineId: string;
     serverId?: string | null;
     /** Current raw V2 Action lookup supplied by the projection owner. */
@@ -94,23 +93,7 @@ export function createAppShellPluginUiInvocationHost(input: Readonly<{
     const identity = Object.freeze({
         pluginId: input.pluginId,
         contributionId: input.contributionId,
-        generation: input.generation,
-    });
-    // Projection generations are decimal wire values at this Voice-host seam.
-    // The shared client Action dispatcher accepts only its exact non-negative
-    // numeric generation, so malformed/stale host input cannot manufacture a
-    // client executable binding. Daemon Actions retain their incumbent path.
-    const projectionGeneration = Number(input.generation);
-    const requestCurrentIntent = createPluginActionCurrentIntentHandler({
-        requester: {
-            pluginId: input.pluginId,
-            contributionId: input.contributionId,
-            generationId: input.generation,
-            invocationId: `voice:${input.contributionId}`,
-        },
-        signal: input.signal,
-        isCurrent: input.isCurrent,
-        pluginUiProjection: input.pluginUiProjection,
+        occurrenceId: input.occurrenceId,
     });
     const clientActionOpenSurface: PluginSurfaceDestinationNavigationBinding['openSurface'] | undefined = input.readNavigationBinding
         ? (request) => {
@@ -120,13 +103,9 @@ export function createAppShellPluginUiInvocationHost(input: Readonly<{
                 : { ok: false, code: 'unavailable', reason: 'plugin_surface_open_unavailable' };
         }
         : undefined;
-    const clientAction = Number.isSafeInteger(projectionGeneration) && projectionGeneration >= 0
-        ? Object.freeze({
-            projectionGeneration,
-            requestCurrentIntent,
-            ...(clientActionOpenSurface ? { openSurface: clientActionOpenSurface } : {}),
-        })
-        : null;
+    const clientAction = Object.freeze({
+        ...(clientActionOpenSurface ? { openSurface: clientActionOpenSurface } : {}),
+    });
     const unavailable = (): never => {
         throw invocationError('plugin_ui_method_unavailable', identity);
     };
@@ -155,12 +134,11 @@ export function createAppShellPluginUiInvocationHost(input: Readonly<{
                 ...(input.resolveContributedAction
                     ? { resolveContributedAction: input.resolveContributedAction }
                     : {}),
-                ...(clientAction ? { clientAction } : {}),
+                clientAction,
                 invocationSurface: 'voice',
                 contributedAction: {
                     machineId: input.machineId,
                     serverId: input.serverId ?? null,
-                    expectedGeneration: input.generation,
                     timeoutMs: input.timeoutMs ?? PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS,
                     ...(input.execute
                         ? { execute: input.execute as PluginSurfaceContributedActionTransport }
@@ -196,6 +174,9 @@ export function createAppShellPluginUiInvocationHost(input: Readonly<{
         pickComposerMedia: async () => unavailable(),
         inspectComposerContent: async () => unavailable(),
         releaseComposerContent: async () => unavailable(),
+        readSession: async () => unavailable(),
+        watchSession: async () => unavailable(),
+        respondToSessionPermission: async () => unavailable(),
         selectActionInput: async () => unavailable(),
         openNewSession: async () => unavailable(),
         openConnectedAccounts: async () => unavailable(),

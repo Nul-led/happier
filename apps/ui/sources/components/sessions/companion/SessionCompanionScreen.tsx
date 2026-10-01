@@ -2,11 +2,10 @@ import * as React from 'react';
 import { I18nManager, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
+import { usePaneHeaderSlotContent } from '@/components/appShell/panes/paneHeaderSlot';
 import { useMountedSessionBoardController } from '@/components/sessions/board/SessionBoardControllerProvider';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
-import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
@@ -19,21 +18,15 @@ import {
     buildSessionPresentationNoticeKeyPrefix,
 } from './presentation/sessionCompanionPresentationAdapter';
 import { buildSessionCompanionMenuActions } from './sessionCompanionMenu';
-import { resolveSessionCompanionAddableItems } from './sessionCompanionContentModel';
+import { SessionCompanionAddControl } from './picker/SessionCompanionAddControl';
+import { useSessionCompanionBoardAdd } from './picker/useSessionCompanionBoardAdd';
+import type { SessionCompanionItemRefV1 } from './state/sessionCompanionPreference';
 import { useSessionCompanionController } from './state/useSessionCompanionController';
 import type { SessionSummaryDestinationHandlers } from './summary/SessionSummaryCard';
 
-const stylesheet = StyleSheet.create((theme) => ({
+const stylesheet = StyleSheet.create(() => ({
     root: { flex: 1, minHeight: 0 },
-    header: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        paddingStart: 16,
-        paddingEnd: 6,
-        paddingTop: 12,
-    },
-    heading: { ...Typography.eyebrow(), color: theme.colors.text.secondary, flex: 1, minWidth: 0 },
+    headerActions: { flexDirection: 'row', alignItems: 'center', gap: 2 },
 }));
 
 /**
@@ -78,33 +71,30 @@ export const SessionCompanionScreen = React.memo(function SessionCompanionScreen
         noticeKeyPrefix,
         ...input,
     }), [controller, noticeKeyPrefix]);
-    const addItem = React.useCallback((item: Parameters<typeof controller.addItem>[0]) => {
+    const addBoard = useSessionCompanionBoardAdd(mountedBoard);
+    const addItem = React.useCallback((item: SessionCompanionItemRefV1) => {
         mutateCompanion({
             kind: 'companion.item.add',
             message: t('sessionBoard.companion.notices.added'),
             apply: (companion) => companion.addItem(item),
         });
     }, [mutateCompanion]);
-
-    const addableItems = React.useMemo(() => resolveSessionCompanionAddableItems({
-        snapshot: mountedBoard?.binding.status === 'ready' ? mountedBoard.binding.snapshot : null,
+    const boardSnapshot = mountedBoard?.binding.status === 'ready' ? mountedBoard.binding.snapshot : null;
+    const navAddBinding = React.useMemo(() => ({
+        ...addBoard,
         refs: controller.preference.items,
-    }), [controller.preference.items, mountedBoard]);
+        snapshot: boardSnapshot,
+        addItem,
+    }), [addBoard, addItem, boardSnapshot, controller.preference.items]);
     const manageBoardItemPlugin = React.useCallback((itemId: string) => {
         if (!mountedBoard?.controller.supports('item.managePlugin')) return;
         void mountedBoard.controller.run({ kind: 'item.managePlugin', itemId });
     }, [mountedBoard]);
-    const removeBoardItem = React.useCallback((itemId: string) => {
-        if (!mountedBoard?.controller.supports('item.remove')) return;
-        void mountedBoard.controller.run({ kind: 'item.remove', itemId });
-    }, [mountedBoard]);
     const canManageBoardItemPlugin = mountedBoard?.controller.supports('item.managePlugin') === true;
-    const canRemoveBoardItem = mountedBoard?.controller.supports('item.remove') === true;
     const menuActions = React.useMemo(
         () => buildSessionCompanionMenuActions({
             preference: controller.preference,
             layoutDirection: I18nManager.isRTL ? 'rtl' : 'ltr',
-            addableItems,
             setEdge: (edge) => { mutateCompanion({
                 kind: 'companion.edge.set',
                 message: t('sessionBoard.companion.notices.moved'),
@@ -128,10 +118,42 @@ export const SessionCompanionScreen = React.memo(function SessionCompanionScreen
                 });
                 props.onRequestClose();
             },
-            addItem,
         }).filter((action) => action.id !== 'collapse' && action.id !== 'expand'),
-        [addItem, addableItems, controller.preference, mutateCompanion, props.onRequestClose],
+        [controller.preference, mutateCompanion, props.onRequestClose],
     );
+
+    // The cockpit's large title is the one heading (session-tabs lab Cp). The Companion tells it where
+    // it lives and how much it holds, and hands it the one menu (side, size, Hide).
+    const itemCount = controller.preference.items.length;
+    // Phone (lab CAp): + in the navigation bar opens the same picker as the rail's
+    // "Add to Companion" row, beside the one options menu.
+    const headerAction = React.useMemo(() => (controller.availability === 'ready' ? (
+        <View style={styles.headerActions}>
+            <SessionCompanionAddControl
+                binding={navAddBinding}
+                variant="icon"
+                testID="session-companion-screen-add"
+            />
+            <ItemRowActions
+                title={t('sessionBoard.companion.title')}
+                actions={menuActions}
+                compactThreshold={Number.POSITIVE_INFINITY}
+                overflowTriggerTestID="session-companion-screen-menu"
+                overflowTriggerAccessibilityLabel={t('sessionBoard.companion.actions.menuA11y')}
+                iconSize={18}
+                gap={6}
+            />
+        </View>
+    ) : null), [controller.availability, menuActions, navAddBinding, styles.headerActions]);
+    const headerLine = React.useMemo(() => ({
+        segments: itemCount > 0
+            ? [t('sessionBoard.companion.pane.besideChat'), t('sessionBoard.companion.pane.itemCount', { count: itemCount })]
+            : [t('sessionBoard.companion.pane.justForYou')],
+    }), [itemCount]);
+    usePaneHeaderSlotContent(React.useMemo(
+        () => ({ line: headerLine, action: headerAction }),
+        [headerAction, headerLine],
+    ));
 
     if (!session) {
         return (
@@ -160,26 +182,6 @@ export const SessionCompanionScreen = React.memo(function SessionCompanionScreen
 
     return (
         <View style={styles.root} testID="session-companion-screen">
-            <View style={styles.header}>
-                {/* The destination's own heading, reachable by heading navigation. */}
-                <Text
-                    numberOfLines={1}
-                    style={styles.heading}
-                    accessibilityRole="header"
-                    testID="session-companion-screen-heading"
-                >
-                    {t('sessionBoard.companion.title')}
-                </Text>
-                <ItemRowActions
-                    title={t('sessionBoard.companion.title')}
-                    actions={menuActions}
-                    compactThreshold={Number.POSITIVE_INFINITY}
-                    overflowTriggerTestID="session-companion-screen-menu"
-                    overflowTriggerAccessibilityLabel={t('sessionBoard.companion.actions.menuA11y')}
-                    iconSize={18}
-                    gap={6}
-                />
-            </View>
             <SessionCompanionContent
                 session={session}
                 serverId={props.address.serverId}
@@ -196,7 +198,9 @@ export const SessionCompanionScreen = React.memo(function SessionCompanionScreen
                 {...(props.summaryDestinations ? { summaryDestinations: props.summaryDestinations } : {})}
                 onRevealBoardItem={props.onRevealBoardItem}
                 {...(canManageBoardItemPlugin ? { onManageBoardItemPlugin: manageBoardItemPlugin } : {})}
-                {...(canRemoveBoardItem ? { onRemoveBoardItem: removeBoardItem } : {})}
+                addBinding={addBoard}
+                addPlacement="external"
+                revealTranscript={props.onRequestClose}
                 presentation="full"
             />
         </View>

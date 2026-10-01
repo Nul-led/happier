@@ -1,10 +1,15 @@
+import { useAiLaunchProfilesForLegacyUi } from '@/sync/store/useAiLaunchProfiles';
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import React, { useCallback } from 'react';
 import { View } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 import { Typography } from '@/constants/Typography';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { PageHeaderMenu } from '@/components/ui/layout/PageHeaderEntityParts';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Avatar } from '@/components/ui/avatar/Avatar';
 import {
@@ -18,9 +23,9 @@ import {
 } from '@/sync/domains/state/storage';
 import { useMachinePoolOriginName } from '@/sync/engine/machines/useMachinePoolOriginName';
 import type { MachinePoolProjectionMachine } from '@/sync/engine/machines/useMachinePoolProjections';
-import { getSessionName, useSessionStatus, formatOSPlatform, formatPathRelativeToHome, getSessionAvatarId } from '@/utils/sessions/sessionUtils';
+import { getSessionName, resolveLockedSessionTitle, useSessionStatus, formatOSPlatform, formatPathRelativeToHome, getSessionAvatarId } from '@/utils/sessions/sessionUtils';
 import { Modal } from '@/modal';
-import { useUnistyles } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { layout } from '@/components/ui/layout/layout';
 import { t } from '@/text';
 import { isVersionSupported, MINIMUM_CLI_VERSION } from '@/utils/system/versionUtils';
@@ -39,6 +44,7 @@ import { getAgentVendorResumeId } from '@/agents/runtime/resumeCapabilities';
 import { useSessionCollaborationDestinationAdmitted } from '@/hooks/session/useSessionCollaborationAvailability';
 import { useOpenSessionCollaboration } from '@/components/sessions/collaboration/useOpenSessionCollaboration';
 import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
+import { isSessionContentReadable, readSessionContentAvailability } from '@/sync/domains/session/encryptedContentAvailability';
 import { useAutomationsSupport } from '@/hooks/server/useAutomationsSupport';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useSessionExecutionRunsSupported } from '@/hooks/server/useSessionExecutionRunsSupported';
@@ -53,13 +59,15 @@ import { resolveSessionHandoffSourceMachineId } from '@/sync/domains/sessionHand
 import {
     resolveSessionHandoffUiAvailability,
 } from '@/sync/domains/sessionHandoff/resolveSessionHandoffUiAvailability';
-import { getActionSpec } from '@happier-dev/protocol';
+import { getActionSpec, readSessionDirectoryKind } from '@happier-dev/protocol';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { SessionRetentionNotice } from '@/components/sessions/info/SessionRetentionNotice';
 import { buildScopedSessionRouteHref, createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
 import { isSessionRouteHydrationAvailable, isSessionRouteHydrationMissing } from '@/sync/domains/session/sessionRouteHydrationState';
 import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
 import { useSessionHandoffSourceReachability, type SessionHandoffRuntimeAvailability } from '@/sync/domains/sessionHandoff/useSessionHandoffSourceReachability';
 import { useSessionReachableMachineTarget } from '@/components/sessions/model/useSessionMachineReachability';
+import { resolveSessionDeleteWarning } from '@/components/sessions/actions/sessionActionPresentation';
 import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
@@ -130,7 +138,6 @@ import {
 import { stringifySessionDebugJson } from '@/components/sessions/debug/sessionDebugRedaction';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
-import { readUiAiLaunchProfilesForLegacyUi } from '@/sync/domains/profiles/aiLaunchProfileCollection';
 import { Icon } from '@/components/ui/icons/Icon';
 import { useSessionAddressForSessionId, useSessionPluginRuntime } from '@/components/sessions/plugins/useSessionPluginRuntime';
 import { PluginInlineSurfaceHost } from '@/components/plugins/surfaces';
@@ -138,7 +145,7 @@ import { evaluatePluginUiPolicy } from '@/sync/domains/plugins/ui/policy';
 import { usePluginUiSessionPolicyEvaluationContext } from '@/components/sessions/model/usePluginUiSessionPolicyEvaluationContext';
 import { WorkspaceSyncRelationshipList } from '@/components/workspaces/sync/WorkspaceSyncRelationshipList';
 import { resolveSessionWorkspaceDisplayPresentation } from '@/sync/domains/session/listing/sessionWorkspaceDisplayPresentation';
-import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
+import { getMachineDisplayName, isMachineOnline } from '@/utils/sessions/machineUtils';
 
 type RawJsonSectionId = 'agentState' | 'metadata' | 'sessionStatus' | 'session';
 type RawJsonSnapshot = Readonly<{
@@ -156,26 +163,40 @@ function SessionMachinePoolOriginItem(props: Readonly<{
     poolId: string;
     machines?: readonly MachinePoolProjectionMachine[];
 }>) {
-    const { theme } = useUnistyles();
     const name = useMachinePoolOriginName(props);
     return (
         <Item
             testID="session-info-placement-origin"
             title={t('machinePools.chosenFrom')}
             subtitle={name ?? t('machinePools.aMachinePool')}
-            icon={<Icon name="stack" size={29} color={theme.colors.accent.indigo} />}
             showChevron={false}
         />
     );
+}
+
+// Session info is a private-detail surface. Once the canonical content
+// availability owner says this viewer cannot open the Session, retain only
+// the safe title and identity shell; metadata and actions must not bypass
+// the locked Session surface's privacy boundary.
+function isSessionInfoContentUnavailable(session: Session): boolean {
+    return !isSessionContentReadable(readSessionContentAvailability(session));
 }
 
 function resolveSessionInfoWorkspaceRef(
     session: Session,
     serverId: string | null,
 ): SessionFolderWorkspaceRefV1 | null {
-    const metadata = readSessionOwnerMetadataView(session);
+    const metadata = isSessionInfoContentUnavailable(session) ? null : readSessionOwnerMetadataView(session);
     if (!metadata || typeof metadata !== 'object') return null;
     const record = metadata as Record<string, unknown>;
+    // A no-folder session lives in its machine's Chats scope for session folders.
+    if (readSessionDirectoryKind(metadata) === 'managed') {
+        return normalizeSessionFolderWorkspaceRef({
+            t: 'managedSessions',
+            serverId,
+            machineId: typeof record.machineId === 'string' ? record.machineId : null,
+        });
+    }
     const rootPath = typeof record.path === 'string' ? record.path : null;
     if (!rootPath) return null;
     return normalizeSessionFolderWorkspaceRef({
@@ -219,7 +240,8 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     runtimeAvailability: SessionHandoffRuntimeAvailability;
     routeScope: ReturnType<typeof createSessionRouteServerScope>;
 }>) {
-    const metadata = readSessionOwnerMetadataView(session);
+    const contentUnavailable = isSessionInfoContentUnavailable(session);
+    const metadata = contentUnavailable ? null : readSessionOwnerMetadataView(session);
     const { theme } = useUnistyles();
     const router = useRouter();
     const profile = useProfile();
@@ -227,7 +249,9 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const pluginRuntime = useSessionPluginRuntime({ address: sessionPluginAddress });
     const localDevModeEnabled = useLocalSetting('devModeEnabled');
     const devModeEnabled = isSessionDebugInformationEnabled(localDevModeEnabled);
-    const sessionName = getSessionName(session);
+    const sessionName = contentUnavailable
+        ? resolveLockedSessionTitle(getSessionName(session))
+        : getSessionName(session);
     const sessionStatus = useSessionStatus(session, {
         subscribeToSession: false,
         subscribeToTranscript: false,
@@ -253,10 +277,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const profilesSetting = useSetting('profiles');
     const acpCatalogSettingsV1 = useSetting('acpCatalogSettingsV1');
     const backendEnabledByTargetKey = useSetting('backendEnabledByTargetKey');
-    const profiles = React.useMemo(
-        () => readUiAiLaunchProfilesForLegacyUi(profilesSetting),
-        [profilesSetting],
-    );
+    const profiles = useAiLaunchProfilesForLegacyUi(profilesSetting);
     const actionsSettingsV1 = useSetting('actionsSettingsV1');
     const sessionReplayEnabled = useSetting('sessionReplayEnabled') === true;
     const settings = useSettings();
@@ -281,6 +302,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const automationsSupport = useAutomationsSupport();
     const showAutomations = automationsSupport?.enabled !== false;
     const [expandedRawJsonSnapshot, setExpandedRawJsonSnapshot] = React.useState<RawJsonSnapshot | null>(null);
+    const [privateFolderExpanded, setPrivateFolderExpanded] = React.useState(false);
     // Check if CLI version is outdated
     const isCliOutdated = metadata?.version && !isVersionSupported(metadata.version, MINIMUM_CLI_VERSION);
     // A session whose Agent the presentation reader cannot name has no brand to
@@ -319,13 +341,14 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
             browserExists: false,
         },
     });
-    const sessionInfoSections = React.useMemo(() => (
-        Object.values(pluginRuntime.pluginUiProjection?.sessionInfoSectionsById ?? {})
+    const sessionInfoSections = React.useMemo(() => {
+        if (contentUnavailable) return [];
+        return Object.values(pluginRuntime.pluginUiProjection?.sessionInfoSectionsById ?? {})
             .map((section) => ({ section, policy: evaluatePluginUiPolicy(section, pluginPolicyContext) }))
             .filter((entry) => entry.policy.visible)
             .sort((left, right) => ((left.section.order ?? 0) - (right.section.order ?? 0))
-                || left.section.id.localeCompare(right.section.id))
-    ), [pluginRuntime.pluginUiProjection?.sessionInfoSectionsById, pluginPolicyContext]);
+                || left.section.id.localeCompare(right.section.id));
+    }, [contentUnavailable, pluginRuntime.pluginUiProjection?.sessionInfoSectionsById, pluginPolicyContext]);
     const sessionActionDefaultBackend = React.useMemo(
         () => resolveSessionActionDefaultBackend({
             session,
@@ -418,7 +441,11 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     });
     const handoffSupported = handoffAvailability.available;
     const newSessionSeedMachineId = reachableMachineId ?? metadata?.machineId ?? null;
-    const newSessionSeedDirectory = reachableMachineTarget?.basePath ?? metadata?.path ?? null;
+    // "New session here" from a no-folder session starts another no-folder session: its private
+    // folder is never handed on (the seed carries the no-folder choice instead).
+    const newSessionSeedDirectory = readSessionDirectoryKind(metadata) === 'managed'
+        ? null
+        : reachableMachineTarget?.basePath ?? metadata?.path ?? null;
 
     const vendorResumeLabelKey = core?.resume.uiVendorResumeIdLabelKey ?? null;
     const vendorResumeCopiedKey = core?.resume.uiVendorResumeIdCopiedKey ?? null;
@@ -594,8 +621,10 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const canArchiveSession = sessionActionTarget.canArchive;
     const canDeleteSession = sessionActionTarget.canDelete;
     const visibleSessionActionIds = React.useMemo(
-        () => new Set(listVisibleSessionActionIds({ target: sessionActionTarget, surface: 'sessionInfo' })),
-        [sessionActionTarget],
+        () => contentUnavailable
+            ? new Set<string>()
+            : new Set(listVisibleSessionActionIds({ target: sessionActionTarget, surface: 'sessionInfo' })),
+        [contentUnavailable, sessionActionTarget],
     );
     const canRenameSession = visibleSessionActionIds.has(SESSION_ACTION_RENAME_ID);
     const sessionInfoTagEntries = sessionSettingsKey
@@ -622,37 +651,31 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     }, [scopedMutationServerId]);
     const pinInfoItemProps = React.useMemo(() => createSessionActionInfoItemProps({
         actionId: isPinnedSession ? SESSION_ACTION_UNPIN_ID : SESSION_ACTION_PIN_ID,
-        iconColor: theme.colors.accent.blue,
-    }), [isPinnedSession, theme.colors.accent.blue]);
+    }), [isPinnedSession]);
     const tagsInfoItemProps = React.useMemo(() => createSessionActionInfoItemProps({
         actionId: SESSION_ACTION_EDIT_TAGS_ID,
-        iconColor: theme.colors.accent.blue,
-    }), [theme.colors.accent.blue]);
+    }), []);
     const moveToFolderInfoItemProps = React.useMemo(() => createSessionActionInfoItemProps({
         actionId: SESSION_ACTION_MOVE_TO_FOLDER_ID,
-        iconColor: theme.colors.accent.blue,
-    }), [theme.colors.accent.blue]);
+    }), []);
     const stopInfoItemProps = React.useMemo(() => createSessionActionInfoItemProps({
         actionId: SESSION_ACTION_STOP_ID,
-        iconColor: theme.colors.state.danger.foreground,
-    }), [theme.colors.state.danger.foreground]);
+    }), []);
     const archiveInfoItemProps = React.useMemo(() => createSessionActionInfoItemProps({
         actionId: SESSION_ACTION_ARCHIVE_ID,
-        iconColor: theme.colors.state.danger.foreground,
-    }), [theme.colors.state.danger.foreground]);
+    }), []);
     const deleteInfoItemProps = React.useMemo(() => createSessionActionInfoItemProps({
         actionId: SESSION_ACTION_DELETE_ID,
-        iconColor: theme.colors.state.danger.foreground,
-    }), [theme.colors.state.danger.foreground]);
+    }), []);
     const readStateActionId = React.useMemo(
         () => resolveSessionReadStateActionId(sessionActionTarget),
         [sessionActionTarget],
     );
     const readStateInfoItem = React.useMemo(
         () => readStateActionId
-            ? createSessionActionInfoItemProps({ actionId: readStateActionId, iconColor: theme.colors.accent.blue })
+            ? createSessionActionInfoItemProps({ actionId: readStateActionId })
             : null,
-        [readStateActionId, theme.colors.accent.blue],
+        [readStateActionId],
     );
     const attentionStandingActionId = React.useMemo(
         () => resolveSessionAttentionStandingActionId(sessionActionTarget),
@@ -660,9 +683,9 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     );
     const attentionStandingInfoItem = React.useMemo(
         () => attentionStandingActionId
-            ? createSessionActionInfoItemProps({ actionId: attentionStandingActionId, iconColor: theme.colors.accent.blue })
+            ? createSessionActionInfoItemProps({ actionId: attentionStandingActionId })
             : null,
-        [attentionStandingActionId, theme.colors.accent.blue],
+        [attentionStandingActionId],
     );
     const moveTargets = React.useMemo(() => buildSessionInfoMoveTargets({
         sessionFolders: sessionFoldersV1,
@@ -820,6 +843,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     // before any fork effect is issued, from every UI entry point.
     const performFork = useCallback(() => {
         openSessionForkStrategyFlow({
+            navigation: router,
             sessionId: session.id,
             forkSupportSource: session,
             serverId: sessionServerId ?? null,
@@ -891,7 +915,11 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const handleDeleteSession = useCallback(async () => {
         const confirmed = await Modal.confirm(
             t('sessionInfo.deleteSession'),
-            t('sessionInfo.deleteSessionWarning'),
+            resolveSessionDeleteWarning({
+                metadata, machineOnline: currentExecutionMachine ? isMachineOnline(currentExecutionMachine) : false,
+                defaultWarning: t('sessionInfo.deleteSessionWarning'),
+                offlineManagedWarning: t('sessionDirectoryRecovery.offlineDelete', { machine: currentExecutionMachineLabel ?? metadata?.host ?? t('status.unknown') }),
+            }),
             {
                 cancelText: t('common.cancel'),
                 confirmText: t('sessionInfo.deleteSession'),
@@ -900,7 +928,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         );
         if (!confirmed) return;
         await performDelete();
-    }, [performDelete]);
+    }, [currentExecutionMachine, currentExecutionMachineLabel, metadata, performDelete]);
 
     const handleRenameSession = useCallback(async () => {
         if (!canRenameSession) return;
@@ -934,56 +962,69 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         [session.id],
     );
 
+    const aiProviderTitle = resolveSessionActionDefaultBackendTitle({
+        session,
+        sessionActionDefaultBackendEntryTitle: sessionActionDefaultBackendEntry?.title ?? null,
+        fallbackTitle: providerDisplayName,
+    });
+    const headerMachineLabel = currentExecutionMachineLabel ?? metadata?.host ?? null;
+    const headerPath = metadata?.path ? formatPathRelativeToHome(metadata.path, metadata.homeDir) : null;
+    const headerMeta = [
+        aiProviderTitle ? { key: 'agent', text: aiProviderTitle } : null,
+        headerMachineLabel ? { key: 'machine', text: headerMachineLabel } : null,
+        headerPath ? { key: 'path', text: headerPath } : null,
+    ].filter((fact): fact is { key: string; text: string } => fact !== null);
+    const headerMenuActions = canRenameSession
+        ? [{ id: 'rename', testID: 'session-info-rename', title: t('sessionInfo.renameSession'), onSelect: handleRenameSession }]
+        : [];
+    const showStop = sessionStatus.isConnected && canStopSession && stopInfoItemProps;
+    const showArchive = canArchiveSession && archiveInfoItemProps;
+    const showDelete = canDeleteSession && deleteInfoItemProps;
+    const showOrganize = Boolean(readStateInfoItem || attentionStandingInfoItem
+        || (!isArchivedSession && sessionSettingsKey && pinInfoItemProps)
+        || (sessionSettingsKey && tagsInfoItemProps)
+        || (sessionFoldersEnabled && moveTargets.length > 0 && moveToFolderInfoItemProps));
+
     return (
         <>
-            <ItemList>
-                {/* Session Header */}
-                <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
-                    <View style={{ alignItems: 'center', paddingVertical: 24, backgroundColor: theme.colors.surface.base, marginBottom: 8, borderRadius: 12, marginHorizontal: 16, marginTop: 16 }}>
-                        <Avatar id={getSessionAvatarId(session)} size={80} monochrome={!sessionStatus.isConnected} flavor={agentId} />
-                        <Text style={{
-                            fontSize: 20,
-                            fontWeight: '600',
-                            marginTop: 12,
-                            textAlign: 'center',
-                            color: theme.colors.text.primary,
-                            ...Typography.default('semiBold')
-                        }}>
-                            {sessionName}
-                        </Text>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8 }}>
+            <ItemList presentation="page" style={{ paddingTop: 0 }}>
+                <PageHeader
+                    testID="session-info-header"
+                    alwaysShowTitle
+                    title={sessionName}
+                    leading={<Avatar id={getSessionAvatarId(session)} size={48} monochrome={!sessionStatus.isConnected} flavor={agentId} />}
+                    details={(
+                        <View style={infoStyles.status}>
                             <StatusDot
                                 color={sessionStatus.statusDotColor}
                                 isPulsing={sessionStatus.isPulsing}
-                                size={10}
-                                style={{ marginRight: 4 }}
+                                size={8}
                             />
-                            <Text style={{
-                                fontSize: 15,
-                                color: sessionStatus.statusColor,
-                                fontWeight: '500',
-                                ...Typography.default()
-                            }}>
+                            <Text style={[infoStyles.statusText, { color: sessionStatus.statusColor }]}>
                                 {sessionStatus.statusText}
                             </Text>
                         </View>
-                    </View>
-                </View>
+                    )}
+                    meta={headerMeta}
+                    actions={headerMenuActions.length > 0 ? (
+                        <PageHeaderMenu testID="session-info-menu" actions={headerMenuActions} />
+                    ) : undefined}
+                />
 
-                {/* CLI Version Warning */}
-                {isCliOutdated && (
+                {/* What blocks use comes first: an outdated CLI, then retention. */}
+                {!contentUnavailable && isCliOutdated && (
                     <ItemGroup>
                         <Item
                             title={t('sessionInfo.cliVersionOutdated')}
                             subtitle={t('sessionInfo.updateCliInstructions')}
-                            icon={<Icon name="warning" size={29} color={theme.colors.accent.orange} />}
+                            icon={<Icon name="warning" size={20} color={theme.colors.state.warning.foreground} />}
                             showChevron={false}
                             copy={updateCommand}
                         />
                     </ItemGroup>
                 )}
 
-                <SessionRetentionNotice sessionId={session.id} />
+                {!contentUnavailable ? <SessionRetentionNotice sessionId={session.id} /> : null}
 
                 {sessionInfoSections.map(({ section, policy }) => (
                     <View
@@ -1006,407 +1047,15 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                     </View>
                 ))}
 
-                {/* Session Details */}
-                <ItemGroup>
-                    <Item
-                        title={t('sessionInfo.happySessionId')}
-                        subtitle={`${session.id.substring(0, 8)}...${session.id.substring(session.id.length - 8)}`}
-                        icon={<Icon name="fingerprint" size={29} color={theme.colors.accent.blue} />}
-                        copy={session.id}
-                    />
-                    {core && vendorResumeId && vendorResumeLabelKey && vendorResumeCopiedKey && (
-                        <Item
-                            title={t(vendorResumeLabelKey)}
-                            subtitle={`${vendorResumeId.substring(0, 8)}...${vendorResumeId.substring(vendorResumeId.length - 8)}`}
-                            icon={<Icon name={core.ui.agentPickerIconName as any} size={29} color={theme.colors.accent.blue} />}
-                            copy={vendorResumeId}
-                        />
-                    )}
-                    <Item
-                        title={t('sessionInfo.connectionStatus')}
-                        detail={sessionStatus.isConnected ? t('status.online') : t('status.offline')}
-                        icon={<Icon name="pulse" size={29} color={sessionStatus.isConnected ? theme.colors.state.success.foreground : theme.colors.text.secondary} />}
-                        showChevron={false}
-                    />
-                    {currentExecutionMachineLabel && (
-                        <Item
-                            testID="session-info-execution-machine"
-                            title={t('machinePools.executionMachine')}
-                            subtitle={currentExecutionMachineLabel}
-                            icon={<Icon name="desktop" size={29} color={theme.colors.accent.indigo} />}
-                            showChevron={false}
-                        />
-                    )}
-                    {metadata?.placementOrigin?.kind === 'machine_pool' && (
-                        <SessionMachinePoolOriginItem
-                            serverId={sessionServerId}
-                            poolId={metadata.placementOrigin.poolId}
-                            machines={sessionServerId ? machineListByServerId[sessionServerId] ?? undefined : undefined}
-                        />
-                    )}
-                    <Item
-                        title={t('sessionInfo.created')}
-                        subtitle={formatDate(session.createdAt)}
-                        icon={<Icon name="calendar" size={29} color={theme.colors.accent.blue} />}
-                        showChevron={false}
-                    />
-                    <Item
-                        title={t('sessionInfo.lastUpdated')}
-                        subtitle={formatDate(session.updatedAt)}
-                        icon={<Icon name="clock" size={29} color={theme.colors.accent.blue} />}
-                        showChevron={false}
-                    />
-                    <Item
-                        title={t('sessionInfo.sequence')}
-                        detail={session.seq.toString()}
-                        icon={<Icon name="git-commit" size={29} color={theme.colors.accent.blue} />}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-
-                <WorkspaceSyncRelationshipList workspaceRefId={workspaceDisplay.workspaceRefId} />
-
-                {/* Quick Actions */}
-                <ItemGroup title={t('sessionInfo.quickActions')}>
-                    {canRenameSession && (
-                        <Item
-                            title={t('sessionInfo.renameSession')}
-                            subtitle={t('sessionInfo.renameSessionSubtitle')}
-                            icon={<Icon name="pencil" size={29} color={theme.colors.accent.blue} />}
-                            onPress={handleRenameSession}
-                        />
-                    )}
-                    <Item
-                        testID="session-info-new-session-same-setup"
-                        title={t('sessionInfo.newSessionSameSetup')}
-                        subtitle={t('sessionInfo.newSessionSameSetupSubtitle')}
-                        icon={<Icon name="copy" size={29} color={theme.colors.accent.blue} />}
-                        onPress={handleNewSessionSameSetup}
-                    />
-                    {devModeEnabled ? (
-                        <Item
-                            testID="session-info-copy-debug-information"
-                            title={t('sessionInfo.copyDebugInformation')}
-                            icon={<Icon name="copy" size={29} color={theme.colors.accent.blue} />}
-                            copy={sessionDebugInformation.text}
-                        />
-                    ) : null}
-                    {session.access?.role === 'owner' && forkActionEnabled && forkSupported && (
-                        <Item
-                            testID="session-info-fork-session"
-                            title={t('sessionInfo.forkSession')}
-                            subtitle={t('sessionInfo.forkSessionSubtitle')}
-                            icon={<Icon name="git-branch" size={29} color={theme.colors.accent.blue} />}
-                            onPress={performFork}
-                        />
-                    )}
-                    {session.access?.role === 'owner' && handoffActionEnabled && handoffSupported && (
-                        <Item
-                            title={handoffActionSpec.title}
-                            subtitle={handoffActionSpec.description}
-                            icon={<Icon name="arrows-left-right" size={24} color={theme.colors.accent.blue} />}
-                            onPress={performHandoff}
-                            loading={handingOffSession}
-                        />
-                    )}
-                    {readStateInfoItem ? (
-                        <Item
-                            {...readStateInfoItem}
-                            onPress={performReadStateAction}
-                            loading={updatingReadState}
-                        />
-                    ) : null}
-                    {attentionStandingInfoItem ? (
-                        <Item
-                            {...attentionStandingInfoItem}
-                            onPress={performAttentionStandingAction}
-                            loading={updatingAttentionStanding}
-                        />
-                    ) : null}
-                    {!isArchivedSession && sessionSettingsKey && pinInfoItemProps ? (
-                        <Item
-                            {...pinInfoItemProps}
-                            onPress={performTogglePinned}
-                            loading={pinningSession}
-                        />
-                    ) : null}
-                    {sessionSettingsKey && tagsInfoItemProps ? (
-                        <DropdownMenu
-                            open={tagMenuOpen}
-                            onOpenChange={setTagMenuOpen}
-                            items={tagMenuContent.dropdownItems}
-                            onSelect={tagMenuContent.dropdownOnSelect}
-                            closeOnSelect={false}
-                            onCreateItem={tagMenuContent.dropdownOnCreate}
-                            search
-                            searchPlaceholder={t('sessionTags.searchOrAddPlaceholder')}
-                            emptyLabel={t('sessionTags.noTagsFound')}
-                            placement="auto-vertical"
-                            variant="slim"
-                            matchTriggerWidth={false}
-                            maxWidthCap={320}
-                            trigger={({ toggle }) => (
-                                <Item
-                                    {...tagsInfoItemProps}
-                                    detail={sessionInfoTagDetail || undefined}
-                                    onPress={toggle}
-                                    loading={editingTags}
-                                />
-                            )}
-                        />
-                    ) : null}
-                    {sessionFoldersEnabled && moveTargets.length > 0 && moveToFolderInfoItemProps ? (
-                        <Item
-                            {...moveToFolderInfoItemProps}
-                            onPress={performMoveToFolder}
-                            loading={movingToFolder}
-                        />
-                    ) : null}
-                    {executionRunsEnabled && sessionExecutionRunsSupported ? (
-                        <Item
-                            title={t('runs.title')}
-                            subtitle={t('sessionInfo.executionRunsSubtitle')}
-                            icon={<Icon name="play" size={29} color={theme.colors.accent.blue} />}
-                            onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/runs' }))}
-                        />
-                    ) : null}
-                    {showAutomations ? (
-                        <Item
-                            title={t('sessionInfo.automationsTitle')}
-                            subtitle={t('sessionInfo.automationsSubtitle')}
-                            icon={<Icon name="timer" size={29} color={theme.colors.accent.blue} />}
-                            onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/automations' }))}
-                        />
-                    ) : null}
-                    {!session.active && Boolean(vendorResumeId) && (
-                        <Item
-                            title={t('sessionInfo.copyResumeCommand')}
-                            subtitle={resumeCommand}
-                            icon={<Icon name="terminal" size={29} color={theme.colors.accent.purple} />}
-                            showChevron={false}
-                            copy={resumeCommand}
-                        />
-                    )}
-                    <Item
-                        title={t('sessionInfo.viewSessionLogTitle')}
-                        subtitle={t('sessionInfo.viewSessionLogSubtitle')}
-                        icon={<Icon name="file-text" size={29} color={theme.colors.accent.blue} />}
-                        onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/log' }))}
-                    />
-                    {reachableMachineId && (
-                        <Item
-                            title={t('sessionInfo.viewMachine')}
-                            subtitle={t('sessionInfo.viewMachineSubtitle')}
-                            subtitleAccessory={
-                                <Text
-                                    testID="sessionInfo.viewMachineTargetMachineId"
-                                    style={{ position: 'absolute', opacity: 0, width: 1, height: 1 }}
-                                >
-                                    {reachableMachineId}
-                                </Text>
-                            }
-                            icon={<Icon name="hard-drives" size={29} color={theme.colors.accent.blue} />}
-                            onPress={() => {
-                                const encodedMachineId = encodeURIComponent(reachableMachineId);
-                                const normalizedServerId = String(sessionServerId ?? '').trim();
-                                const href = normalizedServerId
-                                    ? `/machine/${encodedMachineId}?serverId=${encodeURIComponent(normalizedServerId)}`
-                                    : `/machine/${encodedMachineId}`;
-                                router.push(href);
-                            }}
-                        />
-                    )}
-                    {collaborationTarget && collaborationAdmitted && (
-                        <Item
-                            testID="session-info-collaboration"
-                            title={t('session.collaboration.title')}
-                            icon={<Icon name="users" size={29} color={theme.colors.accent.blue} />}
-                            onPress={openSessionCollaboration}
-                        />
-                    )}
-                    {sessionActionTarget.isOwnedByCurrentUser ? (
-                        <Item
-                            testID="session-info-remote-permission-grants"
-                            title={t('sessionRemotePermissionGrants.entryTitle')}
-                            subtitle={t('sessionRemotePermissionGrants.entrySubtitle')}
-                            icon={<Icon name="shield-check" size={29} color={theme.colors.accent.blue} />}
-                            onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/permissions' }))}
-                        />
-                    ) : null}
-                    {sessionStatus.isConnected && canStopSession && stopInfoItemProps && (
-                        <Item
-                            {...stopInfoItemProps}
-                            onPress={handleStopSession}
-                            loading={stoppingSession}
-                        />
-                    )}
-                    {canArchiveSession && archiveInfoItemProps && (
-                        <Item
-                            {...archiveInfoItemProps}
-                            onPress={handleArchiveSession}
-                            loading={archivingSession}
-                        />
-                    )}
-                    {canDeleteSession && deleteInfoItemProps && (
-                        <Item
-                            {...deleteInfoItemProps}
-                            onPress={handleDeleteSession}
-                        />
-                    )}
-                </ItemGroup>
-
-                {/* Metadata */}
-                {metadata && (
-                    <ItemGroup title={t('sessionInfo.metadata')}>
-                        <Item
-                            title={t('sessionInfo.host')}
-                            subtitle={metadata.host}
-                            icon={<Icon name="desktop" size={29} color={theme.colors.accent.indigo} />}
-                            showChevron={false}
-                        />
-                        <Item
-                            title={t('sessionInfo.path')}
-                            subtitle={formatPathRelativeToHome(metadata.path, metadata.homeDir)}
-                            icon={<Icon name="folder" size={29} color={theme.colors.accent.indigo} />}
-                            showChevron={false}
-                        />
-                        {metadata.version && (
-                            <Item
-                                title={t('sessionInfo.cliVersion')}
-                                subtitle={metadata.version}
-                                detail={isCliOutdated ? '⚠️' : undefined}
-                                icon={<Icon name="git-branch" size={29} color={isCliOutdated ? theme.colors.accent.orange : theme.colors.accent.indigo} />}
-                                showChevron={false}
-                            />
-                        )}
-                        {metadata.os && (
-                            <Item
-                                title={t('sessionInfo.operatingSystem')}
-                                subtitle={formatOSPlatform(metadata.os)}
-                                icon={<Icon name="cpu" size={29} color={theme.colors.accent.indigo} />}
-                                showChevron={false}
-                            />
-                        )}
-                        <Item
-                            title={t('sessionInfo.aiProvider')}
-                            subtitle={resolveSessionActionDefaultBackendTitle({
-                                session,
-                                sessionActionDefaultBackendEntryTitle: sessionActionDefaultBackendEntry?.title ?? null,
-                                fallbackTitle: providerDisplayName,
-                            })}
-                            icon={<Icon name="sparkle" size={29} color={theme.colors.accent.indigo} />}
-                            showChevron={false}
-                        />
-                        {useProfiles && metadata.profileId !== undefined && (
-                            <Item
-                                title={t('sessionInfo.aiProfile')}
-                                detail={profileLabel}
-                                icon={<Icon name="user-circle" size={29} color={theme.colors.accent.indigo} />}
-                                showChevron={false}
-                            />
-                        )}
-                        {metadata.hostPid && (
-                            <Item
-                                title={t('sessionInfo.processId')}
-                                subtitle={metadata.hostPid.toString()}
-                                icon={<Icon name="terminal" size={29} color={theme.colors.accent.indigo} />}
-                                showChevron={false}
-                            />
-                        )}
-                        {metadata.happyHomeDir && (
-                            <Item
-                                title={t('sessionInfo.happyHome')}
-                                subtitle={formatPathRelativeToHome(metadata.happyHomeDir, metadata.homeDir)}
-                                icon={<Icon name="house" size={29} color={theme.colors.accent.indigo} />}
-                                showChevron={false}
-                            />
-                        )}
-                        {sessionLogPath && (
-                            <Item
-                                title={t('sessionLog.logPathCopyLabel')}
-                                subtitle={formatPathRelativeToHome(sessionLogPath, metadata.homeDir)}
-                                icon={<Icon name="file-text" size={29} color={theme.colors.accent.indigo} />}
-                                copy={sessionLogPath}
-                                showChevron={false}
-                            />
-                        )}
-                        {devModeEnabled && providerSessionArtifactPath && (
-                            <Item
-                                title={t('sessionInfo.providerSessionLogs', { provider: providerDisplayName })}
-                                subtitle={formatPathRelativeToHome(providerSessionArtifactPath, metadata.homeDir)}
-                                icon={<Icon name="file-text" size={29} color={theme.colors.accent.indigo} />}
-                                copy={providerSessionArtifactPath}
-                                showChevron={false}
-                            />
-                        )}
-                        {!!attachCommand && (
-                            <Item
-                                title={t('sessionInfo.attachFromTerminal')}
-                                subtitle={attachCommand}
-                                icon={<Icon name="terminal" size={29} color={theme.colors.accent.indigo} />}
-                                copy={attachCommand}
-                                showChevron={false}
-                            />
-                        )}
-                        {!!tmuxTarget && (
-                            <Item
-                                title={t('sessionInfo.tmuxTarget')}
-                                subtitle={tmuxTarget}
-                                icon={<Icon name="stack" size={29} color={theme.colors.accent.indigo} />}
-                                showChevron={false}
-                            />
-                        )}
-                        {!!tmuxFallbackReason && (
-                            <Item
-                                title={t('sessionInfo.tmuxFallback')}
-                                subtitle={tmuxFallbackReason}
-                                icon={<Icon name="warning-circle" size={29} color={theme.colors.accent.orange} />}
-                                showChevron={false}
-                            />
-                        )}
-                        <Item
-                            title={t('sessionInfo.copyMetadata')}
-                            icon={<Icon name="copy" size={29} color={theme.colors.accent.blue} />}
-                            copy={stringifySessionDebugJson(metadata)}
-                        />
-                    </ItemGroup>
-                )}
-
-                {/* Agent State */}
-                {session.agentState && (
-                    <ItemGroup title={t('sessionInfo.agentState')}>
-                        <Item
-                            title={t('sessionInfo.controlledByUser')}
-                            detail={session.agentState.controlledByUser ? t('common.yes') : t('common.no')}
-                            icon={<Icon name="person" size={29} color={theme.colors.accent.orange} />}
-                            showChevron={false}
-                        />
-                        {session.agentState.requests && Object.keys(session.agentState.requests).length > 0 && (
-                            <Item
-                                title={t('sessionInfo.pendingRequests')}
-                                detail={Object.keys(session.agentState.requests).length.toString()}
-                                icon={<Icon name="hourglass" size={29} color={theme.colors.accent.orange} />}
-                                showChevron={false}
-                            />
-                        )}
-                    </ItemGroup>
-                )}
-
-                {/* Activity */}
-                {followEditor.editor}
-                <SessionFollowSourcesEditor
-                    destination={session}
-                    serverId={scopedMutationServerId}
-                    destinationMachineId={currentExecutionMachineId}
-                />
-                <ItemGroup title={t('sessionInfo.activity')}>
+                {/* Activity: what the agent is doing, and whether you hear about it. */}
+                {!contentUnavailable ? followEditor.editor : null}
+                {!contentUnavailable ? <ItemGroup title={t('sessionInfo.activity')} description={t('sessionPages.info.activityDescription')}>
                     {visibleSessionActionIds.has('ui.session.follow') ? (
                         <View ref={followEditor.anchorRef} collapsable={false}>
                             <Item
                                 pressableRef={followEditor.triggerRef}
                                 testID="session-info-follow"
                                 title={t('session.follow.editor.title')}
-                                icon={<Icon name="bell" size={29} color={theme.colors.text.secondary} />}
                                 onPress={() => {
                                     void executeSessionAction({
                                         actionId: 'ui.session.follow',
@@ -1420,7 +1069,6 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                     <Item
                         title={t('sessionInfo.sessionStatus')}
                         detail={sessionStatus.statusText}
-                        icon={<Icon name="pulse" size={29} color={sessionStatus.statusColor} />}
                         showChevron={false}
                     />
                     {devModeEnabled ? (
@@ -1428,29 +1076,392 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <Item
                                 title={t('sessionInfo.thinking')}
                                 detail={session.thinking ? t('common.yes') : t('common.no')}
-                                icon={<Icon name="lightbulb" size={29} color={session.thinking ? theme.colors.accent.yellow : theme.colors.text.secondary} />}
                                 showChevron={false}
                             />
                             {session.thinking && (
                                 <Item
                                     title={t('sessionInfo.thinkingSince')}
                                     subtitle={formatDate(session.thinkingAt)}
-                                    icon={<Icon name="timer" size={29} color={theme.colors.accent.yellow} />}
                                     showChevron={false}
                                 />
                             )}
                         </>
                     ) : null}
-                </ItemGroup>
+                </ItemGroup> : null}
+                {!contentUnavailable ? <SessionFollowSourcesEditor
+                    destination={session}
+                    serverId={scopedMutationServerId}
+                    destinationMachineId={currentExecutionMachineId}
+                /> : null}
 
-                {/* Raw JSON (Dev Mode Only) */}
-                {devModeEnabled && (
-                    <ItemGroup title={t('sessionInfo.rawJsonDevMode')}>
+                {/* Continue: new work from where this session is. */}
+                {!contentUnavailable ? <ItemGroup title={t('sessionPages.info.continueTitle')} description={t('sessionPages.info.continueDescription')}>
+                    <Item
+                        testID="session-info-new-session-same-setup"
+                        title={t('sessionInfo.newSessionSameSetup')}
+                        subtitle={t('sessionInfo.newSessionSameSetupSubtitle')}
+                        onPress={handleNewSessionSameSetup}
+                    />
+                    {session.access?.role === 'owner' && forkActionEnabled && forkSupported && (
+                        <Item
+                            testID="session-info-fork-session"
+                            title={t('sessionInfo.forkSession')}
+                            subtitle={t('sessionInfo.forkSessionSubtitle')}
+                            onPress={performFork}
+                        />
+                    )}
+                    {session.access?.role === 'owner' && handoffActionEnabled && handoffSupported && (
+                        <Item
+                            title={handoffActionSpec.title}
+                            subtitle={handoffActionSpec.description}
+                            onPress={performHandoff}
+                            loading={handingOffSession}
+                        />
+                    )}
+                    {!session.active && Boolean(vendorResumeId) && (
+                        <Item
+                            title={t('sessionInfo.copyResumeCommand')}
+                            subtitle={resumeCommand}
+                            showChevron={false}
+                            copy={resumeCommand}
+                        />
+                    )}
+                </ItemGroup> : null}
+
+                {/* Organize: where this session shows up in your lists. */}
+                {!contentUnavailable && showOrganize ? (
+                    <ItemGroup title={t('sessionPages.info.organizeTitle')} description={t('sessionPages.info.organizeDescription')}>
+                        {readStateInfoItem ? (
+                            <Item
+                                {...readStateInfoItem}
+                                onPress={performReadStateAction}
+                                loading={updatingReadState}
+                            />
+                        ) : null}
+                        {attentionStandingInfoItem ? (
+                            <Item
+                                {...attentionStandingInfoItem}
+                                onPress={performAttentionStandingAction}
+                                loading={updatingAttentionStanding}
+                            />
+                        ) : null}
+                        {!isArchivedSession && sessionSettingsKey && pinInfoItemProps ? (
+                            <Item
+                                {...pinInfoItemProps}
+                                onPress={performTogglePinned}
+                                loading={pinningSession}
+                            />
+                        ) : null}
+                        {sessionSettingsKey && tagsInfoItemProps ? (
+                            <DropdownMenu
+                                open={tagMenuOpen}
+                                onOpenChange={setTagMenuOpen}
+                                items={tagMenuContent.dropdownItems}
+                                onSelect={tagMenuContent.dropdownOnSelect}
+                                closeOnSelect={false}
+                                onCreateItem={tagMenuContent.dropdownOnCreate}
+                                search
+                                searchPlaceholder={t('sessionTags.searchOrAddPlaceholder')}
+                                emptyLabel={t('sessionTags.noTagsFound')}
+                                placement="auto-vertical"
+                                variant="slim"
+                                matchTriggerWidth={false}
+                                maxWidthCap={320}
+                                trigger={({ toggle }) => (
+                                    <Item
+                                        {...tagsInfoItemProps}
+                                        detail={sessionInfoTagDetail || undefined}
+                                        onPress={toggle}
+                                        loading={editingTags}
+                                    />
+                                )}
+                            />
+                        ) : null}
+                        {sessionFoldersEnabled && moveTargets.length > 0 && moveToFolderInfoItemProps ? (
+                            <Item
+                                {...moveToFolderInfoItemProps}
+                                onPress={performMoveToFolder}
+                                loading={movingToFolder}
+                            />
+                        ) : null}
+                    </ItemGroup>
+                ) : null}
+
+                {/* Details: identifiers and history. */}
+                {!contentUnavailable ? <ItemGroup title={t('sessionPages.info.detailsTitle')} description={t('sessionPages.info.detailsDescription')}>
+                    <Item
+                        title={t('sessionInfo.happySessionId')}
+                        subtitle={`${session.id.substring(0, 8)}...${session.id.substring(session.id.length - 8)}`}
+                        copy={session.id}
+                    />
+                    {core && vendorResumeId && vendorResumeLabelKey && vendorResumeCopiedKey && (
+                        <Item
+                            title={t(vendorResumeLabelKey)}
+                            subtitle={`${vendorResumeId.substring(0, 8)}...${vendorResumeId.substring(vendorResumeId.length - 8)}`}
+                            copy={vendorResumeId}
+                        />
+                    )}
+                    <Item
+                        title={t('sessionInfo.connectionStatus')}
+                        detail={sessionStatus.isConnected ? t('status.online') : t('status.offline')}
+                        showChevron={false}
+                    />
+                    {currentExecutionMachineLabel && (
+                        <Item
+                            testID="session-info-execution-machine"
+                            title={t('machinePools.executionMachine')}
+                            subtitle={currentExecutionMachineLabel}
+                            showChevron={false}
+                        />
+                    )}
+                    {metadata?.placementOrigin?.kind === 'machine_pool' && (
+                        <SessionMachinePoolOriginItem
+                            serverId={sessionServerId}
+                            poolId={metadata.placementOrigin.poolId}
+                            machines={sessionServerId ? machineListByServerId[sessionServerId] ?? undefined : undefined}
+                        />
+                    )}
+                    <Item
+                        title={t('sessionInfo.created')}
+                        subtitle={formatDate(session.createdAt)}
+                        showChevron={false}
+                    />
+                    <Item
+                        title={t('sessionInfo.lastUpdated')}
+                        subtitle={formatDate(session.updatedAt)}
+                        showChevron={false}
+                    />
+                    <Item
+                        title={t('sessionInfo.sequence')}
+                        detail={session.seq.toString()}
+                        showChevron={false}
+                    />
+                </ItemGroup> : null}
+
+                {!contentUnavailable ? <WorkspaceSyncRelationshipList workspaceRefId={workspaceDisplay.workspaceRefId} /> : null}
+
+                {/* Environment: the machine, folder and agent this session runs with. */}
+                {metadata && (
+                    <ItemGroup title={t('sessionPages.info.environmentTitle')} description={t('sessionPages.info.environmentDescription')}>
+                        <Item
+                            title={t('sessionInfo.host')}
+                            subtitle={metadata.host}
+                            showChevron={false}
+                        />
+                        {readSessionDirectoryKind(metadata) === 'managed' ? (
+                            // A no-folder session's folder is Happier's own: named, not shown, with the
+                            // real path one disclosure away (with Copy) for support.
+                            <ExpandableItem
+                                testID="session-info-private-folder"
+                                expanded={privateFolderExpanded}
+                                onExpandedChange={setPrivateFolderExpanded}
+                                header={({ expanded, headerProps }) => (
+                                    <Item
+                                        {...headerProps}
+                                        title={t('session.folderless.folder')}
+                                        detail={t('session.folderless.privateToSession')}
+                                        showChevron={false}
+                                        rightElement={<Icon name={expanded ? 'caret-down' : 'caret-right'} size={16} color={theme.colors.text.secondary} />}
+                                    />
+                                )}
+                            >
+                                <Item
+                                    testID="session-info-private-folder-path"
+                                    title={metadata.path}
+                                    copy={metadata.path}
+                                    showChevron={false}
+                                />
+                            </ExpandableItem>
+                        ) : (
+                            <Item
+                                title={t('sessionInfo.path')}
+                                subtitle={formatPathRelativeToHome(metadata.path, metadata.homeDir)}
+                                showChevron={false}
+                            />
+                        )}
+                        {metadata.version && (
+                            <Item
+                                title={t('sessionInfo.cliVersion')}
+                                subtitle={metadata.version}
+                                detail={isCliOutdated ? '⚠️' : undefined}
+                                showChevron={false}
+                            />
+                        )}
+                        {metadata.os && (
+                            <Item
+                                title={t('sessionInfo.operatingSystem')}
+                                subtitle={formatOSPlatform(metadata.os)}
+                                showChevron={false}
+                            />
+                        )}
+                        <Item
+                            title={t('sessionInfo.aiProvider')}
+                            subtitle={aiProviderTitle}
+                            showChevron={false}
+                        />
+                        {useProfiles && metadata.profileId !== undefined && (
+                            <Item
+                                title={t('sessionInfo.aiProfile')}
+                                detail={profileLabel}
+                                showChevron={false}
+                            />
+                        )}
+                        {metadata.hostPid && (
+                            <Item
+                                title={t('sessionInfo.processId')}
+                                subtitle={metadata.hostPid.toString()}
+                                showChevron={false}
+                            />
+                        )}
+                        {metadata.happyHomeDir && (
+                            <Item
+                                title={t('sessionInfo.happyHome')}
+                                subtitle={formatPathRelativeToHome(metadata.happyHomeDir, metadata.homeDir)}
+                                showChevron={false}
+                            />
+                        )}
+                        {sessionLogPath && (
+                            <Item
+                                title={t('sessionLog.logPathCopyLabel')}
+                                subtitle={formatPathRelativeToHome(sessionLogPath, metadata.homeDir)}
+                                copy={sessionLogPath}
+                                showChevron={false}
+                            />
+                        )}
+                        {devModeEnabled && providerSessionArtifactPath && (
+                            <Item
+                                title={t('sessionInfo.providerSessionLogs', { provider: providerDisplayName })}
+                                subtitle={formatPathRelativeToHome(providerSessionArtifactPath, metadata.homeDir)}
+                                copy={providerSessionArtifactPath}
+                                showChevron={false}
+                            />
+                        )}
+                        {!!attachCommand && (
+                            <Item
+                                title={t('sessionInfo.attachFromTerminal')}
+                                subtitle={attachCommand}
+                                copy={attachCommand}
+                                showChevron={false}
+                            />
+                        )}
+                        {!!tmuxTarget && (
+                            <Item
+                                title={t('sessionInfo.tmuxTarget')}
+                                subtitle={tmuxTarget}
+                                showChevron={false}
+                            />
+                        )}
+                        {!!tmuxFallbackReason && (
+                            <Item
+                                title={t('sessionInfo.tmuxFallback')}
+                                subtitle={tmuxFallbackReason}
+                                icon={<Icon name="warning-circle" size={20} color={theme.colors.state.warning.foreground} />}
+                                showChevron={false}
+                            />
+                        )}
+                        <Item
+                            title={t('sessionInfo.copyMetadata')}
+                            copy={stringifySessionDebugJson(metadata)}
+                        />
+                    </ItemGroup>
+                )}
+
+                {/* Agent State */}
+                {!contentUnavailable && session.agentState && (
+                    <ItemGroup title={t('sessionInfo.agentState')} description={t('sessionPages.info.agentStateDescription')}>
+                        <Item
+                            title={t('sessionInfo.controlledByUser')}
+                            detail={session.agentState.controlledByUser ? t('common.yes') : t('common.no')}
+                            showChevron={false}
+                        />
+                        {session.agentState.requests && Object.keys(session.agentState.requests).length > 0 && (
+                            <Item
+                                title={t('sessionInfo.pendingRequests')}
+                                detail={Object.keys(session.agentState.requests).length.toString()}
+                                showChevron={false}
+                            />
+                        )}
+                    </ItemGroup>
+                )}
+
+                {/* Related: destinations that belong to this session. */}
+                {!contentUnavailable ? <ItemGroup title={t('sessionPages.info.relatedTitle')} description={t('sessionPages.info.relatedDescription')}>
+                    {executionRunsEnabled && sessionExecutionRunsSupported ? (
+                        <Item
+                            title={t('session.subagents.panel.title')}
+                            icon={<Icon name="robot" />}
+                            subtitle={t('sessionInfo.executionRunsSubtitle')}
+                            onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/runs' }))}
+                        />
+                    ) : null}
+                    {showAutomations ? (
+                        <Item
+                            title={t('sessionInfo.automationsTitle')}
+                            icon={<Icon name="timer" />}
+                            subtitle={t('sessionInfo.automationsSubtitle')}
+                            onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/automations' }))}
+                        />
+                    ) : null}
+                    <Item
+                        title={t('sessionInfo.viewSessionLogTitle')}
+                        icon={<Icon name="file-text" />}
+                        subtitle={t('sessionInfo.viewSessionLogSubtitle')}
+                        onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/log' }))}
+                    />
+                    {reachableMachineId && (
+                        <Item
+                            title={t('sessionInfo.viewMachine')}
+                            icon={<Icon name="hard-drives" />}
+                            subtitle={t('sessionInfo.viewMachineSubtitle')}
+                            subtitleAccessory={
+                                <Text
+                                    testID="sessionInfo.viewMachineTargetMachineId"
+                                    style={{ position: 'absolute', opacity: 0, width: 1, height: 1 }}
+                                >
+                                    {reachableMachineId}
+                                </Text>
+                            }
+                            onPress={() => {
+                                const encodedMachineId = encodeURIComponent(reachableMachineId);
+                                const normalizedServerId = String(sessionServerId ?? '').trim();
+                                const href = normalizedServerId
+                                    ? `/machine/${encodedMachineId}?serverId=${encodeURIComponent(normalizedServerId)}`
+                                    : `/machine/${encodedMachineId}`;
+                                router.push(href);
+                            }}
+                        />
+                    )}
+                    {collaborationTarget && collaborationAdmitted && (
+                        <Item
+                            testID="session-info-collaboration"
+                            icon={<Icon name="users" />}
+                            title={t('session.collaboration.title')}
+                            onPress={openSessionCollaboration}
+                        />
+                    )}
+                    {sessionActionTarget.isOwnedByCurrentUser ? (
+                        <Item
+                            testID="session-info-remote-permission-grants"
+                            icon={<Icon name="shield-check" />}
+                            title={t('sessionRemotePermissionGrants.entryTitle')}
+                            subtitle={t('sessionRemotePermissionGrants.entrySubtitle')}
+                            onPress={() => router.push(routeScope.buildHref(session.id, { suffix: '/permissions' }))}
+                        />
+                    ) : null}
+                </ItemGroup> : null}
+
+                {/* Developer: raw records, developer mode only. */}
+                {!contentUnavailable && devModeEnabled && (
+                    <ItemGroup title={t('sessionPages.info.developerTitle')} description={t('sessionPages.info.developerDescription')}>
+                        <Item
+                            testID="session-info-copy-debug-information"
+                            title={t('sessionInfo.copyDebugInformation')}
+                            copy={sessionDebugInformation.text}
+                        />
                         {session.agentState && (
                             <>
                                 <Item
                                     title={t('sessionInfo.agentState')}
-                                    icon={<Icon name="code" size={29} color={theme.colors.accent.orange} />}
                                     onPress={handleToggleAgentStateJson}
                                 />
                                 {expandedRawJsonSection === 'agentState' && expandedRawJsonCode && (
@@ -1467,7 +1478,6 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <>
                                 <Item
                                     title={t('sessionInfo.metadata')}
-                                    icon={<Icon name="info" size={29} color={theme.colors.accent.indigo} />}
                                     onPress={handleToggleMetadataJson}
                                 />
                                 {expandedRawJsonSection === 'metadata' && expandedRawJsonCode && (
@@ -1484,7 +1494,6 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             <>
                                 <Item
                                     title={t('sessionInfo.sessionStatus')}
-                                    icon={<Icon name="chart-line" size={29} color={theme.colors.accent.blue} />}
                                     onPress={handleToggleSessionStatusJson}
                                 />
                                 {expandedRawJsonSection === 'sessionStatus' && expandedRawJsonCode && (
@@ -1497,10 +1506,8 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                                 )}
                             </>
                         )}
-                        {/* Full Session Object */}
                         <Item
                             title={t('sessionInfo.fullSessionObject')}
-                            icon={<Icon name="file-text" size={29} color={theme.colors.state.success.foreground} />}
                             onPress={handleToggleSessionJson}
                         />
                         {expandedRawJsonSection === 'session' && expandedRawJsonCode && (
@@ -1513,12 +1520,58 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         )}
                     </ItemGroup>
                 )}
+
+                {/* Leaving: quiet buttons; the irreversible one stands apart at the end. */}
+                {!contentUnavailable && (showStop || showArchive || showDelete) ? (
+                    <ItemGroup surface="none" accessibilityLabel={t('sessionPages.info.leaveLabel')}>
+                        <View testID="session-info-leave-actions" style={infoStyles.leaveActions}>
+                            {showStop && stopInfoItemProps ? (
+                                <RoundButton
+                                    testID={stopInfoItemProps.testID}
+                                    size="small"
+                                    display="secondary"
+                                    title={stopInfoItemProps.title}
+                                    titleNumberOfLines="complete"
+                                    accessibilityHint={stopInfoItemProps.subtitle}
+                                    onPress={handleStopSession}
+                                    loading={stoppingSession}
+                                />
+                            ) : null}
+                            {showArchive && archiveInfoItemProps ? (
+                                <RoundButton
+                                    testID={archiveInfoItemProps.testID}
+                                    size="small"
+                                    display="secondary"
+                                    title={archiveInfoItemProps.title}
+                                    titleNumberOfLines="complete"
+                                    accessibilityHint={archiveInfoItemProps.subtitle}
+                                    onPress={handleArchiveSession}
+                                    loading={archivingSession}
+                                />
+                            ) : null}
+                            <View style={infoStyles.leaveSpacer} />
+                            {showDelete && deleteInfoItemProps ? (
+                                <RoundButton
+                                    testID={deleteInfoItemProps.testID}
+                                    size="small"
+                                    display="destructive"
+                                    title={deleteInfoItemProps.title}
+                                    titleNumberOfLines="complete"
+                                    accessibilityHint={deleteInfoItemProps.subtitle}
+                                    onPress={handleDeleteSession}
+                                    loading={deletingSession}
+                                />
+                            ) : null}
+                        </View>
+                        <Text style={infoStyles.footnote}>{t('sessionPages.info.leaveFootnote')}</Text>
+                    </ItemGroup>
+                ) : null}
             </ItemList>
         </>
     );
 }
 
-export default () => {
+export const WorkspaceRouteBody = () => {
     const { theme } = useUnistyles();
     const params = useLocalSearchParams<{ id: string; serverId?: string }>();
     const routeScope = React.useMemo(() => createSessionRouteServerScope(params), [params]);
@@ -1595,3 +1648,36 @@ export default () => {
         </View>
     );
 };
+
+const infoStyles = StyleSheet.create((theme) => ({
+    status: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        marginTop: 4,
+    },
+    statusText: {
+        ...Typography.default('medium'),
+        fontSize: 13,
+    },
+    leaveActions: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        gap: 8,
+    },
+    // Pushes "Delete" to the far edge when the row fits, apart from the recoverable actions.
+    leaveSpacer: {
+        flexGrow: 1,
+    },
+    footnote: {
+        ...Typography.default('regular'),
+        fontSize: 12,
+        lineHeight: 16,
+        color: theme.colors.text.tertiary,
+        marginTop: 10,
+        marginHorizontal: 2,
+    },
+}));
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

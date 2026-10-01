@@ -13,7 +13,7 @@ import { storage } from '@/sync/domains/state/storage';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import type { ScmCommitSelectionPatch } from '@/sync/domains/state/storageTypes';
 import { machineScmCommitCreate } from '@/sync/ops/scm/machineScm';
-import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
+import { SCM_OPERATION_ERROR_CODES, createScmOperationUnknownOutcome, normalizeScmOperationOutcome } from '@happier-dev/protocol/scm';
 
 export async function executeWorkspaceScmCommit(input: Readonly<{
     scope: WorkspaceScopeBase;
@@ -49,16 +49,15 @@ export async function executeWorkspaceScmCommit(input: Readonly<{
                 }, {
                     serverId: input.scope.serverId,
                 });
-                if (!response.success) {
+                const outcome = normalizeScmOperationOutcome(response);
+                if (outcome.kind !== 'succeeded') {
                     const shownDaemonUnavailable = tryShowDaemonUnavailableAlertForScmOperationFailure({
-                        errorCode: response.errorCode,
+                        errorCode: outcome.kind === 'failed' ? response.errorCode : undefined,
                         onRetry: () => {
                             void executeWorkspaceScmCommit(input);
                         },
                         shouldContinue: input.shouldContinue ?? null,
                     });
-                    if (shownDaemonUnavailable) return;
-
                     const errorMessage = buildScmCommitFailureMessage({
                         errorCode: response.errorCode,
                         error: response.error,
@@ -69,17 +68,27 @@ export async function executeWorkspaceScmCommit(input: Readonly<{
                         scope: input.scope,
                         operation: 'commit',
                         status: 'failed',
+                        outcome,
                         detail: errorMessage,
                         rawError: response.error,
                         errorCode: response.errorCode,
                         surface: 'files',
                         tracking: input.tracking,
                     });
-                    Modal.alert(t('common.error'), errorMessage);
+                    if (!shownDaemonUnavailable) Modal.alert(t('common.error'), errorMessage);
                     return;
                 }
 
-                input.setScmOperationStatus('Refreshing repository status…');
+                didSucceed = true;
+                const createdCommitSha = outcome.effect?.kind === 'commit' ? outcome.effect.commitSha : response.commitSha;
+                storage.getState().clearWorkspaceScmCommitSelectionPaths(input.scope);
+                storage.getState().clearWorkspaceScmCommitSelectionPatches(input.scope);
+                reportWorkspaceScmOperation({
+                    state: storage.getState(), scope: input.scope, operation: 'commit', status: 'success',
+                    outcome, detail: createdCommitSha || undefined, surface: 'files', tracking: input.tracking,
+                });
+
+                input.setScmOperationStatus(t('files.refreshingRepository'));
                 try {
                     await input.refreshScmData();
                 } catch (refreshError) {
@@ -90,11 +99,15 @@ export async function executeWorkspaceScmCommit(input: Readonly<{
                     reportWorkspaceScmOperation({
                         state: storage.getState(),
                         scope: input.scope,
-                        operation: 'commit',
+                        operation: 'refresh',
                         status: 'failed',
                         detail: refreshMessage,
                         rawError: refreshError instanceof Error ? refreshError.message : String(refreshError ?? ''),
-                        errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+                        errorCode: SCM_OPERATION_ERROR_CODES.REPOSITORY_REFRESH_FAILED,
+                        outcome: createdCommitSha ? {
+                            v: 1, kind: 'effect_applied_with_warning', errorCode: SCM_OPERATION_ERROR_CODES.REPOSITORY_REFRESH_FAILED,
+                            effect: { kind: 'commit', commitSha: createdCommitSha }, nextActions: [{ kind: 'refresh' }],
+                        } : undefined,
                         surface: 'files',
                         tracking: input.tracking,
                     });
@@ -102,18 +115,6 @@ export async function executeWorkspaceScmCommit(input: Readonly<{
                     return;
                 }
 
-                storage.getState().clearWorkspaceScmCommitSelectionPaths(input.scope);
-                storage.getState().clearWorkspaceScmCommitSelectionPatches(input.scope);
-                reportWorkspaceScmOperation({
-                    state: storage.getState(),
-                    scope: input.scope,
-                    operation: 'commit',
-                    status: 'success',
-                    detail: response.commitSha || undefined,
-                    surface: 'files',
-                    tracking: input.tracking,
-                });
-                didSucceed = true;
             } catch (error) {
                 const fallbackMessage = getScmUserFacingError({
                     error: error instanceof Error ? error.message : String(error ?? ''),
@@ -127,14 +128,12 @@ export async function executeWorkspaceScmCommit(input: Readonly<{
                     detail: fallbackMessage,
                     rawError: error instanceof Error ? error.message : String(error ?? ''),
                     errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+                    outcome: createScmOperationUnknownOutcome({ kind: 'repository_status', cwd: input.scope.rootPath }),
                     surface: 'files',
                     tracking: input.tracking,
                 });
                 const shownDaemonUnavailable = tryShowDaemonUnavailableAlertForRpcError({
                     error,
-                    onRetry: () => {
-                        void executeWorkspaceScmCommit(input);
-                    },
                     shouldContinue: input.shouldContinue ?? null,
                 });
                 if (!shownDaemonUnavailable) {

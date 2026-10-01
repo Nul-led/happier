@@ -23,6 +23,7 @@ function RegistrationProbe() {
 function RegisteringBridge(props: Readonly<{
     callbackVersion: string;
     calls: string[];
+    serverId?: string;
     activeSurface?: SessionMobileSurface;
 }>) {
     const register = useSessionCockpitChromeRegister();
@@ -32,11 +33,12 @@ function RegisteringBridge(props: Readonly<{
 
     React.useEffect(() => register({
         sessionId: 'session-1',
+        serverId: props.serverId,
         activeSurface: props.activeSurface ?? 'chat',
         terminalTabAvailable: true,
         openDetailsTabCount: 0,
         switchSurface,
-    }), [props.activeSurface, register, switchSurface]);
+    }), [props.activeSurface, props.serverId, register, switchSurface]);
 
     return null;
 }
@@ -62,13 +64,14 @@ function BottomChromeHeightProbe(props: Readonly<{ heights: number[] }>) {
 function Harness(props: Readonly<{
     callbackVersion: string;
     calls: string[];
+    serverId?: string;
     activeSurface?: SessionMobileSurface;
     registerOnlyRenderCount?: { current: number };
     bottomChromeHeights?: number[];
 }>) {
     return (
         <SessionCockpitChromeRegistryProvider>
-            <RegisteringBridge activeSurface={props.activeSurface} callbackVersion={props.callbackVersion} calls={props.calls} />
+            <RegisteringBridge serverId={props.serverId} activeSurface={props.activeSurface} callbackVersion={props.callbackVersion} calls={props.calls} />
             {props.registerOnlyRenderCount ? <RegisterOnlyProbe renderCount={props.registerOnlyRenderCount} /> : null}
             {props.bottomChromeHeights ? <BottomChromeHeightProbe heights={props.bottomChromeHeights} /> : null}
             <RegistrationProbe />
@@ -124,6 +127,17 @@ function readRegistration(screen: Awaited<ReturnType<typeof renderScreen>>): Ses
 describe('SessionCockpitChromeRegistry', () => {
     afterEach(() => {
         standardCleanup();
+    });
+
+    it('projects and updates the Home identity when the same session id moves between Homes', async () => {
+        const calls: string[] = [];
+        const screen = await renderScreen(<Harness serverId="home-a" callbackVersion="a" calls={calls} />);
+        const previousHomeRegistration = readRegistration(screen);
+        expect(previousHomeRegistration.serverId).toBe('home-a');
+        await screen.update(<Harness serverId="home-b" callbackVersion="b" calls={calls} />);
+        expect(readRegistration(screen).serverId).toBe('home-b');
+        previousHomeRegistration.switchSurface('terminal');
+        expect(calls).toEqual([]);
     });
 
     it('keeps a stable registration object while dispatching to the latest callbacks', async () => {

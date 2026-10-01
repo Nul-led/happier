@@ -1,4 +1,4 @@
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { AutomationsGate } from '@/components/automations/gating/AutomationsGate';
 import { AutomationEditorHostScreen } from '@/components/automations/screens/AutomationEditorHostScreen';
@@ -8,7 +8,7 @@ import {
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { t } from '@/text';
 
-export default function AutomationEditRoute() {
+export function AutomationEditRoute() {
     const params = useLocalSearchParams<{
         id?: string;
         sourceSessionId?: string;
@@ -38,3 +38,6 @@ export default function AutomationEditRoute() {
         </AutomationsGate>
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { AutomationEditRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={AutomationEditRoute} />; }

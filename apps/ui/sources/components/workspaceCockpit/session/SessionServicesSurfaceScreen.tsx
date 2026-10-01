@@ -1,12 +1,11 @@
 import * as React from 'react';
 
-import { LocalServicesSurfaceHost } from '@/components/sessions/localServices';
+import { LocalServicesSurfaceHost, type LocalServicesSurfaceHostProps } from '@/components/sessions/localServices';
 import { useSessionMachineTarget } from '@/components/sessions/model/useSessionMachineTarget';
 import type { RuntimeActionExecute } from '@happier-dev/protocol';
 import type {
     LocalServiceLauncherSnapshotClient,
     LocalServiceLauncherState,
-    LocalServiceLaunchTarget,
 } from '@/sync/domains/local/services/launch';
 import type { LocalServiceInventoryState } from '@/sync/domains/local/services/inventory/store';
 import type { LocalServicePublicPreviewState } from '@/sync/domains/local/services/publicPreview/store';
@@ -23,7 +22,7 @@ export type SessionServicesSurfaceScreenProps = Readonly<{
     publicPreviewState?: LocalServicePublicPreviewState | null;
     publicPreviewStatusClient?: LocalServicePublicPreviewStatusClient;
     runtimeActionExecute?: RuntimeActionExecute;
-    onOpenServiceInBrowser?: (target: LocalServiceLaunchTarget) => void | Promise<unknown>;
+    onOpenServiceInBrowser?: LocalServicesSurfaceHostProps['onOpenServiceInBrowser'];
 }>;
 
 export function SessionServicesSurfaceScreen(props: SessionServicesSurfaceScreenProps = {}): React.ReactElement {

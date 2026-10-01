@@ -1,33 +1,119 @@
+import type { SessionSurfaceItemV1 } from '@happier-dev/protocol/sessions/board';
+
 import type { SessionBoardItemProjection, SessionBoardSnapshot } from '@/sync/domains/session/board';
 import { resolveSessionBoardItemTitle } from '@/components/sessions/board/sessionBoardItemPresentation';
 import type { SessionBoardBinding, SessionBoardBindingUnavailableReason } from '@/components/sessions/board/observeSessionBoard';
 
-import type { SessionCompanionItemRefV1 } from './state/sessionCompanionPreference';
+import { selectWidgetCandidates, type WidgetCandidate } from '@/components/widgets/widgetCatalog';
+import type { SessionPluginRuntimeState } from '@/components/sessions/plugins/useSessionPluginRuntime';
+import { RIGHT_SIDEBAR_BUILTIN_TABS } from '@/components/appShell/rightSidebar/rightSidebarBuiltinTabs';
+import { resolveRightSidebarPluginTabs } from '@/components/appShell/rightSidebar/rightSidebarPluginTabs';
+import { selectPluginRightSidebarTabPlacements } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
 
-export type SessionCompanionAddableItem = Readonly<{ widgetId: string; title: string }>;
+import {
+    SESSION_COMPANION_BUILTIN_ITEM_IDS,
+    type SessionCompanionBuiltinItemId,
+    type SessionCompanionItemRefV1,
+} from './state/sessionCompanionPreference';
+
+export type SessionCompanionAddableItem = Readonly<{
+    widgetId: string;
+    title: string;
+    source: SessionSurfaceItemV1['source'];
+    /** Already kept in this Companion: shown in place, marked, never re-added. */
+    added: boolean;
+}>;
+
+function selectedWidgetIds(refs: readonly SessionCompanionItemRefV1[]): ReadonlySet<string> {
+    return new Set(refs.flatMap((ref) => (ref.kind === 'widget' ? [ref.widgetId] : [])));
+}
 
 /**
- * Projects every currently readable unselected Board item for the local picker.
- * Both rail and full surface consume this one projection, so neither can impose
- * a different arbitrary count limit or title rule.
+ * Projects every currently readable Board item for the local picker, each marked
+ * whether this Companion already keeps it, so the list never reflows when one is
+ * added. Both rail and full surface consume this one projection, so neither can
+ * impose a different arbitrary count limit or title rule.
  */
 export function resolveSessionCompanionAddableItems(input: Readonly<{
     snapshot: SessionBoardSnapshot | null;
     refs: readonly SessionCompanionItemRefV1[];
 }>): readonly SessionCompanionAddableItem[] {
     if (!input.snapshot) return Object.freeze([]);
-    const selected = new Set(input.refs.flatMap((ref) => (
-        ref.kind === 'widget' ? [ref.widgetId] : []
-    )));
+    const selected = selectedWidgetIds(input.refs);
     const candidates: SessionCompanionAddableItem[] = [];
     for (const [widgetId, item] of input.snapshot.itemsById) {
-        if (item.state.kind !== 'ready' || selected.has(widgetId)) continue;
+        if (item.state.kind !== 'ready') continue;
         candidates.push(Object.freeze({
             widgetId,
             title: resolveSessionBoardItemTitle(item.state),
+            source: item.state.item.source,
+            added: selected.has(widgetId),
         }));
     }
     return Object.freeze(candidates);
+}
+
+export type SessionCompanionPickerPluginRow = Readonly<{
+    key: string;
+    candidate: WidgetCandidate;
+    /** The Board record this widget already has; picking it reuses the record. */
+    existingWidgetId: string | null;
+    added: boolean;
+}>;
+
+export type SessionCompanionPickerSections = Readonly<{
+    builtIn: readonly Readonly<{ id: SessionCompanionBuiltinItemId; added: boolean }>[];
+    /** Board items that are not a current plugin widget (notes, interactive views, …). */
+    board: readonly SessionCompanionAddableItem[];
+    plugins: readonly SessionCompanionPickerPluginRow[];
+}>;
+
+/**
+ * The Add to Companion picker: one widget system with three sources.
+ *
+ * Existing Board records remain available as references, while compact plugin
+ * surfaces can be kept directly without creating a shared Board record.
+ * `candidates` comes from the canonical current-Session widget selector using
+ * the Companion placement; this projection adds no availability policy.
+ */
+export function resolveSessionCompanionPickerSections(input: Readonly<{
+    refs: readonly SessionCompanionItemRefV1[];
+    snapshot: SessionBoardSnapshot | null;
+    candidates: readonly WidgetCandidate[];
+}>): SessionCompanionPickerSections {
+    const builtIn = SESSION_COMPANION_BUILTIN_ITEM_IDS.map((id) => Object.freeze({
+        id,
+        added: input.refs.some((ref) => ref.kind === 'builtin' && ref.id === id),
+    }));
+    const boardItems = resolveSessionCompanionAddableItems({ snapshot: input.snapshot, refs: input.refs });
+    const recordByKey = new Map<string, SessionCompanionAddableItem>();
+    for (const item of boardItems) {
+        if (item.source.kind !== 'installedSurface') continue;
+        const key = `${item.source.surface.pluginId}/${item.source.surface.localId}`;
+        const known = recordByKey.get(key);
+        // Prefer the record this Companion already keeps, then the first one.
+        if (!known || (!known.added && item.added)) recordByKey.set(key, item);
+    }
+    const plugins = input.candidates.map((candidate) => {
+        const record = recordByKey.get(candidate.key) ?? null;
+        return Object.freeze({
+            key: candidate.key,
+            candidate,
+            existingWidgetId: record?.widgetId ?? null,
+            added: (record?.added ?? false) || input.refs.some((ref) => ref.kind === 'plugin'
+                && ref.surface.pluginId === candidate.surface.pluginId && ref.surface.localId === candidate.surface.localId),
+        });
+    });
+    const offeredKeys = new Set(input.candidates.map((candidate) => candidate.key));
+    const board = boardItems.filter((item) => (
+        item.source.kind !== 'installedSurface'
+        || !offeredKeys.has(`${item.source.surface.pluginId}/${item.source.surface.localId}`)
+    ));
+    return Object.freeze({
+        builtIn: Object.freeze(builtIn),
+        board: Object.freeze(board),
+        plugins: Object.freeze(plugins),
+    });
 }
 
 /**
@@ -58,6 +144,22 @@ export type SessionCompanionContentItem =
     | Readonly<{
         kind: 'summary';
         ref: Extract<SessionCompanionItemRefV1, { kind: 'builtin' }>;
+    }>
+    | Readonly<{
+        kind: 'plan';
+        ref: Extract<SessionCompanionItemRefV1, { kind: 'builtin' }>;
+    }>
+    | Readonly<{
+        kind: 'changes' | 'local_services';
+        ref: Extract<SessionCompanionItemRefV1, { kind: 'builtin' }>;
+    }>
+    | Readonly<{
+        kind: 'pane';
+        ref: Extract<SessionCompanionItemRefV1, { kind: 'pane' }>;
+    }>
+    | Readonly<{
+        kind: 'plugin';
+        ref: Extract<SessionCompanionItemRefV1, { kind: 'plugin' }>;
     }>
     | Readonly<{
         kind: 'widget';
@@ -103,7 +205,10 @@ export function resolveSessionCompanionBoardInventory(
     if (snapshot.layoutState.kind === 'loading' || snapshot.incomplete || snapshot.loading !== 'idle') {
         return LOADING_INVENTORY;
     }
-    if (snapshot.reachability !== 'reachable' || snapshot.freshness !== 'fresh') {
+    // Freshness is not availability: a stale-but-reachable snapshot still carries its
+    // item rows, and the `incomplete`/`loading` arms above already cover the genuinely
+    // unknown case. Every other Board consumer keys this on reachability alone.
+    if (snapshot.reachability !== 'reachable') {
         return OFFLINE_INVENTORY;
     }
     return AUTHORITATIVE_INVENTORY;
@@ -124,11 +229,32 @@ export function resolveSessionCompanionContentItems(input: Readonly<{
     inventory: SessionCompanionBoardInventory;
 }>): readonly SessionCompanionContentItem[] {
     return Object.freeze(input.refs.map((ref): SessionCompanionContentItem => {
-        if (ref.kind === 'builtin') return Object.freeze({ kind: 'summary', ref });
+        if (ref.kind === 'builtin') {
+            const kind = ref.id === 'agent_plan' ? 'plan' : ref.id === 'session_summary' ? 'summary' : ref.id;
+            return Object.freeze({ kind, ref });
+        }
+        if (ref.kind === 'pane') return Object.freeze({ kind: 'pane', ref });
+        if (ref.kind === 'plugin') return Object.freeze({ kind: 'plugin', ref });
         const item = input.boardItemsById.get(ref.widgetId);
         if (item) return Object.freeze({ kind: 'widget', ref, item });
         return input.inventory.kind === 'authoritative'
             ? Object.freeze({ kind: 'missing_widget', ref })
             : Object.freeze({ kind: 'pending_widget', ref, inventory: input.inventory });
     }));
+}
+
+/** Add admission consumes the existing pane/widget catalogs. Saved unavailable refs are never pruned here. */
+export function canAddSessionCompanionItem(
+    item: SessionCompanionItemRefV1,
+    runtime: SessionPluginRuntimeState | null,
+    canReadBoardItem: (widgetId: string) => boolean = () => false,
+): boolean {
+    if (item.kind === 'builtin') return true;
+    if (item.kind === 'widget') return canReadBoardItem(item.widgetId);
+    if (item.kind === 'pane' && RIGHT_SIDEBAR_BUILTIN_TABS.some((tab) => tab.id === item.paneId && tab.scopes.includes('session'))) return true;
+    if (runtime?.phase !== 'current' || !runtime.pluginUiProjection) return false;
+    if (item.kind === 'plugin') return selectWidgetCandidates(runtime.pluginUiProjection, 'session', undefined, 'companion')
+        .some((candidate) => candidate.surface.pluginId === item.surface.pluginId && candidate.surface.localId === item.surface.localId);
+    return resolveRightSidebarPluginTabs({ scope: 'session', placements: selectPluginRightSidebarTabPlacements(runtime.pluginUiProjection, 'session') })
+        .some((tab) => tab.id === item.paneId);
 }

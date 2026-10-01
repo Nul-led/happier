@@ -58,21 +58,6 @@ vi.mock('expo-clipboard', () => ({
     setStringAsync: vi.fn(async () => {}),
 }));
 
-vi.mock('@/components/ui/layout/layout', () => ({
-    layout: { maxWidth: 1024, headerMaxWidth: 1024 },
-    useLayoutMaxWidth: () => 1024,
-    useLayoutMaxWidthStyle: () => ({ maxWidth: 1024 }),
-}));
-
-vi.mock('@/components/ui/popover', () => ({
-    Popover: ({ children }: any) => (typeof children === 'function' ? children({ maxHeight: 320, maxWidth: 320 }) : children),
-    PopoverScope: ({ children }: any) => React.createElement(React.Fragment, null, children),
-}));
-
-vi.mock('@/components/ui/overlays/FloatingOverlay', () => ({
-    FloatingOverlay: ({ children }: any) => React.createElement(React.Fragment, null, children),
-}));
-
 vi.mock('@/agents/hooks/useEnabledAgentIds', () => ({
     useEnabledAgentIds: () => ['claude'],
 }));

@@ -35,9 +35,6 @@ vi.mock('@/agents/registry/sessionSubagentUiBehavior', () => ({
     renderProviderSessionDetailsTab: () => null,
     resolveProviderSessionDetailsTabIconName: () => null,
 }));
-vi.mock('@/components/sessions/runs/launcher/SessionExecutionRunLauncherView', () => ({
-    SessionExecutionRunLauncherView: 'SessionExecutionRunLauncherView',
-}));
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivityIndicator' }));
 vi.mock('@/components/ui/scroll/useWebScrollLockBypass', () => ({ useWebScrollLockBypass: () => {} }));
 vi.mock('@/components/ui/scroll/resolveWebScrollableElement', () => ({ resolveWebScrollableElementWithin: () => null }));

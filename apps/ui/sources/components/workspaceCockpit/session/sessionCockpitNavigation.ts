@@ -1,3 +1,5 @@
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
+
 import {
     resolveSessionRoutePathForSurface,
     type SessionMobileSurface,
@@ -47,4 +49,24 @@ export function resolveSessionDetailsFallbackHref(input: Readonly<{
     return resolveSessionRoutePathForSurface(input.sessionId, sourceSurface, {
         serverId: input.serverId,
     });
+}
+
+/**
+ * The one link to a Session destination that is both a sidebar tab and a phone surface (Agents,
+ * Collaboration): the cockpit's surface route when the cockpit experience is on, otherwise the
+ * Session route with that sidebar tab open. An unqualified link stays unqualified so the Session root
+ * resolves its Home.
+ */
+export function buildSessionDestinationRouteHref(input: Readonly<{
+    sessionId: string;
+    serverId?: string | null;
+    cockpitEnabled: boolean;
+    surface: SessionMobileSurface;
+    rightTabId: string;
+    query?: Readonly<Record<string, SessionRouteQueryValue>>;
+}>): string {
+    const query = input.query ?? {};
+    return input.cockpitEnabled
+        ? resolveSessionRoutePathForSurface(input.sessionId, input.surface, { serverId: input.serverId, query })
+        : buildScopedSessionRouteHref({ sessionId: input.sessionId, serverId: input.serverId, query: { ...query, right: input.rightTabId } });
 }

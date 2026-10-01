@@ -3,7 +3,7 @@ import { useProjectSurfaceActions } from '@/components/projects/detail/useProjec
 import { useProjectSurfaceController } from '@/components/projects/detail/useProjectSurfaceController';
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
@@ -30,7 +30,7 @@ import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneSco
 import { usePaneFocusMode } from '@/components/appShell/panes/focusMode/usePaneFocusMode';
 import { resolvePluginUiRuntimeFormFactor } from '@/components/appShell/panes/layout/resolveMultiPaneDeviceType';
 import { useDeviceType } from '@/utils/platform/responsive';
-import { useAllMachines, useWorkspaceReviewCommentsDrafts } from '@/sync/domains/state/storage';
+import { useAllMachines, useSetting, useWorkspaceReviewCommentsDrafts } from '@/sync/domains/state/storage';
 import { useLocalServicePreviewState } from '@/sync/domains/local/services/preview/useLocalServicePreviewState';
 import {
     type LocalServiceLauncherState,
@@ -41,7 +41,7 @@ import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
 import { deferOnWeb } from '@/utils/platform/deferOnWeb';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
-import { buildWorkspaceCacheKey } from '@/sync/domains/workspaces/workspaceScope';
+import { buildWorkspaceCacheKey, tryBuildWorkspaceCacheKey } from '@/sync/domains/workspaces/workspaceScope';
 import type { DetailsTabState } from '@/components/appShell/panes/details/workspace/detailsWorkspaceTypes';
 import { resolveWorkspaceRefDisplayName } from '@/components/projects/resolveWorkspaceRefDisplayName';
 import { openProjectTerminalDetailsTab } from '@/components/projects/detail/openProjectTerminalDetailsTab';
@@ -54,6 +54,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 import { resolveNewSessionDraftRouteIdentity } from '@/components/sessions/new/navigation/newSessionDraftRouteIdentity';
 import { buildNewSessionLaunchRouteParams } from '@/components/sessions/new/navigation/newSessionRouteParams';
 import { WorkspaceSyncRelationshipList } from '@/components/workspaces/sync/WorkspaceSyncRelationshipList';
+import { openWorkspaceSyncAddMachine } from '@/components/workspaces/sync/openWorkspaceSyncAddMachine';
 import { createWorkspaceSyncConflictDetailsTab } from '@/components/workspaces/sync/workspaceSyncConflictDetailsTab';
 import { createWorkspaceSyncRelationshipDetailsTab } from '@/components/workspaces/sync/workspaceSyncRelationshipDetailsTab';
 
@@ -95,6 +96,18 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
     const deviceType = useDeviceType();
     const requestClose = props.onRequestClose ?? pane.closeDetails;
     const effectiveRootPath = props.activeRootPath ?? props.workspaceRef.rootPath;
+    const workspaceRefs = useSetting('workspaceRefsV1');
+    const selectedWorkspaceRef = React.useMemo(() => {
+        const selectedKey = tryBuildWorkspaceCacheKey({
+            serverId: props.workspaceRef.serverId,
+            machineId: props.workspaceRef.machineId,
+            rootPath: effectiveRootPath,
+        });
+        if (!selectedKey) return null;
+        if (selectedKey === tryBuildWorkspaceCacheKey(props.workspaceRef)) return props.workspaceRef;
+        return (Array.isArray(workspaceRefs) ? workspaceRefs : []).find((ref) =>
+            tryBuildWorkspaceCacheKey(ref) === selectedKey) ?? null;
+    }, [effectiveRootPath, props.workspaceRef, workspaceRefs]);
     const filesController = useProjectSurfaceController({ scopeId: props.scopeId, workspaceRef: props.workspaceRef, activeRootPath: effectiveRootPath, activeWorktreeId: props.activeWorktreeId });
     const navigateFiles = React.useCallback(() => {
         if (deviceType === 'phone') filesController.navigateToSurface('browse');
@@ -210,12 +223,29 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
     const openBrowserLaunchpadTab = React.useCallback(() => {
         pane.openDetailsTab(createBrowserLaunchpadDetailsTab(), { intent: 'pinned' });
     }, [pane]);
+    const workspaceSyncSelectedRefId = React.useCallback((summary: Parameters<typeof createWorkspaceSyncRelationshipDetailsTab>[0]) => {
+        const selectedKey = tryBuildWorkspaceCacheKey({
+            serverId: props.workspaceRef.serverId,
+            machineId: props.workspaceRef.machineId,
+            rootPath: effectiveRootPath,
+        });
+        return [summary.alpha, summary.beta].find((endpoint) =>
+            endpoint.workspaceRef && tryBuildWorkspaceCacheKey(endpoint.workspaceRef) === selectedKey,
+        )?.workspaceRefId ?? props.workspaceRef.id;
+    }, [effectiveRootPath, props.workspaceRef.id, props.workspaceRef.machineId, props.workspaceRef.serverId]);
     const openWorkspaceSyncConflicts = React.useCallback((summary: Parameters<typeof createWorkspaceSyncConflictDetailsTab>[0]) => {
-        pane.openDetailsTab(createWorkspaceSyncConflictDetailsTab(summary, props.workspaceRef.id), { intent: 'pinned' });
-    }, [pane, props.workspaceRef.id]);
+        pane.openDetailsTab(createWorkspaceSyncConflictDetailsTab(summary, workspaceSyncSelectedRefId(summary)), { intent: 'pinned' });
+    }, [pane, workspaceSyncSelectedRefId]);
     const openWorkspaceSyncDetails = React.useCallback((summary: Parameters<typeof createWorkspaceSyncRelationshipDetailsTab>[0]) => {
-        pane.openDetailsTab(createWorkspaceSyncRelationshipDetailsTab(summary, props.workspaceRef.id), { intent: 'pinned' });
-    }, [pane, props.workspaceRef.id]);
+        pane.openDetailsTab(createWorkspaceSyncRelationshipDetailsTab(summary, workspaceSyncSelectedRefId(summary)), { intent: 'pinned' });
+    }, [pane, workspaceSyncSelectedRefId]);
+    const openWorkspaceSyncAddMachineForProject = React.useCallback(() => {
+        openWorkspaceSyncAddMachine(selectedWorkspaceRef ?? {
+            serverId: props.workspaceRef.serverId,
+            machineId: props.workspaceRef.machineId,
+            rootPath: effectiveRootPath,
+        }, openWorkspaceSyncDetails);
+    }, [effectiveRootPath, openWorkspaceSyncDetails, props.workspaceRef.machineId, props.workspaceRef.serverId, selectedWorkspaceRef]);
 
     const renderEmptyState = React.useCallback(() => (
         <ItemList testID="project-details-info" containerStyle={{ paddingTop: 12 }}>
@@ -225,7 +255,8 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
                 <Item title={t('projects.detail.fields.path')} detail={displayPath} mode="info" copy={displayPath} />
             </ItemGroup>
             <WorkspaceSyncRelationshipList
-                workspaceRefId={props.workspaceRef.id}
+                workspaceRefId={selectedWorkspaceRef?.id ?? null}
+                onAddMachine={openWorkspaceSyncAddMachineForProject}
                 onOpenDetails={openWorkspaceSyncDetails}
                 onOpenConflicts={openWorkspaceSyncConflicts}
             />
@@ -244,6 +275,8 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
         machineName,
         openWorkspaceSyncConflicts,
         openWorkspaceSyncDetails,
+        openWorkspaceSyncAddMachineForProject,
+        selectedWorkspaceRef,
         pluginSurfacePlatform,
         props,
         theme.colors.text.secondary,
@@ -257,12 +290,13 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
                 <Item title={t('projects.detail.fields.path')} detail={displayPath} mode="info" copy={displayPath} />
             </ItemGroup>
             <WorkspaceSyncRelationshipList
-                workspaceRefId={props.workspaceRef.id}
+                workspaceRefId={selectedWorkspaceRef?.id ?? null}
+                onAddMachine={openWorkspaceSyncAddMachineForProject}
                 onOpenDetails={openWorkspaceSyncDetails}
                 onOpenConflicts={openWorkspaceSyncConflicts}
             />
         </ItemList>
-    ), [displayName, displayPath, machineName, openWorkspaceSyncConflicts, openWorkspaceSyncDetails, props.workspaceRef.id]);
+    ), [displayName, displayPath, machineName, openWorkspaceSyncAddMachineForProject, openWorkspaceSyncConflicts, openWorkspaceSyncDetails, selectedWorkspaceRef]);
 
     const detailsSurfaceScope = React.useMemo<DetailsSurfaceScopeV1>(() => ({
         kind: 'project',
@@ -415,10 +449,8 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
                 {props.renderHeaderActionsPrefix ? props.renderHeaderActionsPrefix({ iconButtonStyle, iconColor: theme.colors.text.secondary }) : null}
                 <BrowserSurfaceOpenButton
                     onPress={openBrowserLaunchpadTab}
+                    size={34}
                     testID="workspace-details-open-browser"
-                    style={iconButtonStyle}
-                    disabledStyle={{ opacity: 0.45 }}
-                    iconColor={theme.colors.text.secondary}
                 />
                 {hasWorkspaceReviewCommentDrafts ? (
                     <Pressable
@@ -502,7 +534,7 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
         <DetailsSplitWorkspace
             pane={pane}
             paddingTop={insets.top}
-            headerPaddingTop={10}
+            headerPaddingTop={0}
             testIds={{
                 root: 'workspace-details-panel-root',
                 tab: (safeTabKey) => `workspace-details-tab-${safeTabKey}`,

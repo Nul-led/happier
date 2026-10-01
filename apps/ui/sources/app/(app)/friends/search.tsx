@@ -33,7 +33,7 @@ const FriendsSearchKeyboardAwareItemList = React.forwardRef<ScrollView, Keyboard
     },
 );
 
-export default function SearchFriendsScreen() {
+export function SearchFriendsScreen() {
     const { theme } = useUnistyles();
     const enabled = useRequireFriendsEnabled();
     const { credentials } = useAuth();
@@ -279,3 +279,6 @@ const styles = StyleSheet.create((theme) => ({
         lineHeight: 22,
     },
 }));
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { SearchFriendsScreen as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={SearchFriendsScreen} />; }

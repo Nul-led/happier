@@ -1,6 +1,8 @@
+import { useAiLaunchProfilesForLegacyUi } from '@/sync/store/useAiLaunchProfiles';
 import React from 'react';
+import { AppHeaderCloseButton } from '@/components/navigation/AppHeaderCloseButton';
 import { Stack, useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
-import { Platform, Pressable } from 'react-native';
+import { Platform } from 'react-native';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import {
@@ -18,9 +20,6 @@ import { machinePreviewEnv } from '@/sync/ops';
 import { getRequiredSecretEnvVarNames } from '@/sync/domains/profiles/profileSecrets';
 import { getTempData, storeTempData } from '@/utils/sessions/tempDataStore';
 import { ProfilesList } from '@/components/profiles/ProfilesList';
-import {
-    readUiAiLaunchProfilesForLegacyUi,
-} from '@/sync/domains/profiles/aiLaunchProfileCollection';
 import { useDeleteAiLaunchProfile } from '@/sync/store/settingsWriters';
 import { SecretRequirementModal, type SecretRequirementModalResult } from '@/components/secrets/requirements';
 import { useSavedSecretsMutable } from '@/components/secrets/useSavedSecretsMutable';
@@ -61,7 +60,7 @@ export default React.memo(function ProfilePickerScreen() {
     const [secretBindingsByProfileId, setSecretBindingsByProfileId] = useCurrentSecretBindingsByProfileIdMutable();
     const rawProfiles = useSetting('profiles');
     const deleteAiLaunchProfile = useDeleteAiLaunchProfile();
-    const profiles = React.useMemo(() => readUiAiLaunchProfilesForLegacyUi(rawProfiles), [rawProfiles]);
+    const profiles = useAiLaunchProfilesForLegacyUi(rawProfiles);
     const [favoriteProfileIds, setFavoriteProfileIds] = useSettingMutable('favoriteProfiles');
     const settings = useSettings() ?? settingsDefaults;
 
@@ -438,19 +437,14 @@ export default React.memo(function ProfilePickerScreen() {
         navigation.goBack();
     }, [navigation]);
 
-    const headerLeft = React.useCallback(() => {
-        return (
-            <Pressable
-                onPress={handleBackPress}
-                hitSlop={10}
-                style={({ pressed }) => ({ marginLeft: 10, padding: 4, opacity: pressed ? 0.7 : 1 })}
-                accessibilityRole="button"
-                accessibilityLabel={t('common.back')}
-            >
-                <Icon name="caret-left" size={20} color={theme.colors.chrome.header.foreground} />
-            </Pressable>
-        );
-    }, [handleBackPress, theme.colors.chrome.header.foreground]);
+    // K2 picker route chrome: the native title plus Cancel, nothing else above the list.
+    const headerLeft = React.useCallback(() => (
+        <AppHeaderCloseButton
+            testID="new-session-profile-picker-cancel"
+            appearance="text"
+            onPress={handleBackPress}
+        />
+    ), [handleBackPress]);
     const presentation = useNewSessionPickerRoutePresentation();
 
     const screenOptions = React.useCallback(() => {

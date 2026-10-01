@@ -33,14 +33,15 @@ export function useUnsavedDraftNavigationGuard(params: Readonly<{
     /** Clears the host's own dirty bookkeeping once the person discards. */
     onDiscard?: () => void;
     /** Commits through the host's canonical save owner; `false` keeps the page. */
-    onSave: () => boolean | Promise<boolean>;
+    onSave?: () => boolean | Promise<boolean>;
     /** Where an allowed departure goes when no intercepted action was supplied. */
-    onLeave: () => void;
+    onLeave?: () => void;
     tag: string;
-}>): Readonly<{ requestLeave: () => void }> {
+}>): Readonly<{ requestLeave: () => void; allowSavedNavigation: () => void }> {
     const { isDirty, navigation, onDiscard, onLeave, onSave, tag } = params;
     const isDirtyRef = React.useRef(isDirty);
     isDirtyRef.current = isDirty;
+    const ignoreRef = React.useRef(false);
 
     const requestDecision = React.useCallback(() => promptUnsavedChangesAlert(
         (title, message, buttons) => Modal.alert(title, message, buttons),
@@ -48,10 +49,10 @@ export function useUnsavedDraftNavigationGuard(params: Readonly<{
             title: t('common.discardChanges'),
             message: t('common.unsavedChangesWarning'),
             discardText: t('common.discard'),
-            saveText: t('common.save'),
+            ...(onSave ? { saveText: t('common.save') } : {}),
             keepEditingText: t('common.keepEditing'),
         },
-    ), []);
+    ), [onSave]);
     const discard = React.useCallback(() => {
         isDirtyRef.current = false;
         onDiscard?.();
@@ -62,11 +63,12 @@ export function useUnsavedDraftNavigationGuard(params: Readonly<{
             dispatch(action);
             return;
         }
-        onLeave();
+        onLeave?.();
     }, [navigation, onLeave]);
 
     const guard = React.useMemo<ActiveUnsavedChangesGuard>(() => ({
         isDirtyRef,
+        ignoreRef,
         requestDecision,
         onDiscard: discard,
         onSave,
@@ -77,6 +79,7 @@ export function useUnsavedDraftNavigationGuard(params: Readonly<{
     useUnsavedChangesBeforeRemoveGuard({
         isDirty,
         isDirtyRef,
+        ignoreRef,
         requestDecision,
         onDiscard: discard,
         onSave,
@@ -87,8 +90,13 @@ export function useUnsavedDraftNavigationGuard(params: Readonly<{
     useActiveUnsavedChangesGuard({ navigation, guard, enabled: isDirty });
 
     const requestLeave = React.useCallback(() => {
-        void runUnsavedChangesGuard(guard, onLeave);
+        void runUnsavedChangesGuard(guard, () => onLeave?.());
     }, [guard, onLeave]);
 
-    return React.useMemo(() => ({ requestLeave }), [requestLeave]);
+    const allowSavedNavigation = React.useCallback(() => {
+        ignoreRef.current = true;
+        isDirtyRef.current = false;
+    }, []);
+
+    return React.useMemo(() => ({ requestLeave, allowSavedNavigation }), [requestLeave, allowSavedNavigation]);
 }

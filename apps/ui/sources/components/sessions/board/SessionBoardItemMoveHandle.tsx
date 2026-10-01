@@ -1,11 +1,11 @@
 import * as React from 'react';
-import { AccessibilityInfo, I18nManager, Platform, View } from 'react-native';
+import { I18nManager, Platform, View } from 'react-native';
 import { GestureDetector, type GestureType } from 'react-native-gesture-handler';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
-import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 
 const MOVE_HANDLE_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
@@ -18,13 +18,6 @@ const stylesheet = StyleSheet.create(() => ({
         minHeight: MOVE_HANDLE_TARGET_SIZE,
         alignItems: 'center',
         justifyContent: 'center',
-    },
-    liveRegion: {
-        position: 'absolute',
-        width: 1,
-        height: 1,
-        overflow: 'hidden',
-        opacity: 0,
     },
 }));
 
@@ -226,7 +219,8 @@ export function SessionBoardItemMoveHandle(props: Readonly<{
     >({ kind: 'current' });
     const grabbedRef = React.useRef(false);
     const targetRef = React.useRef<typeof target>({ kind: 'current' });
-    const [announcement, setAnnouncement] = React.useState('');
+    /** Counter-keyed so repeating the same phrase (cancel twice) still speaks. */
+    const [announcement, setAnnouncement] = React.useState<Readonly<{ counter: number; text: string }>>({ counter: 0, text: '' });
 
     const updateGrabbed = React.useCallback((next: boolean) => {
         grabbedRef.current = next;
@@ -237,9 +231,8 @@ export function SessionBoardItemMoveHandle(props: Readonly<{
         setTarget(next);
     }, []);
 
-    const announce = React.useCallback((message: string) => {
-        setAnnouncement(message);
-        if (Platform.OS !== 'web') AccessibilityInfo.announceForAccessibility(message);
+    const announce = React.useCallback((text: string) => {
+        setAnnouncement((previous) => ({ counter: previous.counter + 1, text }));
     }, []);
 
     /**
@@ -271,22 +264,15 @@ export function SessionBoardItemMoveHandle(props: Readonly<{
                     targetPosition: finalTarget.position,
                 })
                 : null;
+            // The Board controller announces the committed move once the layout write lands.
             if (anchor) props.onMoveAnchored?.(anchor);
             else props.onMove(finalTarget.direction);
-            announce(t('sessionsList.dragA11yDroppedReorder', {
-                item: props.itemTitle,
-                destination: positionLabel(finalTarget.position),
-            }));
         } else if (finalTarget.kind === 'view') {
             props.onMoveToView?.(finalTarget.id);
-            announce(t('sessionsList.dragA11yDroppedRoot', {
-                item: props.itemTitle,
-                destination: finalTarget.title,
-            }));
         } else {
             announce(t('sessionsList.dragA11yCancelled', { item: props.itemTitle }));
         }
-    }, [announce, positionLabel, props, updateGrabbed, updateTarget]);
+    }, [announce, props, updateGrabbed, updateTarget]);
 
     const stageView = React.useCallback((delta: -1 | 1) => {
         const destinations = props.moveDestinations ?? [];
@@ -373,30 +359,17 @@ export function SessionBoardItemMoveHandle(props: Readonly<{
                     ...(props.canMoveAfter ? [{ name: 'increment' as const, label: t('common.moveDown') }] : []),
                 ]}
                 onAccessibilityAction={(event) => {
-                    if (event.nativeEvent.actionName === 'decrement' && props.canMoveBefore) {
-                        props.onMove('before');
-                        announce(t('sessionsList.dragA11yDroppedReorder', {
-                            item: props.itemTitle,
-                            destination: positionLabel(Math.max(1, (props.position ?? 2) - 1)),
-                        }));
-                    }
-                    if (event.nativeEvent.actionName === 'increment' && props.canMoveAfter) {
-                        props.onMove('after');
-                        announce(t('sessionsList.dragA11yDroppedReorder', {
-                            item: props.itemTitle,
-                            destination: positionLabel(Math.min(props.total ?? 1, (props.position ?? 0) + 1)),
-                        }));
-                    }
+                    // The Board controller announces the committed move.
+                    if (event.nativeEvent.actionName === 'decrement' && props.canMoveBefore) props.onMove('before');
+                    if (event.nativeEvent.actionName === 'increment' && props.canMoveAfter) props.onMove('after');
                 }}
             >
                 <Icon name="dots-six-vertical" size={20} color={theme.colors.text.secondary} />
-                <Text
-                    testID={`${props.testID}-live-region`}
-                    style={stylesheet.liveRegion}
-                    accessibilityLiveRegion="polite"
-                >
-                    {announcement}
-                </Text>
+                <PoliteAccessibilityStatus
+                    announcement={announcement.text}
+                    transitionKey={String(announcement.counter)}
+                    statusTestID={`${props.testID}-live-region`}
+                />
             </View>
         </GestureDetector>
     );

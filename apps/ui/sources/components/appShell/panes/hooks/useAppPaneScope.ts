@@ -1,3 +1,4 @@
+import { usePaneRegion } from '../paneRegion';
 import * as React from 'react';
 import { Platform } from 'react-native';
 import { useAppPaneContext } from '../AppPaneProvider';
@@ -110,6 +111,7 @@ export function useAppPaneScope(scopeId: string): AppPaneScopeApi {
     const detailsOverlayFocusReturnRef = usePaneOverlayFocusReturnRef(scopeId, 'details');
     const bottomOverlayFocusReturnRef = usePaneOverlayFocusReturnRef(scopeId, 'bottom');
     const detailsPaneTabsBehavior = useLocalSetting('detailsPaneTabsBehavior');
+    const paneRegion = usePaneRegion();
     const recordNativeFocusTarget = React.useCallback((event: unknown) => {
         const target = (event as Readonly<{
             nativeEvent?: Readonly<{ target?: unknown }>;
@@ -186,8 +188,8 @@ export function useAppPaneScope(scopeId: string): AppPaneScopeApi {
         });
         lastPreviewOpenRef.current = decision.nextLastPreviewOpen;
         const openAs = decision.openAs;
-        dispatch({ type: 'openDetailsTab', scopeId, tab, openAs });
-    }, [detailsPaneTabsBehavior, dispatch, scopeId]);
+        dispatch({ type: 'openDetailsTab', scopeId, tab, openAs, origin: paneRegion });
+    }, [detailsPaneTabsBehavior, dispatch, paneRegion, scopeId]);
 
     const setDetailsTabState = React.useCallback((tabKey: string, nextState: unknown) => {
         dispatch({ type: 'setDetailsTabState', scopeId, tabKey, nextState });

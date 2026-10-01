@@ -16,7 +16,7 @@ import {
 import { OverlayScrim } from '@/components/ui/overlays/OverlayScrim';
 import { resolveOverlayPointerEvents } from '@/components/ui/overlays/resolveOverlayPointerEvents';
 import { SelectionList } from '@/components/ui/selectionList';
-import type { SelectionListDynamicSectionCache, SelectionListOption, SelectionListStep } from '@/components/ui/selectionList';
+import type { SelectionListDynamicSectionCache, SelectionListFilter, SelectionListOption, SelectionListStep } from '@/components/ui/selectionList';
 import { useKeyboardHeight } from '@/hooks/ui/useKeyboardHeight';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { t } from '@/text';
@@ -70,11 +70,10 @@ export type UniversalSearchNativeHostProps = Readonly<{
     onRequestClose: () => void;
     selectedOptionId?: string | null;
     listAccessibilityLabel?: string;
-    inputPrefix?: React.ReactNode;
+    /** The controller's scope filters (the Home chip), shown the same way as on the web palette. */
+    filters?: ReadonlyArray<SelectionListFilter>;
     testID?: string;
     dynamicSectionCache: SelectionListDynamicSectionCache;
-    syncActiveStep?: SelectionListStep | null;
-    onActiveStepChange?: (step: SelectionListStep) => void;
 }>;
 
 /**
@@ -217,9 +216,7 @@ export function UniversalSearchNativeHost(props: UniversalSearchNativeHostProps)
                         onSelect={props.onSelect}
                         onRequestClose={requestClose}
                         dynamicSectionCache={props.dynamicSectionCache}
-                        syncActiveStep={props.syncActiveStep}
-                        onActiveStepChange={props.onActiveStepChange}
-                        inputPrefix={props.inputPrefix}
+                        filters={props.filters}
                         inputSuffix={props.query.length > 0 ? (
                             <IconButton
                                 testID={`${testID}:clear`}

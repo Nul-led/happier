@@ -43,7 +43,40 @@ export type PluginAppPage = PluginSurfaceDestination & Readonly<{
     localId: string;
     /** The generated route of the page ROOT (no sub-path). */
     routePath: string;
+    /**
+     * The page's own shell column, when it declares one and its renderer is available: the same
+     * placement (binding, authority, runtime) bound to the column renderer, under its own mount id
+     * so the page and its column are two surfaces.
+     */
+    columnPlacement?: PluginUiSurfacePlacementProjection;
 }>;
+
+function resolvePluginAppPageColumnPlacement(
+    placement: PluginUiSurfacePlacementProjection,
+): PluginUiSurfacePlacementProjection | undefined {
+    const column = placement.column;
+    // An unavailable column renderer means no column: the page stands full width.
+    if (!column || column.availability.state !== 'available') return undefined;
+    return Object.freeze({
+        ...placement,
+        id: `${placement.id}:column`,
+        renderer: column.renderer,
+        availability: column.availability,
+    });
+}
+
+/** The plugin-local location a pathname under the page's route names, or `null` when it is not under it. */
+export function readPluginAppPageSubPathFromPathname(page: PluginAppPage, pathname: string): string | null {
+    const trimmed = pathname.replace(/\/+$/, '');
+    if (trimmed === page.routePath) return '';
+    if (!trimmed.startsWith(`${page.routePath}/`)) return null;
+    const segments = trimmed.slice(page.routePath.length + 1).split('/');
+    try {
+        return readPluginAppPageSubPath(segments.map((segment) => decodeURIComponent(segment)));
+    } catch {
+        return null;
+    }
+}
 
 /**
  * Build a page route. Every segment is encoded, so a page id or location
@@ -124,14 +157,18 @@ export function resolvePluginAppPages(input: Readonly<{
         },
     });
 
-    return Object.freeze(destinations.map((destination) => Object.freeze({
-        ...destination,
-        localId: destination.placement.binding.destination.localId,
-        routePath: buildPluginAppPageRoutePath({
-            pluginId: destination.pluginId,
+    return Object.freeze(destinations.map((destination) => {
+        const columnPlacement = resolvePluginAppPageColumnPlacement(destination.placement);
+        return Object.freeze({
+            ...destination,
             localId: destination.placement.binding.destination.localId,
-        }),
-    })));
+            routePath: buildPluginAppPageRoutePath({
+                pluginId: destination.pluginId,
+                localId: destination.placement.binding.destination.localId,
+            }),
+            ...(columnPlacement ? { columnPlacement } : {}),
+        });
+    }));
 }
 
 /**

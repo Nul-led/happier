@@ -31,12 +31,85 @@ function getDetailsView(state: ReturnType<typeof createAppPaneState>, scopeId: s
 }
 
 describe('appPaneReduce', () => {
+    it('admits another measured split without a terminal-count ceiling', () => {
+        const scopeId = 'session:many-splits';
+        let state = appPaneReduce(createAppPaneState({ maxScopesInMemory: 3 }), { type: 'openBottom', scopeId, tabId: 'terminal' });
+        for (const id of ['second', 'third']) {
+            state = appPaneReduce(state, { type: 'terminalWorkspace', scopeId, command: { type: 'split', terminal: { id, target: { kind: 'workspace_shell' } }, availableWidthPx: 1000, minimumTerminalWidthPx: 320 } });
+        }
+        expect(state.scopes[scopeId].bottom.tabState.terminal).toMatchObject({ tabs: [{ terminals: [{ id: 'embedded' }, { id: 'second' }, { id: 'third' }] }] });
+        state = appPaneReduce(state, { type: 'terminalWorkspace', scopeId, command: { type: 'detach', terminalId: 'embedded', newTabId: 'detached-shell' } });
+        expect(state.scopes[scopeId].bottom.tabState.terminal).toMatchObject({ activeTabId: 'detached-shell', tabs: [
+            { id: 'embedded', terminals: [{ id: 'second' }, { id: 'third' }] },
+            { id: 'detached-shell', terminals: [{ id: 'embedded' }] },
+        ] });
+    });
+    it('refuses unmeasured or narrow terminal splits and preserves the sibling when closing a split member', () => {
+        let state = createAppPaneState({ maxScopesInMemory: 3 });
+        const scopeId = 'session:terminal-split';
+        state = appPaneReduce(state, { type: 'openBottom', scopeId, tabId: 'terminal' });
+        const terminal = { id: 'split-shell', target: { kind: 'workspace_shell' as const } };
+        const before = state;
+        state = appPaneReduce(state, { type: 'terminalWorkspace', scopeId, command: { type: 'split', terminal, availableWidthPx: 500, minimumTerminalWidthPx: 320 } });
+        expect(state).toBe(before);
+        state = appPaneReduce(state, { type: 'terminalWorkspace', scopeId, command: { type: 'split', terminal, availableWidthPx: 1000, minimumTerminalWidthPx: 320 } });
+        expect(state.scopes[scopeId].bottom.tabState.terminal).toMatchObject({ activeTabId: 'embedded', tabs: [{ terminals: [{ id: 'embedded' }, { id: 'split-shell' }] }] });
+        state = appPaneReduce(state, { type: 'terminalWorkspace', scopeId, command: { type: 'close', terminalId: 'split-shell' } });
+        expect(state.scopes[scopeId].bottom.tabState.terminal).toMatchObject({ tabs: [{ focusedTerminalId: 'embedded', terminals: [{ id: 'embedded' }] }] });
+    });
+
+    it('retains separate shell and agent terminal tabs, a split and list preference through hide/reopen', () => {
+        let state = createAppPaneState({ maxScopesInMemory: 3 });
+        const scopeId = 'session:address:home-a:session-a';
+        state = appPaneReduce(state, { type: 'activateScope', scopeId });
+        state = appPaneReduce(state, { type: 'terminalWorkspace', scopeId, command: { type: 'open', terminal: { id: 'agent', target: { kind: 'session_attach' } } } });
+        expect(state.scopes[scopeId]?.bottom.tabState.terminal).toMatchObject({ activeTabId: 'agent' });
+        state = appPaneReduce(state, { type: 'terminalWorkspace', scopeId, command: { type: 'split', terminal: { id: 'shell-2', target: { kind: 'workspace_shell' } }, availableWidthPx: 1200, minimumTerminalWidthPx: 320 } });
+        state = appPaneReduce(state, { type: 'terminalWorkspace', scopeId, command: { type: 'showList', showList: true } });
+        const layout = state.scopes[scopeId].bottom.tabState.terminal;
+        expect(layout).toMatchObject({ showList: true, tabs: [
+            { id: 'embedded', terminals: [{ id: 'embedded', target: { kind: 'workspace_shell' } }] },
+            { id: 'agent', focusedTerminalId: 'shell-2', terminals: [{ id: 'agent' }, { id: 'shell-2' }] },
+        ] });
+        state = appPaneReduce(state, { type: 'closeBottom', scopeId });
+        state = appPaneReduce(state, { type: 'openBottom', scopeId, tabId: 'terminal' });
+        expect(state.scopes[scopeId].bottom.tabState.terminal).toBe(layout);
+        expect(state.scopes[scopeId].bottom.isOpen).toBe(true);
+        expect(state.scopes['session:address:home-b:session-a']).toBeUndefined();
+        state = appPaneReduce(state, { type: 'closeBottom', scopeId });
+        state = appPaneReduce(state, { type: 'terminalWorkspace', scopeId, command: { type: 'focus', terminalId: 'shell-2' } });
+        expect(state.scopes[scopeId].bottom.isOpen).toBe(true);
+    });
+
+    it('does not close another bottom destination when the last hidden terminal view is closed', () => {
+        const scopeId = 'session:hidden-terminal';
+        let state = appPaneReduce(createAppPaneState({ maxScopesInMemory: 3 }), { type: 'openBottom', scopeId, tabId: 'files' });
+        state = appPaneReduce(state, { type: 'terminalWorkspace', scopeId, command: { type: 'close', terminalId: 'embedded' } });
+        expect(state.scopes[scopeId].bottom).toMatchObject({ isOpen: true, activeTabId: 'files' });
+    });
+
     it('creates and activates scopes, keeping an LRU order', () => {
         let state = createAppPaneState({ maxScopesInMemory: 3 });
         state = appPaneReduce(state, { type: 'activateScope', scopeId: 'session:1' });
         state = appPaneReduce(state, { type: 'activateScope', scopeId: 'session:2' });
         expect(state.activeScopeId).toBe('session:2');
         expect(state.scopeLru).toEqual(['session:2', 'session:1']);
+    });
+
+    it('releases the active scope only for the page that owned it, keeping its state', () => {
+        let state = createAppPaneState({ maxScopesInMemory: 3 });
+        state = appPaneReduce(state, { type: 'activateScope', scopeId: 'session:1' });
+        state = appPaneReduce(state, { type: 'openRight', scopeId: 'session:1', tabId: 'files' });
+        // A page left behind (another page on screen now) no longer owns the active scope.
+        state = appPaneReduce(state, { type: 'releaseScope', scopeId: 'session:1' });
+        expect(state.activeScopeId).toBeNull();
+        expect(state.scopes['session:1']?.right.isOpen).toBe(true);
+        // A stale release from a page that is not the active one changes nothing.
+        state = appPaneReduce(state, { type: 'activateScope', scopeId: 'app' });
+        const before = state;
+        state = appPaneReduce(state, { type: 'releaseScope', scopeId: 'session:1' });
+        expect(state).toBe(before);
+        expect(state.activeScopeId).toBe('app');
     });
 
     it('does not clear details tabs when closing the details pane', () => {
@@ -694,5 +767,16 @@ describe('appPaneReduce', () => {
         });
 
         expect(merged).toBe(state);
+    });
+
+    it('remembers which region opened Details, and keeps it when Details opens its own tabs', () => {
+        let state = createAppPaneState({ maxScopesInMemory: 3 });
+        state = appPaneReduce(state, { type: 'activateScope', scopeId: 'session:1' });
+        state = appPaneReduce(state, { type: 'openDetailsTab', scopeId: 'session:1', tab: createFileTab('a.txt'), openAs: 'pinned', origin: 'side' });
+        expect(state.scopes['session:1']?.details.openedFrom).toBe('side');
+        state = appPaneReduce(state, { type: 'openDetailsTab', scopeId: 'session:1', tab: createFileTab('b.txt'), openAs: 'pinned', origin: 'details' });
+        expect(state.scopes['session:1']?.details.openedFrom).toBe('side');
+        state = appPaneReduce(state, { type: 'openDetailsTab', scopeId: 'session:1', tab: createFileTab('c.txt'), openAs: 'pinned', origin: 'main' });
+        expect(state.scopes['session:1']?.details.openedFrom).toBe('main');
     });
 });

@@ -1,9 +1,9 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { PromptAssetExportScreen } from '@/components/settings/prompts/assets/PromptAssetExportScreen';
 
-export default function ExportPromptDocPage() {
+export function ExportPromptDocPage() {
   const params = useLocalSearchParams<{
     id: string;
     assetTypeId?: string | string[];
@@ -23,3 +23,6 @@ export default function ExportPromptDocPage() {
     />
   );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { ExportPromptDocPage as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={ExportPromptDocPage} />; }

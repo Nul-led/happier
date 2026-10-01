@@ -72,6 +72,10 @@ vi.mock('@/hooks/session/useNavigateToSession', () => ({
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: () => false,
 }));
+// The same server feature seam, as the canonical decision the Workflows entry reads.
+vi.mock('@/hooks/server/useFeatureDecision', () => ({
+    useFeatureDecision: () => null,
+}));
 
 vi.mock('@/sync/store/settingsWriters', () => ({
     useApplySettings: () => vi.fn(),

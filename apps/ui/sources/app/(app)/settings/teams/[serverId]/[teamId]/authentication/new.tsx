@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { TeamIdentityProviderSetupScreen } from '@/components/settings/teams/identity/TeamIdentityProviderSetupScreen';
 import { firstRouteParam } from '@/components/settings/teams/teamRouteParams';
 
-export default function TeamIdentityProviderSetupRoute() {
+export function TeamIdentityProviderSetupRoute() {
     const params = useLocalSearchParams<{
         serverId?: string | string[];
         teamId?: string | string[];
@@ -17,3 +17,6 @@ export default function TeamIdentityProviderSetupRoute() {
         providerKind={kind === 'github_app_identity' ? 'github_app_identity' : 'oidc'}
     />;
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { TeamIdentityProviderSetupRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={TeamIdentityProviderSetupRoute} />; }

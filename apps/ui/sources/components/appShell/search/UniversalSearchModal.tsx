@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import type { CustomModalInjectedProps } from '@/modal/types';
+import { buildCommandSurfaceCardChrome } from '@/modal/components/card/commandSurfaceCard';
 import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
 import type { Command } from '@/components/appShell/commandPalette/types';
 import { t } from '@/text';
@@ -16,14 +17,11 @@ export type UniversalSearchModalProps = CustomModalInjectedProps & Readonly<{
 
 export function UniversalSearchModal(props: UniversalSearchModalProps): React.ReactElement {
     const title = t('tools.names.search');
-    const chrome = React.useMemo(() => ({
-        kind: 'card' as const,
+    // Spotlight: the command-surface card, with the search field as its top. Esc and the backdrop close it.
+    const chrome = React.useMemo(() => buildCommandSurfaceCardChrome({
         title,
         testID: 'universal-search:modal',
         closeButtonTestID: 'universal-search:close',
-        scrollHost: 'body' as const,
-        bodyScroll: 'none' as const,
-        dimensions: { width: 800, maxHeightRatio: 0.7, size: 'lg' as const },
     }), [title]);
     useModalCardChrome(props.setChrome, chrome);
     return (

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
@@ -12,13 +13,21 @@ import {
 vi.mock('@/text', () => createTextModuleMock());
 
 const summaryModel = {
+    scope: 'exact' as const,
     title: 'Teams lane 08',
     agentLabel: 'Claude',
-    operational: 'working' as const,
+    agentId: null,
+    status: { state: 'thinking' as const, statusText: 'Working', quiet: false },
     stale: false,
     availability: 'complete' as const,
+    encryption: 'plain' as const,
     identityDestination: 'sessionInfo' as const,
     rows: [] as const,
+    needsYou: null,
+    sinceMs: null,
+    progress: null,
+    plan: null,
+    facts: [] as const,
 };
 vi.mock('./summary/useSessionSummaryModel', () => ({
     useSessionSummaryModel: () => summaryModel,
@@ -97,7 +106,37 @@ import {
     type SessionBoardOpenedRecord,
 } from '@/sync/domains/session/board';
 
+import { PaneHeader } from '@/components/appShell/panes/PaneHeader';
+import {
+    PaneHeaderSlotProvider,
+    PaneHeaderSlotScope,
+    usePublishedPaneHeaderContent,
+} from '@/components/appShell/panes/paneHeaderSlot';
+
 import { SessionCompanionScreen } from './SessionCompanionScreen';
+
+/** The phone cockpit's surface header: the large title plus what the Companion publishes. */
+function HeaderProbe(): React.ReactElement {
+    const published = usePublishedPaneHeaderContent('companion');
+    return (
+        <PaneHeader
+            testID="probe-header"
+            size="large"
+            title="Companion"
+            line={published?.line ?? null}
+            actions={published?.action}
+        />
+    );
+}
+
+function inCockpitHeader(children: React.ReactNode): React.ReactElement {
+    return (
+        <PaneHeaderSlotProvider>
+            <HeaderProbe />
+            <PaneHeaderSlotScope slotKey="companion">{children}</PaneHeaderSlotScope>
+        </PaneHeaderSlotProvider>
+    );
+}
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -155,22 +194,49 @@ describe('SessionCompanionScreen (mounted, mobile Cockpit)', () => {
     });
 
     it('renders one full-height Companion destination with the shared content owner', async () => {
-        const renderer = await renderScreen(
+        const renderer = await renderScreen(inCockpitHeader(
             <SessionCompanionScreen
                 {...shellProps}
             />,
-        );
+        ));
 
         expect(renderer.findByTestId('session-companion-screen')).not.toBeNull();
         expect(renderer.findByTestId('session-companion-content')).not.toBeNull();
         expect(renderer.findByTestId('session-companion-content-summary')).not.toBeNull();
-        expect(renderer.findByTestId('session-companion-screen-heading')?.props.accessibilityRole).toBe('header');
+        // The cockpit's large title is the one heading (session-tabs lab Cp): no uppercase eyebrow of
+        // its own, and the live line says where it lives and how much it holds.
+        expect(renderer.findAllByTestId('session-companion-screen-heading')).toHaveLength(0);
+        expect(renderer.findByTestId('probe-header.subtitle')).toBeTruthy();
+        const headerText = renderer.getTextContent();
+        expect(headerText).toContain('sessionBoard.companion.pane.besideChat');
+        expect(headerText).toContain('sessionBoard.companion.pane.itemCount');
         // Full-height content stretches to the Cockpit width. Publishing that
         // laid-out width as rail evidence would make the placement owner treat
         // a presentation constraint as the card's intrinsic rail width.
         expect(renderer.findByTestId(
             'session-companion-content-item-builtin:session_summary',
         )?.props.onLayout).toBeUndefined();
+    });
+
+    it('invites an empty Companion with the summary and says it is personal (lab STp)', async () => {
+        storedPreference.value = {
+            v: 1,
+            visible: true,
+            collapsed: false,
+            edge: 'trailing',
+            density: 'compact',
+            items: [],
+        };
+        const renderer = await renderScreen(inCockpitHeader(
+            <SessionCompanionScreen
+                {...shellProps}
+            />,
+        ));
+
+        expect(renderer.findByTestId('session-companion-content-empty-action')).toBeTruthy();
+        expect(renderer.findByTestId('session-companion-content-empty-note')).toBeTruthy();
+        const headerText = renderer.getTextContent();
+        expect(headerText).toContain('sessionBoard.companion.pane.justForYou');
     });
 
     it('routes installed-widget recovery and Board removal through the mounted Board controller', async () => {
@@ -225,11 +291,11 @@ describe('SessionCompanionScreen (mounted, mobile Cockpit)', () => {
             reason: 'board_feature_disabled',
             refresh: vi.fn(),
         });
-        const renderer = await renderScreen(
+        const renderer = await renderScreen(inCockpitHeader(
             <SessionCompanionScreen
                 {...shellProps}
             />,
-        );
+        ));
 
         expect(renderer.findByTestId('session-companion-screen-unavailable')).toBeNull();
         expect(renderer.findByTestId('session-companion-content')).not.toBeNull();
@@ -237,11 +303,11 @@ describe('SessionCompanionScreen (mounted, mobile Cockpit)', () => {
     });
 
     it('exposes the Companion menu without collapse controls that would do nothing here', async () => {
-        const renderer = await renderScreen(
+        const renderer = await renderScreen(inCockpitHeader(
             <SessionCompanionScreen
                 {...shellProps}
             />,
-        );
+        ));
 
         const [menu] = renderer.findAll((node) => Array.isArray(node.props?.actions)
             && node.props?.overflowTriggerTestID === 'session-companion-screen-menu');
@@ -259,12 +325,12 @@ describe('SessionCompanionScreen (mounted, mobile Cockpit)', () => {
 
     it('returns to Chat when the person hides the full-screen Companion', async () => {
         const onRequestClose = vi.fn();
-        const renderer = await renderScreen(
+        const renderer = await renderScreen(inCockpitHeader(
             <SessionCompanionScreen
                 {...shellProps}
                 onRequestClose={onRequestClose}
             />,
-        );
+        ));
         const [menu] = renderer.findAll((node) => Array.isArray(node.props?.actions)
             && node.props?.overflowTriggerTestID === 'session-companion-screen-menu');
         const actions = menu?.props.actions as ReadonlyArray<{ id: string; onPress?: () => void }>;
@@ -280,9 +346,9 @@ describe('SessionCompanionScreen (mounted, mobile Cockpit)', () => {
     });
 
     it('publishes feedback only after applied edge and density changes', async () => {
-        const renderer = await renderScreen(
+        const renderer = await renderScreen(inCockpitHeader(
             <SessionCompanionScreen {...shellProps} />,
-        );
+        ));
         const [menu] = renderer.findAll((node) => Array.isArray(node.props?.actions)
             && node.props?.overflowTriggerTestID === 'session-companion-screen-menu');
         const actions = menu?.props.actions as ReadonlyArray<{ id: string; onPress?: () => void }>;
@@ -304,7 +370,7 @@ describe('SessionCompanionScreen (mounted, mobile Cockpit)', () => {
         });
     });
 
-    it('offers safe Undo when a readable Board item is added from the Companion menu', async () => {
+    it('offers safe Undo when a readable Board item is added from the Add to Companion picker', async () => {
         const boardItems = new Map<string, SessionBoardOpenedRecord<SessionSurfaceItemV1>>([['widget-1', {
             revision: 'r1',
             outcome: {
@@ -334,17 +400,23 @@ describe('SessionCompanionScreen (mounted, mobile Cockpit)', () => {
             }),
             refresh: () => {},
         });
-        const renderer = await renderScreen(
+        const renderer = await renderScreen(inCockpitHeader(
             <SessionCompanionScreen
                 {...shellProps}
                 onRequestClose={() => {}}
             />,
-        );
-        const [menu] = renderer.findAll((node) => Array.isArray(node.props?.actions)
-            && node.props?.overflowTriggerTestID === 'session-companion-screen-menu');
-        const actions = menu?.props.actions as ReadonlyArray<{ id: string; onPress?: () => void }>;
-
-        actions.find((action) => action.id === 'add-widget-1')?.onPress?.();
+        ));
+        // The phone's + in the navigation bar opens the one Add popover.
+        await renderer.pressByTestIdAsync('session-companion-screen-add');
+        const [popover] = renderer.findAll((node) => Array.isArray(node.props?.sections)
+            && typeof node.props?.searchPlaceholder === 'string');
+        const sections = popover?.props.sections as ReadonlyArray<{
+            id: string;
+            entries: ReadonlyArray<{ id: string; onPick: () => void }>;
+        }>;
+        const onBoard = sections.find((section) => section.id === 'board')?.entries ?? [];
+        expect(onBoard.map((entry) => entry.id)).toEqual(['board-widget-1']);
+        await act(async () => { onBoard[0]?.onPick(); });
 
         expect(readPresentationNotice()).toMatchObject({
             message: 'sessionBoard.companion.notices.added',
@@ -354,11 +426,11 @@ describe('SessionCompanionScreen (mounted, mobile Cockpit)', () => {
     });
 
     it('never mounts a persistent rail on a phone: the wide host resolves to a mobile control', async () => {
-        const renderer = await renderScreen(
+        const renderer = await renderScreen(inCockpitHeader(
             <SessionCompanionScreen
                 {...shellProps}
             />,
-        );
+        ));
 
         expect(renderer.findByTestId('session-companion-reserved-rail')).toBeNull();
         expect(renderer.findByTestId('session-companion-collapsed-control')).toBeNull();
@@ -375,11 +447,11 @@ describe('SessionCompanionScreen (mounted, mobile Cockpit)', () => {
     });
 
     it('shows a truthful loading state while the exact Session is not readable yet', async () => {
-        const renderer = await renderScreen(
+        const renderer = await renderScreen(inCockpitHeader(
             <SessionCompanionScreen
                 {...shellProps}
             />,
-        );
+        ));
 
         // An unavailable Board never becomes a deleted-item tombstone here.
         expect(renderer.findByTestId('session-companion-content')).not.toBeNull();

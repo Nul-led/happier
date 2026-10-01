@@ -18,7 +18,6 @@ import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const machineContributionRegistryProjectionDescribeMock = vi.hoisted(() => vi.fn());
-const agentSetupFlowPropsSpy = vi.hoisted(() => vi.fn());
 const administrationTargetState = vi.hoisted(() => ({
     selectedTarget: {
         serverIdentityId: 'server-a',
@@ -82,8 +81,7 @@ const machineListByServerIdState = vi.hoisted(() => ({
 
 function createQualifiedExternalAgentProjection() {
     const agent = PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE.agentsById['acme.review.provider'];
-    const backend = PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE.backendsById['acme.review.backend'];
-    if (!agent || !backend) throw new Error('Expected the external Agent fixture to be complete.');
+    if (!agent) throw new Error('Expected the external Agent fixture to be complete.');
 
     return {
         ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
@@ -91,13 +89,6 @@ function createQualifiedExternalAgentProjection() {
             'acme.review/provider': {
                 ...agent,
                 id: 'acme.review/provider',
-            },
-        },
-        backendsById: {
-            ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE.backendsById,
-            'acme.review.backend': {
-                ...backend,
-                agentId: 'acme.review/provider',
             },
         },
     };
@@ -134,16 +125,15 @@ installSessionSettingsEntryModuleMocks({
     },
 });
 
-vi.mock('@/components/settings/acpCatalog/AcpCatalogSettingsSections', () => ({
-    AcpCatalogSettingsSections: () => React.createElement('AcpCatalogSettingsSections'),
+const acpCatalogState = vi.hoisted(() => ({
+    backends: [] as Array<{ id: string; name: string; title?: string; command: string; args: string[] }>,
 }));
 
-vi.mock('@/components/settings/agents/setup/AgentSetupFlow', () => ({
-    AgentSetupFlow: (props: Record<string, unknown>) => {
-        agentSetupFlowPropsSpy(props);
-        return React.createElement('AgentSetupFlow', props);
-    },
+vi.mock('@/components/settings/acpCatalog/AcpCatalogSettingsSections', () => ({
+    useAcpCatalogBackends: () => ({ backends: acpCatalogState.backends, deleteBackend: async () => {} }),
+    formatAcpBackendCommand: (command: string, args: readonly string[]) => [command, ...args].join(' '),
 }));
+
 
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
     useActiveServerSnapshot: () => activeServerSnapshotState.value,
@@ -153,6 +143,8 @@ vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
     useMachineAdministrationTargetSelection: () => ({
         selectedTarget: administrationTargetState.selectedTarget,
         resolveExecutionTarget: () => administrationTargetState.executionTarget,
+        pickerRows: [],
+        candidates: [],
     }),
 }));
 
@@ -170,6 +162,8 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
     machinePluginSecretStatus: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
     machinePluginSecretDelete: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsGet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
+    machinePluginSettingsSet: vi.fn(async () => ({ supported: false, reason: 'not-supported' })),
 }));
 
 vi.mock('@/agents/catalog/catalog', () => ({
@@ -191,6 +185,12 @@ vi.mock('@/agents/catalog/catalog', () => ({
     getAgentIconTintColor: () => undefined,
 }));
 
+/** A collection row's mark: the agent identity icon inside its mark slot. */
+function readIdentityIcon(icon: React.ReactElement<{ children?: React.ReactNode }> | undefined): any {
+    return React.Children.toArray(icon?.props.children)
+        .find((child) => React.isValidElement(child) && child.type === AgentCatalogIdentityIcon);
+}
+
 beforeEach(() => {
     administrationTargetState.selectedTarget = {
         serverIdentityId: 'server-a',
@@ -208,7 +208,7 @@ beforeEach(() => {
             daemonStateVersion: 0,
         },
     };
-    agentSetupFlowPropsSpy.mockReset();
+    acpCatalogState.backends = [];
 });
 
 afterEach(() => {
@@ -284,33 +284,17 @@ describe('PluginAgentSettingsIndexScreen', () => {
                 }),
             }),
         }));
-        expect(agentSetupFlowPropsSpy).toHaveBeenCalledWith(expect.objectContaining({
-            agentEntries: expect.arrayContaining([
-                expect.objectContaining({
-                    agentId: 'acme.review/provider',
-                    catalogAgentId: 'claude',
-                    title: 'Acme Review Provider',
-                    iconAgentId: 'codex',
-                    iconName: 'code-slash-outline',
-                }),
-            ]),
-        }));
-
         expect(screen.findRowByTitle('Codex')).toBeFalsy();
         expect(screen.findRowByTitle('Acme Review Provider')).toBeTruthy();
-        expect(screen.findRowByTitle('Acme Review Provider')?.props.subtitle).toContain(
-            'settingsAgents.channelPlugin',
-        );
+        // The machine has not reported on this agent yet: no guessed status line.
+        expect(screen.findRowByTitle('Acme Review Provider')?.props.subtitle).toBeUndefined();
         expect(screen.findRowByTitle('agent.customAcp')).toBeFalsy();
-        const projectedIcon = screen.findRowByTitle('Acme Review Provider')?.props.icon;
+        const projectedIcon = readIdentityIcon(screen.findRowByTitle('Acme Review Provider')?.props.icon);
         expect(projectedIcon?.type).toBe(AgentCatalogIdentityIcon);
         expect(projectedIcon?.props.entry).toEqual(expect.objectContaining({
             qualifiedId: 'acme.review/provider',
             identity: { pluginId: 'acme.review', localId: 'provider' },
         }));
-
-        const acpSections = screen.findAllByType('AcpCatalogSettingsSections' as any);
-        expect(acpSections).toHaveLength(1);
 
         await act(async () => {
             screen.pressRowByTitle('Acme Review Provider');
@@ -640,13 +624,9 @@ describe('PluginAgentSettingsIndexScreen', () => {
             serverId: 'server-selected',
         }));
         expect(machineContributionRegistryProjectionDescribeMock).not.toHaveBeenCalledWith('machine-other', expect.anything());
-        expect(agentSetupFlowPropsSpy).toHaveBeenCalledWith(expect.objectContaining({
-            machineId: 'machine-selected',
-            serverId: 'server-selected',
-        }));
     });
 
-    it('forwards projected plugin providers into setup even when they do not expose a built-in runtime carrier', async () => {
+    it('lists projected plugin agents even when they do not expose a built-in runtime carrier', async () => {
         const getResolvedAgentCatalogEntriesSpy = vi.spyOn(agentCatalogProjection, 'getResolvedAgentCatalogEntries');
         getResolvedAgentCatalogEntriesSpy.mockReturnValue([{
             agentId: 'acme.headless.provider',
@@ -673,16 +653,7 @@ describe('PluginAgentSettingsIndexScreen', () => {
         const Screen = (await import('@/app/(app)/settings/agents')).default;
         const screen = await renderSettingsView(React.createElement(Screen));
 
-        expect(agentSetupFlowPropsSpy).toHaveBeenCalledWith(expect.objectContaining({
-            agentEntries: expect.arrayContaining([
-                expect.objectContaining({
-                    agentId: 'acme.headless.provider',
-                    catalogAgentId: null,
-                    iconAgentId: 'claude',
-                }),
-            ]),
-        }));
-        const projectedIcon = screen.findRowByTitle('Acme Headless Provider')?.props.icon;
+        const projectedIcon = readIdentityIcon(screen.findRowByTitle('Acme Headless Provider')?.props.icon);
         expect(projectedIcon?.type).toBe(AgentCatalogIdentityIcon);
         expect(projectedIcon?.props.entry).toEqual(expect.objectContaining({
             qualifiedId: 'acme.headless.provider',
@@ -710,8 +681,48 @@ describe('PluginAgentSettingsIndexScreen', () => {
         const screen = await renderSettingsView(React.createElement(Screen));
 
         expect(screen.findRowByTitle('settingsAgents.notAvailable')).toBeTruthy();
-        expect(screen.findAllByType('AcpCatalogSettingsSections' as any)).toHaveLength(1);
 
+        getResolvedAgentCatalogEntriesSpy.mockRestore();
+    });
+
+    it('lists custom ACP agents as their own group and opens the definition editor', async () => {
+        const getResolvedAgentCatalogEntriesSpy = vi.spyOn(agentCatalogProjection, 'getResolvedAgentCatalogEntries');
+        getResolvedAgentCatalogEntriesSpy.mockReturnValue([]);
+        acpCatalogState.backends = [{ id: 'acp-1', name: 'my-acp', title: 'My ACP agent', command: 'my-acp', args: ['--stdio'] }];
+
+        const Screen = (await import('@/app/(app)/settings/agents')).default;
+        const screen = await renderSettingsView(React.createElement(Screen));
+
+        expect(screen.findRowByTitle('settingsAgents.notAvailable')).toBeFalsy();
+        expect(screen.findGroup('settingsAgents.collection.customAgents')).toBeTruthy();
+        expect(screen.findRowByTitle('My ACP agent')?.props.subtitle).toBe('my-acp --stdio');
+        await act(async () => {
+            screen.pressRowByTitle('My ACP agent');
+        });
+        expect(sessionSettingsEntryState.routerPushSpy).toHaveBeenCalledWith('/(app)/settings/agents/custom/acp-1');
+        getResolvedAgentCatalogEntriesSpy.mockRestore();
+    });
+
+    it('offers adding an ACP agent or asking an agent to add one, and sends askers without a machine to machine setup', async () => {
+        const getResolvedAgentCatalogEntriesSpy = vi.spyOn(agentCatalogProjection, 'getResolvedAgentCatalogEntries');
+        getResolvedAgentCatalogEntriesSpy.mockReturnValue([]);
+
+        const Screen = (await import('@/app/(app)/settings/agents')).default;
+        const screen = await renderSettingsView(React.createElement(Screen));
+
+        const menu = screen.findAll((node) => node.props?.testID === 'settings-agents-collection.addMenu'
+            && typeof node.props?.onSelect === 'function')[0];
+        expect(menu?.props.items.map((item: { id: string }) => item.id)).toEqual(['acp', 'askAgent']);
+        await act(async () => {
+            menu?.props.onSelect('acp');
+        });
+        expect(sessionSettingsEntryState.routerPushSpy).toHaveBeenCalledWith('/(app)/settings/agents/custom');
+        // This Account has no machine to run the session on: the entry says so and opens setup.
+        expect(menu?.props.items[1].subtitle).toBe('settingsAgents.authoring.needsMachine');
+        await act(async () => {
+            menu?.props.onSelect('askAgent');
+        });
+        expect(sessionSettingsEntryState.routerPushSpy).toHaveBeenCalledWith('/(app)/settings/machines');
         getResolvedAgentCatalogEntriesSpy.mockRestore();
     });
 });

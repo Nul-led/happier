@@ -6,6 +6,7 @@ export type SessionMobileSurface =
     | 'navigation'
     | 'companion'
     | 'board'
+    | 'agents'
     | 'collaboration'
     | 'tabs'
     | 'browser'
@@ -14,7 +15,7 @@ export type SessionMobileSurface =
     | SessionPluginMobileSurface;
 export type SessionLegacyRouteKind = 'index' | 'files' | 'git' | 'details' | 'terminal';
 
-type SessionRightTabId = 'git' | 'files' | 'navigation' | 'collaboration' | 'board' | 'terminal' | 'browser' | 'services' | SessionPluginMobileSurface;
+type SessionRightTabId = 'git' | 'files' | 'navigation' | 'agents' | 'collaboration' | 'board' | 'terminal' | 'browser' | 'services' | SessionPluginMobileSurface;
 type SessionRoutePathQueryValue = string | number | boolean | null | undefined;
 
 type SessionRoutePathOptions = Readonly<{
@@ -37,6 +38,7 @@ export function normalizeSessionMobileSurface(value: string | null | undefined):
         || normalized === 'navigation'
         || normalized === 'companion'
         || normalized === 'board'
+        || normalized === 'agents'
         || normalized === 'collaboration'
         || normalized === 'tabs'
         || normalized === 'browser'
@@ -117,6 +119,9 @@ export function resolveSessionRightTabIdForSurface(
     if (surface === 'navigation') {
         return 'navigation';
     }
+    if (surface === 'agents') {
+        return 'agents';
+    }
     if (surface === 'collaboration') {
         return 'collaboration';
     }
@@ -178,6 +183,9 @@ export function resolveSessionMobileSurfaceIntent(input: Readonly<{
     if (input.activeRightTabId === 'navigation') {
         return 'navigation';
     }
+    if (input.activeRightTabId === 'agents') {
+        return 'agents';
+    }
     if (input.activeRightTabId === 'collaboration') {
         return 'collaboration';
     }
@@ -206,6 +214,7 @@ export function resolveSessionRoutePathForSurface(
         || surface === 'navigation'
         || surface === 'companion'
         || surface === 'board'
+        || surface === 'agents'
         || surface === 'collaboration'
         || surface === 'browser'
         || surface === 'services'

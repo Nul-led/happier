@@ -86,6 +86,7 @@ function createPlacement(input: Readonly<{
     return {
         id: `surfacePlacement:${pluginId}:${input.descriptorId}`,
         pluginId,
+        occurrenceId: `${pluginId}-occurrence`,
         contributionKind: 'surfacePlacement',
         descriptorId: input.descriptorId,
         binding,

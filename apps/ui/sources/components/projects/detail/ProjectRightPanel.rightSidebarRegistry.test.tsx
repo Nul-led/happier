@@ -84,6 +84,7 @@ vi.mock('@/components/ui/layout/useChromeSafeAreaInsets', () => ({
 
 vi.mock('@/utils/platform/responsive', () => ({
     useDeviceType: () => deviceTypeMock,
+    useHeaderHeight: () => 56,
 }));
 
 vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
@@ -125,6 +126,8 @@ vi.mock('@/components/sessions/localServices', () => ({
 
 vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
     useAppShellPluginUiProjection: () => pluginProjectionState.value,
+    // App panels listed after the Project's own tabs are localized by the app-shell resolver.
+    useProjectedPluginLocalizedTextResolver: () => undefined,
 }));
 
 vi.mock('@/components/plugins/projection/useScopedPluginUiProjection', () => ({
@@ -201,6 +204,9 @@ function createProjectPluginProjection() {
     });
 }
 
+// Load the cold UI dependency graph after boundary mocks, outside per-test clocks.
+await import('./ProjectRightPanel');
+
 describe('ProjectRightPanel right-sidebar registry tabs', () => {
     beforeEach(() => {
         deviceTypeMock = 'desktop';
@@ -243,6 +249,60 @@ describe('ProjectRightPanel right-sidebar registry tabs', () => {
         expect(screen.findByTestId('project-rightpanel-tab:browser')).toBeNull();
         expect(screen.findByTestId('project-rightpanel-surface-browser')).toBeNull();
         expect(screen.findByTestId('project-rightpanel-tab:services')).toBeTruthy();
+    });
+
+    it('keeps plugin actions available while the project panel body is closed', async () => {
+        scopeState = { right: { isOpen: false, activeTabId: 'files', tabState: {} } };
+        scopedPluginProjectionState.value = {
+            pluginUiProjection: createProjectPluginProjection(),
+            phase: 'current',
+            interactionEnabled: true,
+            machineId: 'm1',
+            serverId: 's1',
+            platform: 'web',
+        };
+        const { ProjectRightSidebarProvider, ProjectRightSidebarRail } = await import('./ProjectRightPanel');
+        const screen = await renderScreen(
+            <ProjectRightSidebarProvider
+                workspaceRef={workspaceRef}
+                scopeId="project:wr_1"
+                activeRootPath="/repo"
+                onSelectRootPath={() => {}}
+            >
+                <ProjectRightSidebarRail />
+            </ProjectRightSidebarProvider>,
+        );
+        expect(screen.findByTestId('project-right-panel-root')).toBeNull();
+        await act(async () => {
+            screen.findByTestId(`project-rightpanel-action:plugin:${REVIEW_PLUGIN_ID}:project-review-panel`)!.props.onPress();
+        });
+        expect(appPaneScopeMock.selectRightDestination).toHaveBeenCalledWith({
+            kind: 'plugin',
+            destination: { pluginId: REVIEW_PLUGIN_ID, localId: 'project-review-panel' },
+        });
+    });
+
+    it('omits redundant header controls when the host provides an action rail', async () => {
+        scopeState = { right: { isOpen: true, activeTabId: 'services', tabState: {} } };
+        const { ProjectRightPanel } = await import('./ProjectRightPanel');
+        const { PaneActionRailContext } = await import('@/components/appShell/panes/PaneActionRailContext');
+        const screen = await renderScreen(
+            <PaneActionRailContext.Provider value={{ visible: true, contentWidthPx: 1000 }}>
+                <ProjectRightPanel
+                    workspaceRef={workspaceRef}
+                    scopeId="project:wr_1"
+                    activeRootPath="/repo"
+                    onSelectRootPath={() => {}}
+                    onRequestClose={() => {}}
+                />
+            </PaneActionRailContext.Provider>,
+        );
+        expect(screen.findByTestId('project-rightpanel-tab:services')).toBeNull();
+        expect(screen.findByTestId('project-rightpanel-close')).toBeNull();
+        expect(screen.findByTestId('project-rightpanel-surface-services')).toBeTruthy();
+        // The rail picks the content; the pane names it in the header band beside the page header.
+        const { t } = await import('@/text');
+        expect(screen.findByTestId('project-rightpanel-header.title')?.props.children).toBe(t('localServices.inventory.title'));
     });
 
     it('renders the project Services surface through the local services owner', async () => {

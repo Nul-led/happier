@@ -6,10 +6,13 @@ import type { SessionAwarenessProjectionV1 } from '@happier-dev/protocol';
 
 import {
     projectSessionSummaryCard,
+    resolveSessionSummaryDetailRows,
     resolveSessionSummaryRows,
     resolveSessionSummaryVisibleRows,
     type SessionSummaryInput,
 } from './sessionSummaryProjection';
+import type { SessionPendingPermission } from '@/sync/ops/sessionPendingPermissions';
+import { projectSessionAgentPlan } from '../plan/sessionAgentPlan';
 
 function awareness(overrides: Partial<SessionAwarenessProjectionV1> = {}): SessionAwarenessProjectionV1 {
     return {
@@ -160,7 +163,7 @@ describe('projectSessionSummaryCard', () => {
         }));
 
         expect(model.rows.map((row) => row.destination))
-            .toEqual(['approvals', 'workflow', 'work', 'workflow', 'git', 'usage']);
+            .toEqual(['approvals', 'workTab', 'work', 'workTab', 'git', 'usage']);
     });
 });
 
@@ -206,5 +209,74 @@ describe('resolveSessionSummaryVisibleRows', () => {
         expect(visible.rows.map((row) => row.kind))
             .toEqual(['approvals', 'activity', 'work', 'workflow', 'workspace', 'usage']);
         expect(visible.hiddenCount).toBe(0);
+    });
+});
+
+function pending(requestId: string, createdAtMs: number, answers: SessionPendingPermission['answers'] = ['allowOnce', 'allowForSession', 'deny']): SessionPendingPermission {
+    return {
+        requestId,
+        toolName: 'Bash',
+        summary: 'Run yarn test:ui',
+        command: 'yarn test:ui',
+        createdAtMs,
+        policy: { protocol: 'standard', usePermissionUpdates: false },
+        answers,
+    };
+}
+
+const fivePlan = projectSessionAgentPlan([
+    { id: 'a', content: 'Find why', status: 'completed', priority: 'medium' },
+    { id: 'b', content: 'Key it', status: 'completed', priority: 'medium' },
+    { id: 'c', content: 'Test it', status: 'completed', priority: 'medium' },
+    { id: 'd', content: 'Run the suite', status: 'in_progress', priority: 'medium' },
+    { id: 'e', content: 'Open the PR', status: 'pending', priority: 'medium' },
+]);
+
+describe('the live hero (lab CA)', () => {
+    it('puts the oldest waiting ask in front, counts the rest, and times the wait from when it was asked', () => {
+        const model = projectSessionSummaryCard(input({
+            pendingPermissions: [pending('req-1', 1_000), pending('req-2', 2_000)],
+            plan: fivePlan,
+            turnStartedAtMs: 500,
+        }));
+
+        expect(model.needsYou).toMatchObject({ request: { requestId: 'req-1' }, moreCount: 1 });
+        expect(model.sinceMs).toBe(1_000);
+        expect(model.progress).toEqual({ step: 4, total: 5 });
+    });
+
+    it('times a working turn from its start and shows no timer when no start is known', () => {
+        expect(projectSessionSummaryCard(input({ turnStartedAtMs: 500 })).sinceMs).toBe(500);
+        expect(projectSessionSummaryCard(input()).sinceMs).toBeNull();
+        expect(projectSessionSummaryCard(input()).needsYou).toBeNull();
+    });
+
+    it('recomposes subagents, changes and context into three facts and keeps the rest as detail rows', () => {
+        const model = projectSessionSummaryCard(input({
+            openApprovalCount: 1,
+            awareness: awareness({
+                currentWork: { title: 'Reviewing access', activeWorkflowRunCount: 1 },
+                workspace: { projectName: 'happier' },
+            }),
+            activity: { live: 2, total: 3, headline: null },
+            scm: { ...scm, changedFiles: 14 },
+            usage: { tokens: 184_000, contextPercent: 62, stale: false },
+        }));
+
+        expect(model.facts).toEqual([
+            { kind: 'subagents', live: 2, total: 3, destination: 'workTab' },
+            { kind: 'changes', count: 14, destination: 'git' },
+            { kind: 'context', percent: 62, stale: false, destination: 'usage' },
+        ]);
+        expect(resolveSessionSummaryDetailRows(model, { kind: 'full' }).rows.map((row) => row.kind))
+            .toEqual(['approvals', 'workflow']);
+    });
+
+    it('never shows a zero fact: an unknown or empty value is omitted', () => {
+        const model = projectSessionSummaryCard(input({
+            scm: { ...scm, changedFiles: 0, hasAnyChanges: false },
+            usage: { tokens: 10, contextPercent: null, stale: false },
+        }));
+        expect(model.facts).toEqual([]);
     });
 });

@@ -4,7 +4,7 @@ import * as React from 'react';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Fonts from 'expo-font';
 import { FontAwesome, Ionicons } from '@expo/vector-icons';
-import { Stack, usePathname, useRouter } from 'expo-router';
+import { Slot, Stack, usePathname, useRouter } from 'expo-router';
 import {
     PUSH_NOTIFICATION_BUNDLED_SOUND_FILES, PUSH_NOTIFICATION_ACTION_IDS, PUSH_NOTIFICATION_ANDROID_CHANNEL_IDS, PUSH_NOTIFICATION_CATEGORY_IDS, resolveAndroidNotificationSoundName, } from '@happier-dev/protocol';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
@@ -34,8 +34,10 @@ import { RealtimeProvider } from '@/realtime/RealtimeProvider';
 import { VoiceEnergyAppProvider } from '@/components/voice/light/VoiceEnergyAppProvider';
 import { FaviconPermissionIndicator } from '@/components/web/FaviconPermissionIndicator';
 import { CommandPaletteProvider } from '@/components/appShell/commandPalette/CommandPaletteProvider';
+import { WorkspaceAppShellProvider } from '@/components/appShell/workspace/WorkspaceAppShellProvider';
 import { StatusBarProvider } from '@/components/ui/layout/StatusBarProvider';
-import { AppUpdateStatusTag } from '@/components/ui/feedback/AppUpdateStatusTag';
+import { UpdatesEntry } from '@/components/updates/UpdatesPopoverButton';
+import { UpdatesSummaryProvider } from '@/updates/useUpdatesSummary';
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
 // import * as SystemUI from 'expo-system-ui';
 import { monkeyPatchConsoleForRemoteLoggingForFasterAiAutoDebuggingOnlyInLocalBuilds } from '@/utils/system/remoteLogger';
@@ -76,9 +78,16 @@ import { loadExpoNotifications, type ExpoNotificationsModule } from '@/utils/pla
 import { installWebFontFaces } from '@/platform/installWebFontFaces';
 import { AppPresentationPlatformProvider } from '@/components/ui/presentation/AppPresentationPlatformProvider';
 import { PersonalHomeBootstrapRuntimeMount } from '@/components/personalHome/bootstrap';
+import { isEmbedWindowContext } from '@/embed/isEmbedWindowContext';
+import { EmbedSessionRuntimeProvider } from '@/embed/runtime/EmbedSessionRuntimeProvider';
+import { EmbedBridgeRuntime } from '@/embed/bridge/EmbedBridgeRuntime';
 
-initializeSentryOnce();
-installTauriMcpBridgeOnce();
+const embedWindowContext = isEmbedWindowContext();
+
+if (!embedWindowContext) {
+    initializeSentryOnce();
+    installTauriMcpBridgeOnce();
+}
 
 function shouldCaptureRnwUnexpectedTextNodeStacks(): boolean {
     // Dev-only diagnostics: enable via `?debugRnwTextNode=1` on web.
@@ -440,6 +449,7 @@ function configureNotificationCategories(Notifications: ExpoNotificationsModule)
 }
 
 void (async () => {
+    if (embedWindowContext) return;
     try {
         const Notifications = await loadExpoNotifications();
         configureForegroundNotificationHandler(Notifications);
@@ -465,11 +475,13 @@ SplashScreen.preventAutoHideAsync();
 // NEVER ENABLE REMOTE LOGGING IN PRODUCTION
 // This is for local debugging with AI only
 // So AI will have all the logs easily accessible in one file for analysis
-if (readAiAutoDebugRemoteLoggingEnabled()) {
+if (!embedWindowContext && readAiAutoDebugRemoteLoggingEnabled()) {
     monkeyPatchConsoleForRemoteLoggingForFasterAiAutoDebuggingOnlyInLocalBuilds()
 }
-installBugReportConsoleCapture({ maxEntries: 300 });
-configureBugReportUserActionTrail({ maxActions: 300 });
+if (!embedWindowContext) {
+    installBugReportConsoleCapture({ maxEntries: 300 });
+    configureBugReportUserActionTrail({ maxActions: 300 });
+}
 
 if (shouldCaptureRnwUnexpectedTextNodeStacks()) {
     installRnwUnexpectedTextNodeStackCaptureOnce();
@@ -626,7 +638,46 @@ async function loadFonts() {
     });
 }
 
-function RootLayout() {
+function EmbedRootLayout() {
+    return <AppPresentationPlatformProvider><WebCryptoStartupGate><EmbedAppBoot /></WebCryptoStartupGate></AppPresentationPlatformProvider>;
+}
+
+function EmbedAppBoot() {
+    const [ready, setReady] = React.useState(false);
+    const [error, setError] = React.useState<Error | null>(null);
+    React.useEffect(() => {
+        let cancelled = false;
+        void runAppBootSequence({
+            context: 'embed',
+            loadFonts,
+            sodiumReady: sodium.ready,
+            resolveCredentials: () => resolveBootCredentials(Platform.OS),
+            prepareWarmCache: prepareWarmCacheStorage,
+            prepareSessionDrafts: prepareSessionDraftPersistenceStorage,
+            restoreSync: restoreConnectionToActiveServer,
+            onReady: () => {
+                if (cancelled) return;
+                setReady(true);
+                void SplashScreen.hideAsync().catch(() => {});
+            },
+        }).catch((cause: unknown) => {
+            if (cancelled) return;
+            setError(cause instanceof Error ? cause : new Error('Failed to initialize embed', { cause }));
+            void SplashScreen.hideAsync().catch(() => {});
+        });
+        return () => { cancelled = true; };
+    }, []);
+    if (error) throw error;
+    if (!ready) return null;
+    return (
+        <EmbedSessionRuntimeProvider>
+            <EmbedBridgeRuntime />
+            <Slot />
+        </EmbedSessionRuntimeProvider>
+    );
+}
+
+function FullAppRootLayout() {
     React.useEffect(() => {
         if (Platform.OS === 'web' && desktopHostKind() === 'tauri') {
             return installTauriExternalLinkClicks();
@@ -788,7 +839,6 @@ function AppBoot(props: {
     const desktopHost = isDesktopHost();
     const appShellChromeHost = resolveAppShellChromeHost({
         isAuthenticated: initState.credentials != null,
-        isWeb: Platform.OS === 'web',
         isDesktopHost: desktopHost,
         isTablet,
         isTerminalConnectRoute,
@@ -811,18 +861,6 @@ function AppBoot(props: {
                 <DesktopFallbackShellChrome
                     chromeSafeArea={chromeSafeArea}
                 />
-            ) : effectiveAppShellChromeHost === 'web-top-right' ? (
-                <View
-                    pointerEvents="box-none"
-                    style={{
-                        position: 'absolute',
-                        top: chromeSafeArea.top + 12,
-                        right: chromeSafeArea.right + 16,
-                        zIndex: 10,
-                    }}
-                >
-                    <AppUpdateStatusTag testID="root-shell-app-update-status-tag" />
-                </View>
             ) : null}
             <View style={{ flex: 1 }}>
                 <PersonalHomeBootstrapRuntimeMount>
@@ -837,7 +875,11 @@ function AppBoot(props: {
             leftOffsetPx={0}
             style={{ flex: 1 }}
         >
-            {appShell}
+            {/*
+              * One Updates summary for every always-mounted entry (sidebar pill, collapsed rail,
+              * phone header, tray). The pet/activity overlay window has no Updates entry.
+              */}
+            {isDesktopOverlayWindow ? appShell : <UpdatesSummaryProvider>{appShell}</UpdatesSummaryProvider>}
         </DesktopMainContentDragSurface>
     );
 
@@ -855,8 +897,8 @@ function AppBoot(props: {
     /*
      * Voice/realtime still wrap `SidebarNavigator`, which renders the sidebar voice
      * surface above the nested route layout. They intentionally live inside the Personal Home
-     * content gate: the stable root canvas/chrome stays mounted during bootstrap, while
-     * auth-dependent route, realtime, and voice hooks are not constructed before Home readiness.
+     * content gate: the stable root canvas/chrome and normal route stay mounted during automatic
+     * Home startup, while explicit existing-Home and recovery decisions still hold the route.
      */
     let providers = (
         <SafeAreaProvider initialMetrics={initialWindowMetrics}>
@@ -872,9 +914,11 @@ function AppBoot(props: {
                         <ThemeProvider value={props.navigationTheme}>
                             <StatusBarProvider />
                             <AppPaneModalProvider>
+                                <WorkspaceAppShellProvider>
                                 <CommandPaletteProvider>
                                     {appContent}
                                 </CommandPaletteProvider>
+                                </WorkspaceAppShellProvider>
                             </AppPaneModalProvider>
                         </ThemeProvider>
                     </AuthProvider>
@@ -924,10 +968,12 @@ function DesktopFallbackShellChrome(props: Readonly<{
                 {resolvedDesktopWindowControls}
             </DesktopShellWindowControlsHost>
             <DesktopShellUpdateIndicatorHost>
-                <AppUpdateStatusTag testID="root-shell-app-update-status-tag" />
+                <UpdatesEntry variant="pill" testID="root-shell-updates-pill" />
             </DesktopShellUpdateIndicatorHost>
         </View>
     );
 }
 
-export default wrapWithSentryIfEnabled(RootLayout);
+// This realm chooses its boot owner once. Route navigation cannot start another runtime.
+const RootLayout = embedWindowContext ? EmbedRootLayout : wrapWithSentryIfEnabled(FullAppRootLayout);
+export default RootLayout;

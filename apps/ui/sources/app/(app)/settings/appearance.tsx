@@ -1,51 +1,53 @@
+import { SettingAnchor, SettingRow, SettingSection } from '@/components/settings/shell/SettingRow';
+import { UI_FONT_SCALE_PRESETS } from '@/components/ui/text/uiFontScale';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { SelectionTiles } from '@/components/ui/forms/SelectionTiles';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { PAGE_LIST_METRICS } from '@/components/ui/lists/pageListMetrics';
+import { ThemeModePreview } from '@/components/settings/appearance/ThemeModePreview';
+import { AvatarStylePreview } from '@/components/settings/appearance/AvatarStylePreview';
+import { APPEARANCE_SETTINGS } from '@/components/settings/appearance/appearanceSettings';
+import { HomeLayoutEditor } from '@/components/hub/layout/HomeLayoutEditor';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import React from 'react';
-import { Appearance, Platform } from 'react-native';
-import { setStatusBarStyle } from 'expo-status-bar';
+import { Platform, useWindowDimensions } from 'react-native';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { useSettingMutable, useLocalSettingMutable } from '@/sync/domains/state/storage';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import * as Localization from 'expo-localization';
-import { useUnistyles } from 'react-native-unistyles';
 import { Switch } from '@/components/ui/forms/Switch';
-import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { ThemeSelectionDropdown, type ThemeSelectionOption } from '@/components/settings/appearance/themeProfiles/ThemeSelectionDropdown';
+import type { DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { Slider } from '@/components/ui/forms/Slider';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { Text } from '@/components/ui/text/Text';
+import { ItemDensityChoiceRow } from '@/components/settings/appearance/ItemDensityPreview';
+import { WidgetFrameAppearanceSection } from '@/components/settings/appearance/WidgetFrameAppearanceSection';
+import { resolveAppearanceDefaults } from '@/components/settings/appearance/appearanceDefaults';
+import { buildThemePresetSourceOptions } from '@/components/settings/appearance/themeProfiles/themeProfilePresetOptions';
+import { Modal } from '@/modal';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { useApplyLocalSettings, useApplySettings } from '@/sync/store/settingsWriters';
 import { t, getLanguageNativeName, SUPPORTED_LANGUAGES } from '@/text';
 import { useDeviceType } from '@/utils/platform/responsive';
-import { resolveStatusBarStyleForThemePreference } from '@/components/ui/layout/statusBarStyle';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
-import { runThemePreferenceChange } from '@/components/settings/appearance/themePreferenceTransition';
-import { applyThemeRuntimeSelection } from '@/theme/profiles/themeProfileRuntime';
+import { resolveThemeMode, useApplyThemeSelection } from '@/components/settings/appearance/useApplyThemeSelection';
 import {
     DEFAULT_THEME_PROFILES_LOCAL_STATE,
-    findActiveThemeProfileForMode,
-    setActiveThemeProfileForMode,
+    clearActiveThemeProfiles,
 } from '@/theme/profiles/themeProfilePersistence';
-import type { ThemeProfileMode, ThemeProfilesLocalStateV1 } from '@/theme/profiles/themeProfileTypes';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
-import { Icon } from '@/components/ui/icons/Icon';
 
 // Define known avatar styles for this version of the app
 type KnownAvatarStyle = 'pixelated' | 'gradient' | 'brutalist';
 
-const UI_FONT_SCALE_PRESETS = {
-    xxsmall: 0.8,
-    xsmall: 0.85,
-    small: 0.93,
-    default: 1,
-    large: 1.1,
-    xlarge: 1.2,
-    xxlarge: 1.3,
-} as const;
-
 type UiFontScalePresetId = keyof typeof UI_FONT_SCALE_PRESETS;
+const UI_FONT_SCALE_PRESET_IDS = Object.keys(UI_FONT_SCALE_PRESETS) as UiFontScalePresetId[];
 type UiItemDensity = LocalSettings['uiItemDensity'];
 type DetailsPaneTabsBehavior = LocalSettings['detailsPaneTabsBehavior'];
-
-const isUiFontScalePresetId = (value: string): value is UiFontScalePresetId => (
-    Object.prototype.hasOwnProperty.call(UI_FONT_SCALE_PRESETS, value)
-);
 
 const isUiItemDensity = (value: string): value is UiItemDensity => (
     value === 'comfortable' || value === 'cozy' || value === 'compact'
@@ -59,22 +61,28 @@ const isKnownAvatarStyle = (style: string): style is KnownAvatarStyle => {
     return style === 'pixelated' || style === 'gradient' || style === 'brutalist';
 };
 
-export default React.memo(function AppearanceSettingsScreen() {
-    const { theme } = useUnistyles();
+export const WorkspaceRouteBody = React.memo(function AppearanceSettingsScreen() {
     const router = useRouter();
+    const { theme } = useUnistyles();
+    // On a phone the theme counts would be squeezed beside the summary, so they join it instead.
+    const narrowWindow = useWindowDimensions().width < PAGE_LIST_METRICS.rowStackBelowWidthPx;
+    const applyLocalSettings = useApplyLocalSettings();
+    const applySettings = useApplySettings();
     const deviceType = useDeviceType();
     const panelsSupported = Platform.OS === 'web' || deviceType === 'tablet';
     const [avatarStyle, setAvatarStyle] = useSettingMutable('avatarStyle');
     const [showFlavorIcons, setShowFlavorIcons] = useSettingMutable('showFlavorIcons');
-    const [themePreference, setThemePreference] = useLocalSettingMutable('themePreference');
-    const [themeProfiles, setThemeProfiles] = useLocalSettingMutable('themeProfiles');
+    const [themePreference] = useLocalSettingMutable('themePreference');
+    const [themeProfiles] = useLocalSettingMutable('themeProfiles');
     const [uiFontScale, setUiFontScale] = useLocalSettingMutable('uiFontScale');
     const [uiContentWidthMode, setUiContentWidthMode] = useLocalSettingMutable('uiContentWidthMode');
     const [uiItemDensity, setUiItemDensity] = useLocalSettingMutable('uiItemDensity');
     const [uiMultiPanePanelsEnabled, setUiMultiPanePanelsEnabled] = useLocalSettingMutable('uiMultiPanePanelsEnabled');
     const [uiBackdropBlurEnabled, setUiBackdropBlurEnabled] = useLocalSettingMutable('uiBackdropBlurEnabled');
+    const [hideConnectedAccountIdentities, setHideConnectedAccountIdentities] = useLocalSettingMutable('hideConnectedAccountIdentities');
     const [detailsPaneTabsBehavior, setDetailsPaneTabsBehavior] = useLocalSettingMutable('detailsPaneTabsBehavior');
     const [settingsNavSidebarEnabled, setSettingsNavSidebarEnabled] = useLocalSettingMutable('settingsNavSidebarEnabled');
+    const [themeToggleVisible, setThemeToggleVisible] = useLocalSettingMutable('titleStripThemeToggleVisible');
     const [tabBarGitBadgeMode, setTabBarGitBadgeMode] = useSettingMutable('tabBarGitBadgeMode');
     const [tabBarFriendsBadgeEnabled, setTabBarFriendsBadgeEnabled] = useSettingMutable('tabBarFriendsBadgeEnabled');
     const [tabBarSessionsBadgeEnabled, setTabBarSessionsBadgeEnabled] = useSettingMutable('tabBarSessionsBadgeEnabled');
@@ -89,32 +97,26 @@ export default React.memo(function AppearanceSettingsScreen() {
     const [animatedNumbers, setAnimatedNumbers] = useSettingMutable('animatedNumbers');
     const [alwaysShowContextSize, setAlwaysShowContextSize] = useSettingMutable('alwaysShowContextSize');
     const [preferredLanguage] = useSettingMutable('preferredLanguage');
-    const [openGitBadgeMenu, setOpenGitBadgeMenu] = React.useState(false);
-    const [openTabBarSizeMenu, setOpenTabBarSizeMenu] = React.useState(false);
-    const [openGlassBlurMenu, setOpenGlassBlurMenu] = React.useState(false);
-    const [openVisualEffectsLevelMenu, setOpenVisualEffectsLevelMenu] = React.useState(false);
-    const [openContextGaugeMenu, setOpenContextGaugeMenu] = React.useState(false);
-    const [openThemeMenu, setOpenThemeMenu] = React.useState(false);
-    const [openLightThemeMenu, setOpenLightThemeMenu] = React.useState(false);
-    const [openDarkThemeMenu, setOpenDarkThemeMenu] = React.useState(false);
-    const [openTextSizeMenu, setOpenTextSizeMenu] = React.useState(false);
-    const [openContentWidthMenu, setOpenContentWidthMenu] = React.useState(false);
-    const [openItemDensityMenu, setOpenItemDensityMenu] = React.useState(false);
-    const [openDetailsTabsMenu, setOpenDetailsTabsMenu] = React.useState(false);
+    const [badgesExpanded, setBadgesExpanded] = React.useState(false);
     const reduceMotion = useReducedMotionPreference();
     const safeThemeProfiles = themeProfiles ?? DEFAULT_THEME_PROFILES_LOCAL_STATE;
-    const activeLightThemeProfile = React.useMemo(
-        () => findActiveThemeProfileForMode(safeThemeProfiles, 'light'),
-        [safeThemeProfiles],
-    );
-    const activeDarkThemeProfile = React.useMemo(
-        () => findActiveThemeProfileForMode(safeThemeProfiles, 'dark'),
-        [safeThemeProfiles],
-    );
-    const activeThemeProfilesSubtitle = React.useMemo(() => {
-        const defaultTheme = t('settingsAppearance.themeProfiles.defaultTheme');
-        return `${activeLightThemeProfile?.name ?? defaultTheme} / ${activeDarkThemeProfile?.name ?? defaultTheme}`;
-    }, [activeDarkThemeProfile?.name, activeLightThemeProfile?.name]);
+    // The Themes row summarizes the library: which theme each mode uses and how many there are. The
+    // library screen owns choosing them.
+    const themesSummary = React.useMemo(() => {
+        const options = buildThemePresetSourceOptions(safeThemeProfiles);
+        const nameFor = (profileId: string | null) => {
+            const option = profileId ? options.find((candidate) => candidate.id === profileId) : null;
+            return option?.title ?? t('settingsAppearance.themeProfiles.defaultTheme');
+        };
+        const custom = options.filter((option) => option.kind === 'custom').length;
+        return {
+            slots: t('settingsAppearance.themesSummary', {
+                light: nameFor(safeThemeProfiles.activeProfileIds.light),
+                dark: nameFor(safeThemeProfiles.activeProfileIds.dark),
+            }),
+            count: t('settingsAppearance.themesCount', { builtIn: options.length - custom, custom }),
+        };
+    }, [safeThemeProfiles]);
     const gitBadgeMenuItems = React.useMemo((): readonly DropdownMenuItem[] => {
         return [
             { id: 'changedFiles', title: t('settingsAppearance.tabBarBadges.gitChangedFiles') },
@@ -240,55 +242,30 @@ export default React.memo(function AppearanceSettingsScreen() {
         return best;
     }, [uiFontScale]);
 
-    const selectUiFontSize = React.useCallback((itemId: string) => {
-        if (!isUiFontScalePresetId(itemId)) return;
-        setUiFontScale(UI_FONT_SCALE_PRESETS[itemId]);
+    const selectUiFontSizeIndex = React.useCallback((index: number) => {
+        const presetId = UI_FONT_SCALE_PRESET_IDS[index];
+        if (presetId) setUiFontScale(UI_FONT_SCALE_PRESETS[presetId]);
     }, [setUiFontScale]);
+    const textSizeLabels = React.useMemo(
+        () => new Map(textSizeMenuItems.map((item) => [item.id, item.title])),
+        [textSizeMenuItems],
+    );
 
-    const applyThemeSelection = React.useCallback((
-        nextThemePreference: 'adaptive' | 'light' | 'dark',
-        nextThemeProfiles: ThemeProfilesLocalStateV1,
-    ) => {
-        const systemTheme = Appearance.getColorScheme() === 'dark' ? 'dark' : 'light';
-        void runThemePreferenceChange({
-            currentPreference: themePreference,
-            nextPreference: nextThemePreference,
-            platform: Platform.OS,
-            reduceMotion,
-            forceAnimate: true,
-            systemTheme,
-            mutation: () => {
-                setThemePreference(nextThemePreference);
-                setThemeProfiles(nextThemeProfiles);
-                applyThemeRuntimeSelection({
-                    themePreference: nextThemePreference,
-                    themeProfiles: nextThemeProfiles,
-                    systemTheme,
-                });
-                setStatusBarStyle(resolveStatusBarStyleForThemePreference(nextThemePreference, systemTheme), true);
-            },
-        });
-    }, [reduceMotion, setThemePreference, setThemeProfiles, themePreference]);
+    const applyThemeSelection = useApplyThemeSelection();
 
-    const selectCurrentTheme = React.useCallback((option: ThemeSelectionOption) => {
-        if (option.kind === 'adaptive') {
-            applyThemeSelection('adaptive', safeThemeProfiles);
-            return;
-        }
-
-        applyThemeSelection(
-            option.preferredMode,
-            setActiveThemeProfileForMode(
-                safeThemeProfiles,
-                option.preferredMode,
-                option.kind === 'base' ? null : option.id,
-            ),
+    const resetToDefaults = React.useCallback(async () => {
+        const confirmed = await Modal.confirm(
+            t('settingsAppearance.resetConfirmTitle'),
+            t('settingsAppearance.resetConfirmBody'),
+            { confirmText: t('common.reset') },
         );
-    }, [applyThemeSelection, safeThemeProfiles]);
-
-    const selectThemeProfileForMode = React.useCallback((mode: ThemeProfileMode, profileId: string | null) => {
-        applyThemeSelection(themePreference, setActiveThemeProfileForMode(safeThemeProfiles, mode, profileId));
-    }, [applyThemeSelection, safeThemeProfiles, themePreference]);
+        if (!confirmed) return;
+        const defaults = resolveAppearanceDefaults();
+        // Custom themes are the user's own content; only which theme each mode uses goes back.
+        applyThemeSelection(defaults.themePreference, clearActiveThemeProfiles(safeThemeProfiles));
+        applyLocalSettings(defaults.local);
+        applySettings(defaults.account);
+    }, [applyLocalSettings, applySettings, applyThemeSelection, safeThemeProfiles]);
 
     // Ensure we have a valid style for display, defaulting to gradient for unknown values
     const displayStyle: KnownAvatarStyle = isKnownAvatarStyle(avatarStyle) ? avatarStyle : 'gradient';
@@ -307,232 +284,211 @@ export default React.memo(function AppearanceSettingsScreen() {
         }
         return t('settingsLanguage.automatic');
     };
-    return (
-        <ItemList style={{ paddingTop: 0 }}>
+    const toChoices = <T extends string>(items: ReadonlyArray<{ id: string; title: string }>) =>
+        items.map((item) => ({ id: item.id as T, label: item.title }));
+    const themeModeValue = resolveThemeMode(themePreference);
+    const badgesSummary = [
+        tabBarGitBadgeMode === 'off' ? null : t('settingsAppearance.tabBarBadges.gitTitle'),
+        tabBarFriendsBadgeEnabled ? t('tabs.friends') : null,
+        tabBarSessionsBadgeEnabled ? t('tabs.sessions') : null,
+        tabBarInboxBadgeEnabled ? t('tabs.inbox') : null,
+        tabBarOpenTabsBadgeEnabled ? t('common.tabs') : null,
+    ].filter(Boolean).join(' · ');
 
-            {/* Theme Settings */}
-            <ItemGroup title={t('settingsAppearance.theme')} footer={t('settingsAppearance.themeDescription')}>
-                <ThemeSelectionDropdown
-                    open={openThemeMenu}
-                    onOpenChange={setOpenThemeMenu}
-                    variant="current"
-                    themePreference={themePreference}
-                    themeProfiles={safeThemeProfiles}
-                    onSelectTheme={selectCurrentTheme}
-                />
-                {themePreference === 'adaptive' ? (
-                    <>
-                        <ThemeSelectionDropdown
-                            open={openLightThemeMenu}
-                            onOpenChange={setOpenLightThemeMenu}
-                            variant="slot"
-                            mode="light"
-                            themeProfiles={safeThemeProfiles}
-                            onSelectProfile={(profileId) => selectThemeProfileForMode('light', profileId)}
-                        />
-                        <ThemeSelectionDropdown
-                            open={openDarkThemeMenu}
-                            onOpenChange={setOpenDarkThemeMenu}
-                            variant="slot"
-                            mode="dark"
-                            themeProfiles={safeThemeProfiles}
-                            onSelectProfile={(profileId) => selectThemeProfileForMode('dark', profileId)}
-                        />
-                    </>
-                ) : null}
-                <Item
+    return (
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader
+                description={t('settingsAppearance.pageDescription')}
+                actions={
+                    <RoundButton
+                        testID="settings-appearance-reset"
+                        size="small"
+                        display="inverted"
+                        title={t('common.reset')}
+                        leading={<Icon name="arrow-arc-left" size={ICON_SIZE.sm} color={theme.colors.text.secondary} />}
+                        textStyle={styles.resetText}
+                        onPress={resetToDefaults}
+                    />
+                }
+            />
+
+            {/* Theme: the mode is a visual choice; each mode's theme stays one tap away. */}
+            <ItemGroup title={t('settingsAppearance.theme')}>
+                <SectionContentRow testID="settings-appearance-themeMode">
+                    <SelectionTiles
+                        variant="visual"
+                        tileSizing="fill"
+                        accessibilityLabel={t('settingsAppearance.theme')}
+                        testIdPrefix="settings-appearance-themeMode"
+                        value={themeModeValue}
+                        onChange={(next) => {
+                            if (next === 'adaptive') {
+                                applyThemeSelection('adaptive', safeThemeProfiles);
+                            } else if (next === 'light' || next === 'dark') {
+                                applyThemeSelection(next, safeThemeProfiles);
+                            }
+                        }}
+                        options={[
+                            { id: 'adaptive', title: t('settingsAppearance.themeOptions.adaptive'), preview: <ThemeModePreview mode="adaptive" /> },
+                            { id: 'light', title: t('settingsAppearance.themeOptions.light'), preview: <ThemeModePreview mode="light" /> },
+                            { id: 'dark', title: t('settingsAppearance.themeOptions.dark'), preview: <ThemeModePreview mode="dark" /> },
+                        ]}
+                    />
+                </SectionContentRow>
+                <SettingRow
+                    setting={APPEARANCE_SETTINGS.settings.themes}
                     testID="settings-appearance-themeProfiles"
-                    title={t('settingsAppearance.themeProfiles.title')}
-                    subtitle={activeThemeProfilesSubtitle}
-                    icon={<Icon name="palette" size={29} color={theme.colors.accent.indigo} />}
-                    detail={activeLightThemeProfile || activeDarkThemeProfile
-                        ? t('settingsAppearance.themeProfiles.active')
-                        : t('settingsAppearance.themeProfiles.defaultTheme')}
+                    icon={<Icon name="palette" />}
+                    subtitle={narrowWindow ? `${themesSummary.slots}\n${themesSummary.count}` : themesSummary.slots}
+                    subtitleLines={0}
+                    detail={narrowWindow ? undefined : themesSummary.count}
                     onPress={() => router.push('/settings/appearance/themes')}
                 />
+                {/* The window toolbar exists where the app shell does (web and tablets). */}
+                {panelsSupported ? (
+                    <SettingRow
+                        setting={APPEARANCE_SETTINGS.settings.themeToggle}
+                        testID="settings-appearance-theme-toggle-visible"
+                        subtitleLines={0}
+                        onPress={() => setThemeToggleVisible(!themeToggleVisible)}
+                        rightElement={
+                            <Switch
+                                testID="settings-appearance-theme-toggle-visible.switch"
+                                value={themeToggleVisible}
+                                onValueChange={setThemeToggleVisible}
+                            />
+                        }
+                        showChevron={false}
+                    />
+                ) : null}
             </ItemGroup>
 
-            {/* Language Settings */}
-            <ItemGroup title={t('settingsLanguage.title')} footer={t('settingsLanguage.description')}>
-                <Item
-                    title={t('settingsLanguage.currentLanguage')}
-                    icon={<Icon name="translate" size={29} color={theme.colors.accent.blue} />}
-                    detail={getLanguageDisplayText()}
-                    onPress={() => router.push('/settings/language')}
-                />
+            {/* Text & density */}
+            <ItemGroup title={t('settingsAppearance.text')}>
+                <SettingAnchor setting={APPEARANCE_SETTINGS.settings.textSize}>
+                    <Item
+                        testID="settings-appearance-textSize"
+                        title={t(APPEARANCE_SETTINGS.settings.textSize.titleKey)}
+                        accessoryLayout="adaptive"
+                        showChevron={false}
+                        rightElement={
+                            <Slider
+                                testID="settings-appearance-textSize-slider"
+                                value={UI_FONT_SCALE_PRESET_IDS.indexOf(selectedTextSizeId)}
+                                min={0}
+                                max={UI_FONT_SCALE_PRESET_IDS.length - 1}
+                                step={1}
+                                trackWidth={180}
+                                formatValueText={(index) => textSizeLabels.get(UI_FONT_SCALE_PRESET_IDS[index] ?? 'default') ?? ''}
+                                leading={<Text style={[styles.textSizeGlyph, styles.textSizeGlyphSmall]}>{t('settingsAppearance.textSizeGlyph')}</Text>}
+                                trailing={<Text style={[styles.textSizeGlyph, styles.textSizeGlyphLarge]}>{t('settingsAppearance.textSizeGlyph')}</Text>}
+                                onValueChange={selectUiFontSizeIndex}
+                            />
+                        }
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={APPEARANCE_SETTINGS.settings.density}>
+                    <ItemDensityChoiceRow
+                        title={t(APPEARANCE_SETTINGS.settings.density.titleKey)}
+                        subtitle={t('settingsAppearance.itemDensityDescription')}
+                        subtitleLines={0}
+                        testIDPrefix="settings-appearance-itemDensity"
+                        options={toChoices<UiItemDensity>(itemDensityMenuItems)}
+                        value={uiItemDensity}
+                        onChange={(next) => {
+                            if (!isUiItemDensity(next)) return;
+                            setUiItemDensity(next);
+                        }}
+                    />
+                </SettingAnchor>
             </ItemGroup>
 
-            {/* Text Settings */}
-            <ItemGroup title={t('settingsAppearance.text')} footer={t('settingsAppearance.textDescription')}>
-                <DropdownMenu
-                    open={openTextSizeMenu}
-                    onOpenChange={setOpenTextSizeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={selectedTextSizeId}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    itemTrigger={{
-                        title: t('settingsAppearance.textSize'),
-                        subtitle: t('settingsAppearance.textSizeDescription'),
-                        icon: <Icon name="text-aa" size={29} color={theme.colors.accent.orange} />,
-                        showSelectedSubtitle: false,
-                    }}
-                    items={textSizeMenuItems}
-                    onSelect={selectUiFontSize}
-                />
-                <DropdownMenu
-                    open={openItemDensityMenu}
-                    onOpenChange={setOpenItemDensityMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={uiItemDensity}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    itemTrigger={{
-                        title: t('settingsAppearance.itemDensity'),
-                        subtitle: t('settingsAppearance.itemDensityDescription'),
-                        icon: <Icon name="list" size={29} color={theme.colors.accent.orange} />,
-                        showSelectedSubtitle: false,
-                    }}
-                    items={itemDensityMenuItems}
-                    onSelect={(itemId) => {
-                        if (!isUiItemDensity(itemId)) return;
-                        setUiItemDensity(itemId);
-                    }}
-                />
-            </ItemGroup>
-
-            {/* Layout */}
-            <ItemGroup title={t('settingsAppearance.display')} footer={t('settingsAppearance.displayDescription')}>
-                <DropdownMenu
-                    open={openContentWidthMenu}
-                    onOpenChange={setOpenContentWidthMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={uiContentWidthMode}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    itemTrigger={{
-                        title: t('settingsAppearance.contentWidth'),
-                        subtitle: t('settingsAppearance.contentWidthDescription'),
-                        icon: <Icon name="resize" size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                    }}
-                    items={contentWidthMenuItems}
-                    onSelect={(itemId) => {
-                        if (itemId !== 'compact' && itemId !== 'medium' && itemId !== 'full') return;
-                        setUiContentWidthMode(itemId);
-                    }}
-                />
-                <Item
-                    title={t('settingsAppearance.multiPanePanels')}
-                    subtitle={t('settingsAppearance.multiPanePanelsDescription')}
-                    icon={<Icon name="browsers" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={
-                        <Switch
-                            value={uiMultiPanePanelsEnabled}
-                            onValueChange={setUiMultiPanePanelsEnabled}
-                            disabled={!panelsSupported}
+            {/* Layout. Pane and sidebar settings only exist where panes exist (web and tablet). */}
+            {/* The pane rows exist on web and tablets only; on a phone the section answers for them. */}
+            <SettingSection section={APPEARANCE_SETTINGS.sectionRefs.display}>
+            <ItemGroup title={t('settingsAppearance.display')}>
+                <SettingAnchor setting={APPEARANCE_SETTINGS.settings.contentWidth}>
+                    <SegmentedChoiceItem
+                        title={t(APPEARANCE_SETTINGS.settings.contentWidth.titleKey)}
+                        subtitle={t('settingsAppearance.contentWidthDescription')}
+                        subtitleLines={0}
+                        testIDPrefix="settings-appearance-contentWidth"
+                        options={toChoices<'compact' | 'medium' | 'full'>(contentWidthMenuItems)}
+                        value={uiContentWidthMode}
+                        onChange={setUiContentWidthMode}
+                    />
+                </SettingAnchor>
+                {panelsSupported ? (
+                    <SettingRow
+                        setting={APPEARANCE_SETTINGS.settings.rightPanels}
+                        subtitleLines={0}
+                        rightElement={<Switch value={uiMultiPanePanelsEnabled} onValueChange={setUiMultiPanePanelsEnabled} />}
+                        showChevron={false}
+                    />
+                ) : null}
+                {panelsSupported ? (
+                    <SettingAnchor setting={APPEARANCE_SETTINGS.settings.editorTabs}>
+                        <SegmentedChoiceItem
+                            title={t(APPEARANCE_SETTINGS.settings.editorTabs.titleKey)}
+                            subtitle={t('settingsAppearance.detailsPaneTabsBehaviorDescription')}
+                            subtitleLines={0}
+                            testIDPrefix="settings-appearance-detailsTabs"
+                            options={toChoices<DetailsPaneTabsBehavior>(detailsTabsMenuItems)}
+                            value={detailsPaneTabsBehavior}
+                            onChange={setDetailsPaneTabsBehavior}
                         />
-                    }
-                    disabled={!panelsSupported}
-                    showChevron={false}
-                />
-                <Item
-                    testID="settings-appearance-settings-nav-sidebar-enabled"
-                    title={t('settingsAppearance.settingsNavSidebar')}
-                    subtitle={t('settingsAppearance.settingsNavSidebarDescription')}
-                    icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.accent.blue} />}
-                    onPress={panelsSupported ? () => setSettingsNavSidebarEnabled(!settingsNavSidebarEnabled) : undefined}
-                    rightElement={
-                        <Switch
-                            testID="settings-appearance-settings-nav-sidebar-enabled.switch"
-                            value={settingsNavSidebarEnabled}
-                            onValueChange={setSettingsNavSidebarEnabled}
-                            disabled={!panelsSupported}
-                        />
-                    }
-                    disabled={!panelsSupported}
-                    showChevron={false}
-                />
-                <Item
-                    title={t('settingsAppearance.backdropBlur')}
-                    subtitle={t('settingsAppearance.backdropBlurDescription')}
-                    icon={<Icon name="stack-simple" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={
-                        <Switch
-                            value={uiBackdropBlurEnabled !== false}
-                            onValueChange={setUiBackdropBlurEnabled}
-                        />
-                    }
-                    showChevron={false}
-                />
-                <DropdownMenu
-                    open={openDetailsTabsMenu}
-                    onOpenChange={setOpenDetailsTabsMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={detailsPaneTabsBehavior}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    itemTrigger={{
-                        title: t('settingsAppearance.detailsPaneTabsBehavior'),
-                        subtitle: t('settingsAppearance.detailsPaneTabsBehaviorDescription'),
-                        icon: <Icon name="stack" size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { disabled: !panelsSupported },
-                    }}
-                    items={detailsTabsMenuItems}
-                    onSelect={(itemId) => {
-                        if (!isDetailsPaneTabsBehavior(itemId)) return;
-                        setDetailsPaneTabsBehavior(itemId);
-                    }}
-                />
+                    </SettingAnchor>
+                ) : null}
+                {panelsSupported ? (
+                    <SettingRow
+                        setting={APPEARANCE_SETTINGS.settings.settingsSidebar}
+                        testID="settings-appearance-settings-nav-sidebar-enabled"
+                        subtitleLines={0}
+                        onPress={() => setSettingsNavSidebarEnabled(!settingsNavSidebarEnabled)}
+                        rightElement={
+                            <Switch
+                                testID="settings-appearance-settings-nav-sidebar-enabled.switch"
+                                value={settingsNavSidebarEnabled}
+                                onValueChange={setSettingsNavSidebarEnabled}
+                            />
+                        }
+                        showChevron={false}
+                    />
+                ) : null}
             </ItemGroup>
+            </SettingSection>
 
-            {/* Visual effects — the instrument-kit motion chokepoint (L4) */}
+            {/* The home beside the session list: the same editor as the home's "Customize home". */}
+            <SettingSection section={APPEARANCE_SETTINGS.sectionRefs.home}>
+                <SettingAnchor setting={APPEARANCE_SETTINGS.settings.homeSections}>
+                    <HomeLayoutEditor title={t(APPEARANCE_SETTINGS.settings.homeSections.titleKey)} />
+                </SettingAnchor>
+            </SettingSection>
+
+            {/* How widgets are framed on this device: Home, Board and Companion, Card | Plain. */}
+            <WidgetFrameAppearanceSection />
+
+            {/* Motion & depth: effects, animated numbers, and the blur behind layered surfaces. */}
             <ItemGroup
                 title={t('settingsAppearance.visualEffects.title')}
-                footer={reduceMotion
+                description={reduceMotion
                     ? t('settingsAppearance.visualEffects.reduceMotionActive')
                     : t('settingsAppearance.visualEffects.footer')}
             >
-                <DropdownMenu
-                    open={openVisualEffectsLevelMenu}
-                    onOpenChange={setOpenVisualEffectsLevelMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={visualEffectsLevel}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    itemTrigger={{
-                        title: t('settingsAppearance.visualEffects.level'),
-                        subtitle: t('settingsAppearance.visualEffects.levelDescription'),
-                        icon: <Icon name="sparkle" size={29} color={theme.colors.accent.indigo} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-appearance-visualEffectsLevel-select' },
-                    }}
-                    items={visualEffectsLevelMenuItems}
-                    onSelect={(itemId) => {
-                        if (itemId !== 'full' && itemId !== 'subtle' && itemId !== 'minimal') return;
-                        setVisualEffectsLevel(itemId);
-                    }}
+                <SegmentedChoiceItem
+                    title={t('settingsAppearance.visualEffects.level')}
+                    subtitle={t('settingsAppearance.visualEffects.levelDescription')}
+                    subtitleLines={0}
+                    testID="settings-appearance-visualEffectsLevel-select"
+                    testIDPrefix="settings-appearance-visualEffectsLevel"
+                    options={toChoices<'full' | 'subtle' | 'minimal'>(visualEffectsLevelMenuItems)}
+                    value={visualEffectsLevel}
+                    onChange={setVisualEffectsLevel}
                 />
                 <Item
                     title={t('settingsAppearance.visualEffects.animatedNumbers')}
                     subtitle={t('settingsAppearance.visualEffects.animatedNumbersDescription')}
-                    icon={<Icon name="speedometer" size={29} color={theme.colors.accent.indigo} />}
+                    subtitleLines={0}
                     rightElement={
                         <Switch
                             testID="settings-appearance-animatedNumbers-switch"
@@ -542,33 +498,90 @@ export default React.memo(function AppearanceSettingsScreen() {
                     }
                     showChevron={false}
                 />
-                <DropdownMenu
-                    open={openContextGaugeMenu}
-                    onOpenChange={setOpenContextGaugeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={contextGaugeStyle}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    itemTrigger={{
-                        title: t('settingsAppearance.visualEffects.contextGauge'),
-                        subtitle: t('settingsAppearance.visualEffects.contextGaugeDescription'),
-                        icon: <Icon name="chart-pie" size={29} color={theme.colors.accent.indigo} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-appearance-contextGaugeStyle-select' },
-                    }}
-                    items={contextGaugeMenuItems}
-                    onSelect={(itemId) => {
-                        if (itemId !== 'gauge' && itemId !== 'text' && itemId !== 'hidden') return;
-                        setContextGaugeStyle(itemId);
-                    }}
+                <SettingRow
+                    setting={APPEARANCE_SETTINGS.settings.backdropBlur}
+                    subtitleLines={0}
+                    rightElement={<Switch value={uiBackdropBlurEnabled !== false} onValueChange={setUiBackdropBlurEnabled} />}
+                    showChevron={false}
                 />
-                <Item
-                    title={t('settingsAppearance.alwaysShowContextSize')}
-                    subtitle={t('settingsAppearance.alwaysShowContextSizeDescription')}
-                    icon={<Icon name="chart-line" size={29} color={theme.colors.accent.indigo} />}
+            </ItemGroup>
+
+            {/* Glass surfaces */}
+            {/* Intensity waits on the glass switch in this section. */}
+            <SettingSection section={APPEARANCE_SETTINGS.sectionRefs.glass}>
+            <ItemGroup title={t('settingsAppearance.glass.title')} description={t('settingsAppearance.glass.footer')}>
+                <SettingRow
+                    setting={APPEARANCE_SETTINGS.settings.glassBlur}
+                    rightElement={
+                        <Switch
+                            testID="settings-appearance-glassBlur-switch"
+                            value={glassBlurEnabled}
+                            onValueChange={setGlassBlurEnabled}
+                        />
+                    }
+                    showChevron={false}
+                />
+                {glassBlurEnabled ? (
+                    <SettingAnchor setting={APPEARANCE_SETTINGS.settings.glassIntensity}>
+                        <SegmentedChoiceItem
+                            title={t(APPEARANCE_SETTINGS.settings.glassIntensity.titleKey)}
+                            testID="settings-appearance-glassBlurIntensity-select"
+                            testIDPrefix="settings-appearance-glassBlurIntensity"
+                            options={toChoices<'light' | 'regular' | 'strong'>(glassBlurIntensityMenuItems)}
+                            value={glassBlurIntensity}
+                            onChange={setGlassBlurIntensity}
+                        />
+                    </SettingAnchor>
+                ) : null}
+            </ItemGroup>
+            </SettingSection>
+
+            {/* How sessions look */}
+            <ItemGroup title={t('tabs.sessions')}>
+                <SettingAnchor setting={APPEARANCE_SETTINGS.settings.avatarStyle}>
+                    <Item
+                        title={t(APPEARANCE_SETTINGS.settings.avatarStyle.titleKey)}
+                        subtitle={t('settingsAppearance.avatarStyleDescription')}
+                        subtitleLines={0}
+                        accessoryLayout="stacked"
+                        showChevron={false}
+                        rightElement={
+                            <SelectionTiles
+                                variant="visual"
+                                accessibilityLabel={t('settingsAppearance.avatarStyle')}
+                                testIdPrefix="settings-appearance-avatarStyle"
+                                value={displayStyle}
+                                onChange={(next) => {
+                                    if (next && isKnownAvatarStyle(next)) setAvatarStyle(next);
+                                }}
+                                options={[
+                                    { id: 'pixelated', title: t('settingsAppearance.avatarOptions.pixelated'), preview: <AvatarStylePreview style="pixelated" /> },
+                                    { id: 'gradient', title: t('settingsAppearance.avatarOptions.gradient'), preview: <AvatarStylePreview style="gradient" /> },
+                                    { id: 'brutalist', title: t('settingsAppearance.avatarOptions.brutalist'), preview: <AvatarStylePreview style="brutalist" /> },
+                                ]}
+                            />
+                        }
+                    />
+                </SettingAnchor>
+                <SettingRow
+                    setting={APPEARANCE_SETTINGS.settings.agentIcons}
+                    subtitleLines={0}
+                    rightElement={<Switch value={showFlavorIcons} onValueChange={setShowFlavorIcons} />}
+                    showChevron={false}
+                />
+                <SegmentedChoiceItem
+                    title={t('settingsAppearance.visualEffects.contextGauge')}
+                    subtitle={t('settingsAppearance.visualEffects.contextGaugeDescription')}
+                    subtitleLines={0}
+                    testID="settings-appearance-contextGaugeStyle-select"
+                    testIDPrefix="settings-appearance-contextGaugeStyle"
+                    options={toChoices<'gauge' | 'text' | 'hidden'>(contextGaugeMenuItems)}
+                    value={contextGaugeStyle}
+                    onChange={setContextGaugeStyle}
+                />
+                <SettingRow
+                    setting={APPEARANCE_SETTINGS.settings.alwaysShowContextSize}
+                    subtitleLines={0}
                     rightElement={
                         <Switch
                             testID="settings-appearance-alwaysShowContextSize-switch"
@@ -580,60 +593,20 @@ export default React.memo(function AppearanceSettingsScreen() {
                 />
             </ItemGroup>
 
-            {/* Style */}
-            <ItemGroup title={t('settingsAppearance.avatarStyle')}>
-                <Item
-                    title={t('settingsAppearance.avatarStyle')}
-                    subtitle={t('settingsAppearance.avatarStyleDescription')}
-                    icon={<Icon name="user-circle" size={29} color={theme.colors.accent.indigo} />}
-                    detail={displayStyle === 'pixelated' ? t('settingsAppearance.avatarOptions.pixelated') : displayStyle === 'brutalist' ? t('settingsAppearance.avatarOptions.brutalist') : t('settingsAppearance.avatarOptions.gradient')}
-                    onPress={() => {
-                        const currentIndex = displayStyle === 'pixelated' ? 0 : displayStyle === 'gradient' ? 1 : 2;
-                        const nextIndex = (currentIndex + 1) % 3;
-                        const nextStyle = nextIndex === 0 ? 'pixelated' : nextIndex === 1 ? 'gradient' : 'brutalist';
-                        setAvatarStyle(nextStyle);
-                    }}
-                />
-                <Item
-                    title={t('settingsAppearance.showFlavorIcons')}
-                    subtitle={t('settingsAppearance.showFlavorIconsDescription')}
-                    icon={<Icon name="squares-four" size={29} color={theme.colors.accent.indigo} />}
-                    rightElement={
-                        <Switch
-                            value={showFlavorIcons}
-                            onValueChange={setShowFlavorIcons}
-                        />
-                    }
-                />
-            </ItemGroup>
-
-            {/* Tab bar appearance */}
-            <ItemGroup title={t('settingsAppearance.tabBarAppearance.title')} footer={t('settingsAppearance.tabBarAppearance.footer')}>
-                <DropdownMenu
-                    open={openTabBarSizeMenu}
-                    onOpenChange={setOpenTabBarSizeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={tabBarSize}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    itemTrigger={{
-                        title: t('settingsAppearance.tabBarAppearance.size'),
-                        icon: <Icon name="resize" size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-appearance-tabBarSize-select' },
-                    }}
-                    items={tabBarSizeMenuItems}
-                    onSelect={(itemId) => {
-                        if (itemId !== 'compact' && itemId !== 'regular' && itemId !== 'large') return;
-                        setTabBarSize(itemId);
-                    }}
-                />
-                <Item
-                    title={t('settingsAppearance.tabBarAppearance.showLabels')}
-                    icon={<Icon name="text-aa" size={29} color={theme.colors.accent.blue} />}
+            {/* Tab bar (phones and tablets) */}
+            <ItemGroup title={t('settingsAppearance.tabBarAppearance.title')} description={t('settingsAppearance.tabBarAppearance.footer')}>
+                <SettingAnchor setting={APPEARANCE_SETTINGS.settings.tabBarSize}>
+                    <SegmentedChoiceItem
+                        title={t(APPEARANCE_SETTINGS.settings.tabBarSize.titleKey)}
+                        testID="settings-appearance-tabBarSize-select"
+                        testIDPrefix="settings-appearance-tabBarSize"
+                        options={toChoices<'compact' | 'regular' | 'large'>(tabBarSizeMenuItems)}
+                        value={tabBarSize}
+                        onChange={setTabBarSize}
+                    />
+                </SettingAnchor>
+                <SettingRow
+                    setting={APPEARANCE_SETTINGS.settings.tabBarLabels}
                     rightElement={
                         <Switch
                             testID="settings-appearance-tabBarShowLabels-switch"
@@ -643,121 +616,101 @@ export default React.memo(function AppearanceSettingsScreen() {
                     }
                     showChevron={false}
                 />
-            </ItemGroup>
-
-            {/* Glass surfaces */}
-            <ItemGroup title={t('settingsAppearance.glass.title')} footer={t('settingsAppearance.glass.footer')}>
-                <Item
-                    title={t('settingsAppearance.glass.enable')}
-                    icon={<Icon name="circle-half" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={
-                        <Switch
-                            testID="settings-appearance-glassBlur-switch"
-                            value={glassBlurEnabled}
-                            onValueChange={setGlassBlurEnabled}
+                <SettingAnchor setting={APPEARANCE_SETTINGS.settings.tabBarBadges}>
+                <ExpandableItem
+                    expanded={badgesExpanded}
+                    onExpandedChange={setBadgesExpanded}
+                    reducedMotion={reduceMotion}
+                    header={({ headerProps }) => (
+                        <Item
+                            {...headerProps}
+                            testID="settings-appearance-badges-toggle"
+                            title={t('settingsAppearance.tabBarBadges.title')}
+                            subtitle={t('settingsAppearance.tabBarBadges.footer')}
+                            subtitleLines={0}
+                            detail={badgesExpanded ? undefined : badgesSummary}
                         />
-                    }
-                    showChevron={false}
-                />
-                {glassBlurEnabled ? (
-                    <DropdownMenu
-                        open={openGlassBlurMenu}
-                        onOpenChange={setOpenGlassBlurMenu}
-                        variant="selectable"
-                        search={false}
-                        selectedId={glassBlurIntensity}
-                        showCategoryTitles={false}
-                        matchTriggerWidth={true}
-                        connectToTrigger={true}
-                        rowKind="item"
-                        itemTrigger={{
-                            title: t('settingsAppearance.glass.intensity'),
-                            icon: <Icon name="sliders-horizontal" size={29} color={theme.colors.accent.blue} />,
-                            showSelectedSubtitle: false,
-                            itemProps: { testID: 'settings-appearance-glassBlurIntensity-select' },
-                        }}
-                        items={glassBlurIntensityMenuItems}
-                        onSelect={(itemId) => {
-                            if (itemId !== 'light' && itemId !== 'regular' && itemId !== 'strong') return;
-                            setGlassBlurIntensity(itemId);
-                        }}
+                    )}
+                >
+                    <SegmentedChoiceItem
+                        title={t('settingsAppearance.tabBarBadges.gitTitle')}
+                        testID="settings-appearance-tabBarGitBadge-select"
+                        testIDPrefix="settings-appearance-tabBarGitBadge"
+                        options={toChoices<'changedFiles' | 'diffLines' | 'off'>(gitBadgeMenuItems)}
+                        value={tabBarGitBadgeMode}
+                        onChange={setTabBarGitBadgeMode}
                     />
-                ) : null}
+                    <Item
+                        title={t('tabs.friends')}
+                        rightElement={<Switch testID="settings-appearance-tabBarFriendsBadge-switch" value={tabBarFriendsBadgeEnabled} onValueChange={setTabBarFriendsBadgeEnabled} />}
+                        showChevron={false}
+                    />
+                    <Item
+                        title={t('tabs.sessions')}
+                        rightElement={<Switch testID="settings-appearance-tabBarSessionsBadge-switch" value={tabBarSessionsBadgeEnabled} onValueChange={setTabBarSessionsBadgeEnabled} />}
+                        showChevron={false}
+                    />
+                    <Item
+                        title={t('tabs.inbox')}
+                        rightElement={<Switch testID="settings-appearance-tabBarInboxBadge-switch" value={tabBarInboxBadgeEnabled} onValueChange={setTabBarInboxBadgeEnabled} />}
+                        showChevron={false}
+                    />
+                    <Item
+                        title={t('common.tabs')}
+                        rightElement={<Switch testID="settings-appearance-tabBarOpenTabsBadge-switch" value={tabBarOpenTabsBadgeEnabled} onValueChange={setTabBarOpenTabsBadgeEnabled} />}
+                        showChevron={false}
+                    />
+                </ExpandableItem>
+                </SettingAnchor>
             </ItemGroup>
 
-            {/* Tab bar badges */}
-            <ItemGroup title={t('settingsAppearance.tabBarBadges.title')} footer={t('settingsAppearance.tabBarBadges.footer')}>
-                <DropdownMenu
-                    open={openGitBadgeMenu}
-                    onOpenChange={setOpenGitBadgeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={tabBarGitBadgeMode}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    itemTrigger={{
-                        title: t('settingsAppearance.tabBarBadges.gitTitle'),
-                        icon: <Icon name="git-branch" size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-appearance-tabBarGitBadge-select' },
-                    }}
-                    items={gitBadgeMenuItems}
-                    onSelect={(itemId) => {
-                        if (itemId !== 'changedFiles' && itemId !== 'diffLines' && itemId !== 'off') return;
-                        setTabBarGitBadgeMode(itemId);
-                    }}
-                />
-                <Item
-                    title={t('tabs.friends')}
-                    icon={<Icon name="users" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={
+            {/* Privacy: one device-local setting, mirrored by the eye on Connected services and the Usage popover. */}
+            <SettingSection section={APPEARANCE_SETTINGS.sectionRefs.privacy}>
+            <ItemGroup title={t('connectedServicesCollection.privacyTitle')}>
+                <SettingRow
+                    setting={APPEARANCE_SETTINGS.settings.hideAccountIdentities}
+                    subtitleLines={0}
+                    rightElement={(
                         <Switch
-                            testID="settings-appearance-tabBarFriendsBadge-switch"
-                            value={tabBarFriendsBadgeEnabled}
-                            onValueChange={setTabBarFriendsBadgeEnabled}
+                            testID="settings-appearance-hideAccountIdentities-switch"
+                            value={hideConnectedAccountIdentities}
+                            onValueChange={setHideConnectedAccountIdentities}
                         />
-                    }
+                    )}
                     showChevron={false}
                 />
+            </ItemGroup>
+            </SettingSection>
+
+            {/* Language */}
+            <ItemGroup title={t('settingsLanguage.title')} description={t('settingsLanguage.description')}>
                 <Item
-                    title={t('tabs.sessions')}
-                    icon={<Icon name="chats-circle" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={
-                        <Switch
-                            testID="settings-appearance-tabBarSessionsBadge-switch"
-                            value={tabBarSessionsBadgeEnabled}
-                            onValueChange={setTabBarSessionsBadgeEnabled}
-                        />
-                    }
-                    showChevron={false}
-                />
-                <Item
-                    title={t('tabs.inbox')}
-                    icon={<Icon name="envelope" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={
-                        <Switch
-                            testID="settings-appearance-tabBarInboxBadge-switch"
-                            value={tabBarInboxBadgeEnabled}
-                            onValueChange={setTabBarInboxBadgeEnabled}
-                        />
-                    }
-                    showChevron={false}
-                />
-                <Item
-                    title={t('common.tabs')}
-                    icon={<Icon name="stack" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={
-                        <Switch
-                            testID="settings-appearance-tabBarOpenTabsBadge-switch"
-                            value={tabBarOpenTabsBadgeEnabled}
-                            onValueChange={setTabBarOpenTabsBadgeEnabled}
-                        />
-                    }
-                    showChevron={false}
+                    title={t('settingsLanguage.currentLanguage')}
+                    icon={<Icon name="translate" />}
+                    detail={getLanguageDisplayText()}
+                    onPress={() => router.push('/settings/language')}
                 />
             </ItemGroup>
         </ItemList>
     );
 });
+
+const styles = StyleSheet.create((theme) => ({
+    resetText: {
+        color: theme.colors.text.secondary,
+    },
+    // The small and large letter at the ends of the text size slider show what the scale does.
+    textSizeGlyph: {
+        color: theme.colors.text.secondary,
+    },
+    textSizeGlyphSmall: {
+        fontSize: 11,
+        lineHeight: 14,
+    },
+    textSizeGlyphLarge: {
+        fontSize: 17,
+        lineHeight: 20,
+    },
+}));
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

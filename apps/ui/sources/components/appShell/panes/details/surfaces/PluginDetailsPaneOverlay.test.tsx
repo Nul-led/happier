@@ -40,6 +40,7 @@ function createPlacement(): PluginUiSurfacePlacementProjection {
     return {
         id: 'surfacePlacement:com.example.viewer:activity-log',
         pluginId: 'com.example.viewer',
+        occurrenceId: 'com-example-viewer-occurrence',
         contributionKind: 'surfacePlacement',
         descriptorId: 'activity-log',
         binding,

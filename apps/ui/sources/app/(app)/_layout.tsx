@@ -1,12 +1,12 @@
 import { Stack, router, usePathname } from 'expo-router';
-import type { NativeStackNavigationOptions } from '@react-navigation/native-stack';
+import type { ExtendedStackNavigationOptions } from 'expo-router/build/layouts/StackClient';
+import { getFocusedRouteNameFromRoute, type ParamListBase, type RouteProp } from '@react-navigation/native';
 import 'react-native-reanimated';
 import * as React from 'react';
 import { Platform, TouchableOpacity } from 'react-native';
-import { isRunningOnMac } from '@/utils/platform/platform';
 import { useUnistyles } from 'react-native-unistyles';
 import { getPreferredLanguage, t } from '@/text';
-import { createAppStackScreenOptions } from '@/components/navigation/createAppStackScreenOptions';
+import { createAppStackScreenOptions, useAppStackUsesCustomHeader } from '@/components/navigation/createAppStackScreenOptions';
 import { useAuth } from '@/auth/context/AuthContext';
 import { useFriendsIdentityReadiness } from '@/hooks/server/useFriendsIdentityReadiness';
 import { Text } from '@/components/ui/text/Text';
@@ -18,10 +18,14 @@ import {
 import { isDesktopOverlayWindowContext } from '@/desktop/window/isDesktopOverlayWindowContext';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { AppHeaderCloseButton } from '@/components/navigation/AppHeaderCloseButton';
+import { DefaultBackButton } from '@/components/navigation/Header';
+import { NavigationTitleChromeProvider } from '@/components/ui/layout/PageHeader';
+import { useAppShellColumn } from '@/components/navigation/shell/appRail/appShellColumnContext';
 import { MobileBottomChromeHost } from '@/components/navigation/mobile/chrome/MobileBottomChromeHost';
 import { SessionCockpitChromeRegistryProvider } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
 import { BrowserPresentationRetentionProvider } from '@/components/browser/surfaces/browserPresentationRetention';
 import { AuthenticatedAppRuntimeMounts } from '@/components/appShell/runtime/AuthenticatedAppRuntimeMounts';
+import { DesktopMainWindowRuntimes } from '@/desktop/DesktopMainWindowRuntimes';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { useSetting } from '@/sync/domains/state/storage';
 import {
@@ -29,16 +33,15 @@ import {
     resolveNewSessionRoutePresentation,
     resolveNewSessionSecretRequirementRoutePresentation,
 } from '@/components/sessions/new/navigation/newSessionPresentation';
-import { resolveSettingsRouteAnimation, resolveSettingsRoutePresentation } from '@/components/settings/navigation/settingsRoutePresentation';
-import { useDeviceType } from '@/utils/platform/responsive';
 import { RootLayoutNavigationEffects } from '@/components/navigation/root/RootLayoutNavigationEffects';
 import { RootLayoutRedirectGate } from '@/components/navigation/root/RootLayoutRedirectGate';
 import { useOnboardingJourneySessionActive } from '@/components/onboarding/tour/state/journeySession';
 import { VoiceAnnouncer } from '@/components/voice/surface/VoiceAnnouncer';
 import { ActivityPersonalSessionMembershipProvider } from '@/activity/source/activityPersonalSessionMembership';
 import { buildUniversalSearchRouteScreenOptions } from './universalSearchRouteScreenOptions';
+import { buildSessionRouteScreenOptions } from '@/components/navigation/sessionRouteScreenOptions';
 
-type StackScreenOptions = NativeStackNavigationOptions;
+type StackScreenOptions = ExtendedStackNavigationOptions;
 type ModalRouteNavigation = Readonly<{
     canGoBack?: () => boolean;
     goBack?: () => void;
@@ -59,10 +62,9 @@ function hasPriorModalStackRoute(navigation: ModalRouteNavigation): boolean {
 const MAIN_TAB_STACK_SCREEN_OPTIONS = { animation: 'none' } as const;
 // Module-scope so the memo hands the navigator the same object on every render.
 const NEW_SESSION_TRANSPARENT_CONTENT_STYLE = { backgroundColor: 'transparent' } as const;
-const SESSION_COCKPIT_SURFACE_STACK_SCREEN_OPTIONS = {
-    animation: 'none',
-    headerShown: false,
-} as const satisfies StackScreenOptions;
+const sessionRouteScreenOptions = ({ route }: { route: RouteProp<ParamListBase, string> }) => (
+    buildSessionRouteScreenOptions({ childRouteName: getFocusedRouteNameFromRoute(route) })
+);
 
 /**
  * Keeps authenticated runtimes outside the full-viewport onboarding journey and
@@ -125,7 +127,6 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
         variant: newSessionVariant,
         platformOs: Platform.OS,
     });
-    const deviceType = useDeviceType();
     const stackContentStyle = React.useMemo(
         () => ({
             backgroundColor: isDesktopOverlayWindow ? 'transparent' : theme.colors.surface.base,
@@ -134,7 +135,8 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
     );
 
     // Use custom header on Android and Mac Catalyst, native header on iOS (non-Catalyst)
-    const shouldUseCustomHeader = Platform.OS === 'android' || isRunningOnMac() || Platform.OS === 'web';
+    const shouldUseCustomHeader = useAppStackUsesCustomHeader();
+    const appShellPresent = useAppShellColumn().present;
     const rootStackScreenOptions = React.useMemo(() => createAppStackScreenOptions({
         contentStyle: stackContentStyle,
         headerBackTitle: t('common.back'),
@@ -183,15 +185,10 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
             hiddenHeader,
             settings: {
                 // Nested navigator; per-settings-screen headers are configured in `settings/_layout.tsx`.
+                // Settings is a destination on every form factor: the phone's tab, and the app rail's
+                // Settings on tablets and desktops, whose column holds its navigation (`AppShellColumn`).
                 headerShown: false,
                 ...MAIN_TAB_STACK_SCREEN_OPTIONS,
-                // Tablet/desktop present settings as a modal (nav rail on the left, section
-                // content on the right). Phones keep it as a full-screen tab reached via the
-                // bottom tab bar — see resolveSettingsRoutePresentation.
-                presentation: resolveSettingsRoutePresentation({ deviceType, platformOs: Platform.OS }),
-                // Animate only in modal mode; the phone tab keeps the instant `animation: 'none'`
-                // inherited from MAIN_TAB_STACK_SCREEN_OPTIONS (overridden per device type here).
-                animation: resolveSettingsRouteAnimation({ deviceType }),
             },
             desktopActivityOverlay: {
                 headerShown: false,
@@ -224,19 +221,27 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                 headerTitle: t('workflows.title'),
                 headerBackTitle: back,
             },
+            boards: {
+                headerShown: true,
+                headerTitle: t('boards.title'),
+                headerBackTitle: back,
+            },
             workflowsNew: {
                 headerShown: true,
-                headerTitle: t('workflows.newWorkflow'),
+                // The editable name lives in the page; the chrome names the kind only.
+                headerTitle: t('workflows.page.chromeTitle'),
                 headerBackTitle: back,
             },
             workflowsEdit: {
                 headerShown: true,
-                headerTitle: t('workflows.title'),
+                // The editable name lives in the page; the chrome names the kind only.
+                headerTitle: t('workflows.page.chromeTitle'),
                 headerBackTitle: back,
             },
             workflowsDetail: {
                 headerShown: true,
-                headerTitle: t('workflows.title'),
+                // The editable name lives in the page; the chrome names the kind only.
+                headerTitle: t('workflows.page.chromeTitle'),
                 headerBackTitle: back,
             },
             workflowsRunDetail: {
@@ -249,29 +254,17 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                 headerTitle: t('automations.settings.title'),
                 headerBackTitle: back,
             },
-            sessionAutomations: {
+            workflowsHistory: {
                 headerShown: true,
-                headerTitle: t('sessionInfo.automationsTitle'),
+                headerTitle: t('workflows.destination.history.title'),
                 headerBackTitle: back,
             },
-            sessionAutomationsNew: {
+            workflowsRunSettings: {
                 headerShown: true,
-                headerTitle: t('navigation.newAutomation'),
+                headerTitle: t('workflows.destination.runSettingsPage.title'),
                 headerBackTitle: back,
             },
             visibleBlankBack,
-            sessionRuns: {
-                headerShown: true,
-                headerTitle: t('runs.title'),
-                headerBackTitle: back,
-            },
-            sessionInfo: {
-                ...visibleBlankBack,
-                headerBackVisible: false,
-                headerLeft: () => null,
-            },
-            files: SESSION_COCKPIT_SURFACE_STACK_SCREEN_OPTIONS,
-            sessionCockpitSurface: SESSION_COCKPIT_SURFACE_STACK_SCREEN_OPTIONS,
             sessionRecent: visibleSessionHistory,
             sessionArchived: visibleSessionHistory,
             teamSessions: {
@@ -282,9 +275,35 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
             terminalIndex: {
                 headerTitle: t('navigation.connectTerminal'),
             },
+            // The main sidebar's Plugins page: the same screens as Settings → Plugin marketplace,
+            // hosted as an app page.
+            pluginsIndex: {
+                headerShown: true,
+                headerTitle: t('settingsPlugins.surfaces.navigationTitle'),
+                headerBackTitle: back,
+            },
+            pluginsListing: {
+                headerShown: true,
+                headerTitle: t('settingsPlugins.detailTitle'),
+                headerBackTitle: back,
+            },
+            // An entity page: its own header names the plugin, so the native title stays empty.
+            pluginsDetail: visibleBlankBack,
             changelog: {
                 headerShown: true,
                 headerTitle: t('navigation.whatsNew'),
+                headerBackTitle: back,
+            },
+            // Titled like its Settings route and catalog entry: one title for the Homes page.
+            server: {
+                headerShown: true,
+                headerTitle: t('settings.servers'),
+                headerBackTitle: back,
+            },
+            // The phone's Account & Homes page: the desktop account/Home popover's content.
+            accountHomes: {
+                headerShown: true,
+                headerTitle: t('accountPopover.pageTitle'),
                 headerBackTitle: back,
             },
             artifactsIndex: {
@@ -352,7 +371,7 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                 headerBackTitle: back,
             },
         } satisfies Record<string, StackScreenOptions>;
-    }, [newSessionPresentationMode, preferredLanguage, deviceType]);
+    }, [newSessionPresentationMode, preferredLanguage]);
     const friendsManageScreenOptions = React.useCallback((args: { navigation: { navigate: (route: never) => void } }) => ({
         headerShown: true,
         headerTitle: t('navigation.friends'),
@@ -412,9 +431,12 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
     }, [newSessionPresentationMode, newSessionRendersFloatingComposer, newSessionVariant, preferredLanguage]);
     const externalSessionBrowseScreenOptions = React.useMemo<StackScreenOptions>(() => ({
         headerTitle: t('externalSessions.browseTitle'),
-        headerShown: true,
+        // On web the route is a transparent layer: Browse opens in the command-surface card (the same
+        // frame and placement as Search / ⌘K), which draws its own band with ⋯ and close.
+        headerShown: Platform.OS !== 'web',
         headerBackTitle: t('common.cancel'),
-        presentation: 'modal',
+        presentation: Platform.OS === 'web' ? 'transparentModal' : 'modal',
+        ...(Platform.OS === 'web' ? { contentStyle: NEW_SESSION_TRANSPARENT_CONTENT_STYLE } : {}),
         gestureEnabled: true,
         fullScreenGestureEnabled: true,
         headerBackVisible: false,
@@ -442,11 +464,20 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
               * only; two live regions do not coalesce.
               */}
             <VoiceAnnouncer />
+            {/* The main window's tray and Quit handoff, outside the onboarding gate (R13C-F3). */}
+            {isDesktopShell && !isDesktopOverlayWindow ? <DesktopMainWindowRuntimes /> : null}
             <AuthenticatedAppRuntimeMountsGate
                 isDesktopOverlayWindow={isDesktopOverlayWindow}
                 isAuthenticated={isAuthenticated}
                 isDesktopShell={isDesktopShell}
             />
+            {/*
+              * On phones root-stack pages show their title in the stack header, so a page header below
+              * it shows only the purpose line (entity pages opt back in with `alwaysShowTitle`). Inside
+              * the desktop app shell there is no stack header (`createHeader`), so the page header
+              * carries the title. Settings re-provides its own value.
+              */}
+            <NavigationTitleChromeProvider showsTitle={!appShellPresent}>
             <Stack screenOptions={rootStackScreenOptions}>
                 <Stack.Screen
                     name="index"
@@ -467,6 +498,18 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                 <Stack.Screen
                     name="settings"
                     options={rootStackRouteOptions.settings}
+                />
+                <Stack.Screen
+                    name="plugins/index"
+                    options={rootStackRouteOptions.pluginsIndex}
+                />
+                <Stack.Screen
+                    name="plugins/listing"
+                    options={rootStackRouteOptions.pluginsListing}
+                />
+                <Stack.Screen
+                    name="plugins/[pluginId]"
+                    options={rootStackRouteOptions.pluginsDetail}
                 />
                 <Stack.Screen
                     name="search"
@@ -505,6 +548,14 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                     options={rootStackRouteOptions.workflowsIndex}
                 />
                 <Stack.Screen
+                    name="boards/index"
+                    options={rootStackRouteOptions.boards}
+                />
+                <Stack.Screen
+                    name="boards/[boardId]"
+                    options={rootStackRouteOptions.boards}
+                />
+                <Stack.Screen
                     name="workflows/new"
                     options={rootStackRouteOptions.workflowsNew}
                 />
@@ -521,47 +572,12 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                     options={rootStackRouteOptions.workflowsRunDetail}
                 />
                 <Stack.Screen
-                    name="session/[id]/automations"
-                    options={rootStackRouteOptions.sessionAutomations}
+                    name="workflows/runs/index"
+                    options={rootStackRouteOptions.workflowsHistory}
                 />
                 <Stack.Screen
-                    name="session/[id]/automations/new"
-                    options={rootStackRouteOptions.sessionAutomationsNew}
-                />
-                <Stack.Screen
-                    name="session/[id]/info"
-                    options={({ navigation }) => ({
-                        ...rootStackRouteOptions.sessionInfo,
-                        headerRight: () => <AppHeaderCloseButton accessibilityLabel={t('common.close')} testID="session-info-close" onPress={() => safeRouterBack({ router, navigation, fallbackHref: '/' })} />,
-                    })}
-                />
-                <Stack.Screen
-                    name="session/[id]/runs"
-                    options={rootStackRouteOptions.sessionRuns}
-                />
-                <Stack.Screen
-                    name="session/[id]/runs/new"
-                    options={rootStackRouteOptions.visibleBlankBack}
-                />
-                <Stack.Screen
-                    name="session/[id]/runs/[runId]"
-                    options={rootStackRouteOptions.visibleBlankBack}
-                />
-                <Stack.Screen
-                    name="session/[id]/files"
-                    options={rootStackRouteOptions.files}
-                />
-                <Stack.Screen
-                    name="session/[id]/git"
-                    options={rootStackRouteOptions.sessionCockpitSurface}
-                />
-                <Stack.Screen
-                    name="session/[id]/details"
-                    options={rootStackRouteOptions.sessionCockpitSurface}
-                />
-                <Stack.Screen
-                    name="session/[id]/terminal"
-                    options={rootStackRouteOptions.sessionCockpitSurface}
+                    name="workflows/settings"
+                    options={rootStackRouteOptions.workflowsRunSettings}
                 />
                 <Stack.Screen
                     name="projects/[workspaceRefId]/terminal"
@@ -587,13 +603,15 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                     name="projects/[workspaceRefId]/details"
                     options={rootStackRouteOptions.hiddenHeader}
                 />
+                {/*
+                  * `session/[id]` has its own `_layout` (a Slot), so this is the stack's only screen for
+                  * every Session route (no `session/[id]/…` entry here would name a stack child). The
+                  * nested route decides: the Session view and its cockpit surfaces draw their own
+                  * header, so the stack adds none (no second back row above the Session header).
+                  */}
                 <Stack.Screen
-                    name="session/[id]/index"
-                    options={rootStackRouteOptions.sessionCockpitSurface}
-                />
-                <Stack.Screen
-                    name="session/[id]/message/[messageId]"
-                    options={rootStackRouteOptions.visibleBlankBack}
+                    name="session/[id]"
+                    options={sessionRouteScreenOptions}
                 />
                 <Stack.Screen
                     name="session/recent"
@@ -638,6 +656,10 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                     options={rootStackRouteOptions.hiddenHeader}
                 />
                 <Stack.Screen
+                    name="homes/sign-in"
+                    options={rootStackRouteOptions.hiddenHeader}
+                />
+                <Stack.Screen
                     name="restore/index"
                     options={rootStackRouteOptions.hiddenHeader}
                 />
@@ -666,8 +688,32 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                     options={rootStackRouteOptions.hiddenHeader}
                 />
                 <Stack.Screen
+                    name="home"
+                    // The phone's Home, opened from the Sessions header logo: the page is its own title.
+                    options={rootStackRouteOptions.visibleBlankBack}
+                />
+                <Stack.Screen
                     name="changelog"
                     options={rootStackRouteOptions.changelog}
+                />
+                <Stack.Screen
+                    name="server"
+                    options={rootStackRouteOptions.server}
+                />
+                <Stack.Screen
+                    name="homes/index"
+                    options={({ navigation }) => ({
+                        ...rootStackRouteOptions.accountHomes,
+                        // Opened from the Sessions header's Home line; phone web reports no stack `back`,
+                        // so the page names its own way back (lab `xacct-P1`), falling back to Sessions.
+                        headerLeft: ({ tintColor }: { tintColor?: string }) => (
+                            <DefaultBackButton
+                                testID="account-homes-back"
+                                tintColor={tintColor}
+                                onPress={() => safeRouterBack({ router, navigation, fallbackHref: '/' })}
+                            />
+                        ),
+                    })}
                 />
                 <Stack.Screen
                     name="artifacts/index"
@@ -800,6 +846,7 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                     options={rootStackRouteOptions.zenView}
                 />
             </Stack>
+            </NavigationTitleChromeProvider>
             <MobileBottomChromeMountGate newSessionRendersFloatingComposer={newSessionRendersFloatingComposer} />
             </ActivityPersonalSessionMembershipProvider>
             </BrowserPresentationRetentionProvider>

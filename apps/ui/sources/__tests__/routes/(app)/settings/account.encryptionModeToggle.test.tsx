@@ -92,6 +92,7 @@ const fetchAccountEncryptionCurrentnessMock =
 const fetchAccountSecurityMock = vi.hoisted(() => vi.fn<() => Promise<AccountSecurityGetResponseV1>>(async () => ({
     v: 1 as const,
     encryptionMode: 'plain' as const,
+    terminalPresentUserPolicy: 'allowed' as const,
     nativeEmail: null,
     password: { status: 'not_enrolled' as const, revision: null },
 })));
@@ -299,6 +300,7 @@ describe('Settings → Account (encryption mode toggle)', () => {
         fetchAccountSecurityMock.mockResolvedValue({
             v: 1,
             encryptionMode: 'plain',
+            terminalPresentUserPolicy: 'allowed',
             nativeEmail: null,
             password: { status: 'not_enrolled', revision: null },
         });
@@ -334,7 +336,7 @@ describe('Settings → Account (encryption mode toggle)', () => {
         useFeatureEnabledMock.mockReturnValue(false);
         useAuthMock.mockReturnValue({
             isAuthenticated: true,
-            credentials: { token: 't', secret: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+            credentials: { token: 't' },
             logout: vi.fn(),
             login: vi.fn(),
         });
@@ -369,6 +371,53 @@ describe('Settings → Account (encryption mode toggle)', () => {
             await act(async () => {});
 
             expect(findEncryptionModeSwitches(screen)).toHaveLength(0);
+        } finally {
+            await screen?.unmount();
+        }
+    });
+
+    it('offers Secret Key recovery for a saved legacy credential with Account opt-out disabled', async () => {
+        useFeatureEnabledMock.mockReturnValue(false);
+        useAuthMock.mockReturnValue({
+            isAuthenticated: true,
+            credentials: { token: 'legacy-token', secret: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+            logout: vi.fn(),
+            login: vi.fn(),
+        });
+        storage.getState().applyProfile({
+            ...profileDefaults,
+            id: 'account-1',
+            linkedProviders: [],
+            username: null,
+        });
+
+        const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = getRequestUrl(input);
+            const method = (init?.method ?? 'GET').toUpperCase();
+            if (url.endsWith('/health') && method === 'GET') return createReachabilityProbeResponse();
+            if (url.endsWith('/v1/auth/ping') && method === 'GET') return createReachabilityProbeResponse();
+            if (isFeaturesRequest(url)) {
+                return Response.json(createAccountFeaturesResponse({ encryptionAccountOptOutEnabled: false }));
+            }
+            if (url.endsWith('/v1/account/encryption') && method === 'GET') {
+                return new Response(JSON.stringify({ error: 'account-encryption-recovery-required' }), { status: 400 });
+            }
+            throw new Error(`Unexpected fetch: ${url} (${method})`);
+        });
+        vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+        const { AccountEncryptionSettingsSection: AccountScreen } = await import('@/components/settings/account/AccountEncryptionSettingsSection');
+        let screen: Awaited<ReturnType<typeof renderSettingsView>> | undefined;
+        try {
+            screen = await renderSettingsView(<AccountScreen />);
+            await vi.waitFor(() => {
+                expect(screen!.findByTestId('settings-account-encryption-recovery')).toBeTruthy();
+            });
+            expect(findEncryptionModeSwitches(screen)).toHaveLength(0);
+            await act(async () => {
+                screen?.findByTestId('settings-account-encryption-recovery')?.props.onPress();
+            });
+            expect(routerMockRef.current.spies.push).toHaveBeenCalledWith('/restore/manual');
         } finally {
             await screen?.unmount();
         }
@@ -870,7 +919,7 @@ describe('Settings → Account (encryption mode toggle)', () => {
             proof: { challengeId: 'password-transition', publicKey: field(32), signature: field(64) },
         };
         fetchAccountSecurityMock.mockResolvedValue({
-            v: 1, encryptionMode: 'e2ee', nativeEmail: 'person@example.test',
+            v: 1, encryptionMode: 'e2ee', terminalPresentUserPolicy: 'allowed', nativeEmail: 'person@example.test',
             password: { status: 'enrolled', revision: 3 },
         });
         prepareAccountEncryptionModePasswordCredentialMock.mockResolvedValue(preparedPasswordCredential);
@@ -967,17 +1016,18 @@ describe('Settings → Account (encryption mode toggle)', () => {
 
         let screen: Awaited<ReturnType<typeof renderSettingsView>> | undefined;
         try {
-            screen = await renderSettingsView(<AccountScreen />);
+            const rendered = await renderSettingsView(<AccountScreen />);
+            screen = rendered;
             await act(async () => {});
 
-            const encryptionSwitch = findEncryptionModeSwitch(screen);
+            const encryptionSwitch = findEncryptionModeSwitch(rendered);
             expect(encryptionSwitch).toBeTruthy();
             await vi.waitFor(() => expect(
                 findEncryptionModeSwitch(screen!)?.props.disabled,
             ).toBe(false));
 
             await act(async () => {
-                await findEncryptionModeSwitch(screen)?.props.onValueChange(false);
+                await findEncryptionModeSwitch(rendered)?.props.onValueChange(false);
             });
 
             const seen = fetchMock.mock.calls.map((call) => [getRequestUrl(call[0]), (call[1]?.method ?? 'GET').toUpperCase()]);
@@ -1015,6 +1065,7 @@ describe('Settings → Account (encryption mode toggle)', () => {
         fetchAccountSecurityMock.mockResolvedValue({
             v: 1,
             encryptionMode: 'e2ee',
+            terminalPresentUserPolicy: 'allowed',
             nativeEmail: 'person@example.test',
             password: { status: 'enrolled', revision: 3 },
         });
@@ -1173,7 +1224,8 @@ describe('Settings → Account (encryption mode toggle)', () => {
 
         let screen: Awaited<ReturnType<typeof renderSettingsView>> | undefined;
         try {
-            screen = await renderSettingsView(<AccountScreen />);
+            const rendered = await renderSettingsView(<AccountScreen />);
+            screen = rendered;
             await vi.waitFor(() => {
                 expect(findEncryptionModeSwitch(screen!)?.props.disabled).toBe(false);
             });
@@ -1310,9 +1362,15 @@ describe('Settings → Account (encryption mode toggle)', () => {
 
     it('emits the request-bound body only for a restored pinned Account key', async () => {
         const preparedPasswordCredential = e2eeTransitionPasswordCredential(5);
+        // An existing Plain password credential needs the current password even
+        // when the Account key is retained (L02-R22): the transition-bound
+        // `email_password` first-key proof, minted for this exact request.
+        const passwordProof = { provider: 'email_password', pending: 'password-step-up-pending', proof: 'password-step-up-proof' };
+        const stepUpBodies: unknown[] = [];
         fetchAccountSecurityMock.mockResolvedValue({
             v: 1,
             encryptionMode: 'plain',
+            terminalPresentUserPolicy: 'allowed',
             nativeEmail: 'person@example.test',
             password: { status: 'enrolled', revision: 5 },
         });
@@ -1397,6 +1455,10 @@ describe('Settings → Account (encryption mode toggle)', () => {
                     }),
                 };
             }
+            if (url.endsWith('/v1/auth/email/step-up') && method === 'POST') {
+                stepUpBodies.push(JSON.parse(String(init?.body)));
+                return Response.json({ externalAuthProof: passwordProof });
+            }
             if (url.endsWith('/v1/account/encryption/migrate') && method === 'POST') {
                 const body = init?.body ? JSON.parse(String(init.body)) : null;
                 expect(body).toEqual(expect.objectContaining({
@@ -1411,6 +1473,7 @@ describe('Settings → Account (encryption mode toggle)', () => {
                     connectedServices: { action: 'assert_empty' },
                     automations: { action: 'assert_empty' },
                     passwordCredential: preparedPasswordCredential,
+                    externalAuthProof: passwordProof,
                     keyProof: expect.objectContaining({
                         v: 1,
                         publicKey: expect.any(String),
@@ -1421,6 +1484,17 @@ describe('Settings → Account (encryption mode toggle)', () => {
                     }),
                 }));
                 expect(body.keyProof).not.toHaveProperty('challenge');
+                const { externalAuthProof: _proof, ...boundRequest } = body;
+                expect(stepUpBodies).toEqual([{
+                    v: 1,
+                    password: 'current plain password',
+                    purpose: 'account_encryption_first_key',
+                    requestDigest: createAccountEncryptionMigrateRequestBindingDigestV1({
+                        request: boundRequest,
+                        accountId: 'account-1',
+                        sourceMode: 'plain',
+                    }),
+                }]);
                 expect(body.sessions).toMatchObject({
                     action: 'migrate',
                     items: [{
@@ -1453,17 +1527,18 @@ describe('Settings → Account (encryption mode toggle)', () => {
 
         let screen: Awaited<ReturnType<typeof renderSettingsView>> | undefined;
         try {
-            screen = await renderSettingsView(<AccountScreen />);
+            const rendered = await renderSettingsView(<AccountScreen />);
+            screen = rendered;
             await act(async () => {});
 
-            const encryptionSwitch = findEncryptionModeSwitch(screen);
+            const encryptionSwitch = findEncryptionModeSwitch(rendered);
             expect(encryptionSwitch).toBeTruthy();
             await vi.waitFor(() => expect(
                 findEncryptionModeSwitch(screen!)?.props.disabled,
             ).toBe(false));
 
             await act(async () => {
-                await findEncryptionModeSwitch(screen)?.props.onValueChange(true);
+                await findEncryptionModeSwitch(rendered)?.props.onValueChange(true);
             });
 
             expect(loginSpy).not.toHaveBeenCalled();

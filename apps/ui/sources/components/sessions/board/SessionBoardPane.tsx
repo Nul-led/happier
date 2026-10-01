@@ -17,7 +17,6 @@ import type { SessionWidgetDensity } from './SessionWidgetHost';
 import { SessionBoardNoteEditorCard } from './note/SessionBoardNoteEditorCard';
 import { SessionBoardHostedHtmlEditorCard } from './hostedHtml/SessionBoardHostedHtmlEditorCard';
 import { useSessionBoardHostActionBindings } from './useSessionBoardHostActionBindings';
-import { SessionWidgetPickerCard } from '@/components/sessions/widgets/SessionWidgetPickerCard';
 import type { SessionPluginRuntimeState } from '@/components/sessions/plugins/useSessionPluginRuntime';
 import type { CallerHostedHtmlRuntime } from '@/components/ui/surfaces/hostedHtml/HostedHtmlSurfaceAdapter';
 import { useSessionCompanionController } from '@/components/sessions/companion/state/useSessionCompanionController';
@@ -283,20 +282,6 @@ export function SessionBoardPane(props: SessionBoardPaneProps): React.ReactEleme
     ) : null;
     const editor = noteEditor ?? hostedHtmlEditor;
 
-    const picker = interactive && controller.installedWidgetPickerOpen && pluginRuntime ? (
-        <SessionWidgetPickerCard
-            candidates={installedWidgetCandidates}
-            onAdd={(candidate) => {
-                void controller.run({
-                    kind: 'item.addInstalled',
-                    surface: candidate.surface,
-                    title: candidate.title,
-                });
-            }}
-            onCancel={controller.closeInstalledWidgetPicker}
-            testID={`${testID}-widget-picker`}
-        />
-    ) : null;
 
     // Add is a complete one-press intent only when the canonical preference
     // realm, exact shell destination and Board currentness owners all agree.
@@ -319,6 +304,7 @@ export function SessionBoardPane(props: SessionBoardPaneProps): React.ReactEleme
                 resolveActionBinding={resolveActionBinding}
                 navigationOnly={navigationOnly}
                 retained={retained}
+                onBodyEligibilityChange={mounted?.onBodyEligibilityChange}
                 {...(interactive && mounted ? {
                     onViewFocusTargetChange: mounted.onViewFocusTargetChange,
                     onViewActionsFocusTargetChange: mounted.onViewActionsFocusTargetChange,
@@ -347,7 +333,7 @@ export function SessionBoardPane(props: SessionBoardPaneProps): React.ReactEleme
                     : {})}
                 testID={`${testID}-surface`}
                 {...(editor ? { editor } : {})}
-                {...(picker ? { picker } : {})}
+                {...(interactive ? { addCandidates: installedWidgetCandidates } : {})}
             />
         </View>
     );

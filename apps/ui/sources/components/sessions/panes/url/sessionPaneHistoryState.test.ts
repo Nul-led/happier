@@ -73,6 +73,24 @@ describe('sessionPaneHistoryState', () => {
         delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
     });
 
+    it('stops legacy popstate persistence after the last URL owner releases it', async () => {
+        installSessionStorage();
+        const windowStub = installWindow('http://localhost:19364/session/history-owner');
+        const { primeSessionPaneHistoryTraversalTracking, consumeSessionPaneHistoryTraversalForCurrentLocation } = await import('./sessionPaneHistoryState');
+        const { readStoredSessionPaneUrlState, writeStoredSessionPaneUrlState } = await import('./sessionPaneStoredState');
+        const releaseFirst = primeSessionPaneHistoryTraversalTracking();
+        const releaseSecond = primeSessionPaneHistoryTraversalTracking();
+        releaseFirst();
+        writeStoredSessionPaneUrlState('session:history-owner', { bottomTabId: 'terminal' });
+        windowStub.dispatchEvent({ type: 'popstate' });
+        expect(readStoredSessionPaneUrlState('session:history-owner')).toBeNull();
+        releaseSecond();
+        writeStoredSessionPaneUrlState('session:history-owner', { bottomTabId: 'terminal' });
+        windowStub.dispatchEvent({ type: 'popstate' });
+        expect(readStoredSessionPaneUrlState('session:history-owner')).toEqual({ bottomTabId: 'terminal' });
+        expect(consumeSessionPaneHistoryTraversalForCurrentLocation()).toBe(false);
+    });
+
     it('clears stored pane state and records the traversal for pane-less session popstate urls', async () => {
         installSessionStorage();
         const windowStub = installWindow('http://localhost:19364/session/history-popstate?server=http%3A%2F%2Flocalhost%3A53288');

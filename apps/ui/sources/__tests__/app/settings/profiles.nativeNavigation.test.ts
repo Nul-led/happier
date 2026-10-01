@@ -1,7 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
-import { renderScreen } from '@/dev/testkit';
+import { renderInCollectionLayout } from '@/dev/testkit';
 import { createCapturingComponent, createPassThroughComponent } from '@/dev/testkit/mocks/components';
 import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
 import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
@@ -13,36 +13,31 @@ type ReactActEnvironmentGlobal = typeof globalThis & {
 
 (globalThis as ReactActEnvironmentGlobal).IS_REACT_ACT_ENVIRONMENT = true;
 
-type ProfileCompatibility = {
-    claude: boolean;
-    codex: boolean;
-    gemini: boolean;
-};
-type ProfileRow = {
-    id: string;
-    name: string;
-    isBuiltIn: boolean;
-    compatibility: ProfileCompatibility;
-};
+type ProfileRow = { id: string; name: string };
 type CapturedProfilesListProps = {
     includeDefaultEnvironmentRow?: boolean;
+    onPressDefaultEnvironment?: () => void;
     onAddProfilePress?: () => void;
+    onPressProfile?: (profile: ProfileRow) => void;
     onDuplicateProfile?: (profile: ProfileRow) => void;
     onEditProfile?: (profile: ProfileRow) => void;
 };
 
-const profileEditPath = '/new/pick/profile-edit' as const;
-const testProfileCompatibility: ProfileCompatibility = {
-    claude: true,
-    codex: true,
-    gemini: true,
-};
-const testProfileRow: ProfileRow = {
+const testProfileRow: ProfileRow = { id: 'p1', name: 'Test profile' };
+const savedProfile = {
+    v: 2 as const,
     id: 'p1',
     name: 'Test profile',
-    isBuiltIn: false,
-    compatibility: testProfileCompatibility,
+    extraEnvironmentVariables: [],
+    defaultPermissionModeByTargetKey: {},
+    defaultPersistenceModeByTargetKey: {},
+    compatibilityByTargetKey: {},
+    createdAt: 1,
+    updatedAt: 1,
 };
+const settingsState = vi.hoisted(() => ({
+    values: {} as Record<string, unknown>,
+}));
 
 installProfilesCommonModuleMocks({
     reactNative: () => createReactNativeWebMock({
@@ -51,38 +46,23 @@ installProfilesCommonModuleMocks({
         },
     }),
     storage: () => createStorageModuleStub({
-        useSetting: () => false,
-        useSettingMutable: () => [[], vi.fn()],
+        useSetting: (key: string) => settingsState.values[key],
+        useSettingMutable: (key: string) => [settingsState.values[key], vi.fn()],
     }),
 });
 
 const routerMock = vi.hoisted(() => ({
     push: vi.fn(),
-    back: vi.fn(),
     replace: vi.fn(),
-    setParams: vi.fn(),
-    navigationSetOptions: vi.fn(),
 }));
 
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
-    const expoRouterMock = createExpoRouterMock({
-        navigation: { setOptions: routerMock.navigationSetOptions },
-    });
+    const expoRouterMock = createExpoRouterMock();
     routerMock.push = expoRouterMock.spies.push;
-    routerMock.back = expoRouterMock.spies.back;
     routerMock.replace = expoRouterMock.spies.replace;
-    routerMock.setParams = expoRouterMock.spies.setParams;
     return expoRouterMock.module;
 });
-
-vi.mock('@/utils/ui/promptUnsavedChangesAlert', () => ({
-    promptUnsavedChangesAlert: vi.fn(async () => 'keep'),
-}));
-
-vi.mock('@/components/profiles/edit', () => ({
-    ProfileEditForm: createPassThroughComponent('ProfileEditForm'),
-}));
 
 let capturedProfilesListProps: CapturedProfilesListProps | null = null;
 vi.mock('@/components/profiles/ProfilesList', () => ({
@@ -91,18 +71,21 @@ vi.mock('@/components/profiles/ProfilesList', () => ({
     }),
 }));
 
-vi.mock('@/sync/domains/profiles/profileUtils', () => ({
-    DEFAULT_PROFILES: [],
-    getBuiltInProfileNameKey: () => null,
-    resolveProfileById: () => null,
+vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
+    useMachineAdministrationTargetSelection: () => ({
+        selectedTarget: null,
+        resolveExecutionTarget: () => null,
+    }),
 }));
-
-vi.mock('@/sync/domains/profiles/profileMutations', () => ({
-    convertBuiltInProfileToCustom: <T,>(profile: T) => profile,
-    createEmptyCustomProfile: () => ({ id: 'new', name: '', isBuiltIn: false, compatibility: { claude: true, codex: true, gemini: true } }),
-    duplicateProfileForEdit: <T,>(profile: T) => profile,
+vi.mock('@/components/settings/machines/MachineAdministrationTargetSelector', () => ({
+    MachineAdministrationTargetSelector: createPassThroughComponent('MachineAdministrationTargetSelector'),
 }));
-
+vi.mock('@/components/secrets/useSavedSecretsMutable', () => ({
+    useSavedSecretsMutable: () => [[], vi.fn()],
+}));
+vi.mock('@/components/secrets/requirements', () => ({
+    SecretRequirementModal: createPassThroughComponent('SecretRequirementModal'),
+}));
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: createPassThroughComponent('ItemList'),
 }));
@@ -116,75 +99,95 @@ vi.mock('@/components/ui/forms/Switch', () => ({
     Switch: createPassThroughComponent('Switch'),
 }));
 
-vi.mock('@/components/secrets/requirements', () => ({
-    SecretRequirementModal: createPassThroughComponent('SecretRequirementModal'),
-}));
+function resetSettings(overrides: Record<string, unknown> = {}) {
+    settingsState.values = {
+        useProfiles: true,
+        profiles: [savedProfile],
+        favoriteProfiles: [],
+        profileEnabledById: {},
+        providerSettingsV1: null,
+        currentSecretBindingsByProfileId: {},
+        lastUsedProfile: null,
+        ...overrides,
+    };
+}
 
-vi.mock('@/utils/secrets/secretSatisfaction', () => ({
-    getSecretSatisfaction: () => ({ isSatisfied: true, items: [] }),
-}));
+async function renderIndex(mode: 'split' | 'stacked' | null) {
+    const { ProfileSettingsIndex } = await import('@/components/settings/profiles/ProfileSettingsIndex');
+    capturedProfilesListProps = null;
+    routerMock.push.mockClear();
+    return renderInCollectionLayout(React.createElement(ProfileSettingsIndex), mode);
+}
 
-vi.mock('@/sync/domains/profiles/profileSecrets', () => ({
-    getRequiredSecretEnvVarNames: () => [],
-}));
+describe('Settings › Profiles collection list', () => {
+    it('adds a profile as a draft in the collection', async () => {
+        resetSettings();
+        await renderIndex('stacked');
 
-describe('ProfileManager (native)', () => {
-    async function renderProfileManager() {
-        const ProfileManager = (await import('@/app/(app)/settings/profiles')).default;
-        capturedProfilesListProps = null;
-        await renderScreen(React.createElement(ProfileManager));
-    }
-
-    it('navigates to the profile edit screen when adding a profile', async () => {
-        routerMock.push.mockClear();
-        await renderProfileManager();
-
-        expect(typeof capturedProfilesListProps?.onAddProfilePress).toBe('function');
         await act(async () => {
             capturedProfilesListProps?.onAddProfilePress?.();
         });
 
         expect(routerMock.push).toHaveBeenCalledTimes(1);
-        expect(routerMock.push).toHaveBeenCalledWith({
-            pathname: profileEditPath,
-            params: {},
-        });
+        expect(routerMock.push).toHaveBeenCalledWith('/settings/profiles/new');
     });
 
-    it('keeps Default Environment visible as the first-class no-profile choice', async () => {
-        await renderProfileManager();
-        expect(capturedProfilesListProps?.includeDefaultEnvironmentRow).toBe(true);
-    });
+    it('opens a profile, and a copy of one, in the collection instead of an inline or new-session editor', async () => {
+        resetSettings();
+        await renderIndex('stacked');
 
-    it('navigates to the profile edit screen instead of using the inline modal editor', async () => {
-        routerMock.push.mockClear();
-        await renderProfileManager();
-
-        expect(typeof capturedProfilesListProps?.onEditProfile).toBe('function');
         await act(async () => {
             capturedProfilesListProps?.onEditProfile?.(testProfileRow);
         });
-
-        expect(routerMock.push).toHaveBeenCalledTimes(1);
-        expect(routerMock.push).toHaveBeenCalledWith({
-            pathname: profileEditPath,
-            params: { profileId: testProfileRow.id },
+        await act(async () => {
+            capturedProfilesListProps?.onPressProfile?.(testProfileRow);
         });
-    });
-
-    it('navigates with clone id when duplicating a profile', async () => {
-        routerMock.push.mockClear();
-        await renderProfileManager();
-
-        expect(typeof capturedProfilesListProps?.onDuplicateProfile).toBe('function');
         await act(async () => {
             capturedProfilesListProps?.onDuplicateProfile?.(testProfileRow);
         });
 
-        expect(routerMock.push).toHaveBeenCalledTimes(1);
-        expect(routerMock.push).toHaveBeenCalledWith({
-            pathname: profileEditPath,
-            params: { cloneFromProfileId: testProfileRow.id },
+        expect(routerMock.push.mock.calls).toEqual([
+            ['/settings/profiles/p1'],
+            ['/settings/profiles/p1'],
+            ['/settings/profiles/new?cloneFrom=p1'],
+        ]);
+    });
+
+    it('keeps Default Environment visible as the first-class no-profile choice, with its own detail', async () => {
+        resetSettings();
+        await renderIndex('stacked');
+
+        expect(capturedProfilesListProps?.includeDefaultEnvironmentRow).toBe(true);
+        await act(async () => {
+            capturedProfilesListProps?.onPressDefaultEnvironment?.();
         });
+        expect(routerMock.push).toHaveBeenCalledWith('/settings/profiles/default-environment');
+    });
+
+    it('lands on a profile beside the rail instead of an empty detail', async () => {
+        resetSettings();
+        const screen = await renderIndex('split');
+
+        const redirects = screen.findAll((node) => String(node.type) === 'Redirect');
+        expect(redirects).toHaveLength(1);
+        expect(redirects[0]?.props.href).toBe('/settings/profiles/p1');
+        expect(capturedProfilesListProps).toBeNull();
+    });
+
+    it('lands on the no-profile choice, not a blank draft, when there is no profile to show', async () => {
+        resetSettings({ profiles: [] });
+        const screen = await renderIndex('split');
+
+        const redirects = screen.findAll((node) => String(node.type) === 'Redirect');
+        expect(redirects.map((node) => node.props.href)).toEqual(['/settings/profiles/default-environment']);
+    });
+
+    it('shows only the switch that turns profiles on while they are off', async () => {
+        resetSettings({ useProfiles: false });
+        const screen = await renderIndex('split');
+
+        expect(screen.findAll((node) => String(node.type) === 'Redirect')).toHaveLength(0);
+        expect(capturedProfilesListProps).toBeNull();
+        expect(screen.findByTestId('settings.profiles.useProfiles')).not.toBeNull();
     });
 });

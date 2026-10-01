@@ -23,6 +23,16 @@ describe('sessionCockpitState', () => {
         expect(resolveSessionRightTabIdForSurface('collaboration', false)).toBe('collaboration');
     });
 
+    it('gives phones the one Agents roster as a Session surface, reachable by route and from the sidebar tab (B18)', () => {
+        expect(resolveSessionMobileSurfaceIntent({ routeKind: 'index', persistedSurface: 'agents' })).toBe('agents');
+        expect(resolveSessionMobileSurfaceIntent({ routeKind: 'index', activeRightTabId: 'agents' })).toBe('agents');
+        expect(resolveSessionRoutePathForSurface('s1', 'agents', { serverId: 'home-a' }))
+            .toBe('/session/s1?mobileSurface=agents&serverId=home-a');
+        expect(resolveSessionRightTabIdForSurface('agents', false)).toBe('agents');
+        const agents = resolveRightSidebarTabs({ scope: 'session', presentation: 'mobile' }).find((tab) => tab.id === 'agents');
+        expect(agents && resolveRightSidebarMobileSurface(agents, 'session')).toBe('agents');
+    });
+
     it('admits Collaboration through the shared registry only when this Home supports it', () => {
         const tabs = resolveRightSidebarTabs({ scope: 'session', presentation: 'mobile', sessionSharingAvailable: true });
         const collaboration = tabs.find((tab) => tab.id === 'collaboration');

@@ -58,7 +58,9 @@ const styles = StyleSheet.create((theme) => ({
 
 export type CockpitTabBadge =
     | Readonly<{ kind: 'count'; value: number }>
-    | Readonly<{ kind: 'diff'; added: number; removed: number; modifiedCount: number }>;
+    /** Something on this surface is waiting for the person (the Companion's amber dot). */
+    | Readonly<{ kind: 'attention' }>
+    | Readonly<{ kind: 'diff'; added: number; removed: number; changedFileCount: number }>;
 
 export type CockpitTabBarTabDefinition<TSurface extends string> = Readonly<{
     id: TSurface;
@@ -71,6 +73,8 @@ export type CockpitTabBarTabDefinition<TSurface extends string> = Readonly<{
         }>) => React.ReactNode;
     }>;
     badge?: CockpitTabBadge;
+    /** The announced name when it says more than the visible label ("Companion, 1 waiting for you"). */
+    accessibilityLabel?: string;
 }>;
 
 type CockpitTabBarProps<TSurface extends string> = Readonly<{
@@ -123,7 +127,7 @@ export function CockpitTabBar<TSurface extends string>(props: CockpitTabBarProps
 
     return (
         <FloatingTabBarSurface testID={props.barTestId} bottomInset={insets.bottom} opaqueBand>
-            <Animated.View style={[styles.innerContainer, { gap: metrics.rowGap }, rowStyle]}>
+            <Animated.View accessibilityRole="tablist" style={[styles.innerContainer, { gap: metrics.rowGap }, rowStyle]}>
                 {props.tabs.map((tab) => {
                     const active = tab.id === props.activeSurface;
                     const tintColor = active ? theme.colors.text.primary : theme.colors.text.secondary;
@@ -132,14 +136,14 @@ export function CockpitTabBar<TSurface extends string>(props: CockpitTabBarProps
                             key={tab.id}
                             testID={`${props.tabTestIdPrefix}${tab.id}`}
                             onPress={() => props.onSurfacePress(tab.id)}
-                            hitSlop={8}
+                            hitSlop={{ top: 8, bottom: 8 }}
                             style={[styles.tab, {
                                 minWidth: metrics.tabMinWidth,
                                 paddingVertical: metrics.tabPaddingVertical,
                                 paddingHorizontal: metrics.tabPaddingHorizontal,
                             }]}
                             accessibilityRole="tab"
-                            accessibilityLabel={tab.label}
+                            accessibilityLabel={tab.accessibilityLabel ?? tab.label}
                             accessibilityState={{ selected: active }}
                             accessibilityActions={props.bandAccessibilityActions}
                             onAccessibilityAction={props.onBandAccessibilityAction
@@ -184,7 +188,7 @@ export const CockpitTabBarAction = React.forwardRef<View, Readonly<{
             ref={ref as React.Ref<never>}
             testID={props.testID}
             onPress={props.onPress}
-            hitSlop={8}
+            hitSlop={{ top: 8, bottom: 8 }}
             style={[styles.tab, {
                 minWidth: metrics.tabMinWidth,
                 paddingVertical: metrics.tabPaddingVertical,
@@ -212,12 +216,15 @@ function renderTabBadge(badge: CockpitTabBadge | undefined, testID: string): Rea
     if (badge.kind === 'count') {
         return <TabBadge variant="count" value={badge.value} tone="neutral" testID={testID} />;
     }
+    if (badge.kind === 'attention') {
+        return <TabBadge variant="dot" tone="attention" testID={testID} />;
+    }
     return (
         <TabBadge
             variant="diff"
             added={badge.added}
             removed={badge.removed}
-            modifiedCount={badge.modifiedCount}
+            changedFileCount={badge.changedFileCount}
             testID={testID}
         />
     );

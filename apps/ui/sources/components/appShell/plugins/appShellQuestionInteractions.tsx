@@ -576,7 +576,7 @@ export function createAppShellTransientInteractions(input: Readonly<{
 }> {
     const owner = createTransientInteractionOwner({
         scope: Object.freeze({ kind: 'app' }),
-        isGenerationCurrent: input.isCurrent,
+        isOccurrenceCurrent: input.isCurrent,
         deadlineMs: PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS,
         present: async (request, options) => await presentAppShellTransientInteraction({
             request,

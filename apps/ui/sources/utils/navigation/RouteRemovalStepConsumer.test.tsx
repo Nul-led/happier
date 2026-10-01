@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NavigationContext } from '@react-navigation/native';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { DestinationInstanceHost } from '@/components/appShell/workspace/DestinationInstanceHost';
+import { WorkspaceNavigationContext, type WorkspaceNavigationContextValue } from '@/components/appShell/workspace/WorkspaceNavigationContext';
+import { createWorkspaceState } from '@/components/appShell/workspace/workspaceState';
 
 const removal = vi.hoisted(() => ({
     enabled: false,
@@ -29,6 +32,35 @@ describe('RouteRemovalStepConsumer', () => {
 
     afterEach(() => {
         standardCleanup();
+    });
+
+    it('registers the hosted page step with workspace Back without guarding the outer Expo route', async () => {
+        const consume = vi.fn(() => true);
+        const participants = new Map<string, () => boolean>();
+        const workspace: WorkspaceNavigationContextValue = {
+            active: true,
+            state: createWorkspaceState({ id: 'plugin-tab', target: { kind: 'plugin:notes', params: {} }, pinned: false, preview: false }),
+            canGoBack: true, canGoForward: false, openHref: () => true,
+            activateTab: () => {}, closeTab: () => {}, dispatch: () => {}, back: () => {}, forward: () => {},
+            navigationForTab: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
+            registerBackStep: (tabId, step) => {
+                participants.set(tabId, step);
+                return () => { participants.delete(tabId); };
+            },
+        };
+        const { RouteRemovalStepConsumer } = await import('./RouteRemovalStepConsumer');
+        const screen = await renderScreen(<WorkspaceNavigationContext.Provider value={workspace}>
+            <DestinationInstanceHost tabId="plugin-tab" ref={{ kind: 'plugin:notes', params: {} }}
+                pathname="/plugins/notes/page" focused visible>
+                <RouteRemovalStepConsumer active consume={consume} />
+            </DestinationInstanceHost>
+        </WorkspaceNavigationContext.Provider>);
+        expect(removal.callback).toBeNull();
+        expect(participants.get('plugin-tab')?.()).toBe(true);
+        consume.mockReturnValue(false);
+        expect(participants.get('plugin-tab')?.()).toBe(false);
+        await screen.unmount();
+        expect(participants.size).toBe(0);
     });
 
     it('redispatches a same-page replacement without spending the declared Back step', async () => {
@@ -76,6 +108,21 @@ describe('RouteRemovalStepConsumer', () => {
 
         expect(consume).toHaveBeenCalledOnce();
         expect(dispatch).not.toHaveBeenCalled();
+    });
+
+    it('redispatches the same Back action when the declared step declines it', async () => {
+        const dispatch = vi.fn();
+        const goBack = { type: 'GO_BACK' };
+        const { RouteRemovalStepConsumer } = await import('./RouteRemovalStepConsumer');
+        await renderScreen(<NavigationContext.Provider value={{ dispatch } as never}>
+            <RouteRemovalStepConsumer active consume={() => false} />
+        </NavigationContext.Provider>);
+        await act(async () => {
+            removal.callback?.({ data: { action: goBack } });
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(dispatch).toHaveBeenCalledWith(goBack);
     });
 
     it('redispatches a targeted stack dismissal without spending the page-local step', async () => {

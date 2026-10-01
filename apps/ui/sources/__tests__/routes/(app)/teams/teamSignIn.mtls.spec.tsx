@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import TeamSignInRoute from '@/app/(app)/teams/[teamId]/sign-in';
 
 const boundary = vi.hoisted(() => ({
     entryProps: null as null | Record<string, unknown>,
@@ -15,11 +16,15 @@ const boundary = vi.hoisted(() => ({
     clearPending: vi.fn(),
     joinProps: null as null | Record<string, unknown>,
     joinRenderCount: 0,
+    routerBack: vi.fn(),
+    routerReplace: vi.fn(),
+    canGoBack: true,
 }));
 
 vi.mock('expo-router', () => ({
     useLocalSearchParams: () => boundary.params,
-    useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+    useRouter: () => ({ back: boundary.routerBack, replace: boundary.routerReplace, push: vi.fn(), canGoBack: () => boundary.canGoBack }),
+    useNavigation: () => ({ canGoBack: () => boundary.canGoBack }),
 }));
 
 vi.mock('@/components/teams/entry/TeamAuthEntrySurface', () => ({
@@ -37,7 +42,7 @@ vi.mock('@/components/account/auth/HomeAuthenticationFlow', () => ({
 }));
 
 vi.mock('@/components/teams/entry/teamSignInHome', () => ({
-    resolveTeamSignInHome: () => ({
+    useTeamSignInHome: () => ({
         kind: 'resolved',
         savedProfileId: 'profile-home',
         target: {
@@ -60,7 +65,12 @@ vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
     useServerCredentialAccountScopeResolution: () => boundary.scopeResolution,
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
+// Only the two continuation reads this route performs are replaced. The rest of
+// the credential-storage module stays real: other modules in the route's graph
+// read its other exports at import time, and listing them by hand here made the
+// file uncollectable every time that graph grew.
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/auth/storage/tokenStorage')>()),
     TokenStorage: {
         readPendingExternalAuthContinuationState: boundary.readPending,
         clearPendingExternalAuth: boundary.clearPending,
@@ -102,12 +112,14 @@ describe('TeamSignInRoute native mTLS', () => {
         boundary.clearPending.mockReset();
         boundary.joinProps = null;
         boundary.joinRenderCount = 0;
+        boundary.routerBack.mockReset();
+        boundary.routerReplace.mockReset();
+        boundary.canGoBack = true;
     });
 
     afterEach(() => standardCleanup());
 
     it('carries direct Home-origin mTLS through the exact Team continuation', async () => {
-        const { default: TeamSignInRoute } = await import('@/app/(app)/teams/[teamId]/sign-in');
         await renderScreen(<TeamSignInRoute />);
 
         const onSelectAction = boundary.entryProps?.onSelectAction as ((selection: unknown) => void) | undefined;
@@ -129,8 +141,34 @@ describe('TeamSignInRoute native mTLS', () => {
         });
 
         expect(boundary.authenticationProps).toEqual(expect.objectContaining({
-            teamAdmission: { teamId: 'team-1' },
+            teamAdmission: { teamId: 'team-1', accountSelection: 'current' },
         }));
+    });
+
+    it('uses the safe back owner from ready Team entry', async () => {
+        boundary.scopeResolution = { kind: 'bound', scope: { serverId: 'profile-home', accountId: 'account-1' } };
+        await renderScreen(<TeamSignInRoute />);
+        const onBack = boundary.entryProps?.onBack as (() => void) | undefined;
+        expect(onBack).toBeTypeOf('function');
+        act(() => onBack?.());
+        expect(boundary.routerBack).toHaveBeenCalledTimes(1);
+        expect(boundary.routerReplace).not.toHaveBeenCalled();
+    });
+
+    it('never offers sign-in when this device cannot read its saved Home credential', async () => {
+        // Whether an Account is saved here is unknown; signing in again could
+        // replace a credential that still exists. Same remedy as Team join.
+        boundary.scopeResolution = { kind: 'unavailable' };
+        const rendered = await renderScreen(<TeamSignInRoute />);
+
+        expect(boundary.entryProps).toBeNull();
+        expect(boundary.surfaceProps).toEqual(expect.objectContaining({
+            testID: 'team-sign-in-home-unavailable',
+            title: 'homeGovernance.credentialUnreadableTitle',
+            action: expect.objectContaining({ label: 'homeGovernance.retry' }),
+            secondaryAction: expect.objectContaining({ label: 'common.back' }),
+        }));
+        expect(rendered.findByTestId('team-sign-in-shell')).not.toBeNull();
     });
 
     it('leaves post-auth invitation custody unclaimed and presents exact Team sign-in after resolving becomes signed out', async () => {
@@ -140,7 +178,6 @@ describe('TeamSignInRoute native mTLS', () => {
             postAuthInvitation: '1',
         };
         boundary.scopeResolution = { kind: 'resolving' };
-        const { default: TeamSignInRoute } = await import('@/app/(app)/teams/[teamId]/sign-in');
         const rendered = await renderScreen(<TeamSignInRoute />);
         expect(boundary.surfaceProps).toEqual(expect.objectContaining({
             testID: 'team-sign-in-resolving',
@@ -156,7 +193,9 @@ describe('TeamSignInRoute native mTLS', () => {
             teamId: 'team-1',
             target: expect.objectContaining({ kind: 'descriptor' }),
         }));
-        expect(boundary.surfaceProps?.testID).not.toBe('team-sign-in-post-auth-loading');
+        expect(boundary.surfaceProps).not.toEqual(expect.objectContaining({
+            testID: 'team-sign-in-post-auth-loading',
+        }));
         expect(boundary.readPending).not.toHaveBeenCalled();
         expect(boundary.clearPending).not.toHaveBeenCalled();
 
@@ -210,7 +249,6 @@ describe('TeamSignInRoute native mTLS', () => {
         boundary.readPending.mockResolvedValue({ value: pending, serverMismatch: false });
         boundary.clearPending.mockResolvedValue(true);
 
-        const { default: TeamSignInRoute } = await import('@/app/(app)/teams/[teamId]/sign-in');
         await act(async () => { await renderScreen(<TeamSignInRoute />); });
         await act(async () => { await new Promise<void>((resolve) => queueMicrotask(resolve)); });
 

@@ -34,6 +34,20 @@ vi.mock('@/sync/domains/state/storage', async () => {
 });
 });
 
+/** The two built-in destinations the catalog marks for empty Search, as it projects them. */
+const SUGGESTED_BUILTIN_DESTINATIONS = [
+  {
+    kind: 'builtin', id: 'sessions', title: 'Sessions', icon: 'chats-circle', order: 0,
+    placement: { kind: 'rail', region: 'app' }, column: 'sessions', activation: 'navigate',
+    routePath: '/', suggested: true, availability: 'available',
+  },
+  {
+    kind: 'builtin', id: 'settings', title: 'Settings', icon: 'gear', order: 1,
+    placement: { kind: 'rail', region: 'account' }, column: 'settings', activation: 'navigate',
+    routePath: '/settings', shortcut: 'settings.open', suggested: true, availability: 'available',
+  },
+] as const satisfies readonly CompactAppDestination[];
+
 function commandTitles(cmds: readonly Command[]): string[] {
   return cmds.map((c) => c.title);
 }
@@ -67,7 +81,6 @@ function projectedDaemonAction(
     surfaces: action.surfaces,
     execution: { target: 'daemon' },
     ...(action.placementBindings.length > 0 ? { placementBindings: action.placementBindings } : {}),
-    ...(action.inputSchema ? { inputSchema: action.inputSchema } : {}),
     ...(action.inputHints ? { inputHints: action.inputHints } : {}),
     ...(action.slash ? { slash: action.slash } : {}),
     priority: action.priority ?? 0,
@@ -90,7 +103,6 @@ function pluginAction(input: Partial<PluginProjectionAction> & Readonly<{
     scopes: input.scopes ?? ['session'],
     surfaces: input.surfaces ?? ['ui'],
     placementBindings: input.placementBindings ?? ['commandPalette'],
-    inputSchema: input.inputSchema ?? null,
     inputHints: input.inputHints ?? null,
     slash: input.slash ?? null,
     priority: input.priority ?? null,
@@ -141,7 +153,6 @@ function pluginActionSnapshot(input: Readonly<{
     host: {
       machineId: MACHINE_ID,
       serverId: SERVER_ID,
-      expectedGeneration: generation,
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       isCurrent: () => true,
     },
@@ -179,10 +190,12 @@ describe('buildCommandPaletteCommands', () => {
       nav: { push: () => {}, openNewSession: () => {}, navigateToSession: () => {} },
       actions: { execute: async () => ({ ok: true, result: {} }) },
       alert: async () => {},
+      compactAppDestinations: SUGGESTED_BUILTIN_DESTINATIONS,
+      onActivateCompactAppDestination: () => {},
     });
 
     expect(commands.filter((command) => command.emptyQuerySuggested).map((command) => command.id))
-      .toEqual(['new-session', 'sessions', 'settings']);
+      .toEqual(['new-session', 'app-destination:sessions', 'app-destination:settings']);
   });
 
   it('routes sign-out through the confirmed account-settings flow', async () => {
@@ -310,7 +323,7 @@ describe('buildCommandPaletteCommands', () => {
 
     expect(command).toMatchObject({
       title: 'Sync notes',
-      subtitle: 'Synchronize the current notes · acme.commands/sync-notes',
+      subtitle: 'Synchronize the current notes',
       icon: 'magic-wand',
       category: 'acme.commands',
     });
@@ -322,7 +335,7 @@ describe('buildCommandPaletteCommands', () => {
       contributedAction: {
         machineId: MACHINE_ID,
         serverId: SERVER_ID,
-        expectedGeneration: '7',
+        expectedContributorOccurrenceId: '7',
         sessionId: 'session-command-palette',
       },
     }));
@@ -458,7 +471,8 @@ describe('buildCommandPaletteCommands', () => {
         id: 'browseExistingSessions',
         title: 'Browse existing sessions',
         icon: 'folder-open',
-        group: 'sessions',
+        placement: { kind: 'column', column: 'sessions' },
+        activation: 'navigate',
         order: 0,
         routePath: '/external/browse',
         availability: 'available',
@@ -470,7 +484,8 @@ describe('buildCommandPaletteCommands', () => {
         destination: { pluginId: 'acme.notes', localId: 'notes' },
         title: 'Acme notes',
         icon: 'note',
-        group: 'plugins',
+        placement: { kind: 'rail', region: 'plugins' },
+        activation: 'navigate',
         order: 10,
         routePath: '/plugins/acme.notes/notes',
         availability: 'available',
@@ -482,7 +497,8 @@ describe('buildCommandPaletteCommands', () => {
         destination: { pluginId: 'beta.notes', localId: 'notes' },
         title: 'Beta notes',
         icon: 'note',
-        group: 'plugins',
+        placement: { kind: 'rail', region: 'plugins' },
+        activation: 'navigate',
         order: 20,
         routePath: '/plugins/beta.notes/notes',
         availability: 'unavailable',
@@ -549,7 +565,8 @@ describe('buildCommandPaletteCommands', () => {
         destination: { pluginId: 'acme.notes', localId: 'hidden' },
         title: 'Hidden notes',
         icon: 'note',
-        group: 'plugins',
+        placement: { kind: 'rail', region: 'plugins' },
+        activation: 'navigate',
         order: 10,
         routePath: '/plugins/acme.notes/hidden',
         availability: 'available',
@@ -843,10 +860,13 @@ describe('buildCommandPaletteCommands', () => {
       },
       actions: { execute: async () => ({ ok: true, result: {} }) },
       alert: async () => {},
+      compactAppDestinations: SUGGESTED_BUILTIN_DESTINATIONS,
+      onActivateCompactAppDestination: () => {},
     });
 
     expect(cmds.find((command) => command.id === 'new-session')?.shortcut).toBe('Cmd+P');
-    expect(cmds.find((command) => command.id === 'settings')?.shortcut).toBeUndefined();
+    // Settings' own shortcut is disabled in this registry, so its destination shows none.
+    expect(cmds.find((command) => command.id === 'app-destination:settings')?.shortcut).toBeUndefined();
     expect(cmds.some((command) => command.shortcut === '⌘N' || command.shortcut === '⌘,')).toBe(false);
   });
 
@@ -872,38 +892,6 @@ describe('buildCommandPaletteCommands', () => {
     expect(cmd).toBeTruthy();
     await cmd!.action();
     expect(pushes).toEqual(['/scan/terminal']);
-  });
-
-  /**
-   * Workflows are reached through the palette only when the one canonical
-   * Workflows decision says they exist on this Home; the caller projects that
-   * decision in, and an unavailable or unresolved Home gets no dead entry.
-   */
-  it.each([
-    ['available', true, ['/workflows']],
-    ['unavailable', false, []],
-  ] as const)('offers Open Workflows only when Workflows are %s', async (_label, workflowsAvailable, expectedPushes) => {
-    const pushes: string[] = [];
-    mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: {} };
-
-    const cmds = buildCommandPaletteCommands({
-      sessionsById: {},
-      isDev: false,
-      activeSessionId: null,
-      features: { executionRunsEnabled: false, voiceEnabled: false, workflowsAvailable },
-      nav: {
-        push: (path) => pushes.push(path),
-        openNewSession: () => {},
-        navigateToSession: () => {},
-      },
-      actions: { execute: async () => ({ ok: true, result: {} }) },
-      alert: async () => {},
-    });
-
-    const workflows = cmds.find((command) => command.id === 'workflows');
-    expect(workflows !== undefined).toBe(workflowsAvailable);
-    await workflows?.action();
-    expect(pushes).toEqual(expectedPushes);
   });
 
   it('registers pet commands when the companion feature is enabled', async () => {

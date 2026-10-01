@@ -1,3 +1,4 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
 import type { ActionId } from '@happier-dev/protocol';
 import { listActionSpecs } from '@happier-dev/protocol';
 
@@ -45,7 +46,7 @@ function readSessionLabel(session: any): Readonly<{ title: string; subtitle: str
   const legacyName = typeof metadata?.name === 'string' ? metadata.name.trim() : '';
   const title = readSessionDisplayTitleField(session).value
     ?? (legacyName || t('commandPalette.commands.sessionFallbackTitle', { id: String(session?.id ?? '').slice(0, 6) }));
-  const path = typeof metadata?.path === 'string' ? metadata.path.trim() : '';
+  const path = typeof metadata?.path === 'string' && readSessionDirectoryKind(metadata) !== 'managed' ? metadata.path.trim() : '';
   const subtitle = path || t('commandPalette.commands.sessionFallbackSubtitle');
   return { title, subtitle };
 }
@@ -79,8 +80,6 @@ type BuildCommandPaletteCommandsBaseParams = Readonly<{
     executionRunsEnabled: boolean;
     voiceEnabled: boolean;
     petsCompanionEnabled?: boolean;
-    /** The canonical Workflows availability decision, projected by the host. */
-    workflowsAvailable?: boolean;
   }>;
   shortcutLabels?: Partial<Record<KeyboardCommandId, string>>;
   petControls?: PetCommandControls;
@@ -163,35 +162,14 @@ export function buildCommandPaletteCommands(
       id: 'new-session',
       emptyQuerySuggested: true,
       title: t('commandPalette.commands.newSessionTitle'),
-      subtitle: t('commandPalette.commands.newSessionSubtitle'),
       icon: 'plus-circle',
-      category: t('commandPalette.commands.sessionsCategory'),
+      category: t('commandPalette.commands.actionsCategory'),
       shortcut: params.shortcutLabels?.['session.new'],
       action: nav.openNewSession,
     },
     {
-      id: 'sessions',
-      emptyQuerySuggested: true,
-      title: t('commandPalette.commands.viewAllSessionsTitle'),
-      subtitle: t('commandPalette.commands.viewAllSessionsSubtitle'),
-      icon: 'chats-circle',
-      category: t('commandPalette.commands.sessionsCategory'),
-      action: () => nav.push('/'),
-    },
-    {
-      id: 'settings',
-      emptyQuerySuggested: true,
-      title: t('commandPalette.commands.settingsTitle'),
-      subtitle: t('commandPalette.commands.settingsSubtitle'),
-      icon: 'sliders-horizontal',
-      category: t('commandPalette.commands.navigationCategory'),
-      shortcut: params.shortcutLabels?.['settings.open'],
-      action: () => nav.push('/settings'),
-    },
-    {
       id: 'account',
       title: t('commandPalette.commands.accountTitle'),
-      subtitle: t('commandPalette.commands.accountSubtitle'),
       icon: 'user-circle',
       category: t('commandPalette.commands.navigationCategory'),
       action: () => nav.push('/settings/account'),
@@ -199,38 +177,26 @@ export function buildCommandPaletteCommands(
     {
       id: 'connect',
       title: t('commandPalette.commands.connectTerminalTitle'),
-      subtitle: t('commandPalette.commands.connectTerminalSubtitle'),
       icon: 'link',
-      category: t('commandPalette.commands.navigationCategory'),
+      category: t('commandPalette.commands.actionsCategory'),
       action: () => nav.push('/scan/terminal'),
     },
   ];
-
-  // The Workflows collection has no global tab; the palette reaches it only
-  // where the one canonical decision says Workflows exist on this Home.
-  if (features.workflowsAvailable === true) {
-    cmds.push({
-      id: 'workflows',
-      title: t('workflows.openCollection'),
-      icon: 'tree-structure',
-      category: t('commandPalette.commands.navigationCategory'),
-      action: () => nav.push('/workflows'),
-    });
-  }
 
   if (params.compactAppDestinations !== undefined) {
     for (const destination of params.compactAppDestinations) {
       if (!isCompactAppDestinationVisible(destination)) {
         continue;
       }
+      const builtin = destination.kind === 'builtin' ? destination : null;
       cmds.push({
         id: `app-destination:${destination.id}`,
+        ...(builtin?.suggested ? { emptyQuerySuggested: true } : {}),
         title: destination.title,
         subtitle: resolveCompactAppDestinationCommandSubtitle(destination),
         icon: destination.icon,
-        category: destination.group === 'sessions'
-          ? t('commandPalette.commands.sessionsCategory')
-          : t('commandPalette.commands.navigationCategory'),
+        category: t('commandPalette.commands.navigationCategory'),
+        ...(builtin?.shortcut ? { shortcut: params.shortcutLabels?.[builtin.shortcut] } : {}),
         action: () => params.onActivateCompactAppDestination(destination),
       });
     }
@@ -244,7 +210,6 @@ export function buildCommandPaletteCommands(
         {
           id: 'pet-wake',
           title: t('commandPalette.pets.wakeTitle'),
-          subtitle: t('commandPalette.pets.wakeSubtitle'),
           icon: 'paw-print',
           category: petCategory,
           action: () => petControls.wake(),
@@ -252,7 +217,6 @@ export function buildCommandPaletteCommands(
         {
           id: 'pet-tuck',
           title: t('commandPalette.pets.tuckTitle'),
-          subtitle: t('commandPalette.pets.tuckSubtitle'),
           icon: 'moon',
           category: petCategory,
           action: () => petControls.tuck(),
@@ -262,7 +226,6 @@ export function buildCommandPaletteCommands(
         cmds.push({
           id: 'pet-reset-position',
           title: t('commandPalette.pets.resetPositionTitle'),
-          subtitle: t('commandPalette.pets.resetPositionSubtitle'),
           icon: 'crosshair',
           category: petCategory,
           action: () => petControls.resetPosition?.(),
@@ -271,7 +234,6 @@ export function buildCommandPaletteCommands(
       cmds.push({
         id: 'pet-refresh-codex',
         title: t('commandPalette.pets.refreshCodexTitle'),
-        subtitle: t('commandPalette.pets.refreshCodexSubtitle'),
         icon: 'arrow-clockwise',
         category: petCategory,
         action: () => petControls.refreshCodexPets(),
@@ -280,7 +242,6 @@ export function buildCommandPaletteCommands(
     cmds.push({
       id: 'ui.pet.choose',
       title: t('commandPalette.pets.chooseTitle'),
-      subtitle: t('commandPalette.pets.chooseSubtitle'),
       icon: 'palette',
       category: petCategory,
       action: () => nav.push('/settings/pets'),
@@ -310,11 +271,11 @@ export function buildCommandPaletteCommands(
       placement: 'commandPalette',
       scope: pluginActionPresentation.scope,
     })) {
-      const subtitle = [action.description, action.qualifiedActionId]
-        .filter((part): part is string => typeof part === 'string' && part.length > 0)
-        .join(' · ');
+      // The plugin's own description; never its qualified id.
+      const subtitle = typeof action.description === 'string' ? action.description.trim() : '';
       cmds.push({
         id: `plugin-action:${action.qualifiedActionId}`,
+        actionSpecId: action.qualifiedActionId,
         title: action.title,
         ...(subtitle ? { subtitle } : {}),
         icon: resolvePluginContributedActionIconName(action.icon),
@@ -349,8 +310,8 @@ export function buildCommandPaletteCommands(
       if (!entry) continue;
       cmds.push({
         id: `action:${entry.spec.id}`,
+        actionSpecId: entry.spec.id,
         title: entry.title,
-        subtitle: t('commandPalette.commands.executionRunsSubtitle'),
         icon: 'code',
         category: t('commandPalette.commands.runsCategory'),
         action: async () => {
@@ -385,6 +346,7 @@ export function buildCommandPaletteCommands(
     if (list) {
       cmds.push({
         id: `action:${list.id}`,
+        actionSpecId: list.id,
         title: t('commandPalette.commands.openSessionRunsTitle'),
         subtitle: activeSessionId ? t('commandPalette.commands.runsForCurrentSessionSubtitle') : t('commandPalette.commands.runsAcrossMachinesSubtitle'),
         icon: 'list',
@@ -411,8 +373,8 @@ export function buildCommandPaletteCommands(
     if (reset) {
       cmds.push({
         id: `action:${reset.id}`,
+        actionSpecId: reset.id,
         title: t('commandPalette.commands.resetVoiceAgentTitle'),
-        subtitle: t('commandPalette.commands.voiceSubtitle'),
         icon: 'arrow-clockwise',
         category: t('commandPalette.commands.voiceCategory'),
         action: async () => {
@@ -425,7 +387,6 @@ export function buildCommandPaletteCommands(
   cmds.push({
     id: 'sign-out',
     title: t('commandPalette.commands.signOutTitle'),
-    subtitle: t('commandPalette.commands.signOutSubtitle'),
     icon: 'sign-out',
     category: t('commandPalette.commands.systemCategory'),
     action: () => nav.push('/settings/account'),
@@ -435,7 +396,6 @@ export function buildCommandPaletteCommands(
     cmds.push({
       id: 'dev-menu',
       title: t('commandPalette.commands.developerMenuTitle'),
-      subtitle: t('commandPalette.commands.developerMenuSubtitle'),
       icon: 'code',
       category: t('commandPalette.commands.developerCategory'),
       action: () => nav.push('/dev'),

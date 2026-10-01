@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    AGENT_PLAN_COMPANION_ITEM,
     HIDDEN_SESSION_COMPANION_PREFERENCE_V1,
     SESSION_SUMMARY_COMPANION_ITEM,
     SessionCompanionPreferencesV1Schema,
     addSessionCompanionItem,
+    areSessionCompanionPreferencesEqual,
     hideSessionCompanion,
     moveSessionCompanionItem,
     normalizeSessionCompanionPreference,
@@ -26,6 +28,19 @@ const visible: SessionCompanionPreferenceV1 = {
 };
 
 describe('session companion preference schema', () => {
+    it('retains compact glances and pane links with independent frame overrides, deduplicating by reference identity', () => {
+        const refs = [
+            { kind: 'builtin', id: 'changes', frameStyle: 'card' },
+            { kind: 'builtin', id: 'local_services' },
+            { kind: 'pane', paneId: 'git', frameStyle: 'plain' },
+            { kind: 'plugin', surface: { pluginId: 'acme.tools', localId: 'glance' }, frameStyle: 'card' },
+        ];
+        const normalized = normalizeSessionCompanionPreference({ ...visible, items: [...refs, { ...refs[2], frameStyle: 'card' }] });
+        expect(normalized.items).toEqual(refs);
+        expect(addSessionCompanionItem(normalized, { kind: 'pane', paneId: 'git' })).toBe(normalized);
+        expect(removeSessionCompanionItem(normalized, { kind: 'pane', paneId: 'git' }).items).toEqual([refs[0], refs[1], refs[3]]);
+        expect(areSessionCompanionPreferencesEqual(normalized, { ...normalized, items: normalized.items.map((ref) => ({ ...ref, frameStyle: 'plain' })) })).toBe(false);
+    });
     it('drops only the malformed entry and keeps every valid sibling', () => {
         const parsed = SessionCompanionPreferencesV1Schema.parse({
             'realm:good': visible,
@@ -56,6 +71,16 @@ describe('session companion preference schema', () => {
         const withUnknownBuiltin = { ...visible, items: [{ kind: 'builtin', id: 'session_summary_shard' }] };
 
         expect(SessionCompanionPreferencesV1Schema.parse({ 'realm:x': withUnknownBuiltin })).toEqual({});
+    });
+
+    it('keeps the agent Plan as a built-in reference of its own', () => {
+        const withPlan = { ...visible, items: [SESSION_SUMMARY_COMPANION_ITEM, AGENT_PLAN_COMPANION_ITEM] };
+
+        expect(SessionCompanionPreferencesV1Schema.parse({ 'realm:x': withPlan })).toEqual({ 'realm:x': withPlan });
+        expect(normalizeSessionCompanionPreference(withPlan).items).toEqual([
+            { kind: 'builtin', id: 'session_summary' },
+            { kind: 'builtin', id: 'agent_plan' },
+        ]);
     });
 });
 

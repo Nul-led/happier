@@ -1,18 +1,11 @@
-import React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import * as React from 'react';
 
-import { AutomationsGate } from '@/components/automations/gating/AutomationsGate';
-import { SessionAutomationsScreen } from '@/components/automations/screens/SessionAutomationsScreen';
-import { createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
-import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
+import { SessionTriggersRedirect } from '@/components/workflows/triggers/SessionTriggersRedirect';
 
-export default function SessionAutomationsRoute() {
-    const params = useLocalSearchParams<{ id?: string | string[]; serverId?: string | string[] }>();
-    const routeScope = React.useMemo(() => createSessionRouteServerScope(params as Record<string, unknown>), [params]);
-    const sessionId = normalizeSessionId(params.id);
-    return (
-        <AutomationsGate>
-            <SessionAutomationsScreen sessionId={sessionId} hydrationOptions={routeScope.hydrationOptions} />
-        </AutomationsGate>
-    );
+/** Retired: session triggers are the Work tab's Triggers section (FIN 04 §3.2, §5.5). */
+export function RetiredSessionAutomationsRoute(): React.ReactElement {
+    return <SessionTriggersRedirect />;
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { RetiredSessionAutomationsRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={RetiredSessionAutomationsRoute} />; }

@@ -20,52 +20,31 @@ describe('legacy automation picker route', () => {
         vi.resetModules();
     });
 
-    it('redirects to the inline new-session automation flow and preserves automation params', async () => {
+    it('reaches the shared Automation wrapper instead of a second inline authoring surface', async () => {
         useLocalSearchParamsMock.mockReturnValue({
             automationEnabled: '1',
             automationName: 'Legacy',
-            automationDescription: 'Carry this over',
             automationScheduleKind: 'interval',
-            automationEveryMinutes: '90',
-            automationCronExpr: '0 * * * *',
-            automationTimezone: 'Europe/Zurich',
             draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         });
 
         const module = await import('@/app/(app)/new/pick/automation');
-
         const screen = await renderScreen(React.createElement(module.default));
 
         const redirect = screen.findByType('Redirect' as any);
-        expect(redirect.props.href).toEqual({
-            pathname: '/new',
-            params: {
-                automation: '1',
-                automationEnabled: '1',
-                automationName: 'Legacy',
-                automationDescription: 'Carry this over',
-                automationScheduleKind: 'interval',
-                automationEveryMinutes: '90',
-                automationCronExpr: '0 * * * *',
-                automationTimezone: 'Europe/Zurich',
-                draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
-            },
-        });
+        // The old destination forced New Session into an Automation entry and
+        // manufactured a fresh inline draft that reached the retained one-shot
+        // writer directly, bypassing the trigger editor and its save owner.
+        expect(redirect.props.href).toEqual({ pathname: '/automations/new' });
     });
 
-    it('allocates an explicit draft identity for a direct legacy automation route', async () => {
+    it('carries no prompt, setting or manufactured draft in the URL', async () => {
         useLocalSearchParamsMock.mockReturnValue({});
 
         const module = await import('@/app/(app)/new/pick/automation');
         const screen = await renderScreen(React.createElement(module.default));
 
         const redirect = screen.findByType('Redirect' as any);
-        expect(redirect.props.href).toEqual({
-            pathname: '/new',
-            params: {
-                automation: '1',
-                draftId: expect.any(String),
-            },
-        });
+        expect(redirect.props.href).toEqual({ pathname: '/automations/new' });
     });
 });

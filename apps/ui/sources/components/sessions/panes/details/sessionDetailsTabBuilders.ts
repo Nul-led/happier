@@ -4,6 +4,7 @@ import { t } from '@/text';
 
 export const SESSION_DETAILS_SCM_REVIEW_TAB_KEY = 'scmReview:working';
 export const SESSION_DETAILS_SCM_STASH_TAB_KEY = 'scmStash';
+export const SESSION_DETAILS_SCM_PULL_REQUEST_TAB_KEY = 'scmPullRequest';
 export const SESSION_DETAILS_BOARD_TAB_KEY = 'board';
 
 export type SessionBoardDetailsFocusTarget = Readonly<{
@@ -94,6 +95,16 @@ export function createSessionScmStashDetailsTab() {
         kind: 'scmStash' as const,
         title: t('files.stash.detailsTitle'),
         resource: { kind: 'scmStash' as const },
+    };
+}
+
+/** The session's new pull request form, moved out of the Git sidebar (Git lab PRD). One per session. */
+export function createSessionScmPullRequestDetailsTab() {
+    return {
+        key: SESSION_DETAILS_SCM_PULL_REQUEST_TAB_KEY,
+        kind: 'scmPullRequest' as const,
+        title: t('sessionGitPullRequest.form.title'),
+        resource: { kind: 'scmPullRequest' as const },
     };
 }
 

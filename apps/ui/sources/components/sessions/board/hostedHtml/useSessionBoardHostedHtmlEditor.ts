@@ -58,6 +58,7 @@ export type SessionBoardHostedHtmlEditorInput = Readonly<{
     onSaved: (
         result: SessionBoardMutationResult | null,
         committedItemRevision: string | null,
+        draftSettled: boolean,
     ) => void;
     flushHtml?: () => Promise<string | null>;
 }>;

@@ -1,7 +1,8 @@
 import * as React from 'react';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 
-import { ExternalSessionsBrowseScreen } from '@/components/sessions/external/browse/ExternalSessionsBrowseScreen';
+import { ExternalSessionsBrowseSurface } from '@/components/sessions/external/browse/ExternalSessionsBrowseModal';
 import { ExternalSessionsBrowseRouteGate } from '@/components/sessions/external/browse/ExternalSessionsBrowseRouteGate';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
 import {
@@ -13,6 +14,7 @@ import { useProfile } from '@/sync/store/hooks';
 import { resolveExternalSessionsAgentBrowseRouteScope } from '@/components/sessions/external/browse/externalSessionBrowseNavigation';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { t } from '@/text';
+import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 
 type ExternalSessionsBrowseRouteParams = Readonly<{
     machineId?: string | string[];
@@ -28,6 +30,7 @@ const ExternalSessionsBrowseRouteContent = React.memo(function ExternalSessionsB
     routeScope: ExternalSessionsBrowseRouteScope;
 }>) {
     const router = useRouter();
+    const navigation = useNavigation();
     const settings = useSettings();
     const profile = useProfile();
     const routeScope = props.routeScope;
@@ -109,15 +112,16 @@ const ExternalSessionsBrowseRouteContent = React.memo(function ExternalSessionsB
             />
         );
     }
+    // Closing leaves the route even when it was the first entry (a deep link): back, else home.
     return (
-        <ExternalSessionsBrowseScreen
+        <ExternalSessionsBrowseSurface
             lockScope={lockScope}
-            onRequestClose={() => router.back()}
+            onRequestClose={() => safeRouterBack({ router, navigation, fallbackHref: '/' })}
         />
     );
 });
 
-export default React.memo(function ExternalSessionsBrowseRoute() {
+export const WorkspaceRouteBody = React.memo(function ExternalSessionsBrowseRoute() {
     const params = useLocalSearchParams<ExternalSessionsBrowseRouteParams>();
     const routeScope = React.useMemo(
         () => resolveExternalSessionsAgentBrowseRouteScope(params),
@@ -142,3 +146,5 @@ export default React.memo(function ExternalSessionsBrowseRoute() {
         </ExternalSessionsBrowseRouteGate>
     );
 });
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

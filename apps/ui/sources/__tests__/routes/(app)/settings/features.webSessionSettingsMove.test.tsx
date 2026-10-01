@@ -78,7 +78,6 @@ beforeEach(() => {
         if (key === 'useProfiles') return createNoopMutable(false);
         if (key === 'agentInputEnterToSend') return createNoopMutable(false);
         if (key === 'agentInputHistoryScope') return createNoopMutable('perSession');
-        if (key === 'showEnvironmentBadge') return createNoopMutable(false);
         if (key === 'useEnhancedSessionWizard') return createNoopMutable(false);
         if (key === 'useMachinePickerSearch') return createNoopMutable(false);
         if (key === 'usePathPickerSearch') return createNoopMutable(false);

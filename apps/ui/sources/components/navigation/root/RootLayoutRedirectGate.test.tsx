@@ -3,6 +3,7 @@ import { useSyncExternalStore } from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
+import { createSignInServiceFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 
 // Controllable navigation store so that only components calling the navigation hooks
 // (via useSyncExternalStore) re-render when the route changes — faithfully modelling
@@ -30,8 +31,10 @@ vi.mock('expo-router', () => ({
     usePathname: () => useSyncExternalStore(subscribeNav, () => navState.pathname),
     useGlobalSearchParams: () => ({}),
     useRouter: () => ({ push() {}, back() {}, replace() {}, setParams() {} }),
-    router: { push() {}, back() {}, replace() {}, setParams() {} },
+    router: { push() {}, back() {}, replace: replaceSpy, setParams() {} },
 }));
+
+const replaceSpy = vi.hoisted(() => vi.fn());
 
 const authState: { isAuthenticated: boolean; refreshFromActiveServer: () => Promise<void> } = {
     isAuthenticated: true,
@@ -55,20 +58,15 @@ vi.mock('@/sync/domains/state/storage', () => ({
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
     useActiveServerSnapshot: () => ({ serverId: '', serverUrl: '', activeLocalRelayUrl: null }),
 }));
-vi.mock('@/sync/domains/server/url/shouldHoldAuthenticatedShellForWebServerOverride', () => ({
-    shouldHoldAuthenticatedShellForWebServerOverride: () => false,
+const runtimeFetchSpy = vi.hoisted(() => vi.fn(async () => new Response('', { status: 503 })));
+vi.mock('@/utils/system/runtimeFetch', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/system/runtimeFetch')>(),
+    runtimeFetch: runtimeFetchSpy,
 }));
-vi.mock('@/sync/domains/server/url/resolveAuthenticatedWebServerUrlOverrideAction', () => ({
-    resolveAuthenticatedWebServerUrlOverrideAction: () => ({ kind: 'none' as const }),
-}));
-const bootstrapActiveServerFromWebLocationSpy = vi.hoisted(() => vi.fn(() => null));
-vi.mock('@/sync/domains/server/url/bootstrapActiveServerFromWebLocation', () => ({
-    bootstrapActiveServerFromWebLocation: bootstrapActiveServerFromWebLocationSpy,
-}));
-vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
-    normalizeServerUrl: (value: string | null) => value ?? null,
-    upsertActivateAndSwitchServer: vi.fn(async () => {}),
-}));
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ confirmResult: false }).module;
+});
 
 import { useSegments } from 'expo-router';
 import { RootLayoutRedirectGate } from './RootLayoutRedirectGate';
@@ -89,6 +87,9 @@ function NavProbe({ counter }: { counter: Counter }): null {
 describe('RootLayoutRedirectGate', () => {
     beforeEach(() => {
         authState.isAuthenticated = true;
+        replaceSpy.mockClear();
+        runtimeFetchSpy.mockClear();
+        vi.unstubAllGlobals();
         navState.listeners.clear();
         navState.pathname = '/';
         navState.segments = [];
@@ -128,7 +129,9 @@ describe('RootLayoutRedirectGate', () => {
         }
     });
 
-    it('does not mutate the active server while the route module loads or the gate mounts', async () => {
+    it('does not mutate the active server when the gate mounts without a URL override', async () => {
+        const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverProfiles');
+        const before = getActiveServerSnapshot().serverId;
         const screen = await renderScreen(
             React.createElement(
                 RootLayoutRedirectGate,
@@ -138,8 +141,7 @@ describe('RootLayoutRedirectGate', () => {
         );
 
         try {
-            expect(bootstrapActiveServerFromWebLocationSpy)
-                .not.toHaveBeenCalled();
+            expect(getActiveServerSnapshot().serverId).toBe(before);
         } finally {
             await screen.unmount();
         }
@@ -185,5 +187,55 @@ describe('RootLayoutRedirectGate', () => {
         } finally {
             await screen.unmount();
         }
+    });
+
+    it('keeps a supplied unsaved Home URL out of the switch path when reachability fails', async () => {
+        const { getActiveServerSnapshot, listServerProfiles } = await import('@/sync/domains/server/serverProfiles');
+        vi.stubGlobal('window', {
+            location: { href: 'https://app.example.test/session/new?server=https%3A%2F%2Funreachable.example.test' },
+            history: { replaceState: vi.fn() },
+        });
+        vi.stubGlobal('document', {});
+        const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
+        await upsertAndActivateServer({ serverUrl: 'https://saved.example.test', source: 'manual', scope: 'device' });
+        const activeBefore = getActiveServerSnapshot().serverId;
+        const screen = await renderScreen(
+            React.createElement(RootLayoutRedirectGate, null, React.createElement(React.Fragment)),
+        );
+        try {
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+            expect(runtimeFetchSpy).toHaveBeenCalledWith('https://unreachable.example.test/health', expect.any(Object));
+            expect(listServerProfiles().some((profile) => profile.serverUrl === 'https://unreachable.example.test')).toBe(false);
+            expect(getActiveServerSnapshot().serverId).toBe(activeBefore);
+            expect(replaceSpy).toHaveBeenCalledWith('/settings/server/add?address=https%3A%2F%2Funreachable.example.test&source=url');
+        } finally {
+            await screen.unmount();
+        }
+    });
+
+    it('adopts a supplied Directory-capable Home without replacing the selected sign-in service', async () => {
+        const address = 'https://accounts.example.test';
+        runtimeFetchSpy.mockImplementation(async (...args: unknown[]) => {
+            const url = String(args[0]);
+            return new Response(JSON.stringify(url.endsWith('/health') ? { status: 'ok' } : createSignInServiceFeaturesResponse(address)), {
+                status: url.endsWith('/health') || url.endsWith('/v1/features') ? 200 : 404, headers: { 'content-type': 'application/json' },
+            });
+        });
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        vi.stubGlobal('window', {
+            location: { href: `https://app.example.test/?server=${encodeURIComponent(address)}` },
+            history: { replaceState: vi.fn() },
+        });
+        vi.stubGlobal('document', {});
+        const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
+        await upsertAndActivateServer({ serverUrl: 'https://saved.example.test', source: 'manual', scope: 'device' });
+        const beforeService = profiles.resolveSelectedAccountServiceEndpoint();
+        const screen = await renderScreen(<RootLayoutRedirectGate><React.Fragment /></RootLayoutRedirectGate>);
+        try {
+            await vi.waitFor(() => expect(profiles.getActiveServerSnapshot().serverUrl).toBe(address));
+            expect(profiles.resolveSelectedAccountServiceEndpoint()).toEqual(beforeService);
+            expect(profiles.listServerProfiles().some((profile) => profile.serverUrl === address)).toBe(true);
+            expect(replaceSpy).not.toHaveBeenCalledWith(expect.stringContaining('path=other_service'));
+        } finally { await screen.unmount(); }
     });
 });

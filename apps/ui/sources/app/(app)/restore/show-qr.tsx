@@ -21,7 +21,7 @@ export default function RestoreShowQrRoute() {
         safeRouterBack({ router, fallbackHref: '/restore' });
     }, [router]);
     const handleOpenRelayCustomFlow = React.useCallback(() => {
-        router.push('/setup');
+        router.push('/');
     }, [router]);
 
     return (

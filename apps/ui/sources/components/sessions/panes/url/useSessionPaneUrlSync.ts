@@ -19,6 +19,8 @@ import { parseSessionPaneScopeId } from '../sessionPaneScopeId';
 
 export type UseSessionPaneUrlSyncInput = Readonly<{
     enabled: boolean;
+    /** Workspace navigation owns browser history and persisted layout for hosted sessions. */
+    browserMirrorsEnabled?: boolean;
     routeParamSyncEnabled?: boolean;
     /**
      * Stable key for the pane scope being synced (e.g. `session:<id>`). When this changes,
@@ -38,7 +40,7 @@ export type UseSessionPaneUrlSyncInput = Readonly<{
     }>;
     scopeState: unknown;
     urlState: SessionPaneUrlState | null;
-    setParams: ((params: Record<string, unknown>) => void) | null | undefined;
+    setParams: ((params: Record<string, string | undefined>) => void) | null | undefined;
 }>;
 
 function signatureFromSerialized(
@@ -91,7 +93,11 @@ function canWriteSessionPaneParamsForCurrentBrowserUrl(scopeKey: string): boolea
 }
 
 export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
-    primeSessionPaneHistoryTraversalTracking();
+    const browserMirrorsEnabled = input.browserMirrorsEnabled !== false;
+    React.useEffect(() => {
+        if (!input.enabled || !browserMirrorsEnabled) return;
+        return primeSessionPaneHistoryTraversalTracking();
+    }, [browserMirrorsEnabled, input.enabled]);
 
     const pendingUrlWriteRef = React.useRef<null | Readonly<{ fromSig: string; toSig: string }>>(null);
     const pendingPaneReconcileRef = React.useRef<null | Readonly<{ targetUrlSig: string }>>(null);
@@ -110,14 +116,15 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
     const urlSig = React.useMemo(() => signatureFromSerialized(urlParams), [urlParams]);
     const scopeKey = input.scopeKey ?? 'default';
     const scopeAddress = React.useMemo(() => parseSessionPaneScopeId(scopeKey)?.address ?? null, [scopeKey]);
-    const currentHistoryPaneState = React.useMemo(() => readCurrentSessionPaneHistoryState(scopeKey), [scopeKey, urlSig]);
+    const currentHistoryPaneState = React.useMemo(() => browserMirrorsEnabled ? readCurrentSessionPaneHistoryState(scopeKey) : null, [browserMirrorsEnabled, scopeKey, urlSig]);
     const storedState = React.useMemo(() => {
+        if (!browserMirrorsEnabled) return null;
         if (routeParamSyncEnabled && input.urlState) return null;
         return readStoredSessionPaneUrlState(scopeKey);
-    }, [input.urlState, routeParamSyncEnabled, scopeKey]);
+    }, [browserMirrorsEnabled, input.urlState, routeParamSyncEnabled, scopeKey]);
 
     React.useEffect(() => {
-        if (!input.enabled) return;
+        if (!input.enabled || !browserMirrorsEnabled) return;
         if (restoredScopeKeyRef.current === scopeKey) return;
         restoredScopeKeyRef.current = scopeKey;
 
@@ -135,10 +142,10 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
 
         pendingStoredStateWriteSigRef.current = signatureFromSerialized(serializeToParamShape(storedState));
         applySessionPaneUrlState(input.pane, storedState, scopeAddress);
-    }, [currentHistoryPaneState?.urlSig, input.enabled, input.pane, input.urlState, routeParamSyncEnabled, scopeAddress, scopeKey, storedState, urlSig]);
+    }, [browserMirrorsEnabled, currentHistoryPaneState?.urlSig, input.enabled, input.pane, input.urlState, routeParamSyncEnabled, scopeAddress, scopeKey, storedState, urlSig]);
 
     React.useEffect(() => {
-        if (!input.enabled) return;
+        if (!input.enabled || !browserMirrorsEnabled) return;
         if (input.urlState) return;
 
         const firstWriteForScope = storedStateHydratedScopeKeyRef.current !== scopeKey;
@@ -150,7 +157,7 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
         }
 
         writeStoredSessionPaneUrlState(scopeKey, derivedState);
-    }, [derivedSig, derivedState, input.enabled, input.urlState, scopeKey, storedState]);
+    }, [browserMirrorsEnabled, derivedSig, derivedState, input.enabled, input.urlState, scopeKey, storedState]);
 
     React.useEffect(() => {
         if (!input.enabled) return;
@@ -177,7 +184,7 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
             }
             // The URL now reflects the params we wrote; clear pending state and ignore.
             if (urlSig === pending.toSig) {
-                scheduleCurrentSessionPaneHistoryState({ scopeKey, urlSig });
+                if (browserMirrorsEnabled) scheduleCurrentSessionPaneHistoryState({ scopeKey, urlSig });
                 pendingUrlWriteRef.current = null;
                 return;
             }
@@ -219,13 +226,13 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
         if (!routeParamSyncEnabled) return;
         if (!input.setParams) return;
         if (derivedSig === urlSig) return;
-        if (!canWriteSessionPaneParamsForCurrentBrowserUrl(scopeKey)) return;
+        if (browserMirrorsEnabled && !canWriteSessionPaneParamsForCurrentBrowserUrl(scopeKey)) return;
 
         // Pane state changed (or initial empty URL): serialize state back into the URL.
         const shouldReplaceHistoryEntry = isFirstRun || pendingStoredStateWriteSigRef.current === derivedSig;
         if (shouldReplaceHistoryEntry) {
             pendingStoredStateWriteSigRef.current = null;
-        } else {
+        } else if (browserMirrorsEnabled) {
             pushSessionPaneUrlParams({
                 right: derivedParams.right,
                 bottom: derivedParams.bottom,
@@ -246,7 +253,7 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
             terminalInstanceId: derivedParams.terminalInstanceId,
             discussionId: derivedParams.discussionId,
         });
-        scheduleCurrentSessionPaneHistoryState({ scopeKey, urlSig: derivedSig });
+        if (browserMirrorsEnabled) scheduleCurrentSessionPaneHistoryState({ scopeKey, urlSig: derivedSig });
     }, [
         derivedParams.bottom,
         derivedParams.details,
@@ -256,6 +263,7 @@ export function useSessionPaneUrlSync(input: UseSessionPaneUrlSyncInput): void {
         derivedParams.terminalInstanceId,
         derivedParams.discussionId,
         derivedSig,
+        browserMirrorsEnabled,
         input.enabled,
         scopeKey,
         urlSig,

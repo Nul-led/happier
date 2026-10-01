@@ -1,12 +1,19 @@
+import { ProjectGitActionRailBadge, ProjectGitActionRailTooltip } from './ProjectGitActionRailBadge';
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Platform, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 import type { PluginUiDestinationReferenceV1 } from '@happier-dev/protocol/plugins/ui';
 
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
+import { usePaneActionRail, usePaneActionRailRightPaneHiddenByDetails } from '@/components/appShell/panes/PaneActionRailContext';
+import { RightSidebarActionRail } from '@/components/appShell/rightSidebar/RightSidebarActionRail';
+import { toggleRightSidebarTab } from '@/components/appShell/rightSidebar/rightSidebarActions';
 import { RightSidebarIconTabBar } from '@/components/appShell/rightSidebar/RightSidebarIconTabBar';
+import { RightSidebarPaneHeader } from '@/components/appShell/rightSidebar/RightSidebarPaneHeader';
+import { AppRightSidebarTabSurface, useAppRightSidebarTabInputs } from '@/components/appShell/rightSidebar/appRightSidebarTabs';
 import {
+    getRightSidebarTabLabel,
     resolveProjectRightSidebarTabs,
     resolveRightSidebarTabSelection,
 } from '@/components/appShell/rightSidebar/rightSidebarTabRegistry';
@@ -24,6 +31,7 @@ import {
 } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
 import { PluginReactNativeUnavailable } from '@/components/plugins/reactNative/PluginReactNativeUnavailable';
 import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
+import { SurfaceStateSizeProvider } from '@/components/ui/surfaces/surfaceStateSize';
 import { RetainedPanelSurface } from '@/components/ui/panels/RetainedPanelSurface';
 import { getPreferredLanguage, t } from '@/text';
 import { useDeviceType } from '@/utils/platform/responsive';
@@ -42,7 +50,8 @@ import {
     selectPluginDestinationSurfacePlacements,
     selectPluginRightSidebarTabPlacements,
 } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
-import { Icon } from '@/components/ui/icons/Icon';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { resolveTouchTargetFloorPx } from '@/components/ui/interactiveTargetSize';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { createPluginLocalizedTextResolver } from '@/sync/domains/plugins/ui/i18n';
 
@@ -86,16 +95,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         flex: 1,
         alignItems: 'center',
     },
-    closeButton: {
-        width: 34,
-        height: 34,
-        borderRadius: 10,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-    },
     body: {
         flex: 1,
         minHeight: 0,
@@ -103,14 +102,16 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
 }));
 
-export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
-    const styles = stylesheet;
-    const { theme } = useUnistyles();
-    const insets = useChromeSafeAreaInsets();
+function useProjectRightSidebarModel(props: ProjectRightPanelProps) {
     const deviceType = useDeviceType();
     const pane = useAppPaneScope(props.scopeId);
     const scopeState = pane.scopeState;
-    const headerPaddingTop = 10;
+    const workspaceScope = React.useMemo((): WorkspaceScopeBase => ({
+        serverId: props.workspaceRef.serverId,
+        machineId: props.workspaceRef.machineId,
+        rootPath: props.activeRootPath,
+    }), [props.activeRootPath, props.workspaceRef.machineId, props.workspaceRef.serverId]);
+
     const pluginProjection = useScopedPluginUiProjection({
         machineId: props.workspaceRef.machineId,
         serverId: props.workspaceRef.serverId,
@@ -132,13 +133,16 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
         platform: pluginProjection.platform,
         formFactor: resolvePluginUiRuntimeFormFactor({ deviceType }),
     }), [deviceType, pluginProjection.platform]);
+    const appTabInputs = useAppRightSidebarTabInputs();
     const rightPanelTabs = React.useMemo(() => resolveProjectRightSidebarTabs({
+        ...appTabInputs,
         presentation: deviceType === 'phone' ? 'mobile' : 'desktop',
         pluginPlacements: pluginRightSidebarPlacements,
         projectionGeneration: pluginProjection.pluginUiProjection?.generation ?? null,
         runtimeAdmission,
         localize: localizePluginText,
     }), [
+        appTabInputs,
         deviceType,
         localizePluginText,
         pluginProjection.pluginUiProjection?.generation,
@@ -178,14 +182,12 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
     const scopedLaunchFacts = React.useMemo(() => Object.freeze({
         serverId: pluginProjection.serverId ?? null,
         machineId: pluginProjection.machineId ?? null,
-        generation: pluginProjection.pluginUiProjection?.generation ?? null,
         interactionEnabled: pluginProjection.phase === 'current'
             && pluginProjection.interactionEnabled === true,
     }), [
         pluginProjection.interactionEnabled,
         pluginProjection.phase,
         pluginProjection.machineId,
-        pluginProjection.pluginUiProjection?.generation,
         pluginProjection.serverId,
     ]);
     const activePaneLaunch = usePluginSurfacePaneLaunch({
@@ -252,6 +254,60 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
     const openSurface = navigationBinding.openSurface;
     const pluginBinding = React.useMemo<BoundPluginSurfaceBinding>(() => ({ openSurface }), [openSurface]);
 
+    return {
+        pane, workspaceScope, deviceType, pluginProjection, runtimeAdmission, rightPanelTabs,
+        availableTabIds, rightTabSelection, activeTab, activeInstanceKey,
+        activePaneLaunch, pluginBinding, selectTab, setActiveTab,
+    };
+}
+
+const ProjectRightSidebarContext = React.createContext<ReturnType<typeof useProjectRightSidebarModel> | null>(null);
+
+export function ProjectRightSidebarProvider(props: React.PropsWithChildren<ProjectRightPanelProps>): React.ReactElement {
+    const model = useProjectRightSidebarModel(props);
+    return <ProjectRightSidebarContext.Provider value={model}>{props.children}</ProjectRightSidebarContext.Provider>;
+}
+
+export function ProjectRightSidebarRail(): React.ReactElement | null {
+    const model = React.useContext(ProjectRightSidebarContext);
+    const hiddenByDetails = usePaneActionRailRightPaneHiddenByDetails();
+    if (!model) return null;
+    return (
+        <RightSidebarActionRail
+            testID="project-right-sidebar-action-rail"
+            testIDPrefix="project-rightpanel-action"
+            actions={model.rightPanelTabs.map((tab) => ({
+                id: tab.id,
+                label: getRightSidebarTabLabel(tab),
+                icon: tab.icon,
+                badge: tab.id === 'git' ? <ProjectGitActionRailBadge scope={model.workspaceScope} /> : undefined,
+                tooltipContent: tab.id === 'git' ? <ProjectGitActionRailTooltip scope={model.workspaceScope} /> : undefined,
+                active: !hiddenByDetails && model.pane.scopeState?.right.isOpen === true && model.activeTab === tab.id,
+                disabled: Boolean(tab.disabledReason),
+                onPress: () => toggleRightSidebarTab(model.pane, tab.id, model.activeTab, model.selectTab, hiddenByDetails),
+            }))}
+        />
+    );
+}
+
+export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
+    const model = React.useContext(ProjectRightSidebarContext);
+    return model
+        ? <ProjectRightPanelContent {...props} model={model} />
+        : <ProjectRightSidebarProvider {...props}><ProjectRightPanel {...props} /></ProjectRightSidebarProvider>;
+});
+
+function ProjectRightPanelContent(props: ProjectRightPanelProps & Readonly<{
+    model: ReturnType<typeof useProjectRightSidebarModel>;
+}>): React.ReactElement {
+    const styles = stylesheet;
+    const insets = useChromeSafeAreaInsets();
+    const hasActionRail = usePaneActionRail();
+    const {
+        workspaceScope, deviceType, pluginProjection, runtimeAdmission, rightPanelTabs,
+        availableTabIds, rightTabSelection, activeTab, activeInstanceKey,
+        activePaneLaunch, pluginBinding, selectTab, setActiveTab,
+    } = props.model;
     const {
         openFileInDetails,
         openFileInDetailsPinned,
@@ -267,11 +323,6 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
         onRevealInFilesTreeNavigate: () => setActiveTab('files'),
     });
 
-    const workspaceScope = React.useMemo((): WorkspaceScopeBase => ({
-        serverId: props.workspaceRef.serverId,
-        machineId: props.workspaceRef.machineId,
-        rootPath: props.activeRootPath,
-    }), [props.activeRootPath, props.workspaceRef.machineId, props.workspaceRef.serverId]);
 
     const openServiceInBrowser = useServicesOpenInBrowser({
         scopeId: props.scopeId,
@@ -282,7 +333,7 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
 
     return (
         <View testID="project-right-panel-root" style={styles.container}>
-            <View style={[styles.header, { paddingTop: headerPaddingTop + insets.top }]}>
+            {!hasActionRail ? <View style={[styles.header, { paddingTop: 10 + insets.top }]}>
                 <View style={styles.tabBarContainer}>
                     <RightSidebarIconTabBar
                         tabs={rightPanelTabs}
@@ -292,26 +343,32 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
                     />
                 </View>
                 {props.onRequestClose && deviceType !== 'phone' ? (
-                    <Pressable
+                    <IconButton
                         testID="project-rightpanel-close"
                         onPress={props.onRequestClose}
-                        style={styles.closeButton}
-                        accessibilityRole="button"
                         accessibilityLabel={t('common.close')}
-                    >
-                        <Icon name="x" size={16} color={theme.colors.text.secondary} />
-                    </Pressable>
+                        variant="plain"
+                        size={resolveTouchTargetFloorPx() ?? 36}
+                        iconName="x"
+                        iconSize={16}
+                    />
                 ) : null}
-            </View>
+            </View> : null}
+            <RightSidebarPaneHeader
+                tabs={rightPanelTabs}
+                activeTabId={activeTab}
+                testID="project-rightpanel-header"
+            />
             <View style={styles.body}>
+                <SurfaceStateSizeProvider size={deviceType === 'phone' ? 'phone' : 'pane'}>
                 {rightTabSelection.kind === 'unresolved' ? (
-                    <PaneLoadingFallback color={theme.colors.text.secondary} />
+                    <PaneLoadingFallback />
                 ) : rightTabSelection.kind === 'unavailable' ? (
                     <PluginReactNativeUnavailable diagnostics={[rightTabSelection.reason]} />
                 ) : (
                     <View style={{ flex: 1, minHeight: 0, minWidth: 0, position: 'relative' }}>
                     <RetainedPanelSurface isActive={activeTab === 'git'} testID="project-rightpanel-surface-git">
-                        <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
+                        <React.Suspense fallback={<PaneLoadingFallback />}>
                             <ProjectGitSurface
                         scopeId={props.scopeId}
                                 serverId={props.workspaceRef.serverId}
@@ -329,7 +386,7 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
                         </React.Suspense>
                     </RetainedPanelSurface>
                     <RetainedPanelSurface isActive={activeTab === 'files'} testID="project-rightpanel-surface-files">
-                        <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
+                        <React.Suspense fallback={<PaneLoadingFallback />}>
                             <ProjectBrowseFilesSurface
                         scopeId={props.scopeId}
                                 scope={workspaceScope}
@@ -340,7 +397,7 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
                     </RetainedPanelSurface>
                     {availableTabIds.has('browser') ? (
                         <RetainedPanelSurface isActive={activeTab === 'browser'} testID="project-rightpanel-surface-browser">
-                            <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
+                            <React.Suspense fallback={<PaneLoadingFallback />}>
                                 <ProjectRightPanelBrowserView
                                     workspaceRefId={props.workspaceRef.id}
                                     pluginProjection={pluginProjection}
@@ -350,7 +407,7 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
                     ) : null}
                     {availableTabIds.has('services') ? (
                         <RetainedPanelSurface isActive={activeTab === 'services'} testID="project-rightpanel-surface-services">
-                            <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
+                            <React.Suspense fallback={<PaneLoadingFallback />}>
                                 <ProjectRightPanelServicesView
                                     machineId={props.workspaceRef.machineId}
                                     serverId={props.workspaceRef.serverId}
@@ -368,8 +425,14 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
                                 isActive={activeTab === tab.id}
                                 testID={`project-rightpanel-surface-${tab.id}`}
                             >
-                                <React.Suspense fallback={<PaneLoadingFallback color={theme.colors.text.secondary} />}>
-                                    <PluginSurfacePlacementHost
+                                <React.Suspense fallback={<PaneLoadingFallback />}>
+                                    {tab.placement.binding.targetKind === 'app' ? (
+                                        <AppRightSidebarTabSurface
+                                            placement={tab.placement}
+                                            binding={activeTab === tab.id ? pluginBinding : undefined}
+                                            mountInstanceKey={activeTab === tab.id ? activeInstanceKey : undefined}
+                                        />
+                                    ) : <PluginSurfacePlacementHost
                                         placement={tab.placement}
                                         machineId={pluginProjection.machineId}
                                         serverId={pluginProjection.serverId}
@@ -382,13 +445,14 @@ export const ProjectRightPanel = React.memo((props: ProjectRightPanelProps) => {
                                         binding={activeTab === tab.id ? pluginBinding : undefined}
                                         launchInput={activeTab === tab.id ? activePaneLaunch?.input : undefined}
                                         mountInstanceKey={activeTab === tab.id ? activeInstanceKey : undefined}
-                                    />
+                                    />}
                                 </React.Suspense>
                             </RetainedPanelSurface>
                         ))}
                     </View>
                 )}
+                </SurfaceStateSizeProvider>
             </View>
         </View>
     );
-});
+}

@@ -35,7 +35,7 @@ export default function LegacyAccountRoute() {
         }
 
         fireAndForget((async () => {
-            const action = await promptAccountConnectApprovalRequired();
+            const action = await promptAccountConnectApprovalRequired({ showQr: true });
             if (auth.isAuthenticated) {
                 router.replace(action === 'showQr' ? '/settings/add-phone' : '/settings/account');
                 return;

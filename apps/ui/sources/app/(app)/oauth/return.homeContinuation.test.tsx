@@ -16,10 +16,13 @@ import MtlsCallbackScreen from '../mtls';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { executeHomeAuthentication } from '@/auth/flows/executeHomeAuthentication';
+import TeamSignInRoute from '../teams/[teamId]/sign-in';
+import type { AuthEntryProjectionV1 } from '@happier-dev/protocol';
 
 installTokenStorageWebPlatformMocks();
 const boundary = vi.hoisted(() => ({ request: vi.fn(), params: {
     provider: 'github', flow: 'auth', pending: 'provider-handle', purpose: '', admissionReference: '', accountMode: 'plain', code: 'mtls-code', error: '',
+    teamId: '', target: '',
 } }));
 vi.mock('@/sync/http/client', async (importOriginal) => ({
     ...await importOriginal<typeof import('@/sync/http/client')>(),
@@ -36,9 +39,14 @@ vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).creat
 
 let screen: Awaited<ReturnType<typeof renderScreen>> | undefined;
 let restore: (() => void) | undefined;
+let createdCredentialTarget: Readonly<{ serverUrl: string; serverId: string }> | undefined;
 afterEach(async () => {
     await screen?.unmount();
     screen = undefined;
+    if (createdCredentialTarget) {
+        await TokenStorage.removeCredentialsForServerUrl(createdCredentialTarget.serverUrl, { serverId: createdCredentialTarget.serverId });
+        createdCredentialTarget = undefined;
+    }
     restore?.();
     boundary.params.provider = 'github';
     boundary.params.flow = 'auth';
@@ -48,7 +56,138 @@ afterEach(async () => {
     boundary.params.accountMode = 'plain';
     boundary.params.code = 'mtls-code';
     boundary.params.error = '';
+    boundary.params.teamId = '';
+    boundary.params.target = '';
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
+});
+
+async function mountTeamEntry() {
+    restore = installLocalStorageMock().restore;
+    const fixture = createDirectoryHttpFixture();
+    const home = await adoptHomeProfile({ descriptor: fixture.home.connectionDescriptor,
+        source: 'account-directory', descriptorAuthority: 'current_connection_observation' });
+    await setActiveServerId(home.id, { scope: 'device' });
+    const credentials = { token: fixture.token };
+    await TokenStorage.setCredentialsForServerUrl(home.serverUrl, { serverId: home.id }, credentials);
+    createdCredentialTarget = { serverUrl: home.serverUrl, serverId: home.id };
+    boundary.params.teamId = 'team-1';
+    boundary.params.target = fixture.home.homeServerIdentityId;
+    boundary.request.mockImplementation(async (endpoint: string, path: string, init?: RequestInit) => {
+        if (path === '/v1/auth/ping') return new Response(JSON.stringify({ ok: true }));
+        if (path === '/v1/auth/entry' && JSON.parse(String(init?.body)).scope.kind === 'team') {
+            return new Response(JSON.stringify({
+                v: 1, state: 'admission_required', scope: { kind: 'team' },
+                home: { serverId: fixture.home.homeServerIdentityId, displayName: 'Home B', storageMode: 'plain', hosting: null },
+                team: { teamId: 'team-1', name: 'Team One', logo: null },
+                signInService: { v: 1, mode: 'external', endpoint: fixture.service.endpointUrl,
+                    expectedServerIdentityId: fixture.service.serverIdentityId },
+                actions: [{ kind: 'authenticate', methodId: 'oidc-team', action: 'connect', mode: 'keyless',
+                    origin: 'team', presentation: { displayName: 'Team SSO', providerKind: 'oidc' } },
+                    { kind: 'switch_account' }], autoRedirect: null,
+            } satisfies AuthEntryProjectionV1));
+        }
+        if (path.startsWith('/v1/auth/external/oidc-team/params?')
+            || path.startsWith('/v1/connect/external/oidc-team/params?')) {
+            return new Response(JSON.stringify({ url: 'https://idp.example/authorize',
+                purpose: 'team_admission', teamId: 'team-1', admissionReference: 'team-attempt' }));
+        }
+        return fixture.request(endpoint, path, init);
+    });
+    // Authenticated entry uses the exact Account request authority, whose final
+    // HTTP boundary is fetch rather than the anonymous endpoint client above.
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        return await boundary.request(url.origin, `${url.pathname}${url.search}`, init);
+    }));
+    screen = await renderScreen(<AuthProvider initialCredentials={credentials}><TeamSignInRoute /></AuthProvider>);
+    return { fixture, home, credentials };
+}
+
+async function pressEntryCard(testID: string) {
+    await vi.waitFor(() => expect(screen?.findByTestId(testID), JSON.stringify({
+        wanted: testID, rendered: screen?.getTextContent(), requests: boundary.request.mock.calls.map(([endpoint, path]) => [endpoint, path]),
+    })).toBeTruthy());
+    await screen!.pressByTestIdAsync(testID);
+}
+
+it.each(['current', 'another'] as const)('starts the selected %s Account Team flow without replacing the saved credential', async (accountSelection) => {
+    const { home, credentials } = await mountTeamEntry();
+    if (accountSelection === 'another') await pressEntryCard('team-auth-entry-use-another-account');
+    await pressEntryCard('team-auth-entry-action:oidc-team');
+    const assign = vi.fn();
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', { value: { location: { assign } }, configurable: true, writable: true });
+    try {
+        await pressEntryCard('home-auth-oidc-team-connect-keyless');
+        expect(assign).toHaveBeenCalledWith('https://idp.example/authorize');
+        const starts = boundary.request.mock.calls.filter(([, path]) => String(path).includes('/external/oidc-team/params?'));
+        expect(starts.map(([, path]) => String(path).split('?')[0])).toEqual([
+            accountSelection === 'another' ? '/v1/auth/external/oidc-team/params' : '/v1/connect/external/oidc-team/params',
+        ]);
+        if (accountSelection === 'another') {
+            expect(await TokenStorage.getPendingExternalAuth()).toMatchObject({ provider: 'oidc-team',
+                teamContinuation: { teamId: 'team-1', admissionReference: 'team-attempt' } });
+            expect(await TokenStorage.getPendingExternalConnect()).toBeNull();
+        } else {
+            expect(await TokenStorage.getPendingExternalAuth()).toBeNull();
+            expect(await TokenStorage.getPendingExternalConnect()).toMatchObject({ provider: 'oidc-team',
+                returnTo: '/teams/team-1/sign-in?target=srv_home_b', serverUrl: home.serverUrl, serverId: home.id });
+        }
+        expect(await TokenStorage.getCredentialsForServerUrl(home.serverUrl, { serverId: home.id })).toEqual(credentials);
+    } finally {
+        if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+        else delete (globalThis as { window?: unknown }).window;
+    }
+});
+
+it('keeps the exact Team return when handing authentication to the Home-selected Account Service', async () => {
+    const { fixture } = await mountTeamEntry();
+    await pressEntryCard('team-auth-entry-account-service');
+    expect(router.push).toHaveBeenCalledWith(expect.objectContaining({ pathname: '/setup/wizard',
+        params: expect.objectContaining({ accountEntryReturnTo:
+            `/teams/team-1/sign-in?target=${encodeURIComponent(fixture.home.homeServerIdentityId)}` }) }));
+});
+
+it.each(['access_denied', 'oauth_not_configured'])('returns a failed Team connect to its bound Team after %s', async (error) => {
+    restore = installLocalStorageMock().restore;
+    const fixture = createDirectoryHttpFixture();
+    const home = await adoptHomeProfile({ descriptor: fixture.home.connectionDescriptor,
+        source: 'account-directory', descriptorAuthority: 'current_connection_observation' });
+    const returnTo = `/teams/team-1/sign-in?target=${encodeURIComponent(fixture.home.homeServerIdentityId)}`;
+    await TokenStorage.setPendingExternalConnect({ provider: 'github', returnTo,
+        serverId: home.id, serverUrl: home.serverUrl });
+    boundary.params.flow = 'connect';
+    boundary.params.error = error;
+    boundary.request.mockRejectedValue(new Error('A canceled connect must not finalize'));
+    screen = await renderScreen(<AuthProvider initialCredentials={null}><OAuthProviderReturn /></AuthProvider>);
+    await vi.waitFor(() => expect(router.replace).toHaveBeenCalledWith(returnTo));
+    expect(await TokenStorage.getPendingExternalConnect()).toBeNull();
+    expect(boundary.request).not.toHaveBeenCalled();
+});
+
+it('returns canceled fresh Team authentication to its stored Team continuation', async () => {
+    restore = installLocalStorageMock().restore;
+    const fixture = createDirectoryHttpFixture();
+    const home = await adoptHomeProfile({ descriptor: fixture.home.connectionDescriptor,
+        source: 'account-directory', descriptorAuthority: 'current_connection_observation' });
+    await TokenStorage.setPendingExternalAuth({ provider: 'github', proof: 'team-proof',
+        serverUrl: home.serverUrl, serverId: fixture.home.homeServerIdentityId,
+        teamContinuation: {
+            v: 1, purpose: 'team_admission', admissionReference: 'team-attempt',
+            teamId: 'team-1', homeServerIdentityId: fixture.home.homeServerIdentityId,
+            destination: { kind: 'team_sign_in', teamId: 'team-1' },
+        },
+    }, { serverUrl: home.serverUrl, serverId: fixture.home.homeServerIdentityId });
+    boundary.params.flow = 'auth';
+    boundary.params.error = 'access_denied';
+    boundary.request.mockRejectedValue(new Error('Canceled authentication must not finalize'));
+    screen = await renderScreen(<AuthProvider initialCredentials={null}><OAuthProviderReturn /></AuthProvider>);
+    await vi.waitFor(() => expect(router.replace).toHaveBeenCalledWith(
+        `/teams/team-1/sign-in?target=${encodeURIComponent(fixture.home.homeServerIdentityId)}`,
+    ));
+    expect(await TokenStorage.getPendingExternalAuth()).toBeNull();
+    expect(boundary.request).not.toHaveBeenCalled();
 });
 
 it('rejects a Team callback whose admission reference does not match its pending continuation', async () => {

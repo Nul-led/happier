@@ -43,10 +43,7 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     }), {});
 }
 
-function createDetailsTabProjection(): Readonly<{
-    placement: PluginUiSurfacePlacementProjection;
-    projection: PluginUiProjectionModel;
-}> {
+function createDetailsTabProjection() {
     const binding = normalizePluginUiDestinationBindingV1({
         pluginId: 'com.example.viewer',
         destinationId: 'workspace-file',
@@ -59,6 +56,7 @@ function createDetailsTabProjection(): Readonly<{
     const placement = {
         id: 'surfacePlacement:com.example.viewer:workspace-file',
         pluginId: 'com.example.viewer',
+        occurrenceId: 'com-example-viewer-occurrence',
         contributionKind: 'surfacePlacement' as const,
         descriptorId: 'workspace-file',
         binding,
@@ -91,7 +89,7 @@ function createDetailsTabProjection(): Readonly<{
             ...EMPTY_PLUGIN_UI_PROJECTION,
             generation: 4,
             surfacePlacementsById: { [placement.id]: placement },
-        },
+        } satisfies PluginUiProjectionModel,
     };
 }
 
@@ -180,6 +178,29 @@ function createDetailsRenderInput(): DetailsSurfaceRenderInputV1 {
 }
 
 describe('pluginDetailsDestination', () => {
+    it('retains selected-machine launch authority for an originless app placement', () => {
+        const { placement } = createDetailsTabProjection();
+        const originlessPlacement = {
+            ...placement,
+            occurrenceId: 'com-example-viewer-originless-occurrence',
+            hostOrigin: {
+                ...placement.hostOrigin,
+                executionOrigin: null,
+            },
+        } satisfies PluginUiSurfacePlacementProjection;
+
+        expect(resolveSelectedPluginSurfaceLaunchAuthority({
+            placement: originlessPlacement,
+            accountLifetime: null,
+        })).toEqual({
+            serverId: 'server-1',
+            machineId: 'machine-1',
+            occurrenceId: 'com-example-viewer-originless-occurrence',
+            accountLifetime: null,
+            executionOrigin: null,
+        });
+    });
+
     it('creates one durable tab resource from a qualified destination and optional instance identity', async () => {
         const module = await import('./pluginDetailsDestination');
         const createTab = Reflect.get(module, 'createPluginDetailsDestinationTab');
@@ -263,6 +284,7 @@ describe('pluginDetailsDestination', () => {
         const rightPlacement = {
             id: 'surfacePlacement:com.example.viewer:project-companion',
             pluginId: 'com.example.viewer',
+            occurrenceId: 'com-example-viewer-occurrence',
             contributionKind: 'surfacePlacement' as const,
             descriptorId: 'project-companion',
             binding,
@@ -592,7 +614,7 @@ describe('pluginDetailsDestination', () => {
             authority: createPluginSurfaceLaunchAuthority({
                 serverId: 'server-1',
                 machineId: 'machine-1',
-                generation: 5,
+                occurrenceId: 'viewer-occurrence-replacement',
             }),
             targetKind: 'session',
             resource: receipt.resource,
@@ -632,7 +654,6 @@ describe('pluginDetailsDestination', () => {
         const scopedLaunchFacts = {
             serverId: 'server-1',
             machineId: 'machine-1',
-            generation: 4,
             interactionEnabled: true,
         } as const;
         const authority = resolvePluginSurfaceLaunchAuthority({
@@ -643,7 +664,7 @@ describe('pluginDetailsDestination', () => {
         expect(authority).toMatchObject({
             serverId: 'server-1',
             machineId: 'machine-1',
-            generation: 4,
+            occurrenceId: direct.occurrenceId,
             executionOrigin: {
                 materializationRef: {
                     pluginId: 'com.example.viewer',

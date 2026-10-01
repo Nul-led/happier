@@ -51,6 +51,11 @@ export function resolveSelectedPaneDestination(input: Readonly<{
     targetKind: AppPaneDestinationTargetKind;
     projection: PluginUiProjectionModel | null | undefined;
     /**
+     * The app-shell projection. A Session's or Project's right sidebar also lists the App's panels
+     * (`rightSidebarTab × app`, design §3.3), which come from here, never from the scope's machine.
+     */
+    appProjection?: PluginUiProjectionModel | null;
+    /**
      * Canonical currentness owned by the scope projection hook. An empty model
      * cannot stand in for this fact: the first describe is pending, while a
      * current empty describe is a truthful unavailable selection.
@@ -87,14 +92,25 @@ export function resolveSelectedPaneDestination(input: Readonly<{
             reason: 'pane_destination_projection_unavailable',
         };
     }
-    const destinationPlacements = selectPluginSurfacePlacementsByDestination(
+    const scopePlacements = selectPluginSurfacePlacementsByDestination(
         input.projection,
         selected.destination,
     );
-    const slotPlacements = destinationPlacements.filter((placement) => (
-        placement.binding.container === input.container
-        && placement.binding.targetKind === input.targetKind
-    ));
+    // App panels in a scoped right sidebar come from the app projection only (one source, so a
+    // plugin both projections carry is not a duplicate claim).
+    const appPanelsListed = input.container === 'rightSidebarTab' && input.targetKind !== 'app';
+    const appPlacements = appPanelsListed
+        ? selectPluginSurfacePlacementsByDestination(input.appProjection ?? input.projection, selected.destination)
+            .filter((placement) => placement.binding.container === 'rightSidebarTab' && placement.binding.targetKind === 'app')
+        : [];
+    const destinationPlacements = [...scopePlacements, ...appPlacements];
+    const slotPlacements = [
+        ...scopePlacements.filter((placement) => (
+            placement.binding.container === input.container
+            && placement.binding.targetKind === input.targetKind
+        )),
+        ...appPlacements,
+    ];
     // A selected destination is an exact binding in this AppPane slot. A
     // declaration elsewhere is a truthful tombstone; duplicate records in the
     // exact slot are equally unavailable rather than a first-record winner.

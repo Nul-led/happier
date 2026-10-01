@@ -1,7 +1,9 @@
 import * as React from 'react';
-import { createContext, useContext, useMemo, useReducer, useRef, useState } from 'react';
+import { createContext, useContext, useMemo, useRef, useState } from 'react';
 import { useLocalSetting, useLocalSettingMutable } from '@/sync/domains/state/storage';
 import type { PaneDriver, PaneScopeId } from './types';
+import { registerSessionTerminalWorkspaceOwner, notifySessionTerminalWorkspaceChanged } from '@/components/sessions/terminal/sessionTerminalWorkspaceRuntime';
+import { readSessionTerminalWorkspace } from '@/components/sessions/terminal/sessionTerminalWorkspace';
 import { appPaneReduce, createAppPaneState, type AppPaneAction, type AppPaneState, type PaneScopeState } from './model/appPaneReducer';
 import { migrateLegacyDetailsWorkspaceState, serializeDetailsWorkspaceState } from './details/workspace/migrateLegacyDetailsWorkspaceState';
 import {
@@ -164,16 +166,12 @@ export const AppPaneProvider = React.memo((props: Readonly<{ children: React.Rea
         [persistedScopesValue],
     );
     const [, setPersistedScopes] = useLocalSettingMutable('appPaneScopesV1');
-    const [state, reduce] = useReducer(
-        appPaneReduce,
-        persistedScopes ?? {},
-        (initialScopes) => createAppPaneState({
-            maxScopesInMemory: 12,
-            persistedScopes: initialScopes,
-        }),
-    );
+    const [state, setState] = useState(() => createAppPaneState({
+        maxScopesInMemory: 12,
+        persistedScopes: persistedScopes ?? {},
+    }));
     const stateRef = useRef(state);
-    stateRef.current = state;
+    const driversRef = useRef<Map<PaneScopeId, PaneDriver>>(new Map());
     const overlayFocusReturnOwnerRef = useRef<PaneOverlayFocusReturnOwner | null>(null);
     if (overlayFocusReturnOwnerRef.current === null) {
         overlayFocusReturnOwnerRef.current = createPaneOverlayFocusReturnOwner();
@@ -194,10 +192,29 @@ export const AppPaneProvider = React.memo((props: Readonly<{ children: React.Rea
             overlayFocusReturnOwner.clear(clear.scopeId, clear.surface);
         }
 
-        reduce(action);
-    }, [overlayFocusReturnOwner, reduce]);
-    const driversRef = useRef<Map<PaneScopeId, PaneDriver>>(new Map());
+        const previousState = stateRef.current;
+        const nextState = appPaneReduce(previousState, action);
+        stateRef.current = nextState;
+        setState(nextState);
+        notifySessionTerminalWorkspaceChanged();
+        if (action.type === 'terminalWorkspace') {
+            const command = action.command;
+            const bottom = nextState.scopes[action.scopeId]?.bottom;
+            const workspace = readSessionTerminalWorkspace(bottom?.tabState.terminal);
+            const previousWorkspace = readSessionTerminalWorkspace(previousState.scopes[action.scopeId]?.bottom.tabState.terminal);
+            const tab = workspace.tabs.find((candidate) => candidate.id === workspace.activeTabId);
+            const terminalId = tab?.focusedTerminalId;
+            const accepted = command.type === 'focus'
+                ? terminalId === command.terminalId
+                : workspace !== previousWorkspace && (command.type === 'open' || command.type === 'split' || command.type === 'detach');
+            if (accepted && tab && terminalId && bottom?.isOpen && bottom.selectedDestination?.kind === 'builtin' && bottom.selectedDestination.id === 'terminal') {
+                driversRef.current.get(action.scopeId)?.onTerminalWorkspaceReveal?.({ tabId: tab.id, terminalId });
+            }
+        }
+    }, [overlayFocusReturnOwner]);
     const [driverRegistryVersion, setDriverRegistryVersion] = useState(0);
+
+    React.useLayoutEffect(() => registerSessionTerminalWorkspaceOwner({ getState: () => stateRef.current, dispatch }), [dispatch]);
 
     React.useEffect(() => {
         if (Object.keys(persistedScopes).length === 0) return;

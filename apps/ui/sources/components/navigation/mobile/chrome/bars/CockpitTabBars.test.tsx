@@ -3,7 +3,7 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { normalizePluginUiDestinationBindingV1 } from '@happier-dev/protocol/plugins/ui';
 
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { installNavigationCommonModuleMocks } from '@/components/ui/navigation/navigationTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -15,6 +15,7 @@ const sessionMetadataState = vi.hoisted(() => ({
     ownerMetadataView: null as Record<string, unknown> | null,
     accessLevel: null as 'view' | 'edit' | 'admin' | null,
 }));
+const collaborationAdmissionState = vi.hoisted(() => ({ admitted: false }));
 const scmState = vi.hoisted(() => ({
     status: null as Record<string, unknown> | null,
 }));
@@ -28,6 +29,11 @@ const cockpitPinsState = vi.hoisted(() => ({
 }));
 const reachableMachineState = vi.hoisted(() => ({
     target: null as { machineId: string; basePath: string } | null,
+}));
+const scopedSessionReadCalls = vi.hoisted(() => ({
+    session: [] as Array<[string, string | null | undefined]>,
+    scm: [] as Array<[string | null, string | null | undefined]>,
+    machine: [] as Array<[string, string | null | undefined]>,
 }));
 type LateralTarget = { sessionId: string; title: string; position: number; total: number } | null;
 const lateralNavigationState = vi.hoisted(() => ({
@@ -95,14 +101,20 @@ installNavigationCommonModuleMocks({
     // `getStorage`, which the bar's exact-Home feature decisions read.
     storage: async () => (await import('@/dev/testkit/mocks/storage')).createStorageModuleStub({
         useSessionMetadata: () => sessionMetadataState.metadata,
-        useSession: () => ({
-            id: 'sess_1',
-            metadata: sessionMetadataState.metadata,
-            metadataLayoutVersion: sessionMetadataState.metadataLayoutVersion,
-            ownerMetadataView: sessionMetadataState.ownerMetadataView,
-            accessLevel: sessionMetadataState.accessLevel,
-        }),
-        useSessionProjectScmStatus: () => scmState.status,
+        useSession: (sessionId: string, serverId?: string | null) => {
+            scopedSessionReadCalls.session.push([sessionId, serverId]);
+            return {
+                id: 'sess_1',
+                metadata: sessionMetadataState.metadata,
+                metadataLayoutVersion: sessionMetadataState.metadataLayoutVersion,
+                ownerMetadataView: sessionMetadataState.ownerMetadataView,
+                accessLevel: sessionMetadataState.accessLevel,
+            };
+        },
+        useSessionProjectScmStatus: (sessionId: string | null, serverId?: string | null) => {
+            scopedSessionReadCalls.scm.push([sessionId, serverId]);
+            return scmState.status;
+        },
         useSetting: (key: string) => {
             if (key === 'tabBarGitBadgeMode') return badgeSettingsState.gitBadgeMode;
             if (key === 'tabBarOpenTabsBadgeEnabled') return badgeSettingsState.openTabs;
@@ -146,7 +158,22 @@ vi.mock('@/components/sessions/presentation/SessionAgentCatalogIdentityIcon', ()
 }));
 
 vi.mock('@/components/sessions/model/useSessionMachineReachability', () => ({
-    useSessionReachableMachineTarget: () => reachableMachineState.target,
+    useSessionReachableMachineTarget: (sessionId: string, serverId?: string | null) => {
+        scopedSessionReadCalls.machine.push([sessionId, serverId]);
+        return reachableMachineState.target;
+    },
+}));
+
+vi.mock('@/hooks/session/useSessionCollaborationAvailability', () => ({
+    useSessionCollaborationDestinationAdmitted: () => collaborationAdmissionState.admitted,
+}));
+
+vi.mock('@/components/sessions/board/useSessionBoardFeatureEnabled', () => ({
+    useSessionBoardFeatureEnabled: () => false,
+}));
+
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession', () => ({
+    usePreferredServerIdForSession: (target: { serverId?: string | null }) => target.serverId ?? null,
 }));
 
 vi.mock('@/components/ui/layout/layout', () => ({
@@ -168,9 +195,45 @@ describe('cockpit tab bars', () => {
         cockpitPinsState.value = [];
         cockpitPinsState.set.mockClear();
         reachableMachineState.target = null;
+        scopedSessionReadCalls.session.length = 0;
+        scopedSessionReadCalls.scm.length = 0;
+        scopedSessionReadCalls.machine.length = 0;
         lateralNavigationState.previous = null;
         lateralNavigationState.next = null;
         lateralNavigationState.navigate.mockClear();
+    });
+
+    it('forwards the route Home to every session-scoped cockpit read', async () => {
+        const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
+        const screen = await renderScreen(
+            <SessionCockpitTabBar
+                sessionId="sess_1"
+                serverId="home-b"
+                activeSurface="chat"
+                terminalTabAvailable={true}
+                openDetailsTabCount={0}
+                onSurfacePress={() => {}}
+            />,
+        );
+
+        expect(scopedSessionReadCalls.session).toContainEqual(['sess_1', 'home-b']);
+        expect(scopedSessionReadCalls.scm).toContainEqual(['sess_1', 'home-b']);
+        expect(scopedSessionReadCalls.machine).toContainEqual(['sess_1', 'home-b']);
+    });
+
+    it('groups Project tabs into one tablist while preserving selection and navigation', async () => {
+        const { ProjectCockpitTabBar } = await import('./ProjectCockpitTabBar');
+        const navigate = vi.fn();
+        const screen = await renderScreen(<ProjectCockpitTabBar
+            workspaceRefId="workspace-a" activeSurface="git" onSurfacePress={navigate}
+        />);
+        const tablists = screen.findAll((node) => typeof node.type === 'string' && node.props.accessibilityRole === 'tablist');
+        expect(tablists).toHaveLength(1);
+        const tabs = tablists[0].findAll((node) => typeof node.type === 'string' && node.props.accessibilityRole === 'tab');
+        expect(tabs).toHaveLength(7);
+        expect(screen.findByTestId('project-cockpit-tab-git')?.props.accessibilityState.selected).toBe(true);
+        await act(async () => { screen.findByTestId('project-cockpit-tab-browse')?.props.onPress(); });
+        expect(navigate).toHaveBeenCalledWith('browse');
     });
 
     it('offers the lateral step as an accessibility action on every cockpit tab', async () => {
@@ -271,6 +334,7 @@ describe('cockpit tab bars', () => {
         return {
             id: 'surfacePlacement:acme.review:review-panel',
             pluginId: 'acme.review',
+            occurrenceId: 'acme-review-occurrence',
             contributionKind: 'surfacePlacement' as const,
             descriptorId: 'review-panel',
             binding,
@@ -416,7 +480,7 @@ describe('cockpit tab bars', () => {
     });
 
     it('shows a changed-files count badge by default when the session is dirty', async () => {
-        scmState.status = { isDirty: true, modifiedCount: 3, linesAdded: 42, linesRemoved: 8 };
+        scmState.status = { isDirty: true, changedFileCount: 3, linesAdded: 42, linesRemoved: 8 };
         const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
 
         const screen = await renderScreen(
@@ -437,7 +501,7 @@ describe('cockpit tab bars', () => {
 
     it('shows the added/removed line chip when git badge mode is diffLines', async () => {
         badgeSettingsState.gitBadgeMode = 'diffLines';
-        scmState.status = { isDirty: true, modifiedCount: 3, linesAdded: 42, linesRemoved: 8 };
+        scmState.status = { isDirty: true, changedFileCount: 3, linesAdded: 42, linesRemoved: 8 };
         const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
 
         const screen = await renderScreen(
@@ -457,7 +521,7 @@ describe('cockpit tab bars', () => {
 
     it('hides the git badge when git badge mode is off', async () => {
         badgeSettingsState.gitBadgeMode = 'off';
-        scmState.status = { isDirty: true, modifiedCount: 3, linesAdded: 42, linesRemoved: 8 };
+        scmState.status = { isDirty: true, changedFileCount: 3, linesAdded: 42, linesRemoved: 8 };
         const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
 
         const screen = await renderScreen(
@@ -474,7 +538,7 @@ describe('cockpit tab bars', () => {
     });
 
     it('omits the git badge for a clean working tree', async () => {
-        scmState.status = { isDirty: false, modifiedCount: 0, linesAdded: 0, linesRemoved: 0 };
+        scmState.status = { isDirty: false, changedFileCount: 0, linesAdded: 0, linesRemoved: 0 };
         const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
 
         const screen = await renderScreen(
@@ -522,6 +586,47 @@ describe('cockpit tab bars', () => {
 
         expect(screen.findByTestId('session-cockpit-tab-tabs-badge')).not.toBeNull();
         expect(screen.getTextContent()).toContain('4');
+    });
+
+    it('marks Collaboration in More with the rail\'s mention dot, and only for an unread mention', async () => {
+        collaborationAdmissionState.admitted = true;
+        const { getStorage } = await import('@/sync/domains/state/storageStore');
+        const store = getStorage();
+        const publish = (reasons: string[]) => store.setState((state) => ({
+            ...state,
+            sessionListRowsByServerId: {
+                ...state.sessionListRowsByServerId,
+                srv_1: {
+                    sess_1: {
+                        viewer: { readState: { state: 'tracking' }, attention: { needsAttention: reasons.length > 0, reasons } },
+                    } as never,
+                },
+            },
+        }));
+        try {
+            publish(['mentioned']);
+            const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
+            const screen = await renderScreen(
+                <SessionCockpitTabBar
+                    sessionId="sess_1"
+                    serverId="srv_1"
+                    activeSurface="chat"
+                    terminalTabAvailable={false}
+                    openDetailsTabCount={0}
+                    onSurfacePress={() => {}}
+                />,
+            );
+            expect(screen.tree.findByType('DropdownMenu' as never).props.items).toEqual(expect.arrayContaining([
+                expect.objectContaining({ id: 'collaboration' }),
+            ]));
+            expect(screen.findHostByTestId('session-cockpit-more-fact:collaboration')).not.toBeNull();
+
+            // Plain unread discussion stays quiet here, as on the desktop rail.
+            await act(async () => { publish(['unread_discussion']); });
+            expect(screen.findHostByTestId('session-cockpit-more-fact:collaboration')).toBeNull();
+        } finally {
+            collaborationAdmissionState.admitted = false;
+        }
     });
 
     it('renders Browser and Services as first-class session cockpit tabs', async () => {

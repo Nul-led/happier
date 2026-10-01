@@ -17,6 +17,7 @@ import {
     type SessionBoardActionFailureV1,
     type SessionBoardActionRecoveryEvidenceV1,
     type SessionBoardItemWidth,
+    type SessionBoardItemFrameStyle,
     type SessionSurfaceItemV1,
 } from '@happier-dev/protocol/sessions/board';
 
@@ -76,19 +77,29 @@ import {
  * persisted.
  */
 
+/**
+ * What this Board can add. `fromPlugins` is an availability fact only: the Add popover lists the
+ * installed widgets itself and creates one through `item.addInstalled`.
+ */
 export type SessionBoardAddIntent = 'note' | 'interactiveView' | 'fromPlugins' | 'askAgent';
 
 export type SessionBoardCommand =
-    | Readonly<{ kind: 'add'; intent: SessionBoardAddIntent }>
+    | Readonly<{ kind: 'add'; intent: Exclude<SessionBoardAddIntent, 'fromPlugins'> }>
     /**
-     * Create one installed-plugin widget from the Add picker. The item persists
+     * Create one installed-plugin widget from the Add popover, placed on the view
+     * being read. The item persists
      * the stable qualified surface identity and nothing else; the current
      * generation, renderer, origin and Artifact are resolved at every mount.
      */
-    | Readonly<{ kind: 'item.addInstalled'; surface: PluginContributionIdentityV1; title: string }>
+    | Readonly<{
+        kind: 'item.addInstalled';
+        surface: PluginContributionIdentityV1;
+        title: string;
+    }>
     | Readonly<{ kind: 'item.edit'; itemId: string }>
     | Readonly<{ kind: 'item.rename'; itemId: string; title: string }>
     | Readonly<{ kind: 'item.resize'; itemId: string; width: SessionBoardItemWidth }>
+    | Readonly<{ kind: 'item.frameStyle'; itemId: string; frameStyle: SessionBoardItemFrameStyle | null }>
     /** Height is item content, not placement: it stays coherent across every view. */
     | Readonly<{ kind: 'item.height'; itemId: string; height: SessionSurfaceItemV1['height'] }>
     | Readonly<{ kind: 'item.move'; itemId: string; direction: 'before' | 'after' }>
@@ -147,7 +158,6 @@ export type SessionBoardRetainedMutation = Readonly<{
     /** A completed stale→fresh or refreshing→settled repository cycle was observed. */
     refreshObserved: boolean;
     ready: boolean;
-    onApplied?: () => void;
 }>;
 
 export type SessionBoardNoteDraft = Readonly<{
@@ -198,7 +208,7 @@ export type SessionBoardControllerInput = Readonly<{
     /** Exact current renderer/plugin admission for this device, from the host's PEP projection. */
     resolveSourceAvailability?: SessionBoardSourceAvailabilityResolver;
     /**
-     * Whether this Session's exact plugin projection admits any `sessionWidget`.
+     * Whether this Session's exact plugin projection admits any `widget`.
      * `false` removes **From plugins…** from the Add menu entirely rather than
      * opening a picker with nothing in it.
      */
@@ -238,16 +248,13 @@ export type SessionBoardController = Readonly<{
     busy: boolean;
     noteDraft: SessionBoardNoteDraft | null;
     closeNoteDraft: () => void;
-    onNoteSaved: (result: SessionBoardMutationResult | null, committedItemRevision?: string | null) => void;
+    onNoteSaved: (result: SessionBoardMutationResult | null, committedItemRevision?: string | null, draftSettled?: boolean) => void;
     /** Exact one-shot handoff from a successful editor save to its surviving card heading. */
     headingFocusRequest: Readonly<{ itemId: string; requestId: number }> | null;
     acknowledgeHeadingFocus: (requestId: number) => void;
     hostedHtmlDraft: SessionBoardHostedHtmlDraft | null;
     closeHostedHtmlDraft: () => void;
-    onHostedHtmlSaved: (result?: SessionBoardMutationResult | null, committedItemRevision?: string | null) => void;
-    /** Whether the installed-widget Add picker is open for this viewer. */
-    installedWidgetPickerOpen: boolean;
-    closeInstalledWidgetPicker: () => void;
+    onHostedHtmlSaved: (result?: SessionBoardMutationResult | null, committedItemRevision?: string | null, draftSettled?: boolean) => void;
     /** The latest mutation result, for surfaces that want it inline as well as in the notice. */
     lastOutcome: SessionBoardCommandOutcome | null;
     /** Exact unresolved generic mutation retained by this mounted controller. */
@@ -500,9 +507,16 @@ function isRetainedSessionBoardMutationApplied(
         case 'item.unpin':
             return !views.find((view) => view.id === operation.tabId)
                 ?.placements.some((placement) => placement.itemId === operation.itemId);
+        case 'item.unpinAll':
+            return views.every((view) => !view.placements.some((placement) => placement.itemId === operation.itemId));
         case 'item.resize':
             return views.find((view) => view.id === operation.tabId)
                 ?.placements.find((placement) => placement.itemId === operation.itemId)?.width === operation.width;
+        case 'item.frameStyle': {
+            const placement = views.find((view) => view.id === operation.tabId)
+                ?.placements.find((candidate) => candidate.itemId === operation.itemId);
+            return placement !== undefined && placement.frameStyle === (operation.frameStyle ?? undefined);
+        }
     }
 }
 
@@ -532,7 +546,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
         requestId: number;
     }> | null>(null);
     const localHostedHtmlDraft = React.useState<SessionBoardHostedHtmlDraft | null>(null);
-    const localInstalledWidgetPickerOpen = React.useState(false);
     const localLastOutcome = React.useState<SessionBoardCommandOutcome | null>(null);
     const localRetainedMutation = React.useState<SessionBoardRetainedMutation | null>(null);
     const localAnnouncement = React.useState<string | null>(null);
@@ -541,7 +554,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
     const [headingFocusRequest, setHeadingFocusRequest] = continuity?.controller.headingFocusRequest ?? localHeadingFocusRequest;
     const nextHeadingFocusRequestId = React.useRef(1);
     const [hostedHtmlDraft, setHostedHtmlDraftState] = continuity?.controller.hostedHtmlDraft ?? localHostedHtmlDraft;
-    const [installedWidgetPickerOpen, setInstalledWidgetPickerOpen] = continuity?.controller.installedWidgetPickerOpen ?? localInstalledWidgetPickerOpen;
     const [lastOutcomeState, setLastOutcomeState] = continuity?.controller.lastOutcome ?? localLastOutcome;
     const [retainedMutationState, setRetainedMutationState] = continuity?.controller.retainedMutation ?? localRetainedMutation;
     const [announcement, setAnnouncement] = continuity?.controller.announcement ?? localAnnouncement;
@@ -688,7 +700,7 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
         if (mutationsBlockedReason === null) intents.push('note');
         if (mutationsBlockedReason === null && callerHostedHtmlAvailable) intents.push('interactiveView');
         // **From plugins…** appears only when this Session's exact projection
-        // actually admits a `sessionWidget`.
+        // actually admits a `widget`.
         if (mutationsBlockedReason === null && installedWidgetsAvailable) intents.push('fromPlugins');
         if (canEdit && askAgent) intents.push('askAgent');
         return Object.freeze(intents);
@@ -708,6 +720,7 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
         switch (kind) {
             case 'item.rename':
             case 'item.resize':
+            case 'item.frameStyle':
             case 'item.height':
             case 'item.move':
             case 'item.moveAnchored':
@@ -766,7 +779,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
     const submit = React.useCallback(async (
         command: SessionBoardCommand,
         call: (port: SessionBoardActionsPort) => Promise<SessionBoardActionOutcome<SessionBoardMutationResult>>,
-        onApplied?: () => void,
     ): Promise<SessionBoardCommandOutcome | null> => {
         const port = stable.current.actions;
         if (!port) return null;
@@ -808,7 +820,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                     baselineSnapshot,
                     refreshObserved: false,
                     ready: false,
-                    ...(onApplied ? { onApplied } : {}),
                 });
                 return true;
             };
@@ -833,7 +844,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                         const applied = { kind: 'applied' } as const;
                         present(applied, command);
                         stable.current.binding.refresh?.();
-                        onApplied?.();
                     },
                     onFailed: (code, failure) => {
                         approvalPendingRef.current = false;
@@ -847,7 +857,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                                 baselineSnapshot,
                                 refreshObserved: false,
                                 ready: false,
-                                ...(onApplied ? { onApplied } : {}),
                             } satisfies SessionBoardRetainedMutation;
                             setRetainedMutation(retained);
                             requestMutationRecoveryRefresh(retained);
@@ -887,9 +896,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                     const next = retainedMutationRef.current;
                     if (next) requestMutationRecoveryRefresh(next);
                 }
-            } else if (outcome.kind === 'applied') {
-                setRetainedMutation(null);
-                onApplied?.();
             } else {
                 setRetainedMutation(null);
             }
@@ -916,7 +922,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
             setRetainedMutation(null);
             const applied = { kind: 'applied' } as const;
             present(applied, retained.command);
-            retained.onApplied?.();
             return;
         }
         if (!retained.ready) setRetainedMutation({ ...retained, ready: true, refreshObserved: true });
@@ -965,27 +970,9 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                     current.onAskAgent?.();
                     return;
                 }
-                if (command.intent === 'fromPlugins') {
-                    // The picker only lists; nothing mounts behind it and no
-                    // executable frame is instantiated to preview a candidate.
-                    // One in-place slot, one occupant: leaving an unsaved note
-                    // draft open would keep the picker invisibly "open".
-                    const replace = () => {
-                        setNoteDraft(null);
-                        setHostedHtmlDraft(null);
-                        setInstalledWidgetPickerOpen(true);
-                    };
-                    if (activeDraftItemId() !== null && current.beforeReplaceNoteDraft) {
-                        await current.beforeReplaceNoteDraft(replace);
-                    } else {
-                        replace();
-                    }
-                    return;
-                }
                 if (command.intent === 'interactiveView') {
                     const replace = () => {
                         setNoteDraft(null);
-                        setInstalledWidgetPickerOpen(false);
                         setHostedHtmlDraft({
                             itemId: randomUUID(),
                             expectedItemRevision: null,
@@ -1009,7 +996,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                 // The first note creates the real Overview row and its placement in the
                 // SAME aggregate mutation; the synthetic view never reaches the wire.
                 const replace = () => {
-                    setInstalledWidgetPickerOpen(false);
                     setHostedHtmlDraft(null);
                     setNoteDraft({
                         itemId: randomUUID(),
@@ -1036,10 +1022,11 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                 // land in ONE aggregate mutation, so a Board never keeps an
                 // unplaced installed widget after a partial write.
                 const title = command.title.trim();
-                setInstalledWidgetPickerOpen(false);
+                const itemId = randomUUID();
+                const target = view;
                 await submit(command, (p) => p.upsertItem({
                     sessionId: current.sessionId,
-                    itemId: randomUUID(),
+                    itemId,
                     expectedItemRevision: null,
                     item: {
                         v: 1,
@@ -1054,8 +1041,8 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                         source: { kind: 'installedSurface', surface: command.surface },
                     },
                     placement: {
-                        tabId: view.synthetic ? SESSION_BOARD_OVERVIEW_VIEW_ID : view.id,
-                        tabTitle: viewTitle(view),
+                        tabId: !target || target.synthetic ? SESSION_BOARD_OVERVIEW_VIEW_ID : target.id,
+                        tabTitle: viewTitle(target),
                         width: SESSION_BOARD_DEFAULT_ITEM_WIDTH_V1,
                     },
                 }));
@@ -1079,7 +1066,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                 if (source.kind === 'hostedHtml' && source.source.kind === 'html') {
                     if (hostedHtmlDraftRef.current?.itemId === command.itemId) return;
                     const replace = () => {
-                        setInstalledWidgetPickerOpen(false);
                         setNoteDraft(null);
                         setHostedHtmlDraft({
                             itemId: command.itemId,
@@ -1106,7 +1092,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                 // From plugins, so every draft-replacing Board intent has one owner.
                 if (noteDraftRef.current?.itemId === command.itemId) return;
                 const replace = () => {
-                    setInstalledWidgetPickerOpen(false);
                     setHostedHtmlDraft(null);
                     setNoteDraft({
                         itemId: command.itemId,
@@ -1155,6 +1140,14 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                     sessionId: current.sessionId,
                     expectedLayoutRevision: live.layoutRevision,
                     operation: { op: 'item.resize', itemId: command.itemId, tabId: view.id, width: command.width },
+                }));
+                return;
+
+            case 'item.frameStyle':
+                await submit(command, (p) => p.updateLayout({
+                    sessionId: current.sessionId,
+                    expectedLayoutRevision: live.layoutRevision,
+                    operation: { op: 'item.frameStyle', itemId: command.itemId, tabId: view.id, frameStyle: command.frameStyle },
                 }));
                 return;
 
@@ -1312,21 +1305,21 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                     if (!removalLive || removalLive.layoutRevision === null || !projected) return;
                     if (projected.revision === null) {
                         // A missing-reference card has no shared record left to delete, but the
-                        // layout still carries its placement and the card publishes Remove as
+                        // layout still carries its placements and the card publishes Remove as
                         // the recovery. Resolve it as layout-reference cleanup through the same
-                        // canonical layout Action every other placement edit uses: siblings and
-                        // every other view are untouched, and no item revision is fabricated.
-                        const cleanupView = removalLive.views.find((candidate) => !candidate.synthetic
+                        // canonical layout Action: Remove from Board means every placement,
+                        // while unrelated items survive and no item revision is fabricated.
+                        const hasPlacement = removalLive.views.some((candidate) => !candidate.synthetic
                             && candidate.placements.some((placement) => placement.itemId === command.itemId));
                         const cleanupLayoutRevision = removalLive.layoutRevision;
-                        if (!cleanupView) {
+                        if (!hasPlacement) {
                             present({ kind: 'failed', error: 'session_board_item_not_found' }, command);
                             return;
                         }
                         await submit(command, (p) => p.updateLayout({
                             sessionId: removalInput.sessionId,
                             expectedLayoutRevision: cleanupLayoutRevision,
-                            operation: { op: 'item.unpin', itemId: command.itemId, tabId: cleanupView.id },
+                            operation: { op: 'item.unpinAll', itemId: command.itemId },
                         }), () => retireDraftForItem(command.itemId));
                         return;
                     }
@@ -1548,7 +1541,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
         if (draft) continuity?.editorDrafts.clear(sessionBoardHostedHtmlDraftBufferKey(draft.itemId));
         setHostedHtmlDraft(null);
     }, [continuity, setHostedHtmlDraft]);
-    const closeInstalledWidgetPicker = React.useCallback(() => setInstalledWidgetPickerOpen(false), []);
     const onNoteSaved = React.useCallback((
         result: SessionBoardMutationResult | null,
         committedItemRevision?: string | null,
@@ -1659,10 +1651,6 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
         hostedHtmlDraft: callerHostedHtmlAvailable ? hostedHtmlDraft : null,
         closeHostedHtmlDraft,
         onHostedHtmlSaved,
-        // A picker that outlives its producer would offer stale candidates: it
-        // closes as soon as the Board stops accepting writes here.
-        installedWidgetPickerOpen: installedWidgetPickerOpen && mutationsBlockedReason === null,
-        closeInstalledWidgetPicker,
         get lastOutcome() { return lastOutcomeRef.current; },
         mutationRecovery: retainedMutationState && retainedMutationState.kind !== 'approvalPending'
             ? { kind: retainedMutationState.kind, ready: retainedMutationState.ready }

@@ -1,3 +1,5 @@
+import { t } from '@/text';
+
 import { resolveWorkspaceDisplayLabel } from './workspaceLabel';
 import type { WorkspaceRefV1 } from './workspaceRefModel';
 import { findWorkspaceRefByScope } from './workspaceRefs';
@@ -26,6 +28,11 @@ function resolveWorkspaceBasename(path: string): string {
     return normalizeOptionalLabel(segments[segments.length - 1]) ?? normalized;
 }
 
+/** The home folder itself reads as words; `~` alone is not a name a reader recognises. */
+function isHomeFolderPathLabel(pathLabel: string): boolean {
+    return /^~[\\/]*$/.test(pathLabel.trim());
+}
+
 export function resolveWorkspaceDisplayPresentation(input: Readonly<{
     scope: WorkspaceScopeBase | null | undefined;
     workspaceRefs: ReadonlyArray<WorkspaceRefV1>;
@@ -34,9 +41,11 @@ export function resolveWorkspaceDisplayPresentation(input: Readonly<{
     legacyLabel?: string | null | undefined;
 }>): WorkspaceDisplayPresentation {
     const legacyLabel = normalizeOptionalLabel(input.legacyLabel);
-    const fallbackTitle = input.fallbackPathDisplayMode === 'path'
-        ? input.fallbackPathLabel
-        : resolveWorkspaceBasename(input.fallbackPathLabel);
+    const fallbackTitle = isHomeFolderPathLabel(input.fallbackPathLabel)
+        ? t('workspacePresentation.homeFolder')
+        : input.fallbackPathDisplayMode === 'path'
+            ? input.fallbackPathLabel
+            : resolveWorkspaceBasename(input.fallbackPathLabel);
     if (!input.scope) {
         const displayTitle = legacyLabel ?? fallbackTitle;
         return {

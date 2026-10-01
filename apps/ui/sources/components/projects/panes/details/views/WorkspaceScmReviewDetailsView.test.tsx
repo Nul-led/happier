@@ -316,6 +316,7 @@ describe('WorkspaceScmReviewDetailsView', () => {
 
         expect(reviewCommentsSurfaceSpy).toHaveBeenCalledWith(expect.objectContaining({
             workspaceId: 'wr_1',
+            workspace: { machineId: 'm1', path: '/repo' },
             directWriteGrants: [],
             pendingDirectWriteGrantRequests: [],
             defaultPanelOpen: false,

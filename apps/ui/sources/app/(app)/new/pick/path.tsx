@@ -1,4 +1,7 @@
+import { useAuthoringMemoryField } from '@/sync/domains/state/storage';
 import React, { useState, useMemo } from 'react';
+import type { SessionDirectoryIntentV1 } from '@happier-dev/protocol';
+import { AppHeaderCloseButton } from '@/components/navigation/AppHeaderCloseButton';
 import { View, Pressable } from 'react-native';
 import { Stack, useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 import { Typography } from '@/constants/Typography';
@@ -18,6 +21,8 @@ import { NewSessionPathSelectionContent } from '@/components/sessions/new/compon
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import { resolveSpawnServerRouteParam } from '@/components/sessions/new/navigation/spawnServerRouteParam';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 
 
 export default React.memo(function PathPickerScreen() {
@@ -33,12 +38,13 @@ export default React.memo(function PathPickerScreen() {
         machineId?: string;
         selectedPath?: string;
         directory?: string;
+        directoryKind?: string;
         path?: string;
         spawnServerId?: string;
     }>();
     const machines = useAllMachines();
     const sessions = useAllSessionListRenderables();
-    const recentMachinePaths = useSetting('recentMachinePaths');
+    const recentMachinePaths = useAuthoringMemoryField('recentMachinePaths');
     const usePathPickerSearch = useSetting('usePathPickerSearch');
     const [favoriteDirectoriesRaw, setFavoriteDirectories] = useSettingMutable('favoriteDirectories');
     const settings = useSettings() ?? settingsDefaults;
@@ -111,9 +117,12 @@ export default React.memo(function PathPickerScreen() {
     });
 
 
-    const handleSelectPath = React.useCallback((pathOverride?: string) => {
-        const rawPath = typeof pathOverride === 'string' ? pathOverride : customPathRef.current;
-        const pathToUse = rawPath.trim() || machineHomeDir;
+    const handleSelectDirectory = React.useCallback((intent: SessionDirectoryIntentV1) => {
+        const directoryParams = {
+            directoryKind: intent.kind,
+            directory: intent.kind === 'path' ? intent.path : undefined,
+            path: undefined,
+        };
         const dataId = typeof params.dataId === 'string' ? params.dataId : undefined;
         const roundTripFallbackTarget = resolveRouteCloseoutFallbackTarget({
             agentType: params.agentType,
@@ -132,23 +141,25 @@ export default React.memo(function PathPickerScreen() {
             router,
             routeParams: {
                 ...roundTripBackendParams,
-                directory: pathToUse,
+                ...directoryParams,
             },
             currentParams: currentRouteParams,
             replaceParams: {
                 ...roundTripBackendParams,
                 ...(dataId ? { dataId } : {}),
                 machineId: params.machineId,
-                directory: pathToUse,
+                ...directoryParams,
                 ...(spawnServerId ? { spawnServerId } : {}),
             },
         });
         if (returnMode === 'dispatch') {
             safeRouterBack({ router, navigation, fallbackHref: pickerFallbackHref });
         }
+        announceAccessibilityMessage(intent.kind === 'managed'
+            ? t('newSession.folder.a11y.removed')
+            : t('newSession.folder.a11y.set', { path: intent.path }));
     }, [
         currentRouteParams,
-        machineHomeDir,
         navigation,
         params.agentType,
         params.backendTarget,
@@ -159,6 +170,10 @@ export default React.memo(function PathPickerScreen() {
         preferredBackendTarget,
         spawnServerId,
     ]);
+    const handleSelectPath = React.useCallback((pathOverride?: string) => {
+        const rawPath = typeof pathOverride === 'string' ? pathOverride : customPathRef.current;
+        handleSelectDirectory({ kind: 'path', path: rawPath.trim() || machineHomeDir });
+    }, [handleSelectDirectory, machineHomeDir]);
 
     const handleBackPress = React.useCallback(() => {
         safeRouterBack({ router, navigation, fallbackHref: pickerFallbackHref });
@@ -172,23 +187,14 @@ export default React.memo(function PathPickerScreen() {
     const headerTitle = t('newSession.selectPathTitle');
     const headerBackTitle = t('common.back');
 
-    const headerLeft = React.useCallback(() => {
-        return (
-            <Pressable
-                onPress={handleBackPress}
-                hitSlop={10}
-                accessibilityRole="button"
-                accessibilityLabel={t('common.back')}
-                style={({ pressed }) => ({
-                    marginLeft: 10,
-                    opacity: pressed ? 0.7 : 1,
-                    padding: 4,
-                })}
-            >
-                <Icon name="caret-left" size={20} color={theme.colors.chrome.header.foreground} />
-            </Pressable>
-        );
-    }, [handleBackPress, theme.colors.chrome.header.foreground]);
+    // K2 picker route chrome: the native title plus Cancel (and Done), nothing else above the list.
+    const headerLeft = React.useCallback(() => (
+        <AppHeaderCloseButton
+            testID="new-session-path-picker-cancel"
+            appearance="text"
+            onPress={handleBackPress}
+        />
+    ), [handleBackPress]);
 
     // NOTE: Keep the header actions stable across keystrokes.
     // On iOS containedModal, frequently re-creating `headerRight` as the user types can cause
@@ -202,7 +208,7 @@ export default React.memo(function PathPickerScreen() {
                 accessibilityRole="button"
                 accessibilityLabel={t('common.done')}
                 style={({ pressed }) => ({
-                    opacity: pressed ? 0.7 : 1,
+                    opacity: pressed ? motionTokens.press.opacity : 1,
                     padding: 4,
                 })}
             >
@@ -248,6 +254,7 @@ export default React.memo(function PathPickerScreen() {
                 options={screenOptions}
             />
             <NewSessionPathSelectionContent
+                noFolderOption={{ selected: params.directoryKind === 'managed', onSelect: () => handleSelectDirectory({ kind: 'managed' }) }}
                 machineHomeDir={machineHomeDir}
                 selectedPath={customPath}
                 onChangeSelectedPath={setCustomPath}

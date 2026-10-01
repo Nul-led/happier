@@ -1,7 +1,8 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
-import { useIsFocused } from '@react-navigation/native';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
 
 import { SessionsList } from '@/components/sessions/shell/SessionsList';
 import { resolveFocusedSessionListSurfaceOwnership } from '@/components/sessions/shell/surface/sessionListSurfaceOwnership';
@@ -23,7 +24,7 @@ const RECENT_SESSIONS_PATHNAME = '/session/recent';
  * Back returns to whatever the person last chose in View options and no
  * Session-list, query or settings request is made by opening the link.
  */
-export default function LegacyRecentSessionsRoute() {
+export function LegacyRecentSessionsRoute() {
     const isFocused = useIsFocused();
     const surfaceOwnership = resolveFocusedSessionListSurfaceOwnership(isFocused);
     const styles = stylesheet;
@@ -40,3 +41,7 @@ export default function LegacyRecentSessionsRoute() {
         </SessionListLayoutIntentProvider>
     );
 }
+
+export { LegacyRecentSessionsRoute as WorkspaceRouteBody };
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={LegacyRecentSessionsRoute} />; }

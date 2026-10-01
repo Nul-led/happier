@@ -14,6 +14,8 @@ type AppPaneScopeHostStorageModuleFactory = (
 type InstallAppPaneScopeHostCommonModuleMocksOptions = Readonly<{
     getDimensions?: () => PaneDimensions;
     getLocalSetting?: (key: string) => unknown;
+    /** Observes persisted local-setting writes (pane widths). */
+    onSetLocalSetting?: (key: string, value: unknown) => void;
     reactNative?: AppPaneScopeHostReactNativeModuleFactory;
     storage?: AppPaneScopeHostStorageModuleFactory;
 }>;
@@ -22,6 +24,7 @@ const appPaneScopeHostModuleState = vi.hoisted(() => ({
     options: {
         getDimensions: undefined as (() => PaneDimensions) | undefined,
         getLocalSetting: undefined as ((key: string) => unknown) | undefined,
+        onSetLocalSetting: undefined as ((key: string, value: unknown) => void) | undefined,
         reactNative: undefined as AppPaneScopeHostReactNativeModuleFactory | undefined,
         storage: undefined as AppPaneScopeHostStorageModuleFactory | undefined,
     },
@@ -33,6 +36,7 @@ export function installAppPaneScopeHostCommonModuleMocks(
     appPaneScopeHostModuleState.options = {
         getDimensions: options.getDimensions,
         getLocalSetting: options.getLocalSetting,
+        onSetLocalSetting: options.onSetLocalSetting,
         reactNative: options.reactNative,
         storage: options.storage,
     };
@@ -54,7 +58,10 @@ export function installAppPaneScopeHostCommonModuleMocks(
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
             useLocalSetting: (key: string) => appPaneScopeHostModuleState.options.getLocalSetting?.(key) ?? null,
-            useLocalSettingMutable: () => [null, vi.fn()],
+            useLocalSettingMutable: (key: string) => [
+                null,
+                (value: unknown) => appPaneScopeHostModuleState.options.onSetLocalSetting?.(key, value),
+            ],
         });
     });
 }

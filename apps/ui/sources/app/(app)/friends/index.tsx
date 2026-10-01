@@ -31,7 +31,7 @@ const styles = StyleSheet.create((theme) => ({
   },
 }));
 
-export default function FriendsPage() {
+export function FriendsPage() {
   const enabled = useRequireFriendsEnabled();
   const insets = useSafeAreaInsets();
   const isTablet = useIsTablet();
@@ -54,3 +54,6 @@ export default function FriendsPage() {
     </View>
   );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { FriendsPage as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={FriendsPage} />; }

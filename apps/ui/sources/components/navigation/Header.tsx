@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { t } from '@/text';
 import { View, Platform, StatusBar, Pressable, type StyleProp, type ViewStyle } from 'react-native';
 import type { NativeStackHeaderProps } from '@react-navigation/native-stack';
 import { useLayoutMaxWidth } from '../ui/layout/layout';
@@ -11,6 +12,8 @@ import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAre
 import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
 import { useDesktopWindowDragMouseProps } from '@/components/navigation/desktopWindowChrome/DesktopWindowDragRegion';
 import { Icon } from '@/components/ui/icons/Icon';
+import { useAppShellColumn } from '@/components/navigation/shell/appRail/appShellColumnContext';
+import { useStackHeaderActionsClaimed, useStackHeaderActionsPublisher } from '@/components/navigation/stackHeaderActions';
 
 
 interface HeaderProps {
@@ -115,10 +118,10 @@ interface ExtendedNavigationOptions extends Partial<NativeStackHeaderProps['opti
     headerSubtitleStyle?: any;
 }
 
-// Default back button component
-const DefaultBackButton: React.FC<{ tintColor?: string; onPress: () => void }> = ({ tintColor = '#000', onPress }) => {
+// Default back button component; also the explicit back of a route whose stack reports no `back`.
+export const DefaultBackButton: React.FC<{ tintColor?: string; onPress: () => void; testID?: string }> = ({ tintColor = '#000', onPress, testID }) => {
     return (
-        <Pressable onPress={onPress} hitSlop={15} accessibilityRole="button">
+        <Pressable onPress={onPress} hitSlop={15} accessibilityRole="button" accessibilityLabel={t('common.back')} testID={testID}>
             <Icon
                 name={Platform.OS === 'ios' ? 'caret-left' : 'arrow-left'}
                 size={24}
@@ -195,15 +198,64 @@ const NavigationHeaderComponent: React.FC<NativeStackHeaderProps> = React.memo((
     );
 });
 
+/** Presentations that sit over the app rather than in it keep their own bar, shell or not. */
+const OVERLAY_PRESENTATIONS: ReadonlySet<string> = new Set(['modal', 'transparentModal', 'containedModal', 'containedTransparentModal', 'fullScreenModal', 'formSheet']);
+
+/**
+ * The one rule for stack headers inside the desktop app shell (R1): a page there draws no stack
+ * header. It renders its own page header, and the way back is the rail, the column and the title
+ * strip's history arrows. Outside the shell (phones) the header and its back button stay. Modals keep
+ * theirs everywhere.
+ */
+const AppStackHeader = React.memo(function AppStackHeader(props: NativeStackHeaderProps) {
+    const shell = useAppShellColumn();
+    const presentation = (props.options as { presentation?: string }).presentation;
+    const hidden = shell.present && !(presentation && OVERLAY_PRESENTATIONS.has(presentation));
+    return hidden ? <ShellPageHeaderActions {...props} /> : <NavigationHeaderComponent {...props} />;
+});
+
+/**
+ * The actions a route put in its stack header, where that header is not drawn: handed to the page's
+ * own header (`PageHeader` claims them), or, on a page without one, kept in a slim actions-only bar
+ * so nothing a route offers is lost.
+ */
+const ShellPageHeaderActions = React.memo(function ShellPageHeaderActions(props: NativeStackHeaderProps) {
+    const styles = stylesheet;
+    const { headerLeft, headerRight, headerTintColor } = props.options;
+    const canGoBack = Boolean(props.back);
+    const render = React.useMemo(() => {
+        if (!headerLeft && !headerRight) return null;
+        return () => (
+            <>
+                {headerLeft?.({ tintColor: headerTintColor, canGoBack, label: undefined, href: undefined }) ?? null}
+                {headerRight?.({ tintColor: headerTintColor, canGoBack }) ?? null}
+            </>
+        );
+    }, [canGoBack, headerLeft, headerRight, headerTintColor]);
+    useStackHeaderActionsPublisher(props.route.key, render);
+    const claimed = useStackHeaderActionsClaimed(props.route.key);
+    if (!render || claimed) return null;
+    return <View testID="app-stack-header-actions" style={styles.shellActionsBar}>{render()}</View>;
+});
+
 // Export a render function for React Navigation
 export const createHeader = (props: NativeStackHeaderProps) => {
     if (props.options.headerShown === false) {
         return null;
     }
-    return <NavigationHeaderComponent {...props} />;
+    return <AppStackHeader {...props} />;
 };
 
 const stylesheet = StyleSheet.create((theme, runtime) => ({
+    // The actions of a page with no page header, above it at the trailing edge, in no header chrome.
+    shellActionsBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'flex-end',
+        gap: 8,
+        paddingHorizontal: 16,
+        paddingTop: 8,
+    },
     container: {
         position: 'relative',
         zIndex: 100,

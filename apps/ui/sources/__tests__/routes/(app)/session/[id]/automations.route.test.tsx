@@ -1,62 +1,28 @@
 import * as React from 'react';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const automationsScreenSpy = vi.hoisted(() => vi.fn());
-const workflowEditorScreenSpy = vi.hoisted(() => vi.fn());
+const routerMock = vi.hoisted(() => ({ params: { id: 'session-1', serverId: 'server-a' } as Record<string, unknown> }));
 
-const routerMock = createExpoRouterMock({
-    params: { id: ['s1', 's2'] },
-    router: {
-        push: vi.fn(),
-        back: vi.fn(),
-        replace: vi.fn(),
-        setParams: vi.fn(),
-    },
-});
+vi.mock('expo-router', async () => createExpoRouterMock({ params: routerMock.params }).module);
 
-vi.mock('expo-router', () => routerMock.module);
-
-vi.mock('@/components/automations/gating/AutomationsGate', () => ({
-    AutomationsGate: ({ children }: { children: React.ReactNode }) => React.createElement(React.Fragment, null, children),
-}));
-
-vi.mock('@/components/automations/screens/SessionAutomationsScreen', () => ({
-    SessionAutomationsScreen: (props: { sessionId: string }) => automationsScreenSpy(props),
-}));
-
-vi.mock('@/components/workflows/screens/SessionWorkflowEditorScreen', () => ({
-    SessionWorkflowEditorScreen: (props: { sessionId: string }) => workflowEditorScreenSpy(props),
-}));
-
-describe('session automations routes', () => {
-    beforeEach(() => {
-        automationsScreenSpy.mockClear();
-        workflowEditorScreenSpy.mockClear();
-    });
-
+describe('retired session automations routes', () => {
     afterEach(() => {
         standardCleanup();
     });
 
-    it('normalizes array session ids before rendering the automations screen', async () => {
-        const { default: AutomationsRoute } = await import('@/app/(app)/session/[id]/automations');
-
-        await renderScreen(<AutomationsRoute />);
-
-        expect(automationsScreenSpy).toHaveBeenCalledWith({ sessionId: 's1' });
-    });
-
-    it('normalizes array session ids before rendering the canonical Workflow editor', async () => {
-        const { default: CreateRoute } = await import('@/app/(app)/session/[id]/automations/new');
-
-        await renderScreen(<CreateRoute />);
-
-        expect(workflowEditorScreenSpy).toHaveBeenCalledTimes(1);
-        expect(workflowEditorScreenSpy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1' }));
+    it.each([
+        ['@/app/(app)/session/[id]/automations'],
+        ['@/app/(app)/session/[id]/automations/new'],
+        ['@/app/(app)/session/[id]/automations/when-turn-finishes'],
+    ])('%s lands on the session Triggers section, keeping its Home', async (route) => {
+        const { WorkspaceRouteBody } = await import(/* @vite-ignore */ route);
+        const screen = await renderScreen(<WorkspaceRouteBody />);
+        const redirect = screen.findAll((node) => node.type === 'Redirect')[0];
+        expect(redirect?.props.href).toEqual({ pathname: '/session/[id]/triggers', params: { id: 'session-1', serverId: 'server-a' } });
     });
 });

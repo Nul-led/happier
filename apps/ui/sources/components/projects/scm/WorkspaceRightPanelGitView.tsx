@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { router } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
@@ -10,17 +10,22 @@ import { buildWorkspaceChangedFilesData } from '@/hooks/workspaces/scm/buildWork
 import { useWorkspaceScmSnapshotController } from '@/hooks/workspaces/scm/useWorkspaceScmSnapshotController';
 import { useWorkspaceScmCommitHistory } from '@/hooks/workspaces/scm/useWorkspaceScmCommitHistory';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
-import { storage, useSetting } from '@/sync/domains/state/storage';
+import { storage, useSetting, useWorkspaceScmCommitSelectionPaths, useWorkspaceScmCommitSelectionPatches } from '@/sync/domains/state/storage';
+import { countCommitSelectionItems } from '@/scm/operations/commitSelectionHints';
 import { SCM_COMMIT_STRATEGIES, type ScmCommitStrategy } from '@/scm/settings/commitStrategy';
 import { normalizeScmRemoteConfirmPolicy } from '@/scm/settings/remoteConfirmationPolicy';
 import { evaluateScmOperationPreflight } from '@/scm/core/operationPolicy';
-import { getScmUserFacingError } from '@/scm/operations/userFacingErrors';
-import { reportWorkspaceScmOperation, trackBlockedScmOperation } from '@/scm/operations/reporting';
-import { withWorkspaceScmOperationLock } from '@/scm/operations/withOperationLock';
+import { trackBlockedScmOperation } from '@/scm/operations/reporting';
+import { runWorkspaceScmMutation } from '@/scm/operations/runSessionScmMutation';
 import { NotSourceControlRepositoryState, SourceControlStaleSnapshotNotice, SourceControlUnavailableState } from '@/components/workspaces/scm/states';
-import { WorkspaceScmSubTabsBar, type GitSubTabId } from '@/components/workspaces/scm/WorkspaceScmSubTabsBar';
-import { WorkspaceScmHistoryTab } from '@/components/workspaces/scm/WorkspaceScmHistoryTab';
-import { WorkspaceScmUpdateTab } from '@/components/workspaces/scm/WorkspaceScmUpdateTab';
+import type { GitSubTabId } from '@/components/workspaces/scm/WorkspaceScmSubTabsBar';
+import { GitPaneLayout, resolveGitPaneActiveSubTab } from '@/components/workspaces/scm/GitPaneLayout';
+import { SourceControlRemoteActionsRail, type SourceControlRemoteAction } from '@/components/workspaces/scm/SourceControlRemoteActionsRail';
+import { GitDisplayMenu, useGitDisplaySettings } from '@/components/sessions/panes/git/display/GitDisplayMenu';
+import { GitTimelineSection } from '@/components/sessions/panes/git/GitTimelineSection';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { Item } from '@/components/ui/lists/Item';
+import { Icon } from '@/components/ui/icons/Icon';
 import { SourceControlBranchIntegrationSection } from '@/components/workspaces/scm/update/SourceControlBranchIntegrationSection';
 import { SourceControlPullRequestSection } from '@/components/workspaces/scm/update/SourceControlPullRequestSection';
 import { SourceControlPublishRepositorySection } from '@/components/workspaces/scm/update/SourceControlPublishRepositorySection';
@@ -44,8 +49,7 @@ import type { ScmOperationErrorCode } from '@happier-dev/protocol';
 import type { ScmProjectOperationKind } from '@/sync/runtime/orchestration/projectManager';
 import { executeWorkspaceScmRemoteOperation } from './executeWorkspaceScmRemoteOperation';
 import { WorkspaceSourceControlView, type WorkspaceSourceControlViewProps } from './WorkspaceSourceControlView';
-import { WorkspaceSourceControlBranchMenu } from './WorkspaceSourceControlBranchMenu';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
 
 export type WorkspaceRightPanelGitViewProps = WorkspaceSourceControlViewProps & Readonly<{
     onOpenCommit?: (sha: string) => void;
@@ -60,10 +64,14 @@ type ScmUpdateMutationResponse = Readonly<{
 }>;
 
 export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanelGitViewProps) => {
+    const router = useRouter();
     const { theme } = useUnistyles();
     const [localActiveSubTab, setLocalActiveSubTab] = React.useState<GitSubTabId>('commit');
     const activeSubTab = props.activeSubTabId ?? localActiveSubTab;
     const setActiveSubTab = props.onActiveSubTabChange ?? setLocalActiveSubTab;
+    const { paneLayout } = useGitDisplaySettings();
+    const displayActiveSubTab = resolveGitPaneActiveSubTab(paneLayout, activeSubTab);
+    const [toolsExpanded, setToolsExpanded] = React.useState(activeSubTab === 'update');
     const [scmOperationBusy, setScmOperationBusy] = React.useState(false);
     const [scmOperationStatus, setScmOperationStatus] = React.useState<string | null>(null);
 
@@ -74,6 +82,8 @@ export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanel
     }), [props.machineId, props.rootPath, props.serverId]);
     const scmCallOptions = React.useMemo(() => ({ serverId: scope.serverId }), [scope.serverId]);
     const { snapshot, loading, error, refresh } = useWorkspaceScmSnapshotController(scope);
+    const commitSelectionPaths = useWorkspaceScmCommitSelectionPaths(scope);
+    const commitSelectionPatches = useWorkspaceScmCommitSelectionPatches(scope);
     const scmCommitStrategySetting = useSetting('scmCommitStrategy');
     const scmRemoteConfirmPolicy = useSetting('scmRemoteConfirmPolicy');
     const scmPushRejectPolicy = useSetting('scmPushRejectPolicy');
@@ -95,7 +105,7 @@ export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanel
             : 'manual';
     }, [scmPushRejectPolicy]);
 
-    const { scmStatusFiles } = React.useMemo(
+    const { changedFilesCount } = React.useMemo(
         () => buildWorkspaceChangedFilesData({ scmSnapshot: snapshot }),
         [snapshot],
     );
@@ -110,11 +120,11 @@ export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanel
     const didInitCommitHistoryKeyRef = React.useRef<string | null>(null);
 
     React.useEffect(() => {
-        if (activeSubTab !== 'history') return;
+        if (paneLayout !== 'unified' && displayActiveSubTab !== 'history') return;
         if (didInitCommitHistoryKeyRef.current === commitHistoryInitKey) return;
         didInitCommitHistoryKeyRef.current = commitHistoryInitKey;
         void loadCommitHistory({ reset: true });
-    }, [activeSubTab, commitHistoryInitKey, loadCommitHistory]);
+    }, [paneLayout, displayActiveSubTab, commitHistoryInitKey, loadCommitHistory]);
 
     const pullPreflight = React.useMemo(() => {
         return evaluateScmOperationPreflight({
@@ -138,7 +148,7 @@ export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanel
     const remoteActions = React.useMemo(() => {
         if (scmWriteEnabled !== true) return [];
         if (!snapshot?.repo.isRepo) return [];
-        const actions: Array<React.ComponentProps<typeof WorkspaceScmUpdateTab>['actions'][number]> = [];
+        const actions: SourceControlRemoteAction[] = [];
         if (snapshot.capabilities?.writeRemoteFetch === true) {
             actions.push({
                 key: 'fetch',
@@ -225,21 +235,12 @@ export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanel
         snapshot,
     ]);
 
-    const showUpdateTab = remoteActions.length > 0
-        || snapshot?.capabilities?.readPullRequestStatus === true
-        || snapshot?.capabilities?.readHostingRepositoryPublishTargets === true;
-    const tabs = React.useMemo(() => {
-        return [
-            { id: 'commit' as const, label: t('files.toolbar.changedFiles') },
-            ...(showUpdateTab ? [{ id: 'update' as const, label: t('common.update') }] : []),
-            { id: 'history' as const, label: t('common.history') },
-        ];
-    }, [showUpdateTab]);
-
     React.useEffect(() => {
-        if (activeSubTab !== 'update' || showUpdateTab) return;
+        if (activeSubTab !== 'update') return;
+        // Retained pane state can still name the removed Sync tab. Reveal its tools in Changes.
+        setToolsExpanded(true);
         setActiveSubTab('commit');
-    }, [activeSubTab, showUpdateTab]);
+    }, [activeSubTab, setActiveSubTab]);
 
     const loadMoreHistory = React.useCallback(() => {
         void loadCommitHistory();
@@ -248,48 +249,10 @@ export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanel
         operation: ScmProjectOperationKind;
         fallbackError: string;
         run: () => Promise<T>;
-    }): Promise<T> => {
-        const lockResult = await withWorkspaceScmOperationLock({
-            state: storage.getState(),
-            scope,
-            operation: input.operation,
-            run: async () => {
-                setScmOperationBusy(true);
-                try {
-                    const response = await input.run();
-                    if (!response.success) {
-                        reportWorkspaceScmOperation({
-                            state: storage.getState(),
-                            scope,
-                            operation: input.operation,
-                            status: 'failed',
-                            detail: getScmUserFacingError({
-                                errorCode: response.errorCode,
-                                error: response.error,
-                                fallback: response.error || input.fallbackError,
-                            }),
-                            rawError: response.error,
-                            errorCode: response.errorCode,
-                            surface: 'update',
-                            tracking: null,
-                        });
-                        return response;
-                    }
-
-                    reportWorkspaceScmOperation({
-                        state: storage.getState(),
-                        scope,
-                        operation: input.operation,
-                        status: 'success',
-                        surface: 'update',
-                        tracking: null,
-                    });
-                    return response;
-                } finally {
-                    setScmOperationBusy(false);
-                    setScmOperationStatus(null);
-                }
-            },
+    }) => {
+        const lockResult = await runWorkspaceScmMutation({
+            state: storage.getState(), scope, cwd: scope.rootPath, ...input,
+            setScmOperationBusy, setScmOperationStatus,
         });
         if (!lockResult.started) {
             trackBlockedScmOperation({
@@ -302,9 +265,9 @@ export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanel
             return {
                 success: false,
                 error: lockResult.message,
-            } as T;
+            };
         }
-        return lockResult.value;
+        return lockResult.response === 'cancelled' ? { success: false } : lockResult.response;
     }, [scope]);
     const addRemote = React.useCallback(
         (request: { name: string; fetchUrl: string; pushUrl?: string }) => runWorkspaceUpdateMutation({
@@ -428,14 +391,7 @@ export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanel
         );
     }
     if (loading && !snapshot) {
-        return (
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 16, gap: 10 }}>
-                <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-                <Text style={{ color: theme.colors.text.secondary, ...Typography.default() }}>
-                    {t('common.loading')}
-                </Text>
-            </View>
-        );
+        return <PaneLoadingFallback />;
     }
     // `F-SCM-2`: the branch above is the only place this view reported a snapshot error, and
     // `useWorkspaceScmSnapshotController`'s catch stores the error WITHOUT clearing the stored
@@ -466,95 +422,115 @@ export const WorkspaceRightPanelGitView = React.memo((props: WorkspaceRightPanel
         );
     }
 
+    const repositoryTools = (
+        <ExpandableItem
+            expanded={toolsExpanded}
+            onExpandedChange={setToolsExpanded}
+            header={({ headerProps, expanded }) => (
+                <Item
+                    {...headerProps}
+                    testID="project-git-tools"
+                    title={t('sessionGitPane.flow.tools.title')}
+                    rightElement={<Icon name={expanded ? 'caret-up' : 'caret-down'} size={16} color={theme.colors.text.secondary} />}
+                    showChevron={false}
+                />
+            )}
+        >
+            <SourceControlPullRequestSection
+                theme={theme}
+                snapshot={snapshot}
+                disabled={scmOperationBusy}
+                onOpenOrReuse={openOrReusePullRequest}
+                onOpenCompose={openComposePullRequest}
+                onCreateFeatureBranch={createFeatureBranch}
+                onRefresh={refresh}
+            />
+            <SourceControlPublishRepositorySection
+                theme={theme}
+                snapshot={snapshot}
+                writeEnabled={scmWriteEnabled}
+                disabled={scmOperationBusy}
+                publishTargets={null}
+                onDescribePublishTargets={describePublishTargets}
+                onPublishRepository={publishRepository}
+                onRefresh={refresh}
+                onConnectGitHub={openGitHubConnectedService}
+                onInstallGh={openMachineInstallables}
+                onUseManagedGh={openMachineInstallables}
+                onAuthenticateGh={openMachineInstallables}
+            />
+            <SourceControlRemotesSection
+                theme={theme}
+                snapshot={snapshot}
+                writeEnabled={scmWriteEnabled}
+                disabled={scmOperationBusy}
+                onAddRemote={addRemote}
+                onSetRemoteUrl={setRemoteUrl}
+                onRemoveRemote={removeRemote}
+                onRefresh={refresh}
+            />
+            <SourceControlBranchIntegrationSection
+                theme={theme}
+                snapshot={snapshot}
+                rootPath={scope.rootPath}
+                writeEnabled={scmWriteEnabled}
+                disabled={scmOperationBusy}
+                onMerge={mergeBranch}
+                onRebase={rebaseBranch}
+                onContinue={continueBranchOperation}
+                onAbort={abortBranchOperation}
+                onRefresh={refresh}
+            />
+        </ExpandableItem>
+    );
+    const timeline = (
+        <GitTimelineSection
+            testID="project-git-timeline"
+            changedCount={changedFilesCount}
+            selectedCount={countCommitSelectionItems({ commitSelectionPaths, commitSelectionPatches })}
+            ahead={snapshot?.branch.ahead ?? 0}
+            behind={snapshot?.branch.behind ?? 0}
+            upstream={snapshot?.branch.upstream ?? null}
+            entries={historyEntries}
+            incoming={null}
+            loading={historyLoading}
+            hasMore={historyHasMore}
+            onLoadMore={loadMoreHistory}
+            onOpenCommit={props.onOpenCommit ?? (() => {})}
+            landedSha={null}
+        />
+    );
     return (
         <View style={{ flex: 1, minHeight: 0 }}>
-            <WorkspaceScmSubTabsBar
-                tabs={tabs}
+            {staleSnapshotNotice}
+            <SourceControlRemoteActionsRail
+                theme={theme}
+                actions={remoteActions}
+                hint={!pullPreflight.allowed ? pullPreflight.message : !pushPreflight.allowed ? pushPreflight.message : null}
+            />
+            {scmOperationStatus ? (
+                <Text style={{ paddingHorizontal: 12, color: theme.colors.text.secondary, ...Typography.default() }}>
+                    {scmOperationStatus}
+                </Text>
+            ) : null}
+            <GitPaneLayout
+                layout={paneLayout}
                 activeSubTabId={activeSubTab}
                 onSelectSubTab={setActiveSubTab}
-                testIDPrefix="project-rightpanel-git-subtab:"
+                changedCount={changedFilesCount}
+                historyIdentity={commitHistoryInitKey}
+                testIDPrefix="project-rightpanel-git"
+                timeline={timeline}
+                renderChanges={({ listFooter }) => (
+                    <WorkspaceSourceControlView
+                        {...props}
+                        listHeader={repositoryTools}
+                        listFooter={listFooter}
+                        // Tree review requires a session today; projects expose only supported pane choices.
+                        scopeAccessory={<GitDisplayMenu testID="project-git-display" paneOnly />}
+                    />
+                )}
             />
-            {staleSnapshotNotice}
-            {activeSubTab === 'history' ? (
-                <WorkspaceScmHistoryTab
-                    historyIdentity={commitHistoryInitKey}
-                    theme={theme}
-                    historyLoading={historyLoading}
-                    historyEntries={historyEntries}
-                    historyHasMore={historyHasMore}
-                    onLoadMoreHistory={loadMoreHistory}
-                    onOpenCommit={props.onOpenCommit ?? (() => {})}
-                />
-            ) : activeSubTab === 'update' ? (
-                <WorkspaceScmUpdateTab
-                    theme={theme}
-                    actions={remoteActions}
-                    hint={!pullPreflight.allowed ? pullPreflight.message : !pushPreflight.allowed ? pushPreflight.message : null}
-                    scmStatusFiles={scmStatusFiles}
-                    branchTrigger={(
-                        <WorkspaceSourceControlBranchMenu
-                            serverId={props.serverId}
-                            machineId={props.machineId}
-                            rootPath={props.rootPath}
-                            currentBranch={scmStatusFiles?.branch ?? null}
-                            snapshot={snapshot}
-                            writeEnabled={scmWriteEnabled}
-                            disabled={scmOperationBusy}
-                            onRefreshSnapshot={refresh}
-                            onSelectWorkspacePath={props.onSelectWorkspacePath}
-                            onRequestCreateWorktreeFromAnotherBranch={props.onRequestCreateWorktreeFromAnotherBranch}
-                        />
-                    )}
-                >
-                    <SourceControlPullRequestSection
-                        theme={theme}
-                        snapshot={snapshot}
-                        disabled={scmOperationBusy}
-                        onOpenOrReuse={openOrReusePullRequest}
-                        onOpenCompose={openComposePullRequest}
-                        onCreateFeatureBranch={createFeatureBranch}
-                        onRefresh={refresh}
-                    />
-                    <SourceControlPublishRepositorySection
-                        theme={theme}
-                        snapshot={snapshot}
-                        writeEnabled={scmWriteEnabled}
-                        disabled={scmOperationBusy}
-                        publishTargets={null}
-                        onDescribePublishTargets={describePublishTargets}
-                        onPublishRepository={publishRepository}
-                        onRefresh={refresh}
-                        onConnectGitHub={openGitHubConnectedService}
-                        onInstallGh={openMachineInstallables}
-                        onUseManagedGh={openMachineInstallables}
-                        onAuthenticateGh={openMachineInstallables}
-                    />
-                    <SourceControlRemotesSection
-                        theme={theme}
-                        snapshot={snapshot}
-                        writeEnabled={scmWriteEnabled}
-                        disabled={scmOperationBusy}
-                        onAddRemote={addRemote}
-                        onSetRemoteUrl={setRemoteUrl}
-                        onRemoveRemote={removeRemote}
-                        onRefresh={refresh}
-                    />
-                    <SourceControlBranchIntegrationSection
-                        theme={theme}
-                        snapshot={snapshot}
-                        rootPath={scope.rootPath}
-                        writeEnabled={scmWriteEnabled}
-                        disabled={scmOperationBusy}
-                        onMerge={mergeBranch}
-                        onRebase={rebaseBranch}
-                        onContinue={continueBranchOperation}
-                        onAbort={abortBranchOperation}
-                        onRefresh={refresh}
-                    />
-                </WorkspaceScmUpdateTab>
-            ) : (
-                <WorkspaceSourceControlView {...props} />
-            )}
         </View>
     );
 });

@@ -19,11 +19,15 @@ import { machineExecutionRunsList } from '@/sync/ops/machineExecutionRuns';
 import { sessionExecutionRunStop } from '@/sync/ops/sessionExecutionRuns';
 import { machineStopSession } from '@/sync/ops/machines';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
-import { Text } from '@/components/ui/text/Text';
 import { useMountedShouldContinue } from '@/hooks/ui/useMountedShouldContinue';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
+import { resolveHomeDisplayName } from '@/components/settings/server/homeDisplayName';
+import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 
 type MachineRunsState =
@@ -117,11 +121,11 @@ export default function RunsScreen() {
       .map(([serverId, machines]) => [
         serverId,
         requestedMachineId === null
-          ? machines
-          : machines.filter((machine) => String(machine?.id ?? '').trim() === requestedMachineId),
+          ? machines ?? []
+          : machines?.filter((machine) => String(machine?.id ?? '').trim() === requestedMachineId) ?? [],
       ] as const);
     entries.sort(([a], [b]) => a.localeCompare(b));
-    return entries as Array<[string, any[]]>;
+    return entries;
   }, [machineListByServerId, requestedMachineId, requestedServerId]);
 
   const load = React.useCallback(async () => {
@@ -160,32 +164,27 @@ export default function RunsScreen() {
 
   const headerRight = React.useCallback(() => {
     return (
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t('runs.a11y.toggleFinished')}
-          onPress={() => setShowFinished((value) => !value)}
-          hitSlop={10}
-          style={({ pressed }) => ({ padding: 4, opacity: pressed ? 0.7 : 1 })}
-        >
-          <Icon
-            name="funnel-simple"
-            size={20}
-            color={showFinished ? theme.colors.text.link : headerTint}
-          />
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t('runs.a11y.refresh')}
-          onPress={() => void load()}
-          hitSlop={10}
-          style={({ pressed }) => ({ padding: 4, opacity: pressed ? 0.7 : 1 })}
-        >
-          <Icon name="arrow-clockwise" size={20} color={headerTint} />
-        </Pressable>
-      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={t('runs.a11y.refresh')}
+        onPress={() => void load()}
+        hitSlop={10}
+        style={({ pressed }) => ({ padding: 4, opacity: pressed ? motionTokens.press.opacity : 1 })}
+      >
+        <Icon name="arrow-clockwise" size={20} color={headerTint} />
+      </Pressable>
     );
-  }, [headerTint, load, showFinished]);
+  }, [headerTint, load]);
+
+  const filterTabs = React.useMemo(() => ([
+    { id: 'running' as const, label: t('detailPages.runs.filterRunning') },
+    { id: 'all' as const, label: t('detailPages.runs.filterAll') },
+  ]), []);
+  const onSelectFilter = React.useCallback((tabId: 'running' | 'all') => {
+    setShowFinished(tabId === 'all');
+  }, []);
+  // A Home is named only when runs from more than one Home share the page.
+  const showsHomeNames = serverEntries.filter(([, machines]) => machines.length > 0).length > 1;
 
   const screenOptions = React.useMemo(() => ({
     headerShown: true,
@@ -194,39 +193,51 @@ export default function RunsScreen() {
   }), [headerRight]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.colors.background?.canvas ?? theme.colors.surface.base }}>
+    <View style={{ flex: 1, backgroundColor: theme.colors.surface.base }}>
       <Stack.Screen options={screenOptions} />
       <ConstrainedScreenContent style={{ flex: 1 }}>
-        <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
-          <Text style={{ color: theme.colors.text.secondary }}>
-            {showFinished ? 'Showing finished runs' : 'Showing running runs'}
-          </Text>
-        </View>
-
-        <ItemList style={{ paddingTop: 0 }}>
+        <ItemList presentation="page">
+          <PageHeader
+            title={t('runs.title')}
+            description={t('detailPages.runs.description')}
+            actions={(
+              <View style={{ width: 180 }}>
+                <SegmentedTabBar
+                  tabs={filterTabs}
+                  activeTabId={showFinished ? 'all' : 'running'}
+                  onSelectTab={onSelectFilter}
+                  testIDPrefix="runs.filter"
+                  accessibilityLabel={t('detailPages.runs.filterLabel')}
+                  compact
+                  slidingThumb
+                />
+              </View>
+            )}
+          />
           {state.status === 'loading' ? (
-            <Item
-              title={t('common.loading')}
-              showChevron={false}
-              rightElement={<ActivitySpinner size="small" color={theme.colors.text.secondary} />}
-            />
+            <ItemGroup>
+              <Item
+                title={t('common.loading')}
+                showChevron={false}
+                rightElement={<ActivitySpinner size="small" color={theme.colors.text.secondary} />}
+              />
+            </ItemGroup>
           ) : state.status === 'error' ? (
-            <Item title={t('common.error')} subtitle={state.error} showChevron={false} />
-          ) : serverEntries.length === 0 ? (
-            <Item title={t('status.unknown')} subtitle={t('runs.noMachinesAvailable')} showChevron={false} />
+            <ItemGroup>
+              <Item title={t('common.error')} subtitle={state.error} showChevron={false} />
+            </ItemGroup>
+          ) : !serverEntries.some(([, machines]) => machines.length > 0) ? (
+            <ItemGroup>
+              <Item title={t('runs.noMachinesAvailable')} showChevron={false} />
+            </ItemGroup>
           ) : (
             serverEntries.flatMap(([serverId, machines]) => {
               if (!Array.isArray(machines) || machines.length === 0) return [];
-              const header = (
-                <Item
-                  key={`server:${serverId}`}
-                  title={t('runs.serverTitle', { serverId })}
-                  subtitle={t('runs.machinesSubtitle')}
-                  showChevron={false}
-                />
-              );
+              const homeName = showsHomeNames
+                ? resolveHomeDisplayName(getServerProfileById(serverId)) ?? serverId
+                : null;
 
-              const machineGroups = machines.map((machine) => {
+              return machines.map((machine) => {
                 const machineId = String(machine?.id ?? '').trim();
                 const title = getMachineTitle(machine);
 
@@ -239,19 +250,21 @@ export default function RunsScreen() {
                   : visibleByStatus.filter((run) => run.runId === requestedRunId);
 
                 return (
-                  <ItemGroup key={executionRunMachineAddressKey(serverId, machineId)} title={title}>
+                  <ItemGroup
+                    key={executionRunMachineAddressKey(serverId, machineId)}
+                    title={title}
+                    description={homeName ? t('detailPages.runs.onHome', { home: homeName }) : undefined}
+                  >
                     <Item
-                      title={machineId}
-                      subtitle={t('runs.openMachine')}
-                      subtitleStyle={{ color: theme.colors.text.secondary, fontFamily: 'Menlo' as any, fontSize: 12 }}
-                      rightElement={<Icon name="caret-right" size={16} color={theme.colors.text.secondary} />}
+                      testID="runs.open-machine"
+                      title={t('runs.openMachine')}
                       onPress={() => {
                         const query = serverId ? `?serverId=${encodeURIComponent(serverId)}` : '';
                         router.push(`/machine/${machineId}${query}` as any);
                       }}
                     />
                     {runs.length === 0 ? (
-                      <Item title={t('runs.empty')} subtitle={t('runs.empty')} showChevron={false} />
+                      <Item title={t('runs.empty')} showChevron={false} />
                     ) : (
                       runs.slice(0, 50).map((run) => {
                         const sessionId = readExecutionRunSessionAssociation(run);
@@ -326,7 +339,7 @@ export default function RunsScreen() {
                                 accessibilityLabel={t('runs.stop.stopRunA11y')}
                                 onPress={onStop}
                                 disabled={stoppingRunAddressKey === runAddressKey}
-                                style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+                                style={({ pressed }) => ({ opacity: pressed ? motionTokens.press.opacity : 1 })}
                               >
                                 {stoppingRunAddressKey === runAddressKey ? (
                                   <ActivitySpinner size="small" color={theme.colors.text.secondary} />
@@ -342,8 +355,6 @@ export default function RunsScreen() {
                   </ItemGroup>
                 );
               });
-
-              return [header, ...machineGroups];
             })
           )}
         </ItemList>

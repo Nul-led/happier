@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Pressable, Platform } from 'react-native';
+import { View, Pressable } from 'react-native';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { useRouter, Stack } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -42,9 +42,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         color: theme.colors.text.primary,
         borderWidth: 1,
         borderColor: theme.colors.border.default,
-    } as any,
-    inputFocused: {
-        borderColor: theme.colors.button.primary.background,
     },
     textArea: {
         minHeight: 200,
@@ -74,8 +71,6 @@ export default function NewArtifactScreen() {
     const [title, setTitle] = React.useState('');
     const [body, setBody] = React.useState('');
     const [isSaving, setIsSaving] = React.useState(false);
-    const [titleFocused, setTitleFocused] = React.useState(false);
-    const [bodyFocused, setBodyFocused] = React.useState(false);
     
     const handleSave = React.useCallback(async () => {
         if (isSaving) return;
@@ -152,22 +147,11 @@ export default function NewArtifactScreen() {
                         <View style={styles.inputGroup}>
                             <Text style={styles.label}>{t('artifacts.titleLabel')}</Text>
                             <TextInput
-                                style={[
-                                    styles.input,
-                                    titleFocused && styles.inputFocused,
-                                    Platform.OS === 'web' && { 
-                                        outlineStyle: 'none',
-                                        outline: 'none',
-                                        outlineWidth: 0,
-                                        outlineColor: 'transparent'
-                                    } as any
-                                ]}
+                                style={styles.input}
                                 value={title}
                                 onChangeText={setTitle}
                                 placeholder={t('artifacts.titlePlaceholder')}
                                 placeholderTextColor={theme.colors.input.placeholder}
-                                onFocus={() => setTitleFocused(true)}
-                                onBlur={() => setTitleFocused(false)}
                                 editable={!isSaving}
                                 returnKeyType="next"
                                 autoCapitalize="sentences"
@@ -177,23 +161,11 @@ export default function NewArtifactScreen() {
                         <View style={styles.inputGroup}>
                             <Text style={styles.label}>{t('artifacts.bodyLabel')}</Text>
                             <TextInput
-                                style={[
-                                    styles.input,
-                                    styles.textArea,
-                                    bodyFocused && styles.inputFocused,
-                                    Platform.OS === 'web' && { 
-                                        outlineStyle: 'none',
-                                        outline: 'none',
-                                        outlineWidth: 0,
-                                        outlineColor: 'transparent'
-                                    } as any
-                                ]}
+                                style={[styles.input, styles.textArea]}
                                 value={body}
                                 onChangeText={setBody}
                                 placeholder={t('artifacts.bodyPlaceholder')}
                                 placeholderTextColor={theme.colors.input.placeholder}
-                                onFocus={() => setBodyFocused(true)}
-                                onBlur={() => setBodyFocused(false)}
                                 editable={!isSaving}
                                 multiline
                                 numberOfLines={10}

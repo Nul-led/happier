@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { useOptionalAppPaneContext } from '@/components/appShell/panes/AppPaneProvider';
 import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit/useMobileWorkspaceExperienceState';
@@ -48,14 +48,14 @@ export function useOpenProject(): (workspaceRefId: string, options?: OpenProject
             const tab = options.initialResource.kind === 'file'
                 ? createProjectFileDetailsTab(options.initialResource.path)
                 : createProjectCommitDetailsTab(options.initialResource.sha);
-            if (!tab || !paneContext) return false;
-            paneContext.dispatch({ type: 'openDetailsTab', scopeId, tab, openAs: 'pinned' });
+            if (!tab) return false;
             router.push(buildProjectRouteHref({
                 workspaceRefId: workspaceRef.id,
                 ...(deviceType === 'phone' ? { segment: 'details' as const } : {}),
                 activeRootPath,
                 defaultRootPath: workspaceRef.rootPath,
                 activeWorktreeId,
+                initialResource: options.initialResource,
                 ...(deviceType === 'phone'
                     ? { sourceSurface: options.initialResource.kind === 'file' ? 'browse' as const : 'git' as const }
                     : {}),

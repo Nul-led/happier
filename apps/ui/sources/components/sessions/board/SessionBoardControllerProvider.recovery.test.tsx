@@ -72,8 +72,9 @@ vi.mock('@/components/sessions/plugins/useSessionPluginRuntime', () => ({
 vi.mock('@/components/ui/surfaces/hostedHtml/useSessionCallerHostedHtmlRuntime', () => ({
     useSessionCallerHostedHtmlRuntime: () => null,
 }));
-vi.mock('@/components/sessions/widgets/sessionWidgetCatalog', () => ({
-    selectSessionWidgetCandidates: () => [],
+vi.mock('@/components/widgets/widgetCatalog', () => ({
+    selectWidgetCandidates: () => [],
+    selectCurrentSessionWidgetCandidates: () => [],
 }));
 vi.mock('@/components/sessions/companion/state/useSessionCompanionController', () => ({
     useSessionCompanionController: () => ({

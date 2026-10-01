@@ -41,6 +41,10 @@ export type SplitCanvasAction<TLeafPayload = unknown> =
         axis: SplitCanvasAxis;
         placement: SplitCanvasPlacement;
         newLeaf: SplitCanvasLeafNode<TLeafPayload>;
+        /** Measured target extent along the split axis. All three fields travel together. */
+        availableSizePx?: number;
+        minimumFirstSizePx?: number;
+        minimumSecondSizePx?: number;
     }>
     | Readonly<{
         type: 'replaceLeaf';
@@ -72,6 +76,9 @@ export type SplitCanvasAction<TLeafPayload = unknown> =
         type: 'setSplitRatio';
         splitId: string;
         ratio: number;
+        availableSizePx?: number;
+        minimumFirstSizePx?: number;
+        minimumSecondSizePx?: number;
     }>
     | Readonly<{
         type: 'rebalanceRatios';

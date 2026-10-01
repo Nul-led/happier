@@ -14,6 +14,7 @@ import {
     resolveSessionCompanionHeaderAccessibilityLabel,
     type SessionCompanionHeaderIntent,
 } from './sessionCompanionHeaderIntent';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * Visual projection of the canonical Companion header action. The Session
@@ -42,7 +43,7 @@ export const SessionCompanionHeaderButton = React.memo((props: Readonly<{
                 height: targetSize,
                 alignItems: 'center',
                 justifyContent: 'center',
-                opacity: pressed ? 0.7 : 1,
+                opacity: pressed ? motionTokens.press.opacity : 1,
             })}
         >
             <SessionHeaderIconWithCount count={intent.itemCount}>

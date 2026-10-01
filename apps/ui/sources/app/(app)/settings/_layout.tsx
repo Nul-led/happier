@@ -1,13 +1,13 @@
 import * as React from 'react';
 import { Stack } from 'expo-router';
-import { Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { SettingsShell } from '@/components/settings/shell/SettingsShell';
+import { NavigationTitleChromeProvider } from '@/components/ui/layout/PageHeader';
 import { RouteModalPortalScope } from '@/components/navigation/RouteModalPortalScope';
-import { createAppStackScreenOptions } from '@/components/navigation/createAppStackScreenOptions';
+import { createAppStackScreenOptions, useAppStackUsesCustomHeader } from '@/components/navigation/createAppStackScreenOptions';
 import { getSettingsStackScreenDefinitions } from '@/components/settings/navigation/settingsRouteRegistry';
-import { isRunningOnMac } from '@/utils/platform/platform';
+import { SettingsPresentationRouteKeeper } from '@/components/settings/navigation/SettingsPresentationRouteKeeper';
 import { useDeviceType } from '@/utils/platform/responsive';
 import { getPreferredLanguage, t } from '@/text';
 
@@ -22,7 +22,7 @@ export default React.memo(function SettingsLayoutRoute() {
     // affordance, and the tab bar stay in lock-step. In modal mode we cap the shell to a
     // centered card and add a close button; on phones neither applies.
     const isModalPresentation = deviceType !== 'phone';
-    const shouldUseCustomHeader = Platform.OS === 'android' || isRunningOnMac() || Platform.OS === 'web';
+    const shouldUseCustomHeader = useAppStackUsesCustomHeader();
     const screenOptions = React.useMemo(() => createAppStackScreenOptions({
         headerBackTitle: t('common.back'),
         shouldUseCustomHeader,
@@ -35,6 +35,10 @@ export default React.memo(function SettingsLayoutRoute() {
 
     return (
         <RouteModalPortalScope>
+            {/* Crossing the phone width remounts this navigator; this keeps the page that was open. */}
+            <SettingsPresentationRouteKeeper deviceType={deviceType} />
+            {/* Phones keep the native stack header (which shows the title); the modal has none. */}
+            <NavigationTitleChromeProvider showsTitle={!isModalPresentation}>
             <SettingsShell>
                 <Stack screenOptions={screenOptions}>
                     {screenDefinitions.map((definition) => (
@@ -46,6 +50,7 @@ export default React.memo(function SettingsLayoutRoute() {
                     ))}
                 </Stack>
             </SettingsShell>
+            </NavigationTitleChromeProvider>
         </RouteModalPortalScope>
     );
 });

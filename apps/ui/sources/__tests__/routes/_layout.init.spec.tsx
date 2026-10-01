@@ -441,10 +441,17 @@ vi.mock('@/components/ui/layout/StatusBarProvider', () => ({
     StatusBarProvider: () => null,
 }));
 
-vi.mock('@/components/ui/feedback/AppUpdateStatusTag', () => {
+vi.mock('@/components/updates/UpdatesPopoverButton', () => {
     const React = require('react');
     return {
-        AppUpdateStatusTag: () => React.createElement('AppUpdateStatusTag'),
+        UpdatesEntry: () => React.createElement('UpdatesEntry'),
+    };
+});
+
+vi.mock('@/updates/useUpdatesSummary', () => {
+    const React = require('react');
+    return {
+        UpdatesSummaryProvider: (props: { children?: unknown }) => React.createElement('UpdatesSummaryProvider', null, props.children),
     };
 });
 
@@ -701,7 +708,7 @@ describe('app/_layout init resilience', () => {
 
         expect(screen.findAllByTestId('desktop-narrow-shell-chrome')).toHaveLength(0);
         expect(screen.findAllByTestId('desktop-focus-mode-shell-chrome')).toHaveLength(0);
-        expect(screen.findAllByType('AppUpdateStatusTag' as any)).toHaveLength(0);
+        expect(screen.findAllByType('UpdatesEntry' as any)).toHaveLength(0);
     });
 
     it('uses a transparent navigation background inside the dedicated desktop overlay window', async () => {
@@ -746,31 +753,32 @@ describe('app/_layout init resilience', () => {
         expect(boundary!.findAllByType('FaviconPermissionIndicator' as any)).toHaveLength(1);
     });
 
-    it('keeps the shell navigator mounted while hiding the shell update tag for terminal-connect routes', async () => {
+    it('keeps the shell navigator mounted while hiding the shell Updates entry for terminal-connect routes', async () => {
         mockedPathname = '/terminal/connect';
         const screen = await renderSettledRootLayout();
 
         expect(screen.findAllByType('SidebarNavigator' as any)).toHaveLength(1);
-        expect(screen.findAllByType('AppUpdateStatusTag' as any)).toHaveLength(0);
+        expect(screen.findAllByType('UpdatesEntry' as any)).toHaveLength(0);
         expect(screen.findAllByType('FaviconPermissionIndicator' as any)).toHaveLength(0);
     });
 
-    it('mounts the shell update tag on ordinary app routes', async () => {
+    it('adds no floating update chrome on ordinary routes and computes the one shared Updates summary', async () => {
         mockedPathname = '/';
         const screen = await renderSettledRootLayout();
 
         expect(screen.findAllByType('SidebarNavigator' as any)).toHaveLength(1);
-        expect(screen.findAllByType('AppUpdateStatusTag' as any)).toHaveLength(1);
+        expect(screen.findAllByType('UpdatesEntry' as any)).toHaveLength(0);
+        expect(screen.findAllByType('UpdatesSummaryProvider' as any)).toHaveLength(1);
     });
 
-    it('does not mount a root-shell update tag for unauthenticated desktop flows owned by the pre-auth host', async () => {
+    it('does not mount a root-shell Updates entry for unauthenticated desktop flows owned by the pre-auth host', async () => {
         mockedPathname = '/';
         shellChromeState.isDesktopHost = true;
 
         const screen = await renderSettledRootLayout();
 
         expect(screen.findAllByType('SidebarNavigator' as any)).toHaveLength(1);
-        expect(screen.findAllByType('AppUpdateStatusTag' as any)).toHaveLength(0);
+        expect(screen.findAllByType('UpdatesEntry' as any)).toHaveLength(0);
         expect(screen.findAllByTestId('desktop-focus-mode-shell-chrome')).toHaveLength(0);
         expect(screen.findAllByTestId('desktop-narrow-shell-chrome')).toHaveLength(0);
         const dragSurface = screen.findByTestId('desktop-main-content-drag-surface');

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { PluginAppPageScreen } from '@/components/appShell/plugins/PluginAppPageScreen';
 import {
@@ -7,7 +7,7 @@ import {
 } from '@/components/appShell/plugins/pluginAppPageRoute';
 import { readPluginAppPageSubPath } from '@/components/appShell/plugins/pluginAppPages';
 
-export default React.memo(function PluginAppPageDeepRoute() {
+export const WorkspaceRouteBody = React.memo(function PluginAppPageDeepRoute() {
     const params = useLocalSearchParams();
     const identity = readPluginAppPageRouteIdentity(params);
 
@@ -19,3 +19,5 @@ export default React.memo(function PluginAppPageDeepRoute() {
         />
     );
 });
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

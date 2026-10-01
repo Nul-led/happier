@@ -28,6 +28,9 @@ type HeaderButtonElement = React.ReactElement<{
   disabled?: boolean;
   accessibilityLabel?: string;
   accessibilityRole?: string;
+  testID?: string;
+  /** `AppHeaderCloseButton` presentation: the picker routes' Cancel is `'text'`. */
+  appearance?: 'glyph' | 'text';
 }> | null | undefined;
 
 export type PickerStackScreenOptions = StackScreenOptions & Readonly<{

@@ -9,7 +9,6 @@ describe('resolveAppShellChromeHost', () => {
     it('returns none for terminal-connect routes', () => {
         expect(resolveAppShellChromeHost({
             isAuthenticated: true,
-            isWeb: true,
             isDesktopHost: true,
             isTablet: true,
             isTerminalConnectRoute: true,
@@ -19,31 +18,28 @@ describe('resolveAppShellChromeHost', () => {
     it('returns unauth-shell for unauthenticated desktop flows', () => {
         expect(resolveAppShellChromeHost({
             isAuthenticated: false,
-            isWeb: true,
             isDesktopHost: true,
             isTablet: true,
             isTerminalConnectRoute: false,
         })).toBe('unauth-shell');
     });
 
-    it('returns web-top-right for non-desktop browser shells', () => {
+    it('adds no floating root chrome to browser shells (the sidebar and header own the Updates entry)', () => {
         expect(resolveAppShellChromeHost({
             isAuthenticated: false,
-            isWeb: true,
             isDesktopHost: false,
             isTablet: true,
             isTerminalConnectRoute: false,
-        })).toBe('web-top-right');
+        })).toBe('none');
     });
 
     it('does not place root update chrome over native mobile headers', () => {
         const params = {
             isAuthenticated: true,
-            isWeb: false,
             isDesktopHost: false,
             isTablet: false,
             isTerminalConnectRoute: false,
-        } as ResolveAppShellChromeHostParams & { isWeb: boolean };
+        } as ResolveAppShellChromeHostParams;
 
         expect(resolveAppShellChromeHost(params)).toBe('none');
     });
@@ -51,7 +47,6 @@ describe('resolveAppShellChromeHost', () => {
     it('keeps authenticated wide desktop shell chrome in the sidebar host', () => {
         expect(resolveAppShellChromeHost({
             isAuthenticated: true,
-            isWeb: true,
             isDesktopHost: true,
             isTablet: true,
             isTerminalConnectRoute: false,
@@ -61,7 +56,6 @@ describe('resolveAppShellChromeHost', () => {
     it('returns narrow-desktop-fallback when the desktop shell is too narrow for the sidebar host', () => {
         expect(resolveAppShellChromeHost({
             isAuthenticated: true,
-            isWeb: true,
             isDesktopHost: true,
             isTablet: false,
             isTerminalConnectRoute: false,
@@ -71,7 +65,6 @@ describe('resolveAppShellChromeHost', () => {
     it('returns none when the authenticated desktop sidebar host should stay in the sidebar', () => {
         expect(resolveAppShellChromeHost({
             isAuthenticated: true,
-            isWeb: true,
             isDesktopHost: true,
             isTablet: true,
             isTerminalConnectRoute: false,

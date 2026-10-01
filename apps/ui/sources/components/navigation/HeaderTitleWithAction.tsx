@@ -5,6 +5,7 @@ import { Typography } from '@/constants/Typography';
 import { Text } from '@/components/ui/text/Text';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 
 export type HeaderTitleWithActionProps = {
@@ -64,6 +65,6 @@ const stylesheet = StyleSheet.create(() => ({
         padding: 2,
     },
     actionButtonPressed: {
-        opacity: 0.7,
+        opacity: motionTokens.press.opacity,
     },
 }));

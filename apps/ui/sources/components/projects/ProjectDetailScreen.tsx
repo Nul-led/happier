@@ -16,10 +16,11 @@ import { useScopedPluginUiProjection } from '@/components/plugins/projection/use
 import { useResolvedRepoWorktreeSelection } from '@/components/workspaces/scm/worktrees/useResolvedRepoWorktreeSelection';
 import { findVisibleRepoWorktreeByPath } from '@/components/workspaces/scm/worktrees/repoWorktreeIdentity';
 import { buildProjectPaneScopeId } from './detail/projectPaneScope';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { PROJECT_ROUTE_ROOT_SENTINEL } from './detail/projectRouteState';
 import { resolveProjectRightTabId } from './detail/resolveProjectRightTabId';
 import { useWorkspaceRefById } from './detail/useWorkspaceRefById';
-import { ProjectRightPanel } from './detail/ProjectRightPanel';
+import { ProjectRightPanel, ProjectRightSidebarProvider, ProjectRightSidebarRail } from './detail/ProjectRightPanel';
 import { ProjectDetailsMainPanel } from './detail/ProjectDetailsMainPanel';
 import { ProjectWorktreeRecoveryToast } from './detail/ProjectWorktreeRecoveryToast';
 import { useProjectOverviewMode } from './detail/useProjectOverviewMode';
@@ -41,7 +42,7 @@ export const ProjectDetailScreen = React.memo((props: Readonly<{
     const lastActiveWorktreeIdByWorkspaceRefId = useLocalSetting('projectLastActiveWorktreeIdByWorkspaceRefId');
     const [, setLastActiveRootPathByWorkspaceRefId] = useLocalSettingMutable('projectLastActiveRootPathByWorkspaceRefId');
     const [, setLastActiveWorktreeIdByWorkspaceRefId] = useLocalSettingMutable('projectLastActiveWorktreeIdByWorkspaceRefId');
-    const scopeId = React.useMemo(() => buildProjectPaneScopeId(props.workspaceRefId), [props.workspaceRefId]);
+    const scopeId = useDestinationPaneScopeId(buildProjectPaneScopeId(props.workspaceRefId));
     const pane = useAppPaneScope(scopeId);
     const workspaceRef = useWorkspaceRefById(props.workspaceRefId);
     // This direct Project adapter is the one public target/currentness source
@@ -229,7 +230,21 @@ export const ProjectDetailScreen = React.memo((props: Readonly<{
     }), [renderProjectRightSidebar]);
     const projectRightSidebarAdapter = React.useMemo(() => ({
         render: renderProjectRightSidebar,
+        renderActionRail: () => <ProjectRightSidebarRail />,
     }), [renderProjectRightSidebar]);
+    const wrapProjectScopeContent = React.useCallback((content: React.ReactNode) => (
+        workspaceRef ? (
+            <ProjectRightSidebarProvider
+                scopeId={scopeId}
+                workspaceRef={workspaceRef}
+                activeRootPath={resolvedActiveRootPath}
+                activeWorktreeId={resolvedActiveWorktreeId}
+                onSelectRootPath={handleSelectRootPath}
+            >
+                {content}
+            </ProjectRightSidebarProvider>
+        ) : content
+    ), [handleSelectRootPath, resolvedActiveRootPath, resolvedActiveWorktreeId, scopeId, workspaceRef]);
 
     if (!workspaceRef) {
         return (
@@ -277,6 +292,7 @@ export const ProjectDetailScreen = React.memo((props: Readonly<{
                 surfaceScope={projectSurfaceScope!}
                 rightPaneBuiltinAdapter={projectRightPaneBuiltinAdapter}
                 rightSidebarAdapter={projectRightSidebarAdapter}
+                wrapScopeContent={wrapProjectScopeContent}
                 main={(
                     <ProjectDetailsMainPanel
                         scopeId={scopeId}

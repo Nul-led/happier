@@ -108,6 +108,7 @@ function createPlacement(input: Readonly<{
     return {
         id: `surfacePlacement:acme.preview:${input.descriptorId}`,
         pluginId: 'acme.preview',
+        occurrenceId: 'acme-preview-occurrence',
         contributionKind: 'surfacePlacement',
         descriptorId: input.descriptorId,
         binding,

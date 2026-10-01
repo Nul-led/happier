@@ -1,5 +1,7 @@
 import { usePreventRemove } from '@react-navigation/native';
 import * as React from 'react';
+import { useDestinationFocus, useDestinationInstanceKey } from '@/components/appShell/workspace/DestinationInstanceHost';
+import { useActiveUnsavedChangesGuard } from './useActiveUnsavedChangesGuard';
 
 import {
     type ActiveUnsavedChangesGuard,
@@ -41,6 +43,8 @@ export function useUnsavedChangesBeforeRemoveGuard(params: Readonly<{
         tag,
     } = params;
     const enabled = enabledParam ?? true;
+    const hosted = useDestinationInstanceKey() !== null;
+    const destinationFocused = useDestinationFocus();
     const [pendingContinuation, setPendingContinuation] = React.useState<Readonly<{
         action: unknown;
         resolve: () => void;
@@ -81,7 +85,27 @@ export function useUnsavedChangesBeforeRemoveGuard(params: Readonly<{
         tag,
     ]);
 
-    usePreventRemove(
+    const hostedGuard = React.useMemo<ActiveUnsavedChangesGuard>(() => ({
+        ...guard,
+        onDiscard: async () => {
+            await onDiscard?.();
+            onContinue(null);
+        },
+        onSave: async () => {
+            const saved = await onSave?.() ?? false;
+            if (saved && continueOnSave !== false) onContinue(null);
+            return saved;
+        },
+    }), [continueOnSave, guard, onContinue, onDiscard, onSave]);
+    useActiveUnsavedChangesGuard({
+        navigation: null,
+        guard: hostedGuard,
+        enabled: hosted && destinationFocused && enabled,
+    });
+
+    // Ownership is fixed for a mounted body; hosted views are outside the native Stack.
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    if (!hosted) usePreventRemove(
         enabled
             && pendingContinuation === null
             && !ignoreRef?.current

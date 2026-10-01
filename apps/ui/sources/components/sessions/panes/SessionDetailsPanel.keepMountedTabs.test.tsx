@@ -74,6 +74,7 @@ let scopeState = createScopeState();
 let boardFeatureEnabled = false;
 let mountedBoardItemCount = 0;
 let mountedBoardAddressMatches = true;
+let sessionHydrated = true;
 const mountedBoardAddressCalls: unknown[] = [];
 const mountedCallerHostedHtmlRuntime = Object.freeze({ serverIdentityId: 'home-a-runtime' });
 
@@ -186,11 +187,11 @@ vi.mock('@/components/sessions/board/SessionBoardControllerProvider', () => ({
 }));
 
 vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
-    useSessionViewShellSession: (sessionId: string, serverId: string | null) => ({
+    useSessionViewShellSession: (sessionId: string, serverId: string | null) => sessionHydrated ? ({
         id: sessionId,
         serverId,
         metadata: null,
-    }),
+    }) : null,
 }));
 
 vi.mock('@/components/ui/surfaces/hostedHtml/useSessionCallerHostedHtmlRuntime', () => ({
@@ -231,9 +232,17 @@ describe('SessionDetailsPanel (keep mounted tabs)', () => {
         boardFeatureEnabled = false;
         mountedBoardItemCount = 0;
         mountedBoardAddressMatches = true;
+        sessionHydrated = true;
         mountedBoardAddressCalls.length = 0;
         wheelHandlers.length = 0;
         touchMoveHandlers.length = 0;
+    });
+
+    it('shows a pending details state until a deep-linked Session hydrates', async () => {
+        sessionHydrated = false;
+        const screen = await renderSessionDetailsPanel();
+        expect(screen.findByTestId('details-surface-fallback-pending')).not.toBeNull();
+        expect(screen.findByTestId('details-surface-fallback-unsupported')).toBeNull();
     });
 
     it('keeps inactive tab contents mounted so state can be preserved', async () => {

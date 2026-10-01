@@ -36,6 +36,7 @@ function createDaemonActionProjection(): PluginUiProjectionModel {
     const action: PluginUiActionProjection = Object.freeze({
         id: ACTION_ID.localId,
         pluginId: ACTION_ID.pluginId,
+        occurrenceId: 'acme-current-ui-occurrence-41',
         title: 'Retiring action',
         scopes: ['global'],
         surfaces: ['voice'],

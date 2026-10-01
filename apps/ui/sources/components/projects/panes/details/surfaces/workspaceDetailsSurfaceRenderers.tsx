@@ -129,7 +129,7 @@ export function createWorkspaceDetailsSurfaceRenderers(
     return [
         {
             id: 'workspace-sync-conflicts',
-            owner: 'workspace-sync',
+            owner: 'workspace',
             order: -10,
             canRender: (input) => readWorkspaceSyncConflictDetailsResource(input.tab.resource) !== null,
             render: (input) => {

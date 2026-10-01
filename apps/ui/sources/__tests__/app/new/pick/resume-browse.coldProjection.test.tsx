@@ -64,9 +64,6 @@ installPickerCommonModuleMocks({
         describe: machineContributionRegistryProjectionDescribeMock,
         serverProfiles: [{ id: 'server-cold', serverUrl: 'https://server-cold.example.test' }],
     },
-    tempDataStore: {
-        peekTempData: () => ({ machineId: 'machine-cold', backendTarget: null, backendNewSessionOptionStateByTargetKey: {} }),
-    },
 });
 
 vi.mock('@/components/sessions/external/browse/ExternalSessionsBrowseScreen', () => ({
@@ -93,10 +90,17 @@ vi.mock('@/sync/store/hooks', () => ({
  */
 describe('ResumeBrowsePickerScreen cold projection', () => {
 
-    beforeEach(() => {
+    beforeEach(async () => {
+        const { clearTempData, storeTempData } = await import('@/utils/sessions/tempDataStore');
+        clearTempData();
+        const dataId = storeTempData({
+            machineId: 'machine-cold',
+            backendTarget: null,
+            backendNewSessionOptionStateByTargetKey: {},
+        });
         routeParamsState.value = {
             agentType: 'claude',
-            dataId: 'draft-1',
+            dataId,
             machineId: 'machine-cold',
             spawnServerId: 'server-cold',
         };

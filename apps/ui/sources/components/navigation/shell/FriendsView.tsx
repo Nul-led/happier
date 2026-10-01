@@ -18,7 +18,7 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Item } from '@/components/ui/lists/Item';
 import { RecoveryKeyReminderBanner } from '@/components/account/RecoveryKeyReminderBanner';
 import { Typography } from '@/constants/Typography';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useLayoutMaxWidth } from '@/components/ui/layout/layout';
 import { useIsTablet } from '@/utils/platform/responsive';
 import { Header } from '@/components/navigation/Header';

@@ -1,11 +1,11 @@
 import * as React from 'react';
 
 import { LocalServicesSurfaceHost } from '@/components/sessions/localServices';
+import type { ServiceRowOpenHandler } from '@/components/sessions/localServices/ServiceRowView';
 import type { RuntimeActionExecute } from '@happier-dev/protocol';
 import type {
     LocalServiceLauncherSnapshotClient,
     LocalServiceLauncherState,
-    LocalServiceLaunchTarget,
 } from '@/sync/domains/local/services/launch';
 import type { LocalServiceInventoryState } from '@/sync/domains/local/services/inventory/store';
 import type { LocalServicePublicPreviewState } from '@/sync/domains/local/services/publicPreview/store';
@@ -21,7 +21,7 @@ export type ProjectRightPanelServicesViewProps = Readonly<{
     publicPreviewState?: LocalServicePublicPreviewState | null;
     publicPreviewStatusClient?: LocalServicePublicPreviewStatusClient;
     runtimeActionExecute?: RuntimeActionExecute;
-    onOpenServiceInBrowser?: (target: LocalServiceLaunchTarget) => void | Promise<unknown>;
+    onOpenServiceInBrowser?: ServiceRowOpenHandler;
 }>;
 
 export function ProjectRightPanelServicesView(props: ProjectRightPanelServicesViewProps = {}): React.ReactElement {

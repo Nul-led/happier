@@ -37,34 +37,18 @@ vi.mock('@/components/sessions/panes/git/SessionRightPanelGitView', () => ({
     SessionRightPanelGitView: (props: any) => React.createElement('SessionRightPanelGitView', props),
 }));
 
-const scopeState: any = {
-    right: {
-        isOpen: true,
-        activeTabId: 'git',
-    },
-};
-
-vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
-    useAppPaneScope: () => {
-        const [, bump] = React.useState(0);
-        return {
-            scopeState,
-            openRight: vi.fn(),
-            setRightTab: (tabId: string) => {
-                scopeState.right.activeTabId = tabId;
-                bump((v) => v + 1);
-            },
-            closeRight: vi.fn(),
-            openDetailsTab: vi.fn(),
-        };
-    },
-}));
+// The real pane scope owner (tab selection, per-tab state) — not a mock of it.
 
 describe('SessionRightPanel (keep mounted tabs)', () => {
     it('keeps Git and Files tab surfaces mounted so switching tabs preserves state', async () => {
         const { SessionRightPanel } = await import('./SessionRightPanel');
 
-        const screen = await renderScreen(<SessionRightPanel sessionId="s1" scopeId="session:s1" />);
+        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <SessionRightPanel sessionId="s1" scopeId="session:s1" />
+            </AppPaneProvider>,
+        );
 
         const getStyleValue = (node: ReactTestInstance, key: string) => {
             const styles = Array.isArray(node.props.style) ? node.props.style : [node.props.style];

@@ -123,6 +123,46 @@ async function flushDeferredSessionPaneHistoryStateWrite() {
 }
 
 describe('useSessionPaneUrlSync', () => {
+    it('updates a hosted session through its navigation owner without browser or storage mirrors', async () => {
+        const windowStub = ensurePaneUrlSyncWindow();
+        windowStub.location.href = 'http://localhost:19364/session/other-session?serverId=other-home';
+        const pushState = vi.spyOn(windowStub.history, 'pushState');
+        const replaceState = vi.spyOn(windowStub.history, 'replaceState');
+        pushState.mockClear();
+        replaceState.mockClear();
+        const storage = ensureSessionPaneTestStorage();
+        storage.clear();
+        storage.setItem('happier.sessionPaneState.v1:session:test-session', JSON.stringify({ right: 'files' }));
+        const storedBefore = storage.getItem('happier.sessionPaneState.v1:session:test-session');
+        const setParams = vi.fn();
+        const pane = {
+            openRight: vi.fn(), closeRight: vi.fn(), setRightTab: vi.fn(),
+            openBottom: vi.fn(), closeBottom: vi.fn(), setBottomTab: vi.fn(),
+            openDetailsTab: vi.fn(), closeDetails: vi.fn(),
+        };
+        const scopeState = {
+            right: { isOpen: false, activeTabId: null },
+            bottom: { isOpen: false, activeTabId: null },
+            details: { isOpen: false, tabs: [], activeTabKey: null },
+        };
+        const props = { enabled: true, browserMirrorsEnabled: false, scopeKey: 'session:test-session', pane, scopeState, urlState: null, setParams };
+        const legacy = await renderScreen(<Harness {...props} browserMirrorsEnabled routeParamSyncEnabled={false} />);
+        await act(async () => { legacy.tree.unmount(); });
+        pane.openRight.mockClear();
+        const screen = await renderScreen(<Harness {...props} />);
+        expect(pane.openRight).not.toHaveBeenCalled();
+        await screen.update(<Harness {...props} scopeState={{ ...scopeState, right: { isOpen: true, activeTabId: 'git' } }} />);
+        await flushDeferredSessionPaneHistoryStateWrite();
+        expect(setParams).toHaveBeenCalledWith(expect.objectContaining({ right: 'git' }));
+        await screen.update(<Harness {...props} urlState={{ rightTabId: 'files' }} />);
+        expect(pane.openRight).toHaveBeenCalledWith({ tabId: 'files' });
+        windowStub.location.href = 'http://localhost:19364/session/test-session';
+        windowStub.dispatchEvent?.(new Event('popstate'));
+        expect(pushState).not.toHaveBeenCalled();
+        expect(replaceState).not.toHaveBeenCalled();
+        expect(storage.getItem('happier.sessionPaneState.v1:session:test-session')).toBe(storedBefore);
+    });
+
     it('pushes a browser history entry for pane changes after the initial mount', async () => {
         const setParams = vi.fn();
         const pane = {

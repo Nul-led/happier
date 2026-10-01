@@ -25,11 +25,11 @@ const testState = vi.hoisted(() => ({
 }));
 
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
-vi.mock('@/components/secrets/SecretsList', () => ({
-    SecretsList: (props: Record<string, unknown>) => React.createElement('SecretsList', {
+vi.mock('@/components/settings/secrets/SecretsSettingsPage', () => ({
+    SecretsSettingsPage: (props: Record<string, any>) => React.createElement('SecretsSettingsPage', {
         ...props,
-        testID: 'secrets-list',
-    }),
+        testID: 'secrets-page',
+    }, props.accessEditor?.element ?? null, props.createEditor ?? null),
 }));
 vi.mock('@/components/secrets/SavedSecretAccessEditor', () => ({
     SavedSecretAccessEditor: (props: Record<string, unknown>) => React.createElement('SavedSecretAccessEditor', {
@@ -37,7 +37,12 @@ vi.mock('@/components/secrets/SavedSecretAccessEditor', () => ({
         testID: 'saved-secret-access-editor',
     }),
 }));
-vi.mock('@/components/secrets/SavedSecretCreateEditor', () => ({ SavedSecretCreateEditor: () => null }));
+vi.mock('@/components/secrets/SavedSecretCreateEditor', () => ({
+    SavedSecretCreateEditor: (props: Record<string, unknown>) => React.createElement('SavedSecretCreateEditor', {
+        ...props,
+        testID: 'saved-secret-create-editor',
+    }),
+}));
 vi.mock('@/components/secrets/useSavedSecretCatalog', () => ({
     useSavedSecretCatalog: () => ({
         sharedEnabled: testState.sharedEnabled,
@@ -131,8 +136,8 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         testState.sharedEnabled = true;
         const Screen = (await import('./secrets')).default;
         const { tree } = await renderScreen(<Screen />);
-        const list = tree.root.findByProps({ testID: 'secrets-list' }).props;
-        const secret = list.secrets[0];
+        const list = tree.root.findByProps({ testID: 'secrets-page' }).props;
+        const secret = list.personalSecrets[0];
 
         await act(async () => { list.onSharePersonal(secret); });
 
@@ -140,37 +145,45 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         const editor = tree.root.findByProps({ testID: 'saved-secret-access-editor' }).props;
         expect(editor.target).toEqual({ kind: 'personal', secret, expectedSettingsVersion: 1 });
         expect(editor.scope).toEqual({ serverId: 'home-a', accountId: 'account-a' });
-        expect(tree.root.findAllByProps({ testID: 'secrets-list' })).toHaveLength(0);
+        // The editor opens inside that secret's own row; the collection stays on the page.
+        expect(tree.root.findByProps({ testID: 'secrets-page' }).props.accessEditor.key).toBe(secret.id);
 
         await act(async () => { editor.onClose(); });
-        expect(tree.root.findByProps({ testID: 'secrets-list' })).toBeTruthy();
+        expect(tree.root.findByProps({ testID: 'secrets-page' }).props.accessEditor).toBeNull();
+        expect(tree.root.findAllByProps({ testID: 'saved-secret-access-editor' })).toHaveLength(0);
         expect(testState.promotePersonalSavedSecretResource).not.toHaveBeenCalled();
     });
 
     it('keeps personal editing available while hiding every shared mutation when disabled', async () => {
         const Screen = (await import('./secrets')).default;
         const { tree } = await renderScreen(<Screen />);
-        const props = tree.root.findByProps({ testID: 'secrets-list' }).props;
+        const props = tree.root.findByProps({ testID: 'secrets-page' }).props;
 
-        expect(props.allowAdd).toBe(true);
-        expect(props.allowEdit).toBe(true);
-        expect(props.onCreateShared).toBeUndefined();
+        expect(props.onRenamePersonal).toBeTypeOf('function');
+        expect(props.onRotatePersonal).toBeTypeOf('function');
+        expect(props.onDeletePersonal).toBeTypeOf('function');
+        await act(async () => { props.onAdd(); });
+        // Adding still works, as a personal secret only: the create editor offers no shared storage.
+        const editor = tree.root.findByProps({ testID: 'saved-secret-create-editor' }).props;
+        expect(editor.onCreatePersonal).toBeTypeOf('function');
+        expect(editor.sharedAvailable).toBe(false);
         expect(props.onSharePersonal).toBeUndefined();
         expect(props.onRenameShared).toBeUndefined();
         expect(props.onRotateShared).toBeUndefined();
         expect(props.onManageAccessShared).toBeUndefined();
         expect(props.onDeleteShared).toBeUndefined();
         expect(props.onRetrySharedCatalog).toBeUndefined();
-        expect(props.sharedApprovalId).toBeNull();
+        expect(props.approvalId).toBeNull();
     });
 
     it('exposes shared mutations when the exact Home decision is enabled', async () => {
         testState.sharedEnabled = true;
         const Screen = (await import('./secrets')).default;
         const { tree } = await renderScreen(<Screen />);
-        const props = tree.root.findByProps({ testID: 'secrets-list' }).props;
+        const props = tree.root.findByProps({ testID: 'secrets-page' }).props;
 
-        expect(props.onCreateShared).toBeTypeOf('function');
+        await act(async () => { props.onAdd(); });
+        expect(tree.root.findByProps({ testID: 'saved-secret-create-editor' }).props.sharedAvailable).toBe(true);
         expect(props.onSharePersonal).toBeTypeOf('function');
         expect(props.onRenameShared).toBeTypeOf('function');
         expect(props.onRotateShared).toBeTypeOf('function');
@@ -182,10 +195,11 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         testState.collisionMigrationStatus = 'failed';
         const Screen = (await import('./secrets')).default;
         const { tree } = await renderScreen(<Screen />);
-        const props = tree.root.findByProps({ testID: 'secrets-list' }).props;
+        const props = tree.root.findByProps({ testID: 'secrets-page' }).props;
 
         expect(props.onRetrySharedCatalog).toBeTypeOf('function');
-        expect(props.onCreateShared).toBeUndefined();
+        await act(async () => { props.onAdd(); });
+        expect(tree.root.findByProps({ testID: 'saved-secret-create-editor' }).props.sharedAvailable).toBe(false);
     });
 
     it('preserves exact shared-secret rotation bytes, including an all-whitespace value', async () => {
@@ -207,7 +221,7 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         testState.updateSavedSecretResource.mockResolvedValue({ ok: true });
         const Screen = (await import('./secrets')).default;
         const { tree } = await renderScreen(<Screen />);
-        const props = tree.root.findByProps({ testID: 'secrets-list' }).props;
+        const props = tree.root.findByProps({ testID: 'secrets-page' }).props;
         const entry = testState.sharedEntries[0];
 
         await props.onRotateShared(entry);
@@ -234,7 +248,7 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         testState.modalConfirm.mockResolvedValue(false);
         const Screen = (await import('./secrets')).default;
         const { tree } = await renderScreen(<Screen />);
-        const props = tree.root.findByProps({ testID: 'secrets-list' }).props;
+        const props = tree.root.findByProps({ testID: 'secrets-page' }).props;
 
         await props.onMakeSharedHomeManaged(testState.sharedEntries[0]);
         expect(testState.modalConfirm).toHaveBeenCalledTimes(1);
@@ -251,7 +265,7 @@ describe('SecretsSettingsScreen shared feature decision', () => {
 
         testState.sharedEntries = [sharedOwnerEntry('plain')];
         const plainScreen = await renderScreen(<Screen />);
-        const plainProps = plainScreen.tree.root.findByProps({ testID: 'secrets-list' }).props;
+        const plainProps = plainScreen.tree.root.findByProps({ testID: 'secrets-page' }).props;
         await plainProps.onEncryptShared(testState.sharedEntries[0]);
         await vi.waitFor(() => expect(testState.updateSavedSecretResource).toHaveBeenCalledTimes(2));
         expect(testState.updateSavedSecretResource).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -272,7 +286,7 @@ describe('SecretsSettingsScreen shared feature decision', () => {
 
         testState.encryption = null;
         testState.plaintextStorageEnabled = true;
-        const plainAccount = (await renderScreen(<Screen />)).tree.root.findByProps({ testID: 'secrets-list' }).props;
+        const plainAccount = (await renderScreen(<Screen />)).tree.root.findByProps({ testID: 'secrets-page' }).props;
         expect(plainAccount.onEncryptShared).toBeUndefined();
         expect(testState.featureRequests).toContainEqual([
             'encryption.plaintextStorage',
@@ -281,12 +295,12 @@ describe('SecretsSettingsScreen shared feature decision', () => {
 
         testState.encryption = { decryptEncryptionKey: vi.fn(async () => new Uint8Array(32)) };
         testState.plaintextStorageEnabled = false;
-        const requiredE2ee = (await renderScreen(<Screen />)).tree.root.findByProps({ testID: 'secrets-list' }).props;
+        const requiredE2ee = (await renderScreen(<Screen />)).tree.root.findByProps({ testID: 'secrets-page' }).props;
         expect(requiredE2ee.onMakeSharedHomeManaged).toBeUndefined();
         expect(requiredE2ee.onEncryptShared).toEqual(expect.any(Function));
 
         testState.plaintextStorageEnabled = true;
-        const both = (await renderScreen(<Screen />)).tree.root.findByProps({ testID: 'secrets-list' }).props;
+        const both = (await renderScreen(<Screen />)).tree.root.findByProps({ testID: 'secrets-page' }).props;
         expect(both.onMakeSharedHomeManaged).toEqual(expect.any(Function));
         expect(both.onEncryptShared).toEqual(expect.any(Function));
     });
@@ -304,7 +318,7 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         testState.deleteCorruptResource.mockResolvedValue({ ok: true });
         const Screen = (await import('./secrets')).default;
         const { tree } = await renderScreen(<Screen />);
-        const props = tree.root.findByProps({ testID: 'secrets-list' }).props;
+        const props = tree.root.findByProps({ testID: 'secrets-page' }).props;
 
         expect(props.corruptEntries).toEqual(testState.corruptEntries);
         await props.onDeleteCorruptShared(ownerCorrupt);
@@ -336,7 +350,7 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         const { tree } = await renderScreen(<Screen />);
 
         await act(async () => {
-            tree.root.findByProps({ testID: 'secrets-list' }).props.onDeleteCorruptShared(ownerCorrupt);
+            tree.root.findByProps({ testID: 'secrets-page' }).props.onDeleteCorruptShared(ownerCorrupt);
         });
         await vi.waitFor(() => expect(testState.modalAlert).toHaveBeenCalled());
 

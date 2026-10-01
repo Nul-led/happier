@@ -4,7 +4,8 @@ import { createSessionPaneScopeId } from '../sessionPaneScopeId';
 const SESSION_PANE_HISTORY_STATE_KEY = 'happierSessionPane';
 let pendingHistoryStateWriteTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingHistoryTraversalLocationKey: string | null = null;
-let historyTraversalListenerInstalled = false;
+let historyTraversalSubscribers = 0;
+let removeHistoryTraversalListener: (() => void) | null = null;
 const SESSION_PANE_URL_PARAM_KEYS = ['right', 'bottom', 'details', 'path', 'sha'] as const;
 
 type SessionPaneHistoryState = Readonly<{
@@ -95,19 +96,35 @@ function readHistoryStateRecord(): Record<string, unknown> | null {
     return state as Record<string, unknown>;
 }
 
-export function primeSessionPaneHistoryTraversalTracking(): void {
-    if (historyTraversalListenerInstalled || typeof window === 'undefined' || typeof window.addEventListener !== 'function') {
-        return;
+export function primeSessionPaneHistoryTraversalTracking(): () => void {
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') {
+        return () => {};
     }
-
-    window.addEventListener('popstate', () => {
-        pendingHistoryTraversalLocationKey = readCurrentLocationKey();
-        const scopeKey = readSessionScopeKeyFromCurrentLocation();
-        if (scopeKey && !currentLocationHasExplicitPaneParams()) {
-            writeStoredSessionPaneUrlState(scopeKey, null);
-        }
-    });
-    historyTraversalListenerInstalled = true;
+    if (historyTraversalSubscribers === 0) {
+        const targetWindow = window;
+        const onPopState = () => {
+            pendingHistoryTraversalLocationKey = readCurrentLocationKey();
+            const scopeKey = readSessionScopeKeyFromCurrentLocation();
+            if (scopeKey && !currentLocationHasExplicitPaneParams()) {
+                writeStoredSessionPaneUrlState(scopeKey, null);
+            }
+        };
+        targetWindow.addEventListener('popstate', onPopState);
+        removeHistoryTraversalListener = () => targetWindow.removeEventListener?.('popstate', onPopState);
+    }
+    historyTraversalSubscribers += 1;
+    let disposed = false;
+    return () => {
+        if (disposed) return;
+        disposed = true;
+        historyTraversalSubscribers -= 1;
+        if (historyTraversalSubscribers !== 0) return;
+        removeHistoryTraversalListener?.();
+        removeHistoryTraversalListener = null;
+        pendingHistoryTraversalLocationKey = null;
+        if (pendingHistoryStateWriteTimer !== null) clearTimeout(pendingHistoryStateWriteTimer);
+        pendingHistoryStateWriteTimer = null;
+    };
 }
 
 export function consumeSessionPaneHistoryTraversalForCurrentLocation(): boolean {

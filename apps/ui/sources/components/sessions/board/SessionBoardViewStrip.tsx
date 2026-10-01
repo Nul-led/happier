@@ -4,7 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 // The app's ONE RTL-aware tab-key owner. A Board-local Arrow algorithm would move
 // the wrong way in a right-to-left locale; importing this is the contract.
-import { resolveHappierTabKeySelection } from '@happier-dev/plugin-ui/presentation';
+import { resolveHappierTabKeySelection, resolveHappierFocusRingVisible } from '@happier-dev/plugin-ui/presentation';
 
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
@@ -12,38 +12,37 @@ import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactive
 import { t } from '@/text';
 import { restoreFocusToBestTarget, type FocusReturnRef } from '@/keyboard/focusReturn';
 import type { SessionBoardViewProjection } from '@/sync/domains/session/board';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * The inner Board organization selector.
  *
  * The outer Details destination strip and this one must never read or announce as
- * the same hierarchy. Details tabs are chips with icons and a close affordance;
- * Board views are a quiet secondary underline, labelled "Board views" to assistive
- * technology, and the strip is omitted entirely while Overview is the only view.
+ * the same hierarchy. Details tabs carry icons and a close affordance; Board views
+ * are a quiet row of text chips (lab B: the selected one sits on the selection
+ * fill, the rest are plain text), labelled "Board views" to assistive technology,
+ * and the strip is omitted entirely while Overview is the only view.
  */
 
 const stylesheet = StyleSheet.create((theme) => ({
     strip: {
         flexGrow: 0,
-        borderBottomWidth: Platform.select({ ios: 0.33, default: 1 }),
-        borderBottomColor: theme.colors.border.default,
     },
     content: {
         flexDirection: 'row',
-        alignItems: 'flex-end',
+        alignItems: 'center',
         gap: 4,
-        paddingHorizontal: 4,
+        paddingHorizontal: 12,
+        paddingTop: 4,
+        paddingBottom: 6,
     },
     view: {
         paddingHorizontal: 10,
-        paddingTop: 8,
-        paddingBottom: 6,
-        justifyContent: 'flex-end',
-        borderBottomWidth: 2,
-        borderBottomColor: 'transparent',
+        justifyContent: 'center',
+        borderRadius: 999,
     },
     viewActive: {
-        borderBottomColor: theme.colors.text.primary,
+        backgroundColor: theme.colors.surface.selected,
     },
     label: {
         ...Typography.default(),
@@ -130,10 +129,13 @@ export function SessionBoardViewStrip(props: Readonly<{
             setRenameDraft(view ? resolveSessionBoardViewTitle(view) : '');
             renameSettledRef.current = false;
         } else if (next === null && previous !== null) {
-            viewRefs.current.get(previous)?.focus?.();
+            restoreFocusToBestTarget(
+                { current: viewRefs.current.get(previous) },
+                props.focusFallbackRef,
+            );
         }
         previousRenamingViewIdRef.current = next;
-    }, [props.renamingViewId, views]);
+    }, [props.renamingViewId, props.focusFallbackRef, views]);
     // Removal reconciliation and the surviving tab refs belong to one commit.
     // Restore focus before a following controller effect can schedule another
     // render and obscure which focused tab was removed.
@@ -180,7 +182,13 @@ export function SessionBoardViewStrip(props: Readonly<{
         if (nextIndex !== index) viewRefs.current.get(next.id)?.focus?.();
     }, [onSelectView, views]);
 
-    if (props.views.length <= 1) return null;
+    // A lone view needs no selector — but hiding the strip also hid the inline rename
+    // editor, so the enabled Rename action produced no input and no feedback. The
+    // renaming row is the exception the quiet single-view case keeps.
+    const renamingLoneView = props.renamingViewId !== null
+        && props.renamingViewId !== undefined
+        && props.views.some((view) => view.id === props.renamingViewId);
+    if (props.views.length <= 1 && !renamingLoneView) return null;
 
     return (
         <ScrollView
@@ -276,8 +284,8 @@ export function SessionBoardViewStrip(props: Readonly<{
                             return [
                                 styles.view,
                                 selected ? styles.viewActive : null,
-                                { minHeight: minimumTarget, opacity: webState.pressed ? 0.7 : 1 },
-                                webState.focused === true ? styles.viewFocused : null,
+                                { minHeight: minimumTarget, opacity: webState.pressed ? motionTokens.press.opacity : 1 },
+                                resolveHappierFocusRingVisible(webState.focused) ? styles.viewFocused : null,
                             ];
                         }}
                     >

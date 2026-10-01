@@ -26,6 +26,7 @@ function readProfileId(profile: unknown): string | null {
 
 export function useSessionDetailsPanelPluginRuntime(params: Readonly<{
     sessionId: string;
+    routeServerId?: string | null;
     /**
      * AppPane's registered driver is the authority for target/projection facts.
      * Direct screen renders omit this and retain their incumbent local lookup.
@@ -39,7 +40,7 @@ export function useSessionDetailsPanelPluginRuntime(params: Readonly<{
     // the canonical Session server owner.
     const address = useSessionAddressForSessionId(
         params.sessionId,
-        params.paneSurfaceScope?.serverId,
+        params.paneSurfaceScope?.serverId ?? params.routeServerId,
     );
     const pluginRuntime = useSessionPluginRuntime({
         address,

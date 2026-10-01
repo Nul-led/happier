@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { VirtualizedList } from '@/components/ui/lists/virtualized/VirtualizedList';
+import type { VirtualizedListRef } from '@/components/ui/lists/virtualized/virtualizedListTypes';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { NotSourceControlRepositoryState, SourceControlUnavailableState } from '@/components/workspaces/scm/states';
@@ -42,10 +43,12 @@ import { applyWorkspaceFileDiscardAction } from './applyWorkspaceFileDiscardActi
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { executeWorkspaceScmCommit } from './executeWorkspaceScmCommit';
 import { executeWorkspaceScmRemoteOperation } from './executeWorkspaceScmRemoteOperation';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { activeReviewFileKeyForWorkspace, openChangedFileFromList, useActiveReviewFilePath } from '@/components/workspaces/scm/review/activeReviewFile';
 
 export type WorkspaceSourceControlViewProps = Readonly<{
     serverId: string;
@@ -58,6 +61,9 @@ export type WorkspaceSourceControlViewProps = Readonly<{
     onSelectWorkspacePath?: (path: string) => void;
     onRequestCreateWorktreeFromAnotherBranch?: () => void;
     onRevealInFilesTree?: (fullPath: string) => void;
+    listHeader?: React.ReactNode;
+    listFooter?: React.ReactElement | null;
+    scopeAccessory?: React.ReactNode;
 }>;
 
 const WORKSPACE_CHANGED_FILES_INITIAL_RENDER_COUNT = 12;
@@ -83,6 +89,9 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
         machineId: props.machineId,
         rootPath: props.rootPath,
     }), [props.machineId, props.rootPath, props.serverId]);
+    const activeReviewFileKey = activeReviewFileKeyForWorkspace(scope);
+    const activeReviewPath = useActiveReviewFilePath(activeReviewFileKey);
+    const listRef = React.useRef<VirtualizedListRef | null>(null);
     const { snapshot, loading, error, refresh } = useWorkspaceScmSnapshotController(scope);
     const commitSelectionPaths = useWorkspaceScmCommitSelectionPaths(scope);
     const commitSelectionPatches = useWorkspaceScmCommitSelectionPatches(scope);
@@ -114,8 +123,8 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
     );
 
     const openFile = React.useCallback((file: ScmFileStatus) => {
-        props.onOpenFile(file.fullPath);
-    }, [props]);
+        openChangedFileFromList(activeReviewFileKey, file.fullPath, props.onOpenFile);
+    }, [activeReviewFileKey, props.onOpenFile]);
 
     const openFilePinned = React.useCallback((file: ScmFileStatus) => {
         (props.onOpenFilePinned ?? props.onOpenFile)(file.fullPath);
@@ -163,6 +172,13 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
         if (!searchQuery.trim()) return currentScopeChangedFiles;
         return currentScopeChangedFiles.filter((file) => matchesQuery(file.fullPath, searchQuery));
     }, [currentScopeChangedFiles, searchQuery]);
+
+    React.useEffect(() => {
+        if (!activeReviewPath) return;
+        const index = filteredChangedFiles.findIndex((file) => file.fullPath === activeReviewPath);
+        if (index < 0) return;
+        void listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
+    }, [activeReviewPath, filteredChangedFiles]);
 
     const repositorySelectedCount = React.useMemo(() => {
         if (isAtomicCommitStrategy(scmCommitStrategy)) return commitSelectionCount;
@@ -319,14 +335,7 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
     }
 
     if (loading && !snapshot) {
-        return (
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 16, gap: 10 }}>
-                <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-                <Text style={{ color: theme.colors.text.secondary, ...Typography.default() }}>
-                    {t('common.loading')}
-                </Text>
-            </View>
-        );
+        return <PaneLoadingFallback />;
     }
 
     if (snapshot && snapshot.repo.isRepo === false) {
@@ -336,6 +345,7 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
     return (
         <View style={{ flex: 1, minHeight: 0 }}>
             <VirtualizedList
+                ref={listRef}
                 data={filteredChangedFiles}
                 keyExtractor={(file) => `workspace-scm-${file.fullPath}`}
                 ListHeaderComponent={(
@@ -345,6 +355,7 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
                             borderBottomColor: theme.colors.border.default,
                         }}
                     >
+                        {props.listHeader}
                         {stashCount > 0 && props.onOpenStashDetails ? (
                             <Pressable
                                 testID="workspace-scm-open-stash"
@@ -361,7 +372,7 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
                                     borderBottomWidth: Platform.select({ ios: 0.33, default: 1 }),
                                     borderBottomColor: theme.colors.border.default,
                                     backgroundColor: theme.colors.surface.base,
-                                    opacity: pressed ? 0.85 : 1,
+                                    opacity: pressed ? motionTokens.press.opacitySubtle : 1,
                                 })}
                             >
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
@@ -383,6 +394,7 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
                                 theme={theme}
                                 scmStatusFiles={scmStatusFiles}
                                 variant="rail"
+                                actionSlot={props.scopeAccessory}
                                 branchTrigger={(
                                     <WorkspaceSourceControlBranchMenu
                                         serverId={props.serverId}
@@ -460,7 +472,7 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
                                         borderWidth: 1,
                                         borderColor: theme.colors.border.default,
                                         backgroundColor: theme.colors.surface.base,
-                                        opacity: pressed ? 0.78 : 1,
+                                        opacity: pressed ? motionTokens.press.opacity : 1,
                                         gap: 6,
                                     })}
                                 >
@@ -486,7 +498,7 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
                                     backgroundColor: theme.colors.surface.base,
                                     alignItems: 'center',
                                     justifyContent: 'center',
-                                    opacity: pressed ? 0.78 : 1,
+                                    opacity: pressed ? motionTokens.press.opacity : 1,
                                 })}
                             >
                                 <Icon name="arrows-clockwise" size={14} color={theme.colors.text.secondary} />
@@ -501,6 +513,7 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
                         : undefined;
                     return (
                         <ScmChangeRow
+                            activeReviewFileKey={activeReviewFileKey}
                             theme={theme}
                             file={file}
                             density="compact"
@@ -561,6 +574,7 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
                     );
                 }}
                 contentContainerStyle={{ paddingBottom: 12 }}
+                ListFooterComponent={props.listFooter ?? null}
                 initialNumToRender={Math.min(WORKSPACE_CHANGED_FILES_INITIAL_RENDER_COUNT, filteredChangedFiles.length)}
                 maxToRenderPerBatch={WORKSPACE_CHANGED_FILES_BATCH_RENDER_COUNT}
                 windowSize={WORKSPACE_CHANGED_FILES_WINDOW_SIZE}

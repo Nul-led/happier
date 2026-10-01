@@ -22,7 +22,7 @@ import {
     type PluginSurfaceDestinationNavigationBinding,
 } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
 import {
-    APP_RIGHT_SIDEBAR_PANE_SCOPE_ID,
+    APP_PANE_SCOPE_ID,
     useAppScopeRightSidebarDestinationHandler,
 } from './appScopeRightSidebarNavigation';
 
@@ -144,6 +144,8 @@ function readPaneRight(scopeId: string): PaneRightState {
 // dispatch owner, above any mounted pane host.
 vi.mock('@/components/appShell/panes/AppPaneProvider', () => ({
     useOptionalAppPaneContext: () => ({
+        // No page with a right sidebar is on screen: an App panel opens as its own page.
+        state: { activeScopeId: null },
         dispatch: (action: Readonly<{ type: string; scopeId: string; destination?: unknown }>) => {
             if (action.type !== 'selectRightDestination') return;
             paneScopeStore.commit(action.scopeId, {
@@ -208,6 +210,7 @@ function createAppSidebarPlacement(input: Readonly<{
     return {
         id: `surfacePlacement:acme.preview:${input.descriptorId}`,
         pluginId: 'acme.preview',
+        occurrenceId: 'acme-preview-occurrence',
         contributionKind: 'surfacePlacement',
         descriptorId: input.descriptorId,
         binding,
@@ -416,7 +419,7 @@ describe('AppScopeRightSidebar', () => {
 
         const screen = await renderScreen(
             <AppScopeRightSidebar
-                scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                scopeId={APP_PANE_SCOPE_ID}
                 pluginUiProjection={projectionWith(appSidebarPlacement)}
                 projectionPhase="current"
                 platform="web"
@@ -437,7 +440,7 @@ describe('AppScopeRightSidebar', () => {
 
         const screen = await renderScreen(
             <AppScopeRightSidebar
-                scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                scopeId={APP_PANE_SCOPE_ID}
                 pluginUiProjection={projectionWith(appSidebarPlacement)}
                 projectionPhase="current"
                 platform="web"
@@ -453,7 +456,7 @@ describe('AppScopeRightSidebar', () => {
 
         const screen = await renderScreen(
             <AppScopeRightSidebar
-                scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                scopeId={APP_PANE_SCOPE_ID}
                 requestedDestination={{ pluginId: 'acme.preview', localId: 'detail-panel' }}
                 pluginUiProjection={projectionWith(
                     withSelectedContributionOrigin(appSidebarPlacement, {
@@ -490,7 +493,7 @@ describe('AppScopeRightSidebar', () => {
         await renderScreen(
             <AppTargetNavigationScope projection={projection}>
                 <AppScopeRightSidebar
-                    scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                    scopeId={APP_PANE_SCOPE_ID}
                     pluginUiProjection={projection}
                     projectionPhase="current"
                     platform="web"
@@ -511,7 +514,7 @@ describe('AppScopeRightSidebar', () => {
 
         const screen = await renderScreen(
             <AppScopeRightSidebar
-                scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                scopeId={APP_PANE_SCOPE_ID}
                 pluginUiProjection={projectionWith()}
                 platform="web"
                 testID="app-scope-right-sidebar-empty"
@@ -528,7 +531,7 @@ describe('AppScopeRightSidebar', () => {
 
         const screen = await renderScreen(
             <AppScopeRightSidebar
-                scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                scopeId={APP_PANE_SCOPE_ID}
                 pluginUiProjection={projectionWith()}
                 projectionPhase="establishing"
                 platform="web"
@@ -544,7 +547,7 @@ describe('AppScopeRightSidebar', () => {
 
         await screen.update(
             <AppScopeRightSidebar
-                scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                scopeId={APP_PANE_SCOPE_ID}
                 pluginUiProjection={projectionWith()}
                 projectionPhase="current"
                 platform="web"
@@ -562,7 +565,7 @@ describe('AppScopeRightSidebar', () => {
 
         const screen = await renderScreen(
             <AppScopeRightSidebar
-                scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                scopeId={APP_PANE_SCOPE_ID}
                 pluginUiProjection={projectionWith({
                     ...appSidebarPlacement,
                     availability: { state: 'fallback', reason: 'feature_disabled', diagnostics: ['feature_disabled'] },
@@ -594,7 +597,7 @@ describe('AppScopeRightSidebar', () => {
             const screen = await renderScreen(
                 <AppTargetNavigationScope projection={projection}>
                     <AppScopeRightSidebar
-                        scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                        scopeId={APP_PANE_SCOPE_ID}
                         pluginUiProjection={projection}
                         platform="web"
                         testID="app-scope-right-sidebar-launch"
@@ -665,7 +668,7 @@ describe('AppScopeRightSidebar', () => {
             const screen = await renderScreen(
                 <AppTargetNavigationScope projection={projection}>
                     <AppScopeRightSidebar
-                        scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                        scopeId={APP_PANE_SCOPE_ID}
                         pluginUiProjection={projection}
                         platform="web"
                     />
@@ -730,7 +733,7 @@ describe('AppScopeRightSidebar', () => {
                 return (
                     <AppTargetNavigationScope projection={projection}>
                         <AppScopeRightSidebar
-                            scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                            scopeId={APP_PANE_SCOPE_ID}
                             pluginUiProjection={projection}
                             platform="web"
                             testID="app-scope-right-sidebar-launch"
@@ -775,7 +778,7 @@ describe('AppScopeRightSidebar', () => {
                 return (
                     <AppTargetNavigationScope projection={projection}>
                         <AppScopeRightSidebar
-                            scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                            scopeId={APP_PANE_SCOPE_ID}
                             pluginUiProjection={projection}
                             platform="web"
                         />
@@ -882,8 +885,8 @@ describe('AppScopeRightSidebar', () => {
                 })).resolves.toEqual({ ok: true });
             });
 
-            expect(router.push).toHaveBeenCalledWith('/settings/plugins/panels');
-            expect(paneScopeStore.scopes.get(APP_RIGHT_SIDEBAR_PANE_SCOPE_ID)).toMatchObject({
+            expect(router.push).toHaveBeenCalledWith('/plugins/panels?pluginId=acme.preview&destinationId=detail-panel');
+            expect(paneScopeStore.scopes.get(APP_PANE_SCOPE_ID)).toMatchObject({
                 selectedDestination: {
                     kind: 'plugin',
                     destination: { pluginId: 'acme.preview', localId: 'detail-panel' },
@@ -892,7 +895,7 @@ describe('AppScopeRightSidebar', () => {
 
             // The route now mounts and renders the destination the open selected,
             // together with the launch input that rode across the navigation.
-            routerState.pathname = '/settings/plugins/panels';
+            routerState.pathname = '/plugins/panels';
             await act(async () => {
                 screen.tree.update(
                     <AppTargetNavigationScope
@@ -900,7 +903,7 @@ describe('AppScopeRightSidebar', () => {
                         onBinding={(next) => { binding = next; }}
                     >
                         <AppScopeRightSidebar
-                            scopeId={APP_RIGHT_SIDEBAR_PANE_SCOPE_ID}
+                            scopeId={APP_PANE_SCOPE_ID}
                             pluginUiProjection={projection}
                             platform="web"
                             testID="app-scope-right-sidebar-cold"

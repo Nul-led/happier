@@ -19,8 +19,10 @@ import {
 } from '@/components/browser/surfaces';
 import type { DetailsTab } from '@/components/appShell/panes/details/workspace/detailsWorkspaceTypes';
 import type { SessionFileDeepLinkAnchor } from '@/components/sessions/files/views/SessionFileDetailsView';
-import { SessionExecutionRunLauncherView } from '@/components/sessions/runs/launcher/SessionExecutionRunLauncherView';
 import { SessionInteractiveExecutionRunDraftView } from '@/components/sessions/runs/launcher/SessionInteractiveExecutionRunDraftView';
+import { isSessionPeekDetailsResource } from '@/components/sessions/work/createSessionPeekDetailsTab';
+import { SessionPeekDetailsView } from '@/components/sessions/work/SessionPeekDetailsView';
+import { SessionWorkMapDetailsView, isSessionWorkMapDetailsResource } from '@/components/sessions/work/SessionWorkMapDetailsView';
 import { SessionExecutionRunDetailsView } from '@/components/sessions/runs/details/SessionExecutionRunDetailsView';
 import { createExecutionRunDetailsTab } from '@/components/sessions/runs/launcher/executionRunLauncherModel';
 import { SessionBoardDetailsSurface } from '@/components/sessions/board/SessionBoardDetailsSurface';
@@ -63,6 +65,7 @@ import {
     SessionSubagentDetailsViewForPanel,
 } from '../SessionDetailsPanelDetailViews';
 import { renderSessionSurfaceTab } from '../registry/sessionSurfaces';
+import { SessionScmPullRequestDetailsView } from '@/components/sessions/panes/git/pullRequest/SessionScmPullRequestDetailsView';
 import {
     readWorkspaceSyncConflictDetailsResource,
     WorkspaceSyncConflictDetailsView,
@@ -148,11 +151,13 @@ function isExecutionRunLauncherResource(value: unknown): value is Readonly<{
     intent?: 'review' | 'plan' | 'delegate';
     source?: SessionDiscussionSelectionSourceV1;
     initialInstructions?: string;
+    roleId?: string;
 }> {
     if (!value || typeof value !== 'object') return false;
     const maybe = value as {
         kind?: unknown;
         intent?: unknown;
+        roleId?: unknown;
         source?: unknown;
         initialInstructions?: unknown;
         mode?: unknown;
@@ -166,6 +171,7 @@ function isExecutionRunLauncherResource(value: unknown): value is Readonly<{
         return false;
     }
     if (maybe.initialInstructions != null && typeof maybe.initialInstructions !== 'string') return false;
+    if (maybe.roleId != null && (typeof maybe.roleId !== 'string' || maybe.roleId.trim().length === 0)) return false;
     if (maybe.source == null) return true;
     const source = SessionDiscussionSelectionSourceV1Schema.safeParse(maybe.source);
     if (!source.success) return false;
@@ -340,9 +346,10 @@ export function createSessionDetailsSurfaceRenderers(
             id: 'session-surface-registry',
             owner: 'session',
             order: 0,
-            canRender: (input) => readResourceKind(input) === 'simulatorPreview',
+            canRender: (input) => readResourceKind(input) === 'simulatorPreview' || readResourceKind(input) === 'computerScreen',
             render: (input) => renderSessionSurfaceTab({
                 sessionId: options.sessionId,
+                serverId: options.serverId,
                 tab: input.tab,
                 simulatorPreview: options.simulatorPreview,
                 nowMs: options.nowMs,
@@ -459,8 +466,7 @@ export function createSessionDetailsSurfaceRenderers(
                         sessionId={options.sessionId}
                         serverId={options.serverId}
                         sha={String(sha)}
-                        onBack={options.requestClose}
-                        presentation="panel"
+                        onBack={() => options.closeDetailsTab(input.tab.key)}
                         onOpenFile={(path) => options.openFileTab(path, 'default')}
                         onOpenFilePinned={(path) => options.openFileTab(path, 'pinned')}
                     />
@@ -472,11 +478,12 @@ export function createSessionDetailsSurfaceRenderers(
             owner: 'scm',
             order: 30,
             canRender: (input) => readResourceKind(input) === 'scmReview',
-            render: () => (
+            render: (input) => (
                 <SessionScmReviewDetailsViewForPanel
                     sessionId={options.sessionId}
                     serverId={options.serverId}
                     scopeId={options.scopeId}
+                    active={input.active}
                 />
             ),
         },
@@ -492,6 +499,19 @@ export function createSessionDetailsSurfaceRenderers(
                     scopeId={options.scopeId}
                     onOpenFile={(path) => options.openFileTab(path, 'default')}
                     onOpenFilePinned={(path) => options.openFileTab(path, 'pinned')}
+                />
+            ),
+        },
+        {
+            id: 'session-scm-pull-request',
+            owner: 'scm',
+            order: 45,
+            canRender: (input) => readResourceKind(input) === 'scmPullRequest',
+            render: (input) => (
+                <SessionScmPullRequestDetailsView
+                    sessionId={options.sessionId}
+                    serverId={options.serverId ?? undefined}
+                    onCloseTab={() => options.closeDetailsTab(input.tab.key)}
                 />
             ),
         },
@@ -536,6 +556,38 @@ export function createSessionDetailsSurfaceRenderers(
             },
         },
         {
+            id: 'session-peek',
+            owner: 'session',
+            order: 61,
+            canRender: (input) => isSessionPeekDetailsResource(input.tab.resource),
+            render: (input) => {
+                if (!isSessionPeekDetailsResource(input.tab.resource)) return null;
+                return (
+                    <SessionPeekDetailsView
+                        sessionId={input.tab.resource.sessionId}
+                        serverId={options.serverId}
+                        active={input.active}
+                    />
+                );
+            },
+        },
+        {
+            id: 'session-work-map',
+            owner: 'session',
+            order: 62,
+            canRender: (input) => isSessionWorkMapDetailsResource(input.tab.resource),
+            render: (input) => {
+                if (!isSessionWorkMapDetailsResource(input.tab.resource)) return null;
+                return (
+                    <SessionWorkMapDetailsView
+                        sessionId={input.tab.resource.sessionId}
+                        serverId={options.serverId ?? null}
+                        scopeId={options.scopeId}
+                    />
+                );
+            },
+        },
+        {
             id: 'session-execution-run-launcher',
             owner: 'session',
             order: 70,
@@ -546,33 +598,28 @@ export function createSessionDetailsSurfaceRenderers(
                     input.tab.resource.source
                     && input.tab.resource.source.sessionId !== options.sessionId
                 ) return null;
-                if (input.tab.resource.mode === 'conversation') {
-                    return (
-                        <SessionInteractiveExecutionRunDraftView
-                            sessionId={options.sessionId}
-                            serverId={options.serverId}
-                            initialText={input.tab.resource.initialInstructions}
-                            launchOrigin={input.tab.resource.source && 'draftCorrelationId' in input.tab.resource.source
-                                ? input.tab.resource.source as SessionDiscussionSelectionSourceV1 & Readonly<{ draftCorrelationId: string }>
-                                : undefined}
-                            onRunStarted={(runId, recovery) => {
-                                input.callbacks.replaceTab?.(
-                                    input.tab.key,
-                                    createExecutionRunDetailsTab(runId, recovery),
-                                    { intent: input.tab.isPreview ? 'preview' : 'pinned' },
-                                );
-                            }}
-                        />
-                    );
-                }
+                // One composer-first start for every ask (lab `convo-S1`): a conversation draft carries
+                // no intent; a Review, Plan or Delegate tab carries its own; the old intent-less
+                // "Advanced" tab asks for a review with every choice, as the form did.
+                const resource = input.tab.resource;
                 return (
-                    <SessionExecutionRunLauncherView
+                    <SessionInteractiveExecutionRunDraftView
                         sessionId={options.sessionId}
                         serverId={options.serverId}
-                        scopeId={options.scopeId}
-                        presentation="panel"
-                        initialIntent={input.tab.resource.intent}
-                        onRequestClose={() => options.closeDetailsTab(input.tab.key)}
+                        autoFocusComposer
+                        intent={resource.mode === 'conversation' ? null : resource.intent ?? 'review'}
+                        roleId={resource.roleId ?? null}
+                        initialText={resource.initialInstructions}
+                        launchOrigin={resource.source && 'draftCorrelationId' in resource.source
+                            ? resource.source as SessionDiscussionSelectionSourceV1 & Readonly<{ draftCorrelationId: string }>
+                            : undefined}
+                        onRunStarted={(runId, recovery, presentation) => {
+                            input.callbacks.replaceTab?.(
+                                input.tab.key,
+                                createExecutionRunDetailsTab(runId, recovery, presentation?.title),
+                                { intent: input.tab.isPreview ? 'preview' : 'pinned' },
+                            );
+                        }}
                     />
                 );
             },
@@ -591,6 +638,15 @@ export function createSessionDetailsSurfaceRenderers(
                         retryInputLocalId={input.tab.resource.retryInputLocalId}
                         serverId={options.serverId}
                         presentation="panel"
+                        openingTitle={input.tab.title}
+                        onRequestClose={() => options.closeDetailsTab(input.tab.key)}
+                        onTitleResolved={(title) => {
+                            input.callbacks.replaceTab?.(
+                                input.tab.key,
+                                // Same key and resource: only the name changes; pin and preview state stay.
+                                { key: input.tab.key, kind: input.tab.kind, title, resource: input.tab.resource },
+                            );
+                        }}
                     />
                 );
             },

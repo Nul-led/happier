@@ -1,7 +1,8 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
-import { useIsFocused } from '@react-navigation/native';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
 
 import { SessionsList } from '@/components/sessions/shell/SessionsList';
 import { resolveFocusedSessionListSurfaceOwnership } from '@/components/sessions/shell/surface/sessionListSurfaceOwnership';
@@ -22,7 +23,7 @@ const ARCHIVED_SESSIONS_PATHNAME = '/session/archived';
  * selects the archived corpus and binds the surface to its own focus. It owns no
  * cursor, request lifecycle, grouping or row presentation of its own.
  */
-export default function ArchivedSessionsScreen() {
+export function ArchivedSessionsScreen() {
     const isFocused = useIsFocused();
     const surfaceOwnership = resolveFocusedSessionListSurfaceOwnership(isFocused);
     const styles = stylesheet;
@@ -38,3 +39,7 @@ export default function ArchivedSessionsScreen() {
         </View>
     );
 }
+
+export { ArchivedSessionsScreen as WorkspaceRouteBody };
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={ArchivedSessionsScreen} />; }

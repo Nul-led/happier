@@ -48,6 +48,8 @@ export type SessionBoardPresentationPort = Readonly<{
 export type SessionPresentationPorts = Readonly<{
     companion: SessionCompanionController;
     board: SessionBoardPresentationPort;
+    /** Exact mounted Session catalogs admit new personal references; existing refs remain editable when unavailable. */
+    canAddCompanionItem: (item: SessionCompanionItemRefV1) => boolean;
     /** Returns to Chat preserving draft, selection, anchor and keyboard focus. */
     returnToChat: () => SessionPresentationMutationOutcome;
     /** Opens the incumbent full Companion destination; it owns route currentness. */
@@ -217,13 +219,6 @@ function fromPresentationOutcome(
     return APPLIED;
 }
 
-function itemIsReadable(
-    ports: SessionPresentationPorts,
-    item: SessionCompanionItemRefV1,
-): boolean {
-    return item.kind === 'builtin' || ports.board.canReadItem(item.widgetId);
-}
-
 export function applySessionPresentationIntent(
     ports: SessionPresentationPorts,
     intent: CurrentSessionPresentationIntentV1,
@@ -300,7 +295,7 @@ export function applySessionPresentationIntent(
             );
 
         case 'companion.item.add': {
-            if (!itemIsReadable(exactPorts, intent.item)) return INVALID_TARGET;
+            if (!exactPorts.canAddCompanionItem(intent.item)) return INVALID_TARGET;
             return fromCompanionOutcome(
                 exactPorts,
                 'companion.item.add',
@@ -327,6 +322,14 @@ export function applySessionPresentationIntent(
                 () => exactPorts.companion.moveItem(intent.item, intent.toIndex),
             );
         }
+
+        case 'companion.item.frameStyle.set':
+            return fromCompanionOutcome(
+                exactPorts,
+                'companion.item.frameStyle.set',
+                t('common.done'),
+                () => exactPorts.companion.setItemFrameStyle(intent.item, intent.frameStyle),
+            );
 
         case 'companion.edge.set':
             return fromCompanionOutcome(

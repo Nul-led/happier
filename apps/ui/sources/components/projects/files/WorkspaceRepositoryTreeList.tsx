@@ -4,13 +4,13 @@ import { Platform, View, type ScrollViewProps } from 'react-native';
 import type { useUnistyles } from 'react-native-unistyles';
 
 import { FilesystemBrowser } from '@/components/ui/filesystemBrowser/FilesystemBrowser';
-import { FilesystemBrowserRow } from '@/components/ui/filesystemBrowser/FilesystemBrowserRow';
+import { FilesystemBrowserRow, type FilesystemBrowserRowActionsControl } from '@/components/ui/filesystemBrowser/FilesystemBrowserRow';
 import type { FilesystemBrowserRowRenderInput } from '@/components/ui/filesystemBrowser/filesystemBrowserTypes';
 import { FileIcon } from '@/components/ui/media/FileIcon';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { useWorkspaceRepositoryTreeBrowser } from '@/hooks/workspaces/files/useWorkspaceRepositoryTreeBrowser';
-import { SourceControlUnavailableState } from '@/components/workspaces/scm/states';
+import { RepositoryTreeRootErrorState } from '@/components/workspaces/files/repositoryTree/RepositoryTreeRootErrorState';
 import { t } from '@/text';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import { useScmTreeBadgeIndex } from '@/components/workspaces/files/repositoryTree/useScmTreeBadgeIndex';
@@ -23,6 +23,15 @@ import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScop
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
+import { TREE_ROW_METRICS } from '@/components/ui/lists/itemDensityMetrics';
+import { isTouchPrimaryPointer } from '@/components/ui/interactiveTargetSize';
+import type { SelectionCheckState } from '@/components/ui/selection/SelectionCheckGlyph';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { formatExactCount } from '@/components/ui/navigation/tabBadge/tabBadgeModel';
+import { buildChangedOnlyTreeNodes } from '@/components/workspaces/files/repositoryTree/buildChangedFilesOutlineTree';
+import { resolveScmChangeToneColor, resolveScmChangeToneForCode } from '@/scm/scmChangeKind';
+import { selectScmChangedFiles } from '@/scm/scmStatusFiles';
+import { ScmChangeMark } from '@/components/workspaces/scm/changes/ScmChangeMark';
 
 export type WorkspaceRepositoryTreeWebDropTarget = Readonly<{
     destinationDir: string;
@@ -31,6 +40,18 @@ export type WorkspaceRepositoryTreeWebDropTarget = Readonly<{
 }>;
 
 type WorkspaceRepositoryTreeNode = LazyDirectoryTreeNode;
+
+/**
+ * A controlled checkbox per row. `revision` must change whenever any row's state changes, so mounted
+ * (virtualized) rows redraw; `getState` answers per row (a folder may be `mixed`).
+ */
+export type WorkspaceRepositoryTreeRowSelection = Readonly<{
+    revision: string | number;
+    getState: (node: WorkspaceRepositoryTreeNode) => SelectionCheckState;
+    onToggle: (node: WorkspaceRepositoryTreeNode) => void;
+    accessibilityLabel: (node: WorkspaceRepositoryTreeNode) => string;
+    isDisabled?: (node: WorkspaceRepositoryTreeNode) => boolean;
+}>;
 
 type AppTheme = ReturnType<typeof useUnistyles>['theme'];
 
@@ -53,9 +74,33 @@ type WorkspaceRepositoryTreeListProps = Readonly<{
     onOpenFile: (fullPath: string) => void;
     onOpenFilePinned?: (fullPath: string) => void;
     scmSnapshot?: ScmWorkingSnapshot | null;
-    renderRowActions?: ((node: WorkspaceRepositoryTreeNode) => React.ReactNode) | null;
+    /** Trailing per-row actions; the row reveals them (hover/focus/selected; long press on touch). */
+    renderRowActions?: ((node: WorkspaceRepositoryTreeNode, control: FilesystemBrowserRowActionsControl) => React.ReactNode) | null;
     showInlineLoadingHeader?: boolean;
     onRootLoadingChange?: (loading: boolean) => void;
+    /**
+     * Changed only (session tabs lab FC): the same tree pruned to the changed files
+     * (`selectScmChangedFiles`), folders open, single-child folder chains as one row.
+     */
+    changedOnly?: boolean;
+    /** Changed only has nothing to show: the one way back to every file. */
+    onShowAllFiles?: (() => void) | null;
+    /** The file open in Details: its row stays selected (lab F1). */
+    selectedPath?: string | null;
+    /** The machine the files live on, named by the root failure. */
+    machineName?: string | null;
+    /**
+     * The leading control. Omitted: each row shows its entry icon. Given: each row shows a checkbox the
+     * consumer controls (the Git changed-files tree). Trailing per-row actions stay `renderRowActions`.
+     */
+    rowSelection?: WorkspaceRepositoryTreeRowSelection | null;
+    /**
+     * Read the folder listing under Changed only (default): Files keeps it warm for its way back to every
+     * file. The Git tree has no way back and shows only changes, so it asks the machine for nothing.
+     */
+    directoryListing?: boolean;
+    /** Drawn after the last row, in the tree's own scroll. */
+    listFooter?: React.ReactElement | null;
     onLayout?: ScrollViewProps['onLayout'];
     onContentSizeChange?: ScrollViewProps['onContentSizeChange'];
     onScroll?: ScrollViewProps['onScroll'];
@@ -81,23 +126,17 @@ function buildWebDropTarget(node: WorkspaceRepositoryTreeNode): WorkspaceReposit
     };
 }
 
+const NO_CHANGED_FILES: readonly never[] = [];
+const NO_CLOSED_PATHS: ReadonlySet<string> = new Set();
+
 function renderEntryIcon(node: WorkspaceRepositoryTreeNode, theme: AppTheme) {
     if (node.type === 'directory') {
-        return (
-            <Icon
-                name={node.isExpanded ? 'folder-open' : 'folder'}
-                size={16}
-                color={theme.colors.text.link}
-            />
-        );
-    }
-    if (node.type === 'error') {
-        return <Icon name="warning-circle" size={16} color={theme.colors.text.secondary} />;
+        return <Icon name="folder" size={16} color={theme.colors.text.secondary} />;
     }
     if (node.type === 'info') {
         return <Icon name="info" size={16} color={theme.colors.text.secondary} />;
     }
-    return <FileIcon fileName={node.name} size={16} />;
+    return <FileIcon fileName={node.name} size={16} appearance="line" />;
 }
 
 export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceRepositoryTreeList(props: WorkspaceRepositoryTreeListProps): React.ReactElement {
@@ -108,15 +147,38 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
         ...(props.revealedPaths ?? []),
         ...(props.scmSnapshot?.entries.flatMap(entry => entry.previousPath ? [entry.path, entry.previousPath] : [entry.path]) ?? []),
     ], [props.revealedPaths, props.scmSnapshot]);
-    const { rootLoading, rootError, nodes, toggleDirectory, retryRoot, retryDirectory, gitIgnoreAvailable } = useWorkspaceRepositoryTreeBrowser({
+    const { rootLoading: treeRootLoading, rootError: treeRootError, nodes: treeNodes, toggleDirectory: toggleTreeDirectory, retryRoot, retryDirectory, gitIgnoreAvailable } = useWorkspaceRepositoryTreeBrowser({
         scope: props.scope,
-        enabled: true,
+        enabled: props.directoryListing !== false,
         expandedPaths,
         onExpandedPathsChange,
         reloadToken: props.reloadToken,
         visibilityMode: props.visibilityMode,
         preservedPaths,
     });
+
+    // Changed only is a presentation of the same tree: the one changed-file list (the header's and
+    // Git's count) pruned into rows, with the directory listing kept warm underneath for the way back.
+    const changedOnly = props.changedOnly === true;
+    const scmRepo = props.scmSnapshot?.repo.isRepo === true ? props.scmSnapshot : null;
+    const changedFiles = changedOnly && scmRepo ? selectScmChangedFiles(scmRepo) : NO_CHANGED_FILES;
+    const [closedChangedPaths, setClosedChangedPaths] = React.useState<ReadonlySet<string>>(NO_CLOSED_PATHS);
+    const changedNodes = React.useMemo(
+        () => (changedOnly ? buildChangedOnlyTreeNodes(changedFiles, closedChangedPaths) : []),
+        [changedFiles, changedOnly, closedChangedPaths],
+    );
+    const toggleChangedDirectory = React.useCallback(async (path: string) => {
+        setClosedChangedPaths((current) => {
+            const next = new Set(current);
+            if (next.has(path)) next.delete(path);
+            else next.add(path);
+            return next;
+        });
+    }, []);
+    const nodes = changedOnly ? changedNodes : treeNodes;
+    const toggleDirectory = changedOnly ? toggleChangedDirectory : toggleTreeDirectory;
+    const rootLoading = changedOnly ? props.scmSnapshot == null : treeRootLoading;
+    const rootError = changedOnly ? null : treeRootError;
 
     React.useEffect(() => {
         props.onRootLoadingChange?.(rootLoading);
@@ -138,14 +200,18 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
     }, [nodes, props.revealRequest, treeKeyboard.focusPath]);
     const badgeIndex = useScmTreeBadgeIndex(props.scmSnapshot ?? null);
     const badgeSignature = buildScmTreeBadgeSignature(props.scmSnapshot ?? null);
+    const selectedPath = props.selectedPath ?? null;
     const rowRenderState = React.useMemo(() => ({
         treeKeyboard,
         badgeIndex,
+        changedOnly,
+        selectedPath,
         detailsMode,
         onOpenFile,
         onOpenFilePinned: props.onOpenFilePinned,
         onWebDropTargetChange: props.onWebDropTargetChange,
         renderRowActions: props.renderRowActions,
+        rowSelection: props.rowSelection ?? null,
         retryDirectory,
         scmSnapshot: props.scmSnapshot,
         theme,
@@ -154,11 +220,14 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
     }), [
         treeKeyboard,
         badgeIndex,
+        changedOnly,
+        selectedPath,
         detailsMode,
         onOpenFile,
         props.onOpenFilePinned,
         props.onWebDropTargetChange,
         props.renderRowActions,
+        props.rowSelection,
         retryDirectory,
         props.scmSnapshot,
         theme,
@@ -170,8 +239,14 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
     const rowVisualExtraData = React.useMemo(() => [
         treeKeyboard.activePath,
         badgeSignature,
+        // The web badge index lands a tick after the snapshot (useScmTreeBadgeIndex): mounted rows must
+        // redraw when it arrives, or they keep the badge-less first render.
+        badgeIndex ? 'badges' : 'no-badges',
+        changedOnly ? 'changed' : 'all',
+        selectedPath ?? '',
         detailsMode ? 'details' : 'compact',
         props.renderRowActions ? 'actions' : 'no-actions',
+        props.rowSelection ? `select:${props.rowSelection.revision}` : 'no-select',
         props.onWebDropTargetChange ? 'drop' : 'no-drop',
         props.webDropHoverPath ?? '',
         theme.colors.text?.secondary,
@@ -183,9 +258,13 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
     ].join('|'), [
         treeKeyboard.activePath,
         badgeSignature,
+        badgeIndex,
+        changedOnly,
+        selectedPath,
         detailsMode,
         props.onWebDropTargetChange,
         props.renderRowActions,
+        props.rowSelection,
         props.webDropHoverPath,
         theme.colors.state?.danger?.foreground,
         theme.colors.state?.neutral?.foreground,
@@ -208,7 +287,13 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
             )
             : null;
 
-        const menu = rowState.renderRowActions ? rowState.renderRowActions(node) : null;
+        const renderActions = rowState.renderRowActions;
+        const rowActions = renderActions && (node.type === 'file' || node.type === 'directory')
+            ? (control: FilesystemBrowserRowActionsControl) => renderActions(node, control)
+            : null;
+        const changeToneColor = badge
+            ? resolveScmChangeToneColor(resolveScmChangeToneForCode(badge.kindLetter), rowState.theme)
+            : undefined;
 
         const showDetailsInline = node.type !== 'error' && rowState.detailsMode && Platform.OS === 'web';
         const detailsSize =
@@ -220,7 +305,7 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
                 ? new Date(node.modifiedMs).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
                 : '';
 
-        const shouldShowRight = showDetailsInline || Boolean(badge) || (isDirectoryNode(node) && node.isLoadingChildren) || Boolean(menu);
+        const shouldShowRight = showDetailsInline || Boolean(badge) || (isDirectoryNode(node) && node.isLoadingChildren);
         const right = shouldShowRight ? (
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 {showDetailsInline ? (
@@ -251,38 +336,48 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
                         </Text>
                     </View>
                 ) : null}
-                {badge ? (
-                    <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
-                        <Text style={{ fontSize: 12, color: rowState.theme.colors.state.neutral.foreground, ...Typography.mono('semiBold') }}>
-                            {node.type === 'directory' ? `${badge.kindLetter}${badge.changedCount}` : badge.kindLetter}
+                {badge && node.type === 'directory' ? (
+                    // A folder says how many changed files it holds, in the tone of its strongest change.
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: changeToneColor }} />
+                        <Text
+                            testID={`${rowTestId}-changes`}
+                            style={{ fontSize: 12, color: rowState.theme.colors.text.secondary, fontVariant: ['tabular-nums'], ...Typography.default() }}
+                        >
+                            {formatExactCount(badge.changedCount)}
                         </Text>
-                        {badge.added > 0 ? (
-                            <Text style={{ fontSize: 12, color: rowState.theme.colors.state.success.foreground, ...Typography.mono('semiBold') }}>
+                    </View>
+                ) : badge ? (
+                    // A file carries the same letter as its Git row; Changed only adds its lines. With a
+                    // checkbox (the Git tree) the letter moves to the icon slot after it (Git lab TV).
+                    <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
+                        {rowState.changedOnly && badge.isComplete !== false && badge.added > 0 ? (
+                            <Text style={{ fontSize: 12, color: rowState.theme.colors.state.success.foreground, ...Typography.mono() }}>
                                 {`+${badge.added}`}
                             </Text>
                         ) : null}
-                        {badge.removed > 0 ? (
-                            <Text
-                                style={{
-                                    fontSize: 12,
-                                    color: rowState.theme.colors.state.danger.foreground ?? rowState.theme.colors.state.neutral.foreground,
-                                    ...Typography.mono('semiBold'),
-                                }}
-                            >
-                                {`-${badge.removed}`}
+                        {rowState.changedOnly && badge.isComplete !== false && badge.removed > 0 ? (
+                            <Text style={{ fontSize: 12, color: rowState.theme.colors.state.danger.foreground ?? rowState.theme.colors.state.neutral.foreground, ...Typography.mono() }}>
+                                {`−${badge.removed}`}
                             </Text>
                         ) : null}
+                        {rowState.rowSelection ? null : (
+                            <Text
+                                testID={`${rowTestId}-change`}
+                                style={{ fontSize: 12, width: 12, textAlign: 'center', color: changeToneColor, ...Typography.mono('semiBold') }}
+                            >
+                                {badge.kindLetter}
+                            </Text>
+                        )}
                     </View>
                 ) : null}
                 {isDirectoryNode(node) && node.isLoadingChildren ? (
                     <ActivitySpinner size="small" color={rowState.theme.colors.text.secondary} />
                 ) : null}
-                {menu}
             </View>
         ) : undefined;
 
         const subtitle = (() => {
-            if (node.type === 'error') return t('errors.tryAgain');
             if (node.type === 'info') return undefined;
             if (!rowState.detailsMode || Platform.OS === 'web') return undefined;
             const parts: string[] = [];
@@ -303,14 +398,26 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
                     node.type === 'file' ? () => (rowState.onOpenFilePinned ?? rowState.onOpenFile)(node.path) : undefined,
                 )}
                 node={node}
-                title={node.type === 'directory' ? `${node.name}/` : node.name}
+                title={node.name}
+                selected={node.type === 'file' && node.path === rowState.selectedPath}
                 subtitle={subtitle}
                 icon={renderEntryIcon(node, rowState.theme)}
+                disclosure
+                rowActions={rowActions}
+                selection={rowState.rowSelection && (node.type === 'file' || node.type === 'directory')
+                    ? {
+                        state: rowState.rowSelection.getState(node),
+                        onToggle: () => rowState.rowSelection?.onToggle(node),
+                        accessibilityLabel: rowState.rowSelection.accessibilityLabel(node),
+                        disabled: rowState.rowSelection.isDisabled?.(node) === true,
+                    }
+                    : undefined}
+                selectionMark={rowState.rowSelection && node.type === 'file' && badge
+                    ? <ScmChangeMark testID={`${rowTestId}-change`} code={badge.kindLetter} color={changeToneColor} size="compact" />
+                    : undefined}
                 density="tight"
                 showDivider={showDivider}
                 rightElement={right}
-                errorTitle={t('files.repositoryFolderLoadFailed')}
-                errorSubtitle={t('errors.tryAgain')}
                 onRetryError={(errorNode: WorkspaceRepositoryTreeNode) => {
                     const parentDirectoryPath =
                         typeof errorNode.parentDirectoryPath === 'string' && errorNode.parentDirectoryPath.trim()
@@ -375,11 +482,25 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
         );
     }, []);
 
+    if (changedOnly && props.scmSnapshot != null && changedNodes.length === 0) {
+        return (
+            <SurfaceStateCard
+                testID="repository-tree-changed-only-empty"
+                kind="empty"
+                iconName="check-circle"
+                title={scmRepo ? t('files.pane.noChangedFilesTitle') : t('files.notRepo')}
+                reason={scmRepo ? t('files.pane.noChangedFilesReason') : undefined}
+                action={props.onShowAllFiles ? { label: t('files.pane.showAllFiles'), onPress: props.onShowAllFiles } : undefined}
+            />
+        );
+    }
+
     if (rootError && nodes.length === 0) {
         return (
             <View testID="workspace-repository-tree-error" style={{ flex: 1 }}>
-                <SourceControlUnavailableState
-                    details={rootError}
+                <RepositoryTreeRootErrorState
+                    error={rootError}
+                    machineName={props.machineName}
                     onRetry={() => {
                         void retryRoot();
                     }}
@@ -395,6 +516,7 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
             nodes={nodes}
             rootLoading={rootLoading}
             showInlineLoadingHeader={props.showInlineLoadingHeader}
+            listFooter={props.listFooter}
             rootError={rootError}
             retryRoot={retryRoot}
             emptyLabel={t('files.noFilesInProject')}
@@ -414,7 +536,7 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
             getItemLayout={
                 Platform.OS === 'web'
                     ? (_data, index) => {
-                        const length = 38;
+                        const length = isTouchPrimaryPointer() ? TREE_ROW_METRICS.minHeightPx.touch : TREE_ROW_METRICS.minHeightPx.precise;
                         return { length, offset: length * index, index };
                     }
                     : undefined

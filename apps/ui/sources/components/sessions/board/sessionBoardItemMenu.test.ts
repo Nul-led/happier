@@ -157,4 +157,39 @@ describe('buildSessionBoardItemActions', () => {
         // The item stays fully reachable; only the editor it has no editor for is absent.
         expect(actions.some((action) => action.id === 'read-full')).toBe(true);
     });
+    it('offers the shared frame override to editors: Hide frame while the Board uses Card, then the way back', () => {
+        const onSetFrameStyle = vi.fn();
+        const framed = buildSessionBoardItemActions({
+            density: 'full',
+            canEdit: true,
+            item,
+            frame: { surfaceDefault: 'card', override: null, onSet: onSetFrameStyle },
+        });
+        const toggle = framed.find((action) => action.id === 'frameStyle');
+        expect(toggle?.title).toBe(t('widgetFrame.hideFrame'));
+        expect(toggle?.group?.id).toBe('geometry');
+        expect(framed.some((action) => action.id === 'frameStyleReset')).toBe(false);
+        toggle?.onPress?.();
+        expect(onSetFrameStyle).toHaveBeenCalledWith('plain');
+
+        const overridden = buildSessionBoardItemActions({
+            density: 'full',
+            canEdit: true,
+            item,
+            frame: { surfaceDefault: 'card', override: 'plain', onSet: onSetFrameStyle },
+        });
+        expect(overridden.find((action) => action.id === 'frameStyle')?.title).toBe(t('widgetFrame.showFrame'));
+        overridden.find((action) => action.id === 'frameStyleReset')?.onPress?.();
+        expect(onSetFrameStyle).toHaveBeenLastCalledWith(null);
+    });
+
+    it('never offers the shared frame override to a viewer who cannot edit the Board', () => {
+        const actions = buildSessionBoardItemActions({
+            density: 'full',
+            canEdit: false,
+            item,
+            frame: { surfaceDefault: 'card', override: null, onSet: vi.fn() },
+        });
+        expect(actions.some((action) => action.id.startsWith('frameStyle'))).toBe(false);
+    });
 });

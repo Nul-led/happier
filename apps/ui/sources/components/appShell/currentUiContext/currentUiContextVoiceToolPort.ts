@@ -2,9 +2,12 @@ import * as React from 'react';
 
 import {
     arePluginMachineExecutionOriginsEqual,
+    buildQualifiedPluginContributionKey,
     formatQualifiedPluginActionId,
-    type ActionDefinitionV1,
+    parseQualifiedPluginActionId,
+    type ActionDefinitionSummaryV1,
     type PluginContributionIdentityV1,
+    type PluginJsonSchemaV2,
     type PluginProjectedActionV2,
 } from '@happier-dev/protocol';
 import type {
@@ -24,9 +27,6 @@ import {
     dispatchPluginSurfaceAction,
 } from '@/components/plugins/surfaces/pluginSurfaceActionDispatch';
 import {
-    createPluginActionCurrentIntentHandler,
-} from '@/components/plugins/surfaces/pluginSurfaceFeedback';
-import {
     createPluginUiProjectedActionResolver,
     isPluginProjectedActionExecutable,
     type PluginUiProjectionModel,
@@ -37,6 +37,7 @@ import {
     type PluginUiContributionOriginV1,
 } from '@/sync/domains/plugins/ui/projectionUnion';
 import { resolvePluginUiClientExecutablePlatform } from '@/sync/domains/plugins/ui/usePluginUiProjectionCurrentness';
+import { machinePluginActionSchemasRead } from '@/sync/ops/machineContributionRegistryProjection';
 import { getPreferredLanguage } from '@/text';
 import { mergeAbortSignals } from '@/utils/runtime/abortSignals';
 
@@ -73,8 +74,18 @@ export type CurrentUiContextVoiceActionInvocationInput = Readonly<{
  * navigation and Action owners. No consumer can recover semantic payloads
  * from an opaque command ID through this type.
  */
+/** One contributed Action's declared schemas, read on demand (never listed). */
+export type CurrentUiContextVoiceActionSchemas = Readonly<{
+    inputSchema: PluginJsonSchemaV2;
+    outputSchema?: PluginJsonSchemaV2;
+}>;
+
 export type CurrentUiContextVoiceToolPort = CurrentUiContextReader & Readonly<{
-    listCurrentContributedActionDefinitions?: () => readonly ActionDefinitionV1[];
+    listCurrentContributedActionDefinitions?: () => readonly ActionDefinitionSummaryV1[];
+    readCurrentContributedActionSchemas?: (
+        id: string,
+        signal?: AbortSignal,
+    ) => Promise<CurrentUiContextVoiceActionSchemas | null>;
     invokeCurrentUiCommand?: (
         input: CurrentUiContextVoiceCommandInvocationInput,
     ) => Promise<CurrentUiContextVoiceInvocationOutcome>;
@@ -175,6 +186,15 @@ export function bindCurrentUiContextVoiceToolPortToAdmission(
                     : [],
             }
             : {}),
+        ...(port.readCurrentContributedActionSchemas
+            ? {
+                readCurrentContributedActionSchemas: async (id: string, signal?: AbortSignal) => {
+                    if (!isCurrent()) return null;
+                    const schemas = await port.readCurrentContributedActionSchemas!(id, signal);
+                    return isCurrent() ? schemas : null;
+                },
+            }
+            : {}),
         ...(invokeCurrentUiCommand ? { invokeCurrentUiCommand } : {}),
         ...(invokeAction ? { invokeAction } : {}),
     });
@@ -190,7 +210,7 @@ function internalError(): CurrentUiContextVoiceInvocationOutcome {
 
 function actionSideEffectClass(
     dangerLevel: PluginProjectedActionV2['dangerLevel'],
-): ActionDefinitionV1['sideEffectClass'] {
+): ActionDefinitionSummaryV1['sideEffectClass'] {
     switch (dangerLevel) {
         case 'safe':
             return undefined;
@@ -207,7 +227,7 @@ function actionSideEffectClass(
 function projectedActionToDefinition(
     action: PluginProjectedActionV2,
     projection: PluginUiProjectionModel,
-): ActionDefinitionV1 {
+): ActionDefinitionSummaryV1 {
     const presentation = resolvePluginProjectedActionPresentation({
         pluginId: action.pluginId,
         presentation: action,
@@ -215,11 +235,10 @@ function projectedActionToDefinition(
         locale: getPreferredLanguage(),
     });
     const sideEffectClass = actionSideEffectClass(action.dangerLevel);
-    const approval: NonNullable<ActionDefinitionV1['approval']> = action.dangerLevel === 'safe'
+    const approval: NonNullable<ActionDefinitionSummaryV1['approval']> = action.dangerLevel === 'safe'
         ? { result: 'none' }
         : { result: 'required', flow: 'blocking' };
     return Object.freeze({
-        kindVersion: 1,
         id: formatQualifiedPluginActionId({ pluginId: action.pluginId, localId: action.id }),
         title: presentation.title,
         description: presentation.description,
@@ -240,28 +259,59 @@ function projectedActionToDefinition(
             plugin: action.surfaces.includes('plugin'),
         },
         inputHints: presentation.inputHints,
-        inputSchema: action.inputSchema ?? {},
-        ...(action.outputSchema ? { outputSchema: action.outputSchema } : {}),
         ...(sideEffectClass ? { sideEffectClass } : {}),
+    });
+}
+
+function isVoiceListedAction(
+    readProjection: () => PluginUiProjectionModel | null,
+    action: PluginProjectedActionV2,
+): CurrentUiContextVoiceResolvedAction | null {
+    if (!isPluginProjectedActionExecutable(action) || !action.surfaces.includes('voice')) return null;
+    const resolved = resolveCurrentAction(readProjection, {
+        pluginId: action.pluginId,
+        localId: action.id,
+    });
+    return resolved?.action === action && hasCurrentClientActionRegistration(resolved)
+        ? resolved
+        : null;
+}
+
+/**
+ * Reads one listed Voice Action's declared schemas from its projecting
+ * machine, for the exact projected occurrence. The listing never carries them.
+ */
+async function readCurrentContributedActionSchemas(
+    readProjection: () => PluginUiProjectionModel | null,
+    id: string,
+    signal: AbortSignal | undefined,
+): Promise<CurrentUiContextVoiceActionSchemas | null> {
+    const identity = parseQualifiedPluginActionId(id);
+    if (!identity) return null;
+    const action = createPluginUiProjectedActionResolver(readProjection()?.actionsById)(identity);
+    const resolved = action ? isVoiceListedAction(readProjection, action) : null;
+    if (!resolved) return null;
+    const read = await machinePluginActionSchemasRead(resolved.origin.machineId, {
+        serverId: resolved.origin.serverId,
+        expectedOccurrenceId: resolved.action.occurrenceId,
+        qualifiedActionId: buildQualifiedPluginContributionKey(identity),
+        ...(signal ? { signal } : {}),
+    });
+    if (!read.supported || !read.result.ok) return null;
+    return Object.freeze({
+        inputSchema: read.result.inputSchema,
+        ...(read.result.outputSchema === undefined ? {} : { outputSchema: read.result.outputSchema }),
     });
 }
 
 function listCurrentContributedActionDefinitions(
     readProjection: () => PluginUiProjectionModel | null,
-): readonly ActionDefinitionV1[] {
+): readonly ActionDefinitionSummaryV1[] {
     const projection = readProjection();
     if (!projection) return [];
     const readSnapshot = () => projection;
     return Object.values(projection.actionsById)
-        .filter((action) => {
-            if (!isPluginProjectedActionExecutable(action) || !action.surfaces.includes('voice')) return false;
-            const resolved = resolveCurrentAction(readSnapshot, {
-                pluginId: action.pluginId,
-                localId: action.id,
-            });
-            return resolved?.action === action
-                && hasCurrentClientActionRegistration(resolved);
-        })
+        .filter((action) => isVoiceListedAction(readSnapshot, action) !== null)
         .map((action) => projectedActionToDefinition(action, projection))
         .sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -335,7 +385,6 @@ function hasCurrentClientActionRegistration(
     if (action.execution.target !== 'client') return true;
     return resolvePluginUiClientActionRegistration({
         action,
-        projectionGeneration: origin.generation,
         platform: resolvePluginUiClientExecutablePlatform(),
     }) !== null;
 }
@@ -402,20 +451,6 @@ export function createCurrentUiContextVoiceToolPort(
             mergedSignal.dispose();
             return stale();
         }
-        const requestCurrentIntent = resolved.action.execution.target === 'client'
-            ? createPluginActionCurrentIntentHandler({
-                requester: {
-                    pluginId: resolved.action.pluginId,
-                    contributionId: resolved.action.id,
-                    generationId: String(resolved.origin.generation),
-                    invocationId: `voice-action:${resolved.origin.generation}`,
-                },
-                signal: mergedSignal.signal,
-                isCurrent,
-                pluginUiProjection: input.readProjection(),
-            })
-            : undefined;
-
         const openSurface = async (surfaceRequest: Parameters<PluginSurfaceDestinationNavigationBinding['openSurface']>[0]) => {
             if (!isCurrent()) {
                 return { ok: false as const, code: 'stale_surface' as const, reason: 'current_ui_action_retired' };
@@ -444,11 +479,10 @@ export function createCurrentUiContextVoiceToolPort(
                     createPluginUiProjectedActionResolver(input.readProjection()?.actionsById)(identity)
                 ),
                 invocationSurface: 'voice',
+                pluginUiProjection: input.readProjection(),
                 clientAction: {
-                    projectionGeneration: resolved.origin.generation,
                     ...(sessionId ? { sessionId } : {}),
                     openSurface,
-                    ...(requestCurrentIntent ? { requestCurrentIntent } : {}),
                     ...(includeCurrentUiContext
                         ? {
                             currentUiContext: () => isCurrent()
@@ -463,7 +497,6 @@ export function createCurrentUiContextVoiceToolPort(
                             ...(sessionId ? { sessionId } : {}),
                             machineId: resolved.origin.machineId,
                             serverId: resolved.origin.serverId,
-                            expectedGeneration: String(resolved.origin.generation),
                         },
                     }
                     : {}),
@@ -544,6 +577,9 @@ export function createCurrentUiContextVoiceToolPort(
         ...input.reader,
         listCurrentContributedActionDefinitions: () => (
             listCurrentContributedActionDefinitions(input.readProjection)
+        ),
+        readCurrentContributedActionSchemas: (id: string, signal?: AbortSignal) => (
+            readCurrentContributedActionSchemas(input.readProjection, id, signal)
         ),
         invokeCurrentUiCommand,
         invokeAction,

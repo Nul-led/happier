@@ -11,7 +11,6 @@ type ReactActEnvironmentGlobal = typeof globalThis & {
 
 
 const routerReplaceSpy = vi.fn();
-const processAuthUrlSpy = vi.fn();
 const promptAccountConnectApprovalRequiredSpy = vi.fn();
 let localSearchParams: Record<string, unknown> = {};
 let isAuthenticated = false;
@@ -33,9 +32,6 @@ vi.mock('@/auth/context/AuthContext', async () => {
     };
 });
 
-vi.mock('@/hooks/auth/useConnectAccount', () => ({
-    useConnectAccount: () => ({ processAuthUrl: processAuthUrlSpy, isLoading: false }),
-}));
 
 vi.mock('@/components/account/restore/accountConnectApprovalGuidance', () => ({
     promptAccountConnectApprovalRequired: promptAccountConnectApprovalRequiredSpy,
@@ -45,7 +41,6 @@ afterEach(() => {
     localSearchParams = {};
     isAuthenticated = false;
     routerReplaceSpy.mockReset();
-    processAuthUrlSpy.mockReset();
     promptAccountConnectApprovalRequiredSpy.mockReset();
     vi.restoreAllMocks();
     vi.resetModules();
@@ -96,8 +91,7 @@ describe('Legacy /account route', () => {
         try {
             tree = (await renderScreen(<Screen />)).tree;
 
-            expect(processAuthUrlSpy).not.toHaveBeenCalled();
-            expect(promptAccountConnectApprovalRequiredSpy).toHaveBeenCalledOnce();
+            expect(promptAccountConnectApprovalRequiredSpy).toHaveBeenCalledWith({ showQr: true });
             expect(routerReplaceSpy).toHaveBeenCalledWith('/settings/add-phone');
         } finally {
             act(() => {
@@ -114,7 +108,6 @@ describe('Legacy /account route', () => {
         try {
             tree = (await renderScreen(<Screen />)).tree;
 
-            expect(processAuthUrlSpy).not.toHaveBeenCalled();
             expect(routerReplaceSpy).toHaveBeenCalledWith('/settings/account');
         } finally {
             act(() => {
@@ -132,8 +125,7 @@ describe('Legacy /account route', () => {
         try {
             tree = (await renderScreen(<Screen />)).tree;
 
-            expect(processAuthUrlSpy).not.toHaveBeenCalled();
-            expect(promptAccountConnectApprovalRequiredSpy).toHaveBeenCalledOnce();
+            expect(promptAccountConnectApprovalRequiredSpy).toHaveBeenCalledWith({ showQr: true });
             expect(routerReplaceSpy).toHaveBeenCalledWith('/restore');
         } finally {
             act(() => {

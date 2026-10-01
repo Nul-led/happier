@@ -47,14 +47,7 @@ installSessionDetailsPanelCommonModuleMocks({
     },
 });
 
-vi.mock('@/constants/Typography', () => ({
-    FontWeights: { regular: '400', semiBold: '500', bold: '600' },
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-        tabular: () => ({}),
-    },
-}));
+// Typography is the real type scale (plain constants), not a partial stub that drifts from it.
 
 vi.mock('@/utils/platform/deferOnWeb', () => ({
     deferOnWeb: (fn: any) => fn(),
@@ -86,8 +79,8 @@ vi.mock('@/components/sessions/panes/git/SessionRightPanelGitView', () => ({
     SessionRightPanelGitView: () => React.createElement('GitView'),
 }));
 
-vi.mock('@/components/sessions/panes/agents/SessionRightPanelAgentsView', () => ({
-    SessionRightPanelAgentsView: () => React.createElement('AgentsView'),
+vi.mock('@/components/sessions/work/SessionWorkView', () => ({
+    SessionWorkView: () => React.createElement('AgentsView'),
 }));
 
 vi.mock('@/components/sessions/panes/SessionTranscriptNavigationPane', () => ({

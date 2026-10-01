@@ -1,6 +1,7 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
 import { View } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { CodeView } from '@/components/ui/media/CodeView';
 import { Item } from '@/components/ui/lists/Item';
@@ -24,7 +25,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 
 const LOG_TAIL_MAX_BYTES = 200_000;
 
-export default function SessionLogScreen() {
+export function SessionLogScreen() {
     const { theme } = useUnistyles();
     const params = useLocalSearchParams<{ id?: string | string[]; serverId?: string | string[] }>();
     const routeScope = React.useMemo(() => createSessionRouteServerScope(params as Record<string, unknown>), [params]);
@@ -170,3 +171,7 @@ export default function SessionLogScreen() {
         </ItemList>
     );
 }
+
+export { SessionLogScreen as WorkspaceRouteBody };
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={SessionLogScreen} />; }

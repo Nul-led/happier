@@ -9,7 +9,10 @@ import type { PaneSurfaceScope } from '@/components/appShell/panes/types';
 import { resolvePluginUiRuntimeFormFactor } from '@/components/appShell/panes/layout/resolveMultiPaneDeviceType';
 import { DetailsSplitWorkspace } from '@/components/appShell/panes/details/workspace/DetailsSplitWorkspace';
 import { PluginDetailsPaneOverlay } from '@/components/appShell/panes/details/surfaces/PluginDetailsPaneOverlay';
-import type { DetailsTabState } from '@/components/appShell/panes/details/workspace/detailsWorkspaceTypes';
+import { DetailsSurfaceFallback } from '@/components/appShell/panes/details/surfaces/DetailsSurfaceFallback';
+import { DETAILS_TAB_STRIP_METRICS } from '@/components/appShell/panes/details/header/detailsTabHeaderMetrics';
+import { SurfaceStateSizeProvider } from '@/components/ui/surfaces/surfaceStateSize';
+import type { DetailsTab, DetailsTabState } from '@/components/appShell/panes/details/workspace/detailsWorkspaceTypes';
 import {
     DetailsSurfaceHost,
     createDetailsSurfacePaneCallbacks,
@@ -26,6 +29,7 @@ import { IconButton } from '@/components/ui/buttons/IconButton';
 import { SidebarCollapseIcon, SidebarExpandIcon } from '@/components/navigation/shell/SidebarIcons';
 import { resolveOptionalSessionScreenTestId, useSessionScreenTestIdsEnabled } from '../shell/sessionScreenTestIds';
 import { createSessionBoardDetailsTab, createSessionFileDetailsTab } from './details/sessionDetailsTabBuilders';
+import { SessionDetailsEmptyState } from './details/SessionDetailsEmptyState';
 import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
 import { usePaneFocusMode } from '@/components/appShell/panes/focusMode/usePaneFocusMode';
 import {
@@ -54,9 +58,8 @@ import type { SimulatorPreviewSurfaceRuntime } from '@/sync/domains/devices/simu
 import { useSimulatorPreviewLiveSurface } from '@/components/devices/simulator/relay/useSimulatorPreviewLiveSurface';
 import { useSimulatorLiveStreamRelaySocket } from '@/components/devices/simulator/relay/useSimulatorLiveStreamRelaySocket';
 import { normalizeSessionAddress, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
-import { useSessionBrowserContextRuntimeContext } from '@/components/sessions/browser/sessionBrowserContextRuntime';
 import { useSessionBrowserRecordingRuntime } from '@/components/sessions/browser/sessionBrowserRecordingRuntime';
-import { createManagedChromiumBrowserAnnotationCaptureProvider } from '@/sync/domains/browser/context';
+import { useSessionBrowserContextProductModel } from '@/components/sessions/browser/useSessionBrowserContextProductModel';
 import { Icon } from '@/components/ui/icons/Icon';
 import { useSessionBoardFeatureEnabled } from '@/components/sessions/board/useSessionBoardFeatureEnabled';
 import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
@@ -67,7 +70,12 @@ import { isSessionBoardVisibleInDetails } from '@/components/sessions/board/sess
 
 export type SessionDetailsPanelProps = Readonly<{
     sessionId: string;
+    routeServerId?: string | null;
     scopeId: string;
+    /** Undefined retains the shared pane workspace; null is a controlled empty destination. */
+    destinationTab?: DetailsTabState | null;
+    destinationActive?: boolean;
+    onOpenDestinationTab?: (tab: DetailsTab) => void;
     /** Exact AppPane target/projection facts when this panel is driver-rendered. */
     paneSurfaceScope?: Extract<PaneSurfaceScope, Readonly<{ targetKind: 'session' }>>;
     presentation?: 'pane' | 'screen';
@@ -99,6 +107,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
     const { theme } = useUnistyles();
     const insets = useChromeSafeAreaInsets();
     const pane = useAppPaneScope(props.scopeId);
+    const controlledDestination = props.destinationTab !== undefined;
     const requestClose = props.onRequestClose ?? pane.closeDetails;
     const paneFocusMode = usePaneFocusMode(props.scopeId);
     const sessionScreenTestIdsEnabled = useSessionScreenTestIdsEnabled();
@@ -109,6 +118,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
     const showRightPaneToggle = showHeaderActions && props.presentation !== 'screen';
     const pluginRuntime = useSessionDetailsPanelPluginRuntime({
         sessionId: props.sessionId,
+        routeServerId: props.routeServerId,
         paneSurfaceScope: props.paneSurfaceScope,
         pluginUiProjection: props.pluginUiProjection,
         peerMediationObservabilityScope: props.peerMediationObservabilityScope,
@@ -121,7 +131,6 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         () => resolvePluginUiRuntimeFormFactor({ deviceType }),
         [deviceType],
     );
-    const sessionBrowserContextRuntime = useSessionBrowserContextRuntimeContext();
     const liveLocalServicePreviewState = useLocalServicePreviewState({
         machineId: pluginRuntime.machineId,
         serverId: pluginRuntime.serverId,
@@ -202,22 +211,10 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         pluginUiProjection: pluginRuntime.pluginUiProjection,
         nowMs: props.nowMs,
     }).feed;
-    const managedAnnotationCaptureProvider = React.useMemo(() => {
-        if (!pluginRuntime.machineId) return null;
-        return createManagedChromiumBrowserAnnotationCaptureProvider({
-            machineId: pluginRuntime.machineId,
-            serverId: pluginRuntime.serverId,
-        });
-    }, [pluginRuntime.machineId, pluginRuntime.serverId]);
-    const browserContextProductModel = React.useMemo(() => {
-        const shellContext = sessionBrowserContextRuntime?.browserShellContext;
-        if (!shellContext || !managedAnnotationCaptureProvider) return shellContext;
-        return {
-            ...shellContext,
-            annotationCaptureProvider: managedAnnotationCaptureProvider,
-            managedAnnotationCaptureProvider: true,
-        };
-    }, [managedAnnotationCaptureProvider, sessionBrowserContextRuntime?.browserShellContext]);
+    const browserContextProductModel = useSessionBrowserContextProductModel({
+        machineId: pluginRuntime.machineId,
+        serverId: pluginRuntime.serverId,
+    });
     const liveBrowserRecordingRuntime = useSessionBrowserRecordingRuntime({
         enabled: props.browserRecording === undefined,
         scopeKey: mountedSessionAddress ? sessionAddressKey(mountedSessionAddress) : props.scopeId,
@@ -238,24 +235,48 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         props.browserProductModels,
     ]);
 
+    const openDetailsTab = React.useCallback<typeof pane.openDetailsTab>((tab, options) => {
+        if (controlledDestination) {
+            props.onOpenDestinationTab?.(tab);
+            return;
+        }
+        pane.openDetailsTab(tab, options);
+    }, [controlledDestination, pane.openDetailsTab, props.onOpenDestinationTab]);
+    const closeDetailsTab = React.useCallback((tabKey: string) => {
+        if (controlledDestination) {
+            requestClose();
+            return;
+        }
+        pane.closeDetailsTab(tabKey);
+    }, [controlledDestination, pane.closeDetailsTab, requestClose]);
+    const replaceDetailsTab = React.useCallback<typeof pane.replaceDetailsTab>((tabKey, tab, options) => {
+        if (controlledDestination) {
+            props.onOpenDestinationTab?.(tab);
+            return;
+        }
+        pane.replaceDetailsTab(tabKey, tab, options);
+    }, [controlledDestination, pane.replaceDetailsTab, props.onOpenDestinationTab]);
+
     const openFileTab = React.useCallback((path: string, intent: 'default' | 'pinned' = 'default') => {
         deferOnWeb(() => {
-            pane.openDetailsTab(createSessionFileDetailsTab(path), { intent });
+            openDetailsTab(createSessionFileDetailsTab(path), { intent });
         });
-    }, [pane]);
+    }, [openDetailsTab]);
 
     const openBrowserLaunchpadTab = React.useCallback(() => {
-        pane.openDetailsTab(createBrowserLaunchpadDetailsTab(), { intent: 'pinned' });
-    }, [pane]);
+        openDetailsTab(createBrowserLaunchpadDetailsTab(), { intent: 'pinned' });
+    }, [openDetailsTab]);
 
     const openBoardTab = React.useCallback(() => {
-        pane.openDetailsTab(createSessionBoardDetailsTab(), { intent: 'pinned' });
-    }, [pane]);
+        openDetailsTab(createSessionBoardDetailsTab(), { intent: 'pinned' });
+    }, [openDetailsTab]);
 
     const paneRef = React.useRef(pane);
+    const controlledDestinationRef = React.useRef(controlledDestination);
     React.useEffect(() => {
         paneRef.current = pane;
-    }, [pane]);
+        controlledDestinationRef.current = controlledDestination;
+    }, [controlledDestination, pane]);
     const startEditingFileHandlersRef = React.useRef(new Map<string, () => void>());
     const getStartEditingFileHandler = React.useCallback((tabKey: string, isPreview: boolean): () => void => {
         const cacheKey = `${tabKey}:${isPreview ? 'preview' : 'pinned'}`;
@@ -263,7 +284,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         if (cached) return cached;
 
         const handler = () => {
-            if (isPreview) {
+            if (isPreview && !controlledDestinationRef.current) {
                 paneRef.current.pinDetailsTab(tabKey);
             }
         };
@@ -279,18 +300,19 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
     }), [pluginRuntime.machineId, pluginRuntime.serverId, props.sessionId]);
 
     const detailsSurfaceCallbacks = React.useMemo(() => createDetailsSurfacePaneCallbacks({
-        openTab: pane.openDetailsTab,
-        openOverlay: pane.openDetailsOverlay,
-        closeTab: pane.closeDetailsTab,
-        pinTab: pane.pinDetailsTab,
-        unpinTab: pane.unpinDetailsTab,
-        replaceTab: pane.replaceDetailsTab,
+        openTab: openDetailsTab,
+        openOverlay: controlledDestination ? undefined : pane.openDetailsOverlay,
+        closeTab: closeDetailsTab,
+        pinTab: controlledDestination ? undefined : pane.pinDetailsTab,
+        unpinTab: controlledDestination ? undefined : pane.unpinDetailsTab,
+        replaceTab: replaceDetailsTab,
     }), [
-        pane.closeDetailsTab,
+        controlledDestination,
+        closeDetailsTab,
         pane.openDetailsOverlay,
-        pane.openDetailsTab,
+        openDetailsTab,
         pane.pinDetailsTab,
-        pane.replaceDetailsTab,
+        replaceDetailsTab,
         pane.unpinDetailsTab,
     ]);
 
@@ -322,8 +344,8 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
             openFileTab,
             getStartEditingFileHandler,
             sessionScreenTestIdsEnabled,
-            closeDetailsTab: pane.closeDetailsTab,
-            openDetailsTab: pane.openDetailsTab,
+            closeDetailsTab,
+            openDetailsTab,
             boardHost: paneFocusMode.active ? 'focusedDetails' : 'details',
             resolveBoardPrimaryHost: props.resolveBoardPrimaryHost,
         }) : [], [
@@ -333,8 +355,8 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         localServiceLauncherState,
         localServicePreviewState,
         openFileTab,
-        pane.closeDetailsTab,
-        pane.openDetailsTab,
+        closeDetailsTab,
+        openDetailsTab,
         paneFocusMode.active,
         props.resolveBoardPrimaryHost,
         peerMediationObservabilityState,
@@ -362,6 +384,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         tab: DetailsTabState,
         presentation: Readonly<{ active: boolean }>,
     ) => {
+        if (!session) return <DetailsSurfaceFallback status="pending" />;
         return (
             <DetailsSurfaceHost
                 tab={tab}
@@ -380,7 +403,16 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         detailsSurfaceCallbacks,
         detailsSurfaceRenderers,
         detailsSurfaceScope,
+        session,
     ]);
+
+    const renderEmptyState = React.useCallback(() => (
+        <SessionDetailsEmptyState
+            sessionId={props.sessionId}
+            serverId={pluginRuntime.serverId}
+            openDetailsTab={openDetailsTab}
+        />
+    ), [openDetailsTab, pluginRuntime.serverId, props.sessionId]);
 
     const renderOverlay = React.useCallback((overlay: NonNullable<typeof pane.scopeState>['details']['overlay']) => {
         if (!overlay) return null;
@@ -419,8 +451,8 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
     // `IconButton`; `BrowserSurfaceOpenButton` renders its own Pressable, so it cannot be wrapped in
     // one and takes the matching geometry instead.
     const iconButtonStyle = {
-        width: 34,
-        height: 34,
+        width: DETAILS_TAB_STRIP_METRICS.actionSizePx,
+        height: DETAILS_TAB_STRIP_METRICS.actionSizePx,
         borderRadius: 8,
         alignItems: 'center' as const,
         justifyContent: 'center' as const,
@@ -437,7 +469,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
     const closeButton = (
         <IconButton
             variant="plain"
-            size={34}
+            size={DETAILS_TAB_STRIP_METRICS.actionSizePx}
             onPress={requestClose}
             testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, 'session-details-close')}
             accessibilityLabel={closeButtonAtStart ? t('common.back') : t('session.detailsPanel.closeA11y')}
@@ -447,7 +479,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                     size={24}
                     color={theme.colors.chrome.header.foreground}
                 />
-                : <Icon name="caret-right" size={16} color={theme.colors.text.secondary} />}
+                : <Icon name="x" size={DETAILS_TAB_STRIP_METRICS.actionGlyphPx} color={theme.colors.text.secondary} />}
         />
     );
 
@@ -467,20 +499,18 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         const boardOpenButton = (
             <IconButton
                 variant="plain"
-                size={34}
+                size={DETAILS_TAB_STRIP_METRICS.actionSizePx}
                 onPress={openBoardTab}
                 testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, 'session-details-open-board') ?? 'session-details-open-board'}
                 accessibilityLabel={t(SESSION_BOARD_DESTINATION.labelKey)}
-                icon={<Icon name={SESSION_BOARD_DESTINATION.icon} size={16} color={theme.colors.text.secondary} />}
+                icon={<Icon name={SESSION_BOARD_DESTINATION.icon} size={DETAILS_TAB_STRIP_METRICS.actionGlyphPx} color={theme.colors.text.secondary} />}
             />
         );
         const browserOpenButton = (
             <BrowserSurfaceOpenButton
                 onPress={openBrowserLaunchpadTab}
+                size={DETAILS_TAB_STRIP_METRICS.actionSizePx}
                 testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, 'session-details-open-browser') ?? 'session-details-open-browser'}
-                style={iconButtonStyle}
-                disabledStyle={{ opacity: 0.45 }}
-                iconColor={theme.colors.text.secondary}
             />
         );
 
@@ -495,7 +525,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                 {Platform.OS === 'web' ? (
                     <IconButton
                         variant="plain"
-                        size={34}
+                        size={DETAILS_TAB_STRIP_METRICS.actionSizePx}
                         tooltip={paneFocusMode.active ? t('session.detailsPanel.exitFocusModeA11y') : t('session.detailsPanel.enterFocusModeA11y')}
                         onPress={paneFocusMode.toggle}
                         testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, 'session-details-focus-toggle')}
@@ -508,7 +538,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                         }
                         icon={<Icon
                             name={paneFocusMode.active ? 'arrows-in' : 'arrows-out'}
-                            size={16}
+                            size={DETAILS_TAB_STRIP_METRICS.actionGlyphPx}
                             color={theme.colors.text.secondary}
                         />}
                     />
@@ -516,7 +546,7 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
                 {showRightPaneToggle ? (
                     <IconButton
                         variant="plain"
-                        size={34}
+                        size={DETAILS_TAB_STRIP_METRICS.actionSizePx}
                         onPress={toggleRightPane}
                         testID={resolveOptionalSessionScreenTestId(sessionScreenTestIdsEnabled, 'session-details-right-pane-toggle')}
                         accessibilityLabel={
@@ -550,11 +580,15 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         toggleRightPane,
     ]);
 
-    return (
+    const workspace = controlledDestination
+        ? props.destinationTab
+            ? renderTabContent(props.destinationTab, { active: props.destinationActive ?? true })
+            : renderEmptyState()
+        : (
         <DetailsSplitWorkspace
             pane={pane}
             paddingTop={panelPaddingTop}
-            headerPaddingTop={10}
+            headerPaddingTop={0}
             testIds={testIds}
             resolveTabIconName={(tab) =>
                 resolveSessionDetailsSurfaceIconName({
@@ -565,6 +599,11 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
             renderOverlay={renderOverlay}
             renderHeaderLeadingActions={renderHeaderLeadingActions}
             renderHeaderActions={renderHeaderActions}
+            renderEmptyState={renderEmptyState}
         />
     );
+    // The pushed phone route recomposes every tab's header and state for the phone (details lab 2).
+    return props.presentation === 'screen' && deviceType === 'phone'
+        ? <SurfaceStateSizeProvider size="phone">{workspace}</SurfaceStateSizeProvider>
+        : workspace;
 });

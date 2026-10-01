@@ -27,6 +27,7 @@ function createProjection(
     const placement = {
         id: `surfacePlacement:acme.review:${container}`,
         pluginId: 'acme.review',
+        occurrenceId: 'acme-review-occurrence',
         contributionKind: 'surfacePlacement' as const,
         descriptorId: 'review',
         binding,
@@ -42,7 +43,62 @@ function createProjection(
     };
 }
 
+function createAppSidebarTabProjection(): PluginUiProjectionModel {
+    const binding = normalizePluginUiDestinationBindingV1({
+        pluginId: 'acme.inspector',
+        destinationId: 'inspector-panel',
+        rendererId: 'inspector-renderer',
+        container: 'rightSidebarTab',
+        target: { kind: 'app' },
+    });
+    if (!binding) throw new Error('test binding is required');
+    const placement = {
+        id: 'surfacePlacement:acme.inspector:inspector-panel',
+        pluginId: 'acme.inspector',
+        occurrenceId: 'acme-inspector-occurrence',
+        contributionKind: 'surfacePlacement' as const,
+        descriptorId: 'inspector-panel',
+        binding,
+        target: binding.target,
+        renderer: { kind: 'hostedWeb', contributionId: 'inspector-renderer' },
+        display: { developerFallback: 'Inspector' },
+        availability: { state: 'available' as const, reason: 'available', diagnostics: [] },
+        headerActions: [],
+    };
+    return { ...EMPTY_PLUGIN_UI_PROJECTION, surfacePlacementsById: { [placement.id]: placement } };
+}
+
 describe('resolveSelectedPaneDestination', () => {
+    it("admits an App tab in a Session's or Project's right sidebar, from the app projection, and nowhere else", () => {
+        const appProjection = createAppSidebarTabProjection();
+        const selectedDestination = {
+            kind: 'plugin' as const,
+            destination: { pluginId: 'acme.inspector', localId: 'inspector-panel' },
+        };
+        for (const targetKind of ['session', 'project'] as const) {
+            expect(resolveSelectedPaneDestination({
+                container: 'rightSidebarTab',
+                targetKind,
+                projection: EMPTY_PLUGIN_UI_PROJECTION,
+                appProjection,
+                projectionPhase: 'current',
+                selectedDestination,
+            })).toMatchObject({
+                kind: 'available',
+                placement: appProjection.surfacePlacementsById['surfacePlacement:acme.inspector:inspector-panel'],
+            });
+        }
+        // Only the right sidebar lists App tabs: a right pane never mounts one.
+        expect(resolveSelectedPaneDestination({
+            container: 'rightPane',
+            targetKind: 'session',
+            projection: EMPTY_PLUGIN_UI_PROJECTION,
+            appProjection,
+            projectionPhase: 'current',
+            selectedDestination,
+        })).toMatchObject({ kind: 'unavailable' });
+    });
+
     it('uses the supplied scope target rather than recasting every pane as app', () => {
         const projection = createProjection('rightPane', 'session');
 

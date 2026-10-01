@@ -1,0 +1,280 @@
+import type { DestinationRef } from '@/components/appShell/destinations/compactAppDestinationCatalog';
+import type { SplitCanvasAxis, SplitCanvasNode, SplitCanvasPlacement, SplitCanvasState } from '../splitCanvas/model/splitCanvasTypes';
+import { splitCanvasReduce } from '../splitCanvas/model/splitCanvasReducer';
+import { collectSplitCanvasLeaves } from '../splitCanvas/model/splitCanvasTree';
+import {
+    activateGroupTab, closeGroupTab, insertGroupTab, moveGroupTab,
+    removeGroupPreviewTabs,
+} from './tabGroups/tabGroupTransitions';
+
+export type WorkspaceTab = Readonly<{ id: string; target: DestinationRef; pinned: boolean; preview: boolean }>;
+export function createWorkspaceEmptyTab(id: string): WorkspaceTab {
+    return { id, target: { kind: 'newTab', params: {} }, pinned: false, preview: false };
+}
+export type WorkspaceGroup = Readonly<{ id: string; tabIds: readonly string[]; activeTabId: string; mru: readonly string[] }>;
+export type WorkspaceState = Readonly<{
+    v: 1;
+    tabs: Readonly<Record<string, WorkspaceTab>>;
+    groups: Readonly<Record<string, WorkspaceGroup>>;
+    root: SplitCanvasNode<Readonly<{ groupId: string }>>;
+    focusedGroupId: string;
+    maximizedGroupId: string | null;
+    fallbackTitlesByTabId: Readonly<Record<string, string>>;
+    tabPairs: readonly (readonly string[])[];
+}>;
+
+type MeasuredSplit = Readonly<{
+    availableSizePx: number;
+    minimumFirstSizePx: number;
+    minimumSecondSizePx: number;
+}>;
+
+export type WorkspaceAction =
+    | Readonly<{ type: 'openTab'; groupId: string; tab: WorkspaceTab; fallbackTitle?: string }>
+    | Readonly<{ type: 'activateTab'; groupId: string; tabId: string }>
+    | Readonly<{ type: 'closeTab'; groupId: string; tabId: string; newTab: WorkspaceTab }>
+    | Readonly<{ type: 'moveTab'; tabId: string; sourceGroupId: string; targetGroupId: string }>
+    | Readonly<{ type: 'reorderTab'; groupId: string; tabId: string; index: number }>
+    | Readonly<{ type: 'focusGroup'; groupId: string }>
+    | Readonly<{ type: 'toggleMaximize'; groupId: string }>
+    | Readonly<{ type: 'restoreMaximize' }>
+    | Readonly<{ type: 'setTarget'; tabId: string; target: DestinationRef }>
+    | Readonly<{ type: 'setFallbackTitle'; tabId: string; title: string }>
+    | Readonly<{ type: 'setPinned'; tabId: string; pinned: boolean }>
+    | Readonly<{ type: 'promoteTab'; tabId: string }>
+    | (MeasuredSplit & Readonly<{
+        type: 'splitTab'; tabId: string; sourceGroupId: string; targetGroupId: string;
+        newGroupId: string; axis: SplitCanvasAxis; placement: SplitCanvasPlacement;
+        newTabForSource?: WorkspaceTab;
+    }>)
+    | (MeasuredSplit & Readonly<{ type: 'resize'; splitId: string; ratio: number }>);
+
+type WorkspaceCanvas = SplitCanvasState<Readonly<{ groupId: string }>>;
+
+function canvasFor(state: WorkspaceState): WorkspaceCanvas {
+    return {
+        root: state.root,
+        focusedLeafId: state.focusedGroupId,
+        maximizedLeafId: state.maximizedGroupId,
+        // Unmeasured legacy consumers retain the old ceiling. Workspace splits supply measured minimums.
+        maxLeaves: 8,
+    };
+}
+
+function fromCanvas(state: WorkspaceState, canvas: WorkspaceCanvas): WorkspaceState {
+    if (!canvas.root) throw new Error('Workspace canvas unexpectedly empty');
+    return {
+        ...state,
+        root: canvas.root,
+        focusedGroupId: canvas.focusedLeafId ?? state.focusedGroupId,
+        maximizedGroupId: canvas.maximizedLeafId,
+    };
+}
+
+function withoutTabs<T>(values: Readonly<Record<string, T>>, removed: readonly string[]): Record<string, T> {
+    const excluded = new Set(removed);
+    return Object.fromEntries(Object.entries(values).filter(([id]) => !excluded.has(id)));
+}
+
+function groupContaining(state: WorkspaceState, tabId: string): WorkspaceGroup | null {
+    return Object.values(state.groups).find((group) => group.tabIds.includes(tabId)) ?? null;
+}
+
+function leaf(groupId: string): Extract<WorkspaceState['root'], { kind: 'leaf' }> {
+    return { id: groupId, kind: 'leaf', leafKind: 'workspace-group', payload: { groupId } };
+}
+
+export function projectWorkspaceSplitTabPairs(state: Pick<WorkspaceState, 'root' | 'groups'>): WorkspaceState['tabPairs'] {
+    const ids = collectSplitCanvasLeaves(state.root).map(leaf => state.groups[leaf.payload.groupId].activeTabId);
+    return ids.length >= 2 ? [ids] : [];
+}
+
+function removePairMembers(state: WorkspaceState, ids: readonly string[]): WorkspaceState['tabPairs'] {
+    if (!state.tabPairs.some(pair => pair.some(id => ids.includes(id)))) return state.tabPairs;
+    return state.tabPairs.map(pair => pair.filter(id => !ids.includes(id))).filter(pair => pair.length >= 2);
+}
+
+export function createWorkspaceState(tab: WorkspaceTab): WorkspaceState {
+    return {
+        v: 1,
+        tabs: { [tab.id]: tab },
+        groups: { 'group:1': { id: 'group:1', tabIds: [tab.id], activeTabId: tab.id, mru: [tab.id] } },
+        root: { id: 'group:1', kind: 'leaf', leafKind: 'workspace-group', payload: { groupId: 'group:1' } },
+        focusedGroupId: 'group:1',
+        maximizedGroupId: null,
+        fallbackTitlesByTabId: {},
+        tabPairs: [],
+    };
+}
+
+export function reduceWorkspaceState(state: WorkspaceState, action: WorkspaceAction): WorkspaceState {
+    switch (action.type) {
+        case 'openTab': {
+            const group = state.groups[action.groupId];
+            if (!group) return state;
+            const existing = groupContaining(state, action.tab.id);
+            if (existing) return reduceWorkspaceState(state, { type: 'activateTab', groupId: existing.id, tabId: action.tab.id });
+            const preview = action.tab.preview
+                ? removeGroupPreviewTabs(group, state.tabs)
+                : { group, removedTabIds: [] };
+            const nextGroup = insertGroupTab(preview.group, action.tab.id);
+            const focused = splitCanvasReduce(canvasFor(state), { type: 'focusLeaf', leafId: group.id });
+            return {
+                ...fromCanvas(state, focused),
+                tabs: { ...withoutTabs(state.tabs, preview.removedTabIds), [action.tab.id]: action.tab },
+                groups: { ...state.groups, [group.id]: nextGroup as WorkspaceGroup },
+                fallbackTitlesByTabId: {
+                    ...withoutTabs(state.fallbackTitlesByTabId, preview.removedTabIds),
+                    ...(action.fallbackTitle === undefined ? {} : { [action.tab.id]: action.fallbackTitle }),
+                },
+                tabPairs: removePairMembers(state, preview.removedTabIds),
+            };
+        }
+        case 'activateTab': {
+            const group = state.groups[action.groupId];
+            if (!group || !group.tabIds.includes(action.tabId)) return state;
+            const nextGroup = activateGroupTab(group, action.tabId);
+            const focused = splitCanvasReduce(canvasFor(state), { type: 'focusLeaf', leafId: group.id });
+            if (nextGroup === group && focused.focusedLeafId === state.focusedGroupId
+                && focused.maximizedLeafId === state.maximizedGroupId) return state;
+            return { ...fromCanvas(state, focused), groups: { ...state.groups, [group.id]: nextGroup as WorkspaceGroup } };
+        }
+        case 'closeTab': {
+            const group = state.groups[action.groupId];
+            if (!group?.tabIds.includes(action.tabId)) return state;
+            const tabs = withoutTabs(state.tabs, [action.tabId]);
+            const titles = withoutTabs(state.fallbackTitlesByTabId, [action.tabId]);
+            const nextGroup = closeGroupTab(group, action.tabId);
+            if (nextGroup.tabIds.length > 0) {
+                return { ...state, tabs, fallbackTitlesByTabId: titles, groups: { ...state.groups, [group.id]: nextGroup as WorkspaceGroup }, tabPairs: removePairMembers(state, [action.tabId]) };
+            }
+            if (Object.keys(state.groups).length === 1) {
+                if (action.newTab.target.kind !== 'newTab' || action.newTab.id === action.tabId || state.tabs[action.newTab.id]) return state;
+                const replacement = insertGroupTab({ ...nextGroup, activeTabId: null }, action.newTab.id);
+                return {
+                    ...state, tabs: { ...tabs, [action.newTab.id]: action.newTab },
+                    groups: { [group.id]: replacement as WorkspaceGroup }, fallbackTitlesByTabId: titles,
+                    tabPairs: removePairMembers(state, [action.tabId]),
+                };
+            }
+            const closed = splitCanvasReduce(canvasFor(state), { type: 'closeLeaf', leafId: group.id });
+            const groups = { ...state.groups };
+            delete groups[group.id];
+            return { ...fromCanvas(state, closed), tabs, groups, fallbackTitlesByTabId: titles, tabPairs: removePairMembers(state, [action.tabId]) };
+        }
+        case 'reorderTab': {
+            const group = state.groups[action.groupId];
+            if (!group || !Number.isInteger(action.index) || action.index < 0 || action.index >= group.tabIds.length) return state;
+            const previousIndex = group.tabIds.indexOf(action.tabId);
+            if (previousIndex < 0 || previousIndex === action.index) return state;
+            const tabIds = group.tabIds.filter((id) => id !== action.tabId);
+            tabIds.splice(action.index, 0, action.tabId);
+            return { ...state, groups: { ...state.groups, [group.id]: { ...group, tabIds } } };
+        }
+        case 'moveTab': {
+            if (action.sourceGroupId === action.targetGroupId) return reduceWorkspaceState(state, {
+                type: 'activateTab', groupId: action.targetGroupId, tabId: action.tabId,
+            });
+            const source = state.groups[action.sourceGroupId];
+            const target = state.groups[action.targetGroupId];
+            const tab = state.tabs[action.tabId];
+            if (!source || !target || !tab || !source.tabIds.includes(tab.id)) return state;
+            const moved = moveGroupTab(source, target, tab, state.tabs);
+            const groups = { ...state.groups, [source.id]: moved.source as WorkspaceGroup, [target.id]: moved.target as WorkspaceGroup };
+            let canvas = canvasFor(state);
+            if (moved.source.tabIds.length === 0) {
+                delete groups[source.id];
+                canvas = splitCanvasReduce(canvas, { type: 'closeLeaf', leafId: source.id });
+            }
+            canvas = splitCanvasReduce(canvas, { type: 'focusLeaf', leafId: target.id });
+            return {
+                ...fromCanvas(state, canvas), groups,
+                tabs: withoutTabs(state.tabs, moved.replacedPreviewTabIds),
+                fallbackTitlesByTabId: withoutTabs(state.fallbackTitlesByTabId, moved.replacedPreviewTabIds),
+                tabPairs: projectWorkspaceSplitTabPairs({ root: canvas.root!, groups }),
+            };
+        }
+        case 'splitTab': {
+            const source = state.groups[action.sourceGroupId];
+            const target = state.groups[action.targetGroupId];
+            const tab = state.tabs[action.tabId];
+            if (!source || !target || !tab || !source.tabIds.includes(tab.id) || state.groups[action.newGroupId]) return state;
+            if (source.id === target.id && source.tabIds.length === 1
+                && (!action.newTabForSource || action.newTabForSource.target.kind !== 'newTab'
+                    || state.tabs[action.newTabForSource.id])) return state;
+            let canvas = splitCanvasReduce(canvasFor(state), {
+                type: 'splitLeaf', targetLeafId: target.id, axis: action.axis,
+                placement: action.placement, newLeaf: leaf(action.newGroupId),
+                availableSizePx: action.availableSizePx,
+                minimumFirstSizePx: action.minimumFirstSizePx,
+                minimumSecondSizePx: action.minimumSecondSizePx,
+            });
+            if (canvas.root === state.root) return state;
+            const remainder = closeGroupTab(source, tab.id);
+            const groups = {
+                ...state.groups,
+                [source.id]: remainder as WorkspaceGroup,
+                [action.newGroupId]: {
+                    id: action.newGroupId, tabIds: [tab.id], activeTabId: tab.id, mru: [tab.id],
+                },
+            };
+            let tabs = state.tabs;
+            if (remainder.tabIds.length === 0) {
+                if (source.id === target.id && action.newTabForSource) {
+                    const replacement = insertGroupTab({ ...remainder, activeTabId: null }, action.newTabForSource.id);
+                    groups[source.id] = replacement as WorkspaceGroup;
+                    tabs = { ...tabs, [action.newTabForSource.id]: action.newTabForSource };
+                } else {
+                    delete groups[source.id];
+                    canvas = splitCanvasReduce(canvas, { type: 'closeLeaf', leafId: source.id });
+                }
+            }
+            canvas = splitCanvasReduce(canvas, { type: 'focusLeaf', leafId: action.newGroupId });
+            return { ...fromCanvas(state, canvas), tabs, groups, tabPairs: projectWorkspaceSplitTabPairs({ root: canvas.root!, groups }) };
+        }
+        case 'resize': {
+            const canvas = splitCanvasReduce(canvasFor(state), {
+                type: 'setSplitRatio', splitId: action.splitId, ratio: action.ratio,
+                availableSizePx: action.availableSizePx,
+                minimumFirstSizePx: action.minimumFirstSizePx,
+                minimumSecondSizePx: action.minimumSecondSizePx,
+            });
+            return canvas.root === state.root ? state : fromCanvas(state, canvas);
+        }
+        case 'focusGroup': {
+            if (!state.groups[action.groupId]) return state;
+            const canvas = splitCanvasReduce(canvasFor(state), { type: 'focusLeaf', leafId: action.groupId });
+            return canvas.focusedLeafId === state.focusedGroupId && canvas.maximizedLeafId === state.maximizedGroupId
+                ? state : fromCanvas(state, canvas);
+        }
+        case 'toggleMaximize': {
+            if (!state.groups[action.groupId]) return state;
+            return fromCanvas(state, splitCanvasReduce(canvasFor(state), { type: 'toggleMaximizeLeaf', leafId: action.groupId }));
+        }
+        case 'restoreMaximize': {
+            if (!state.maximizedGroupId) return state;
+            return fromCanvas(state, splitCanvasReduce(canvasFor(state), { type: 'restoreMaximize' }));
+        }
+        case 'setTarget': {
+            const tab = state.tabs[action.tabId];
+            if (!tab || tab.target === action.target) return state;
+            return { ...state, tabs: { ...state.tabs, [tab.id]: { ...tab, target: action.target } } };
+        }
+        case 'setFallbackTitle': {
+            if (!state.tabs[action.tabId] || state.fallbackTitlesByTabId[action.tabId] === action.title) return state;
+            return { ...state, fallbackTitlesByTabId: { ...state.fallbackTitlesByTabId, [action.tabId]: action.title } };
+        }
+        case 'promoteTab': {
+            const tab = state.tabs[action.tabId];
+            if (!tab?.preview || !groupContaining(state, action.tabId)) return state;
+            return { ...state, tabs: { ...state.tabs, [tab.id]: { ...tab, preview: false } } };
+        }
+        case 'setPinned': {
+            const tab = state.tabs[action.tabId];
+            if (!tab || !groupContaining(state, action.tabId)) return state;
+            const preview = action.pinned ? false : tab.preview;
+            if (tab.pinned === action.pinned && tab.preview === preview) return state;
+            return { ...state, tabs: { ...state.tabs, [tab.id]: { ...tab, pinned: action.pinned, preview } } };
+        }
+    }
+}

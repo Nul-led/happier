@@ -1,4 +1,6 @@
-export function buildProjectPaneScopeId(workspaceRefId: string): string {
+import { qualifyPaneScopeId } from '@/components/appShell/panes/paneScopeIdentity';
+
+export function buildProjectPaneScopeId(workspaceRefId: string, instanceKey?: string | null): string {
     const id = String(workspaceRefId ?? '').trim();
-    return `project:${id || 'unknown'}`;
+    return qualifyPaneScopeId(`project:${id || 'unknown'}`, instanceKey);
 }

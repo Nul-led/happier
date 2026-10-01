@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { DirectorySyncSettingsScreen } from '@/components/settings/teams/identity/DirectorySyncSettingsScreen';
 import { firstRouteParam } from '@/components/settings/teams/teamRouteParams';
 
-export default function TeamDirectoryRoute() {
+export function TeamDirectoryRoute() {
     const params = useLocalSearchParams<{ serverId?: string | string[]; teamId?: string | string[] }>();
     return (
         <DirectorySyncSettingsScreen
@@ -13,3 +13,6 @@ export default function TeamDirectoryRoute() {
         />
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { TeamDirectoryRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={TeamDirectoryRoute} />; }

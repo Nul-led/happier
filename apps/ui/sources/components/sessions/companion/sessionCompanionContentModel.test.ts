@@ -12,7 +12,11 @@ import {
     resolveSessionCompanionBoardInventory,
     resolveSessionCompanionAddableItems,
     resolveSessionCompanionContentItems,
+    resolveSessionCompanionPickerSections,
+    canAddSessionCompanionItem,
 } from './sessionCompanionContentModel';
+import { widgetProjectionOf, widgetInstalledPackage } from '@/dev/testkit/fixtures/pluginWidgetProjectionFixtures';
+import type { WidgetCandidate } from '@/components/widgets/widgetCatalog';
 
 const item = (itemId: string): SessionBoardItemProjection => ({
     itemId,
@@ -31,6 +35,29 @@ function readyItem(title: string): SessionSurfaceItemV1 {
 }
 
 describe('resolveSessionCompanionContentItems', () => {
+    it('keeps glances, plugin references and pane links distinct from Summary and Board content', () => {
+        const refs = [
+            { kind: 'builtin', id: 'changes', frameStyle: 'plain' },
+            { kind: 'builtin', id: 'local_services' },
+            { kind: 'pane', paneId: 'git' },
+            { kind: 'plugin', surface: { pluginId: 'acme.review', localId: 'glance' } },
+        ] as const;
+        expect(resolveSessionCompanionContentItems({ refs, boardItemsById: new Map(), inventory: { kind: 'offline' } }))
+            .toEqual(refs.map((ref, index) => ({ kind: ['changes', 'local_services', 'pane', 'plugin'][index], ref })));
+    });
+
+    it('admits compact plugin references through the current placement catalog without requiring a writable Board', () => {
+        const pluginUiProjection = widgetProjectionOf([
+            { pluginId: 'acme.review', localId: 'glance', placements: ['companion'] },
+            { pluginId: 'acme.review', localId: 'board-only' },
+        ], { 'acme.review': widgetInstalledPackage('acme.review', 'Review') });
+        const runtime = { pluginUiProjection, pluginBrowserProjection: null, phase: 'current' as const, interactionEnabled: true, machineId: 'm1', serverId: 'home1', platform: 'web' as const };
+        expect(canAddSessionCompanionItem({ kind: 'plugin', surface: { pluginId: 'acme.review', localId: 'glance' } }, runtime)).toBe(true);
+        expect(canAddSessionCompanionItem({ kind: 'plugin', surface: { pluginId: 'acme.review', localId: 'board-only' } }, runtime)).toBe(false);
+        expect(canAddSessionCompanionItem({ kind: 'plugin', surface: { pluginId: 'acme.review', localId: 'glance' } }, { ...runtime, phase: 'unavailable' })).toBe(false);
+        expect(canAddSessionCompanionItem({ kind: 'pane', paneId: 'git' }, null)).toBe(true);
+        expect(canAddSessionCompanionItem({ kind: 'pane', paneId: 'not-a-pane' }, runtime)).toBe(false);
+    });
     it('preserves preference order and resolves widgets from the shared Board snapshot', () => {
         const boardItem = item('widget-a');
         expect(resolveSessionCompanionContentItems({
@@ -43,6 +70,20 @@ describe('resolveSessionCompanionContentItems', () => {
         })).toEqual([
             { kind: 'widget', ref: { kind: 'widget', widgetId: 'widget-a' }, item: boardItem },
             { kind: 'summary', ref: { kind: 'builtin', id: 'session_summary' } },
+        ]);
+    });
+
+    it('resolves the agent Plan as its own built-in item beside the Summary', () => {
+        expect(resolveSessionCompanionContentItems({
+            refs: [
+                { kind: 'builtin', id: 'session_summary' },
+                { kind: 'builtin', id: 'agent_plan' },
+            ],
+            boardItemsById: new Map(),
+            inventory: { kind: 'loading' },
+        })).toEqual([
+            { kind: 'summary', ref: { kind: 'builtin', id: 'session_summary' } },
+            { kind: 'plan', ref: { kind: 'builtin', id: 'agent_plan' } },
         ]);
     });
 
@@ -119,13 +160,19 @@ describe('resolveSessionCompanionBoardInventory', () => {
             .toEqual({ kind: 'loading' });
     });
 
-    it('reports an unreachable or stale Board rather than an authoritative empty one', () => {
+    it('reports an unreachable Board rather than an authoritative empty one', () => {
         expect(resolveSessionCompanionBoardInventory({ status: 'ready', snapshot: snapshot({ reachability: 'offline' }) }))
             .toEqual({ kind: 'offline' });
         expect(resolveSessionCompanionBoardInventory({ status: 'ready', snapshot: snapshot({ reachability: 'unknown' }) }))
             .toEqual({ kind: 'offline' });
+    });
+
+    it('keeps a stale but reachable Board authoritative, like every other Board consumer', () => {
+        // Freshness is not availability. Any exact Session or share change flips the
+        // snapshot to `stale`, and telling the person their reachable Home is offline
+        // until the refetch settles is a second answer to a question reachability owns.
         expect(resolveSessionCompanionBoardInventory({ status: 'ready', snapshot: snapshot({ freshness: 'stale' }) }))
-            .toEqual({ kind: 'offline' });
+            .toEqual({ kind: 'authoritative' });
     });
 
     it('reports an absent binding as unavailable', () => {
@@ -170,8 +217,81 @@ describe('resolveSessionCompanionAddableItems', () => {
             refs: [{ kind: 'widget', widgetId: 'item-3' }],
         });
 
-        expect(result).toHaveLength(24);
-        expect(result.some((candidate) => candidate.widgetId === 'item-24')).toBe(true);
-        expect(result.some((candidate) => candidate.widgetId === 'item-3')).toBe(false);
+        expect(result).toHaveLength(25);
+        expect(result.some((candidate) => candidate.widgetId === 'item-24' && !candidate.added)).toBe(true);
+        // A kept item stays in place, marked added, so the picker list never jumps.
+        expect(result.find((candidate) => candidate.widgetId === 'item-3')?.added).toBe(true);
+    });
+});
+
+function installedItem(title: string, pluginId: string, localId: string): SessionSurfaceItemV1 {
+    return {
+        v: 1,
+        title,
+        frame: 'card',
+        height: { mode: 'auto', fallback: 'regular' },
+        source: { kind: 'installedSurface', surface: { pluginId, localId } },
+    } as SessionSurfaceItemV1;
+}
+
+function candidate(pluginId: string, localId: string, title: string): WidgetCandidate {
+    return {
+        surface: { pluginId, localId },
+        key: `${pluginId}/${localId}`,
+        title,
+        pluginName: pluginId,
+        sharedPluginName: false,
+        icon: 'puzzle-piece',
+        homeDefault: 'available',
+    };
+}
+
+describe('resolveSessionCompanionPickerSections', () => {
+    const board = projectSessionBoard({
+        layout: undefined,
+        items: new Map([
+            ['note-1', { revision: 'r1', outcome: { status: 'ready' as const, value: readyItem('Open question') } }],
+            ['chan-1', {
+                revision: 'r1',
+                outcome: { status: 'ready' as const, value: installedItem('External conversations', 'channels', 'conversations') },
+            }],
+        ]),
+        capabilities: { readTranscript: true, editSessionRecords: true },
+        freshness: 'fresh',
+        reachability: 'reachable',
+        loading: 'idle',
+        incomplete: false,
+    });
+
+    it('lists built-ins, Board items and plugin widgets as one widget system, marking what is already kept', () => {
+        const sections = resolveSessionCompanionPickerSections({
+            refs: [{ kind: 'builtin', id: 'session_summary' }, { kind: 'widget', widgetId: 'chan-1' }],
+            snapshot: board,
+            candidates: [candidate('channels', 'conversations', 'External conversations'), candidate('triage', 'latest', 'Latest')],
+        });
+
+        expect(sections.builtIn).toEqual([
+            { id: 'session_summary', added: true },
+            { id: 'agent_plan', added: false },
+            { id: 'changes', added: false },
+            { id: 'local_services', added: false },
+        ]);
+        // A plugin widget already on the Board is offered once, under its plugin, and reuses that record.
+        expect(sections.board.map((row) => row.widgetId)).toEqual(['note-1']);
+        expect(sections.plugins).toEqual([
+            expect.objectContaining({ key: 'channels/conversations', existingWidgetId: 'chan-1', added: true }),
+            expect.objectContaining({ key: 'triage/latest', existingWidgetId: null, added: false }),
+        ]);
+    });
+
+    it('offers no plugin creation when the Board cannot take a new item', () => {
+        const sections = resolveSessionCompanionPickerSections({
+            refs: [],
+            snapshot: null,
+            candidates: [],
+        });
+        expect(sections.board).toEqual([]);
+        expect(sections.plugins).toEqual([]);
+        expect(sections.builtIn.every((row) => !row.added)).toBe(true);
     });
 });

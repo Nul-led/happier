@@ -12,6 +12,11 @@ import { Text } from '@/components/ui/text/Text';
 import { useAuth } from '@/auth/context/AuthContext';
 import { setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
+import {
+    buildApiTokenCreateResumePath,
+    isApiTokenCreateResumeReturnPath,
+    readApiTokenCreateResume,
+} from '@/components/settings/apiTokens/apiTokenCreateResume';
 
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -25,19 +30,15 @@ export default function Restore() {
     const params = useLocalSearchParams<{
         returnTo?: string | string[];
         resumeCreate?: string | string[];
-        label?: string | string[];
-        expiry?: string | string[];
+        draft?: string | string[];
         targetServerId?: string | string[];
         targetServerUrl?: string | string[];
         expectedAccountId?: string | string[];
     }>();
     const rawReturnTo = Array.isArray(params.returnTo) ? params.returnTo[0] : params.returnTo;
     const returnTo = normalizeInternalReturnPath(rawReturnTo) ?? null;
-    const resumeCreate = (Array.isArray(params.resumeCreate) ? params.resumeCreate[0] : params.resumeCreate) === '1';
-    const label = String(Array.isArray(params.label) ? params.label[0] ?? '' : params.label ?? '').slice(0, 256);
-    const expiryRaw = Array.isArray(params.expiry) ? params.expiry[0] : params.expiry;
-    const expiry = expiryRaw === '30d' || expiryRaw === '90d' || expiryRaw === '1y' || expiryRaw === 'none'
-        ? expiryRaw : '90d';
+    // A token or embed create interrupted to restore encryption access resumes with its whole draft.
+    const createResume = readApiTokenCreateResume(params);
     const targetServerId = String(Array.isArray(params.targetServerId)
         ? params.targetServerId[0] ?? ''
         : params.targetServerId ?? '').trim();
@@ -57,9 +58,8 @@ export default function Restore() {
         && createServerUrlComparableKey(resolvedTarget.canonicalServerUrl) === createServerUrlComparableKey(targetServerUrl)
         ? resolvedTarget
         : null;
-    const completedReturnTo = returnTo === '/settings/account/api-tokens' && resumeCreate
-        && exactTarget
-        ? `${returnTo}?resumeCreate=1&label=${encodeURIComponent(label)}&expiry=${expiry}&targetServerId=${encodeURIComponent(targetServerId)}&targetServerUrl=${encodeURIComponent(targetServerUrl)}&expectedAccountId=${encodeURIComponent(expectedAccountId)}`
+    const completedReturnTo = isApiTokenCreateResumeReturnPath(returnTo) && createResume && exactTarget
+        ? buildApiTokenCreateResumePath(returnTo, createResume.draft, createResume.target)
         : returnTo;
 
     return (

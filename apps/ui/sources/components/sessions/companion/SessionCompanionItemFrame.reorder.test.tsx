@@ -65,7 +65,7 @@ async function renderFrame(overrides: Partial<SessionCompanionItemMove> = {}, it
                 ...overrides,
             }}
         >
-            {null}
+            {(accessory) => accessory}
         </SessionCompanionItemFrame>,
     );
     return { screen, moveToIndex };
@@ -136,7 +136,7 @@ describe('SessionCompanionItemFrame reorder', () => {
                 actions={[]}
                 move={{ itemKey: 'summary', orderedKeys: ['summary'], rects: RECTS, moveToIndex }}
             >
-                {null}
+                {(accessory) => accessory}
             </SessionCompanionItemFrame>,
         );
         expect(screen.findHostByTestId('companion-item-move-handle')).toBeNull();

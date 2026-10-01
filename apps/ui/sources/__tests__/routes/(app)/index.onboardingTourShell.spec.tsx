@@ -30,30 +30,6 @@ const authEntryOptionsState = vi.hoisted(() => ({
         serverAvailability: 'ready',
         serverUrlForCopy: 'https://relay.example.test',
         showAuthActions: true,
-        showProviderSignup: false,
-        showAnonymousSignup: true,
-        showMtlsLogin: false,
-        showKeylessProviderLogin: false,
-        providerId: null,
-        keylessProviderId: null,
-        providerSignupTitle: '',
-        providerKeylessTitle: '',
-        anonymousSignupTitle: 'welcome.createAccount',
-        mtlsTitle: '',
-        primaryAction: {
-            kind: 'anonymous' as const,
-            title: 'welcome.createAccount',
-        },
-        mtlsPrimary: false,
-        keylessPrimary: false,
-        autoRedirect: {
-            enabled: false,
-            providerId: null,
-            toKeyedProvision: false,
-            toKeylessLogin: false,
-            toMtls: false,
-            toLegacySignupProvider: false,
-        },
         retryServerCheck: vi.fn(),
     },
 }));
@@ -333,35 +309,6 @@ vi.mock('@/components/navigation/shell/MainView', () => ({
     MainView: (props: Record<string, unknown>) => React.createElement('MainView', props),
 }));
 
-vi.mock('@/components/onboarding/surfaces/SetupWizardSurface', () => ({
-    SetupWizardSurface: (props: Record<string, unknown>) => React.createElement('SetupWizardSurface', props),
-}));
-
-vi.mock('@/components/onboarding/surfaces/useSetupWizardController', () => ({
-    useSetupWizardController: () => ({
-        stepId: 'setup_this_computer',
-        currentStepIndex: 0,
-        stepCount: 2,
-        contentTransitionKey: 'setup_this_computer',
-        contentTransitionDirection: 'replace',
-        title: 'setup',
-        subtitle: null,
-        scrollable: false,
-        body: null,
-        onPrimary: vi.fn(),
-        primaryLabel: 'Continue setup',
-        primaryDisabled: false,
-        onBack: vi.fn(),
-        backLabel: 'Back',
-        showBack: true,
-        onSkip: vi.fn(),
-        skipLabel: 'Skip',
-        skipDisabled: false,
-        showSkip: true,
-        footerHint: null,
-        goToStep: vi.fn(),
-    }),
-}));
 
 vi.mock('@/components/navigation/connectionStatus/useConnectionHealth', () => ({
     useConnectionHealth: () => ({ onlineCount: 0 }),
@@ -396,8 +343,9 @@ vi.mock('@/components/navigation/shell/desktopChrome/useResolvedDesktopWindowCon
     useResolvedDesktopWindowControls: () => null,
 }));
 
-vi.mock('@/components/ui/feedback/AppUpdateStatusTag', () => ({
-    AppUpdateStatusTag: (props: Record<string, unknown>) => React.createElement('AppUpdateStatusTag', props),
+vi.mock('@/components/updates/UpdatesPopoverButton', () => ({
+    UpdatesEntry: (props: Record<string, unknown>) => React.createElement('UpdatesEntry', props),
+    UpdatesPopoverButton: (props: Record<string, unknown>) => React.createElement('UpdatesPopoverButton', props),
 }));
 
 vi.mock('@/encryption/libsodium.lib', () => ({

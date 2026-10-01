@@ -1,7 +1,11 @@
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor, SettingSection } from '@/components/settings/shell/SettingRow';
+import { SESSION_SETTINGS } from '@/components/settings/session/sessionSettings';
+import { SelectionTiles } from '@/components/ui/forms/SelectionTiles';
+import { SessionListDensityPreview, SessionListLayoutPreview } from '@/components/settings/session/SessionListPreview';
 import React from 'react';
 import { Platform } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import {
     DEFAULT_CODING_PROMPT_BEHAVIOR_V1,
     type CodingPromptBehaviorV1,
@@ -16,16 +20,17 @@ import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { getPreferredLanguage, t } from '@/text';
 import { useLocalSettingMutable, useSettingMutable } from '@/sync/domains/state/storage';
 import { useDeviceType } from '@/utils/platform/responsive';
-import { Icon } from '@/components/ui/icons/Icon';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import {
     resolveSessionListViewOptionSelectionDelta,
     resolveSessionListViewOptionsPresentation,
 } from '@/components/sessions/shell/sessionListViewOptionsPresentation';
 import { useApplySettings } from '@/sync/store/settingsWriters';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import { useSessionListLayoutChoice } from '@/hooks/session/sessionListLayoutIntent';
+import { Icon } from '@/components/ui/icons/Icon';
 
-export default React.memo(function SessionSettingsScreen() {
-    const { theme } = useUnistyles();
+export const WorkspaceRouteBody = React.memo(function SessionSettingsScreen() {
     const preferredLanguage = getPreferredLanguage();
     const router = useRouter();
     const popoverBoundaryRef = React.useRef<any>(null);
@@ -63,18 +68,17 @@ export default React.memo(function SessionSettingsScreen() {
     // exact Session/Team/list-row surfaces scope their own admission separately.
     const sessionFoldersFeatureEnabled = useFeatureEnabled('sessions.folders', { scopeKind: 'main_selection' });
     const [mobileWorkspaceExperience, setMobileWorkspaceExperience] = useSettingMutable('mobileWorkspaceExperienceV1');
+    const [workspaceTabsSyncEnabled, setWorkspaceTabsSyncEnabled] = useSettingMutable('workspaceTabsSyncEnabled');
     const [sessionsRightPaneDefaultOpen, setSessionsRightPaneDefaultOpen] = useLocalSettingMutable('sessionsRightPaneDefaultOpen');
     const [uiMultiPanePanelsEnabled] = useLocalSettingMutable('uiMultiPanePanelsEnabled');
 
     const [openGroupingMenu, setOpenGroupingMenu] = React.useState<null | 'active' | 'inactive'>(null);
-    const [openSessionListDensityMenu, setOpenSessionListDensityMenu] = React.useState(false);
     const [openSessionListIdentityDisplayMenu, setOpenSessionListIdentityDisplayMenu] = React.useState(false);
     const [openSessionHeaderIdentityDisplayMenu, setOpenSessionHeaderIdentityDisplayMenu] = React.useState(false);
     const [openSessionListActiveColorModeMenu, setOpenSessionListActiveColorModeMenu] = React.useState(false);
     const [openSessionListAttentionPromotionModeMenu, setOpenSessionListAttentionPromotionModeMenu] = React.useState(false);
     const [openSessionListWorkingPlacementModeMenu, setOpenSessionListWorkingPlacementModeMenu] = React.useState(false);
     const [openSessionListOrderingModeMenu, setOpenSessionListOrderingModeMenu] = React.useState(false);
-    const [openSessionListLayoutMenu, setOpenSessionListLayoutMenu] = React.useState(false);
     const [openSessionFolderDisplayMenu, setOpenSessionFolderDisplayMenu] = React.useState(false);
     const [openSessionListFolderSortModeMenu, setOpenSessionListFolderSortModeMenu] = React.useState(false);
     const [openWorkspacePathDisplayMenu, setOpenWorkspacePathDisplayMenu] = React.useState(false);
@@ -134,6 +138,9 @@ export default React.memo(function SessionSettingsScreen() {
         [normalizedCodingPromptBehavior, setCodingPromptBehavior],
     );
 
+    // Settings hosts no list, so this resolves to the stored preference; it still
+    // goes through the one effective-layout reader rather than re-deriving it.
+    const sessionListLayoutChoice = useSessionListLayoutChoice();
     const sessionListViewOptions = resolveSessionListViewOptionsPresentation({
         sessionListSectionModeV1,
         sessionListActiveGroupingV1,
@@ -144,7 +151,7 @@ export default React.memo(function SessionSettingsScreen() {
         sessionFolderViewModeV1,
         sessionListFolderSortModeV1,
         foldersFeatureEnabled: sessionFoldersFeatureEnabled,
-    });
+    }, sessionListLayoutChoice);
     const applySessionListViewOption = React.useCallback((itemId: string) => {
         const delta = resolveSessionListViewOptionSelectionDelta(itemId, {
             sessionListSectionModeV1,
@@ -162,17 +169,17 @@ export default React.memo(function SessionSettingsScreen() {
     ]);
     const sessionListDensityItems = React.useMemo(() => [
         {
-            id: 'detailed',
+            id: 'detailed' as const,
             title: t('settingsAppearance.sessionListDensity.detailed'),
             subtitle: t('settingsAppearance.sessionListDensity.detailedDescription'),
         },
         {
-            id: 'cozy',
+            id: 'cozy' as const,
             title: t('settingsAppearance.sessionListDensity.cozy'),
             subtitle: t('settingsAppearance.sessionListDensity.cozyDescription'),
         },
         {
-            id: 'narrow',
+            id: 'narrow' as const,
             title: t('settingsAppearance.sessionListDensity.narrow'),
             subtitle: t('settingsAppearance.sessionListDensity.narrowDescription'),
         },
@@ -332,590 +339,651 @@ export default React.memo(function SessionSettingsScreen() {
     }, [setSessionListNarrowWorkingIndicatorStyle]);
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
-            <ItemGroup
-                title={t('settingsSession.detailedBehavior.title')}
-                footer={t('settingsSession.detailedBehavior.footer')}
-            >
-                <Item
-                    title={t('settingsSession.composer.title')}
-                    subtitle={t('settingsSession.composer.entrySubtitle')}
-                    icon={<Icon name="paper-plane-tilt" size={29} color={theme.colors.accent.blue} />}
-                    onPress={() => router.push('/(app)/settings/session/composer')}
-                />
-                <Item
-                    title={t('settingsSession.providerLimits.title')}
-                    subtitle={t('settingsSession.providerLimits.entrySubtitle')}
-                    icon={<Icon name="speedometer" size={29} color={theme.colors.accent.indigo} />}
-                    onPress={() => router.push('/(app)/settings/session/provider-limits')}
-                />
-                <Item
-                    title={t('settingsSession.resume.title')}
-                    subtitle={t('settingsSession.resume.entrySubtitle')}
-                    icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.state.success.foreground} />}
-                    onPress={() => router.push('/(app)/settings/session/resume')}
-                />
-                <Item
-                    title={t('settingsSession.runtime.title')}
-                    subtitle={t('settingsSession.runtime.entrySubtitle')}
-                    icon={<Icon name="terminal" size={29} color={theme.colors.accent.indigo} />}
-                    onPress={() => router.push('/(app)/settings/session/runtime')}
-                />
-            </ItemGroup>
+        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settingsSession.pageDescription')} />
+            <SettingSection section={SESSION_SETTINGS.sectionRefs.launchDefaults}>
+                <ItemGroup
+                    title={t('settingsSession.rootGroups.launchDefaults.title')}
+                    footer={t('settingsSession.rootGroups.launchDefaults.footer')}
+                >
+                    <SettingAnchor setting={SESSION_SETTINGS.settings.startWith}>
+                        <SegmentedChoiceItem<'composer' | 'wizard'>
+                            testID="settings-new-session-wizard-mode"
+                            testIDPrefix="settings-session-startWith"
+                            title={t(SESSION_SETTINGS.settings.startWith.titleKey)}
+                            subtitle={t('settingsSession.sessionCreation.startWithDescription')}
+                            subtitleLines={0}
+                            options={[
+                                { id: 'composer', label: t('settingsSession.sessionCreation.startWithComposer') },
+                                { id: 'wizard', label: t('settingsSession.sessionCreation.startWithWizard') },
+                            ]}
+                            value={useEnhancedSessionWizard ? 'wizard' : 'composer'}
+                            onChange={(next) => setUseEnhancedSessionWizard(next === 'wizard')}
+                        />
+                    </SettingAnchor>
+                    {useEnhancedSessionWizard ? (
+                        <SettingAnchor setting={SESSION_SETTINGS.settings.wizardDisposition}>
+                            <Item
+                                title={t(SESSION_SETTINGS.settings.wizardDisposition.titleKey)}
+                                icon={<Icon name="grid-four" />}
+                                subtitle={t('settingsSession.sessionCreation.wizardDispositionSubtitle')}
+                                onPress={() => router.push('/settings/session/new-session-wizard')}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+                    <SettingAnchor setting={SESSION_SETTINGS.settings.rememberProjectSelections}>
+                        <Item
+                            title={t(SESSION_SETTINGS.settings.rememberProjectSelections.titleKey)}
+                            subtitle={t(
+                                rememberProjectSelectionsEnabled
+                                    ? 'settingsSession.sessionCreation.rememberLastProjectSelectionsEnabledSubtitle'
+                                    : 'settingsSession.sessionCreation.rememberLastProjectSelectionsDisabledSubtitle',
+                            )}
+                            rightElement={
+                                <Switch
+                                    value={rememberProjectSelectionsEnabled}
+                                    onValueChange={(next) => setRememberLastProjectSessionSelections(Boolean(next) as any)}
+                                />
+                            }
+                            showChevron={false}
+                            onPress={() => setRememberLastProjectSessionSelections((!rememberProjectSelectionsEnabled) as any)}
+                        />
+                    </SettingAnchor>
+                    <SettingAnchor setting={SESSION_SETTINGS.settings.rememberEngineSelections}>
+                        <Item
+                            title={t(SESSION_SETTINGS.settings.rememberEngineSelections.titleKey)}
+                            subtitle={t(
+                                rememberEngineSelectionsEnabled
+                                    ? 'settingsSession.sessionCreation.rememberLastEngineSelectionsEnabledSubtitle'
+                                    : 'settingsSession.sessionCreation.rememberLastEngineSelectionsDisabledSubtitle',
+                            )}
+                            rightElement={
+                                <Switch
+                                    value={rememberEngineSelectionsEnabled}
+                                    onValueChange={(next) => setRememberLastEngineSelections(Boolean(next) as any)}
+                                />
+                            }
+                            showChevron={false}
+                            onPress={() => setRememberLastEngineSelections((!rememberEngineSelectionsEnabled) as any)}
+                        />
+                    </SettingAnchor>
+                </ItemGroup>
+            </SettingSection>
 
-            <ItemGroup
-                title={t('settingsSession.rootGroups.launchDefaults.title')}
-                footer={t('settingsSession.rootGroups.launchDefaults.footer')}
-            >
-                <Item
-                    testID="settings-new-session-wizard-mode"
-                    title={t('settingsSession.sessionCreation.wizardModeTitle')}
-                    subtitle={t(
-                        useEnhancedSessionWizard
-                            ? 'settingsSession.sessionCreation.wizardModeEnabledSubtitle'
-                            : 'settingsSession.sessionCreation.wizardModeDisabledSubtitle',
-                    )}
-                    icon={<Icon name="sparkle" size={29} color={theme.colors.accent.purple} />}
-                    rightElement={
-                        <Switch
-                            value={Boolean(useEnhancedSessionWizard)}
-                            onValueChange={(next) => setUseEnhancedSessionWizard(Boolean(next))}
+            <SettingSection section={SESSION_SETTINGS.sectionRefs.listOrganization}>
+                <ItemGroup
+                    title={t('settingsSession.rootGroups.listOrganization.title')}
+                    footer={t('settingsSession.rootGroups.listOrganization.footer')}
+                >
+                    <SettingAnchor setting={SESSION_SETTINGS.settings.listDensity}>
+                        <Item
+                            testID="settings-session-sessionListDensity"
+                            title={t(SESSION_SETTINGS.settings.listDensity.titleKey)}
+                            subtitle={t('settingsAppearance.sessionListDensity.subtitle')}
+                            accessoryLayout="stacked"
+                            showChevron={false}
+                            rightElement={
+                                <SelectionTiles
+                                    variant="visual"
+                                    accessibilityLabel={t('settingsAppearance.sessionListDensity.title')}
+                                    testIdPrefix="settings-session-sessionListDensity"
+                                    value={sessionListDensity}
+                                    onChange={(next) => { if (next) handleSessionListDensitySelect(next); }}
+                                    options={sessionListDensityItems.map((item) => ({
+                                        id: item.id,
+                                        title: item.title,
+                                        preview: <SessionListDensityPreview density={item.id} />,
+                                    }))}
+                                />
+                            }
                         />
-                    }
-                    showChevron={false}
-                    onPress={() => setUseEnhancedSessionWizard(!useEnhancedSessionWizard)}
-                />
-                {useEnhancedSessionWizard ? (
-                    <Item
-                        title={t('settingsSession.sessionCreation.wizardDispositionTitle')}
-                        subtitle={t('settingsSession.sessionCreation.wizardDispositionSubtitle')}
-                        icon={<Icon name="grid-four" size={29} color={theme.colors.accent.indigo} />}
-                        onPress={() => router.push('/settings/session/new-session-wizard')}
-                    />
-                ) : null}
-                <Item
-                    title={t('settingsSession.sessionCreation.rememberLastProjectSelectionsTitle')}
-                    subtitle={t(
-                        rememberProjectSelectionsEnabled
-                            ? 'settingsSession.sessionCreation.rememberLastProjectSelectionsEnabledSubtitle'
-                            : 'settingsSession.sessionCreation.rememberLastProjectSelectionsDisabledSubtitle',
-                    )}
-                    icon={<Icon name="copy" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={
-                        <Switch
-                            value={rememberProjectSelectionsEnabled}
-                            onValueChange={(next) => setRememberLastProjectSessionSelections(Boolean(next) as any)}
+                    </SettingAnchor>
+                    {sessionListViewOptions.showProjectOrdering ? (
+                        <SettingAnchor setting={SESSION_SETTINGS.settings.ordering}>
+                            <DropdownMenu
+                                open={openSessionListOrderingModeMenu}
+                                onOpenChange={setOpenSessionListOrderingModeMenu}
+                                variant="selectable"
+                                search={false}
+                                selectedId={`ordering:${normalizedSessionListOrderingMode}`}
+                                showCategoryTitles={false}
+                                matchTriggerWidth={true}
+                                connectToTrigger={true}
+                                rowKind="item"
+                                popoverBoundaryRef={popoverBoundaryRef}
+                                itemTrigger={{
+                                    title: t(SESSION_SETTINGS.settings.ordering.titleKey),
+                                    subtitle: t('settingsSession.sessionList.orderingSubtitle'),
+                                    showSelectedSubtitle: false,
+                                    itemProps: { testID: 'settings-session-sessionListOrderingMode-trigger' },
+                                }}
+                                items={sessionListOrderingModeItems}
+                                onSelect={handleSessionListOrderingModeSelect}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+                    {sessionListViewOptions.showFolderOptions ? (
+                        <SettingAnchor setting={SESSION_SETTINGS.settings.folderView}>
+                            <DropdownMenu
+                                open={openSessionFolderDisplayMenu}
+                                onOpenChange={setOpenSessionFolderDisplayMenu}
+                                variant="selectable"
+                                search={false}
+                                selectedId={`folderDisplay:${sessionListViewOptions.selectedFolderDisplay}`}
+                                showCategoryTitles={false}
+                                matchTriggerWidth={true}
+                                connectToTrigger={true}
+                                rowKind="item"
+                                popoverBoundaryRef={popoverBoundaryRef}
+                                itemTrigger={{
+                                    title: t(SESSION_SETTINGS.settings.folderView.titleKey),
+                                    showSelectedSubtitle: false,
+                                    itemProps: { testID: 'settings-session-sessionFolderViewMode-trigger' },
+                                }}
+                                items={sessionListViewOptions.folderDisplayItems}
+                                onSelect={applySessionListViewOption}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+                    {sessionListViewOptions.showFolderOptions ? (
+                        <SettingAnchor setting={SESSION_SETTINGS.settings.folderSort}>
+                            <DropdownMenu
+                                open={openSessionListFolderSortModeMenu}
+                                onOpenChange={setOpenSessionListFolderSortModeMenu}
+                                variant="selectable"
+                                search={false}
+                                selectedId={`folderSort:${effectiveSessionListFolderSortMode}`}
+                                showCategoryTitles={false}
+                                matchTriggerWidth={true}
+                                connectToTrigger={true}
+                                rowKind="item"
+                                popoverBoundaryRef={popoverBoundaryRef}
+                                itemTrigger={{
+                                    title: t(SESSION_SETTINGS.settings.folderSort.titleKey),
+                                    subtitle: t('settingsSession.sessionList.folderSortModeSubtitle'),
+                                    showSelectedSubtitle: false,
+                                    itemProps: { testID: 'settings-session-sessionListFolderSortMode-trigger' },
+                                }}
+                                items={sessionListFolderSortModeItems}
+                                onSelect={handleSessionListFolderSortModeSelect}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+                    <SettingAnchor setting={SESSION_SETTINGS.settings.layout}>
+                        <Item
+                            testID="settings-session-sessionListLayout"
+                            title={t(SESSION_SETTINGS.settings.layout.titleKey)}
+                            subtitle={t('settingsSession.sessionList.layoutSubtitle')}
+                            accessoryLayout="stacked"
+                            showChevron={false}
+                            rightElement={<SelectionTiles
+                                variant="visual"
+                                accessibilityLabel={t(SESSION_SETTINGS.settings.layout.titleKey)}
+                                testIdPrefix="settings-session-sessionListLayout"
+                                value={`layout:${sessionListViewOptions.selectedLayout}`}
+                                onChange={(next) => { if (next) applySessionListViewOption(next); }}
+                                options={sessionListViewOptions.layoutItems.map((item) => ({
+                                    id: item.id,
+                                    title: item.title,
+                                    preview: <SessionListLayoutPreview layout={item.id} />,
+                                }))}
+                            />}
                         />
-                    }
-                    showChevron={false}
-                    onPress={() => setRememberLastProjectSessionSelections((!rememberProjectSelectionsEnabled) as any)}
-                />
-                <Item
-                    title={t('settingsSession.sessionCreation.rememberLastEngineSelectionsTitle')}
-                    subtitle={t(
-                        rememberEngineSelectionsEnabled
-                            ? 'settingsSession.sessionCreation.rememberLastEngineSelectionsEnabledSubtitle'
-                            : 'settingsSession.sessionCreation.rememberLastEngineSelectionsDisabledSubtitle',
-                    )}
-                    icon={<Icon name="cpu" size={29} color={theme.colors.accent.indigo} />}
-                    rightElement={
-                        <Switch
-                            value={rememberEngineSelectionsEnabled}
-                            onValueChange={(next) => setRememberLastEngineSelections(Boolean(next) as any)}
+                    </SettingAnchor>
+                    {sessionListViewOptions.showSectionGrouping ? (
+                        <SettingAnchor setting={SESSION_SETTINGS.settings.activeGrouping}>
+                            <DropdownMenu
+                                open={openGroupingMenu === 'active'}
+                                onOpenChange={(next) => setOpenGroupingMenu(next ? 'active' : null)}
+                                variant="selectable"
+                                search={false}
+                                selectedId={sessionListViewOptions.selectedActiveGroupingId}
+                                showCategoryTitles={false}
+                                matchTriggerWidth={true}
+                                connectToTrigger={true}
+                                rowKind="item"
+                                popoverBoundaryRef={popoverBoundaryRef}
+                                itemTrigger={{
+                                    title: t(SESSION_SETTINGS.settings.activeGrouping.titleKey),
+                                    subtitle: t('settingsFeatures.sessionListActiveGroupingSubtitle'),
+                                    showSelectedSubtitle: false,
+                                }}
+                                items={sessionListViewOptions.activeGroupingItems}
+                                onSelect={applySessionListViewOption}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+                    {sessionListViewOptions.showSectionGrouping ? (
+                        <SettingAnchor setting={SESSION_SETTINGS.settings.inactiveGrouping}>
+                            <DropdownMenu
+                                open={openGroupingMenu === 'inactive'}
+                                onOpenChange={(next) => setOpenGroupingMenu(next ? 'inactive' : null)}
+                                variant="selectable"
+                                search={false}
+                                selectedId={sessionListViewOptions.selectedInactiveGroupingId}
+                                showCategoryTitles={false}
+                                matchTriggerWidth={true}
+                                connectToTrigger={true}
+                                rowKind="item"
+                                popoverBoundaryRef={popoverBoundaryRef}
+                                itemTrigger={{
+                                    title: t(SESSION_SETTINGS.settings.inactiveGrouping.titleKey),
+                                    subtitle: t('settingsFeatures.sessionListInactiveGroupingSubtitle'),
+                                    showSelectedSubtitle: false,
+                                }}
+                                items={sessionListViewOptions.inactiveGroupingItems}
+                                onSelect={applySessionListViewOption}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+                    <SettingAnchor setting={SESSION_SETTINGS.settings.hideInactive}>
+                        <Item
+                            title={t(SESSION_SETTINGS.settings.hideInactive.titleKey)}
+                            subtitle={t('settingsFeatures.hideInactiveSessionsSubtitle')}
+                            rightElement={<Switch value={hideInactiveSessions} onValueChange={setHideInactiveSessions} />}
+                            showChevron={false}
                         />
-                    }
-                    showChevron={false}
-                    onPress={() => setRememberLastEngineSelections((!rememberEngineSelectionsEnabled) as any)}
-                />
-            </ItemGroup>
-
-            <ItemGroup
-                title={t('settingsSession.rootGroups.listOrganization.title')}
-                footer={t('settingsSession.rootGroups.listOrganization.footer')}
-            >
-                <DropdownMenu
-                    open={openSessionListDensityMenu}
-                    onOpenChange={setOpenSessionListDensityMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={sessionListDensity}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsAppearance.sessionListDensity.title'),
-                        subtitle: t('settingsAppearance.sessionListDensity.subtitle'),
-                        icon: <Icon name="stack" size={29} color={theme.colors.accent.indigo} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-sessionListDensity-trigger' },
-                    }}
-                    items={sessionListDensityItems}
-                    onSelect={handleSessionListDensitySelect}
-                />
-                {sessionListViewOptions.showProjectOrdering ? <DropdownMenu
-                    open={openSessionListOrderingModeMenu}
-                    onOpenChange={setOpenSessionListOrderingModeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={`ordering:${normalizedSessionListOrderingMode}`}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.sessionList.orderingTitle'),
-                        subtitle: t('settingsSession.sessionList.orderingSubtitle'),
-                        icon: <Icon name="arrows-down-up" size={29} color={theme.colors.accent.indigo} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-sessionListOrderingMode-trigger' },
-                    }}
-                    items={sessionListOrderingModeItems}
-                    onSelect={handleSessionListOrderingModeSelect}
-                /> : null}
-                {sessionListViewOptions.showFolderOptions ? <DropdownMenu
-                    open={openSessionFolderDisplayMenu}
-                    onOpenChange={setOpenSessionFolderDisplayMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={`folderDisplay:${sessionListViewOptions.selectedFolderDisplay}`}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.sessionList.folderTreeView'),
-                        icon: <Icon name="folder-open" size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-sessionFolderViewMode-trigger' },
-                    }}
-                    items={sessionListViewOptions.folderDisplayItems}
-                    onSelect={applySessionListViewOption}
-                /> : null}
-                {sessionListViewOptions.showFolderOptions ? <DropdownMenu
-                    open={openSessionListFolderSortModeMenu}
-                    onOpenChange={setOpenSessionListFolderSortModeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={`folderSort:${effectiveSessionListFolderSortMode}`}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.sessionList.folderSortModeTitle'),
-                        subtitle: t('settingsSession.sessionList.folderSortModeSubtitle'),
-                        icon: <Icon name="folder-open" size={29} color={theme.colors.accent.indigo} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-sessionListFolderSortMode-trigger' },
-                    }}
-                    items={sessionListFolderSortModeItems}
-                    onSelect={handleSessionListFolderSortModeSelect}
-                /> : null}
-                <DropdownMenu
-                    open={openSessionListLayoutMenu}
-                    onOpenChange={setOpenSessionListLayoutMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={`layout:${sessionListViewOptions.selectedLayout}`}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.sessionList.layoutTitle'),
-                        subtitle: t('settingsSession.sessionList.layoutSubtitle'),
-                        icon: <Icon name="stack" size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-sessionListLayout-trigger' },
-                    }}
-                    items={sessionListViewOptions.layoutItems}
-                    onSelect={applySessionListViewOption}
-                />
-                {sessionListViewOptions.showSectionGrouping ? <DropdownMenu
-                    open={openGroupingMenu === 'active'}
-                    onOpenChange={(next) => setOpenGroupingMenu(next ? 'active' : null)}
-                    variant="selectable"
-                    search={false}
-                    selectedId={sessionListViewOptions.selectedActiveGroupingId}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsFeatures.sessionListActiveGrouping'),
-                        subtitle: t('settingsFeatures.sessionListActiveGroupingSubtitle'),
-                        icon: <Icon name="folder-open" size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                    }}
-                    items={sessionListViewOptions.activeGroupingItems}
-                    onSelect={applySessionListViewOption}
-                /> : null}
-                {sessionListViewOptions.showSectionGrouping ? <DropdownMenu
-                    open={openGroupingMenu === 'inactive'}
-                    onOpenChange={(next) => setOpenGroupingMenu(next ? 'inactive' : null)}
-                    variant="selectable"
-                    search={false}
-                    selectedId={sessionListViewOptions.selectedInactiveGroupingId}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsFeatures.sessionListInactiveGrouping'),
-                        subtitle: t('settingsFeatures.sessionListInactiveGroupingSubtitle'),
-                        icon: <Icon name="calendar" size={29} color={theme.colors.state.success.foreground} />,
-                        showSelectedSubtitle: false,
-                    }}
-                    items={sessionListViewOptions.inactiveGroupingItems}
-                    onSelect={applySessionListViewOption}
-                /> : null}
-                <Item
-                    title={t('settingsFeatures.hideInactiveSessions')}
-                    subtitle={t('settingsFeatures.hideInactiveSessionsSubtitle')}
-                    icon={<Icon name="eye-slash" size={29} color={theme.colors.accent.orange} />}
-                    rightElement={<Switch value={hideInactiveSessions} onValueChange={setHideInactiveSessions} />}
-                    showChevron={false}
-                />
-                <Item
-                    title={t('settingsAppearance.sessionsRightPaneDefaultOpen')}
-                    subtitle={t('settingsAppearance.sessionsRightPaneDefaultOpenDescription')}
-                    icon={<Icon name="files" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={
-                        <Switch
-                            value={sessionsRightPaneDefaultOpen}
-                            onValueChange={setSessionsRightPaneDefaultOpen}
+                    </SettingAnchor>
+                    <SettingAnchor setting={SESSION_SETTINGS.settings.rightPaneDefaultOpen}>
+                        <Item
+                            title={t(SESSION_SETTINGS.settings.rightPaneDefaultOpen.titleKey)}
+                            subtitle={t('settingsAppearance.sessionsRightPaneDefaultOpenDescription')}
+                            rightElement={
+                                <Switch
+                                    value={sessionsRightPaneDefaultOpen}
+                                    onValueChange={setSessionsRightPaneDefaultOpen}
+                                    disabled={!panelsSupported || !uiMultiPanePanelsEnabled}
+                                />
+                            }
                             disabled={!panelsSupported || !uiMultiPanePanelsEnabled}
+                            showChevron={false}
                         />
-                    }
-                    disabled={!panelsSupported || !uiMultiPanePanelsEnabled}
-                    showChevron={false}
-                />
-            </ItemGroup>
+                    </SettingAnchor>
+                </ItemGroup>
+            </SettingSection>
 
             <ItemGroup
                 title={t('settingsSession.rootGroups.rowDetails.title')}
                 footer={t('settingsSession.rootGroups.rowDetails.footer')}
             >
-                <Item
-                    title={t('settingsSession.sessionList.tagsTitle')}
-                    subtitle={sessionTagsEnabled ? t('settingsSession.sessionList.tagsEnabledSubtitle') : t('settingsSession.sessionList.tagsDisabledSubtitle')}
-                    icon={<Icon name="tag" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={<Switch value={Boolean(sessionTagsEnabled)} onValueChange={setSessionTagsEnabled} />}
-                    showChevron={false}
-                    onPress={() => setSessionTagsEnabled(!sessionTagsEnabled)}
-                />
-                <DropdownMenu
-                    open={openSessionListIdentityDisplayMenu}
-                    onOpenChange={setOpenSessionListIdentityDisplayMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedSessionListIdentityDisplay}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.sessionList.identityDisplayTitle'),
-                        subtitle: t('settingsSession.sessionList.identityDisplaySubtitle'),
-                        icon: <Icon name="user-circle" size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-sessionListIdentityDisplay-trigger' },
-                    }}
-                    items={sessionListIdentityDisplayItems}
-                    onSelect={handleSessionListIdentityDisplaySelect}
-                />
-                <DropdownMenu
-                    open={openSessionHeaderIdentityDisplayMenu}
-                    onOpenChange={setOpenSessionHeaderIdentityDisplayMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedSessionHeaderIdentityDisplay}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.sessionList.headerIdentityDisplayTitle'),
-                        subtitle: t('settingsSession.sessionList.headerIdentityDisplaySubtitle'),
-                        icon: <Icon name="article" size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-sessionHeaderIdentityDisplay-trigger' },
-                    }}
-                    items={sessionHeaderIdentityDisplayItems}
-                    onSelect={handleSessionHeaderIdentityDisplaySelect}
-                />
-                <DropdownMenu
-                    open={openSessionListActiveColorModeMenu}
-                    onOpenChange={setOpenSessionListActiveColorModeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedSessionListActiveColorMode}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.sessionList.activeColorTitle'),
-                        subtitle: t('settingsSession.sessionList.activeColorSubtitle'),
-                        icon: <Icon name="palette" size={29} color={theme.colors.accent.purple} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-sessionListActiveColorMode-trigger' },
-                    }}
-                    items={sessionListActiveColorModeItems}
-                    onSelect={handleSessionListActiveColorModeSelect}
-                />
-                <DropdownMenu
-                    open={openWorkspacePathDisplayMenu}
-                    onOpenChange={setOpenWorkspacePathDisplayMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={workspacePathDisplayMode}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.sessionList.workspacePathDisplayTitle'),
-                        subtitle: workspacePathDisplayMode === 'path'
-                            ? t('settingsSession.sessionList.workspacePathDisplayPathSelectedSubtitle')
-                            : t('settingsSession.sessionList.workspacePathDisplayNameSelectedSubtitle'),
-                        icon: <Icon name="folder-open" size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-workspacePathDisplay-trigger' },
-                    }}
-                    items={workspacePathDisplayItems}
-                    onSelect={handleWorkspacePathDisplaySelect}
-                />
-                <Item
-                    testID="settings-session-workspaceFavicons-item"
-                    title={t('settingsSession.sessionList.workspaceFaviconsTitle')}
-                    subtitle={workspaceFaviconsEnabled !== false
-                        ? t('settingsSession.sessionList.workspaceFaviconsEnabledSubtitle')
-                        : t('settingsSession.sessionList.workspaceFaviconsDisabledSubtitle')}
-                    icon={<Icon name="image" size={29} color={theme.colors.accent.indigo} />}
-                    rightElement={
-                        <Switch
-                            testID="settings-session-workspaceFavicons-toggle"
-                            value={workspaceFaviconsEnabled !== false}
-                            onValueChange={(next) => setWorkspaceFaviconsEnabled(Boolean(next))}
-                        />
-                    }
-                    showChevron={false}
-                    onPress={() => setWorkspaceFaviconsEnabled(workspaceFaviconsEnabled === false)}
-                />
-                <Item
-                    testID="settings-session-workspaceMachineSubtitles-item"
-                    title={t('settingsSession.sessionList.workspaceMachineSubtitlesTitle')}
-                    subtitle={workspaceMachineSubtitlesEnabled !== false
-                        ? t('settingsSession.sessionList.workspaceMachineSubtitlesEnabledSubtitle')
-                        : t('settingsSession.sessionList.workspaceMachineSubtitlesDisabledSubtitle')}
-                    icon={<Icon name="desktop" size={29} color={theme.colors.accent.indigo} />}
-                    rightElement={
-                        <Switch
-                            testID="settings-session-workspaceMachineSubtitles-toggle"
-                            value={workspaceMachineSubtitlesEnabled !== false}
-                            onValueChange={(next) => setWorkspaceMachineSubtitlesEnabled(Boolean(next))}
-                        />
-                    }
-                    showChevron={false}
-                    onPress={() => setWorkspaceMachineSubtitlesEnabled(workspaceMachineSubtitlesEnabled === false)}
-                />
+                <SettingAnchor setting={SESSION_SETTINGS.settings.tags}>
+                    <Item
+                        title={t(SESSION_SETTINGS.settings.tags.titleKey)}
+                        subtitle={sessionTagsEnabled ? t('settingsSession.sessionList.tagsEnabledSubtitle') : t('settingsSession.sessionList.tagsDisabledSubtitle')}
+                        rightElement={<Switch value={Boolean(sessionTagsEnabled)} onValueChange={setSessionTagsEnabled} />}
+                        showChevron={false}
+                        onPress={() => setSessionTagsEnabled(!sessionTagsEnabled)}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.identityDisplay}>
+                    <DropdownMenu
+                        open={openSessionListIdentityDisplayMenu}
+                        onOpenChange={setOpenSessionListIdentityDisplayMenu}
+                        variant="selectable"
+                        search={false}
+                        selectedId={normalizedSessionListIdentityDisplay}
+                        showCategoryTitles={false}
+                        matchTriggerWidth={true}
+                        connectToTrigger={true}
+                        rowKind="item"
+                        popoverBoundaryRef={popoverBoundaryRef}
+                        itemTrigger={{
+                            title: t(SESSION_SETTINGS.settings.identityDisplay.titleKey),
+                            subtitle: t('settingsSession.sessionList.identityDisplaySubtitle'),
+                            showSelectedSubtitle: false,
+                            itemProps: { testID: 'settings-session-sessionListIdentityDisplay-trigger' },
+                        }}
+                        items={sessionListIdentityDisplayItems}
+                        onSelect={handleSessionListIdentityDisplaySelect}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.headerIdentityDisplay}>
+                    <DropdownMenu
+                        open={openSessionHeaderIdentityDisplayMenu}
+                        onOpenChange={setOpenSessionHeaderIdentityDisplayMenu}
+                        variant="selectable"
+                        search={false}
+                        selectedId={normalizedSessionHeaderIdentityDisplay}
+                        showCategoryTitles={false}
+                        matchTriggerWidth={true}
+                        connectToTrigger={true}
+                        rowKind="item"
+                        popoverBoundaryRef={popoverBoundaryRef}
+                        itemTrigger={{
+                            title: t(SESSION_SETTINGS.settings.headerIdentityDisplay.titleKey),
+                            subtitle: t('settingsSession.sessionList.headerIdentityDisplaySubtitle'),
+                            showSelectedSubtitle: false,
+                            itemProps: { testID: 'settings-session-sessionHeaderIdentityDisplay-trigger' },
+                        }}
+                        items={sessionHeaderIdentityDisplayItems}
+                        onSelect={handleSessionHeaderIdentityDisplaySelect}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.activeColor}>
+                    <DropdownMenu
+                        open={openSessionListActiveColorModeMenu}
+                        onOpenChange={setOpenSessionListActiveColorModeMenu}
+                        variant="selectable"
+                        search={false}
+                        selectedId={normalizedSessionListActiveColorMode}
+                        showCategoryTitles={false}
+                        matchTriggerWidth={true}
+                        connectToTrigger={true}
+                        rowKind="item"
+                        popoverBoundaryRef={popoverBoundaryRef}
+                        itemTrigger={{
+                            title: t(SESSION_SETTINGS.settings.activeColor.titleKey),
+                            subtitle: t('settingsSession.sessionList.activeColorSubtitle'),
+                            showSelectedSubtitle: false,
+                            itemProps: { testID: 'settings-session-sessionListActiveColorMode-trigger' },
+                        }}
+                        items={sessionListActiveColorModeItems}
+                        onSelect={handleSessionListActiveColorModeSelect}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.workspacePathDisplay}>
+                    <DropdownMenu
+                        open={openWorkspacePathDisplayMenu}
+                        onOpenChange={setOpenWorkspacePathDisplayMenu}
+                        variant="selectable"
+                        search={false}
+                        selectedId={workspacePathDisplayMode}
+                        showCategoryTitles={false}
+                        matchTriggerWidth={true}
+                        connectToTrigger={true}
+                        rowKind="item"
+                        popoverBoundaryRef={popoverBoundaryRef}
+                        itemTrigger={{
+                            title: t(SESSION_SETTINGS.settings.workspacePathDisplay.titleKey),
+                            subtitle: workspacePathDisplayMode === 'path'
+                                ? t('settingsSession.sessionList.workspacePathDisplayPathSelectedSubtitle')
+                                : t('settingsSession.sessionList.workspacePathDisplayNameSelectedSubtitle'),
+                            showSelectedSubtitle: false,
+                            itemProps: { testID: 'settings-session-workspacePathDisplay-trigger' },
+                        }}
+                        items={workspacePathDisplayItems}
+                        onSelect={handleWorkspacePathDisplaySelect}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.workspaceFavicons}>
+                    <Item
+                        testID="settings-session-workspaceFavicons-item"
+                        title={t(SESSION_SETTINGS.settings.workspaceFavicons.titleKey)}
+                        subtitle={workspaceFaviconsEnabled !== false
+                            ? t('settingsSession.sessionList.workspaceFaviconsEnabledSubtitle')
+                            : t('settingsSession.sessionList.workspaceFaviconsDisabledSubtitle')}
+                        rightElement={
+                            <Switch
+                                testID="settings-session-workspaceFavicons-toggle"
+                                value={workspaceFaviconsEnabled !== false}
+                                onValueChange={(next) => setWorkspaceFaviconsEnabled(Boolean(next))}
+                            />
+                        }
+                        showChevron={false}
+                        onPress={() => setWorkspaceFaviconsEnabled(workspaceFaviconsEnabled === false)}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.workspaceMachineSubtitles}>
+                    <Item
+                        testID="settings-session-workspaceMachineSubtitles-item"
+                        title={t(SESSION_SETTINGS.settings.workspaceMachineSubtitles.titleKey)}
+                        subtitle={workspaceMachineSubtitlesEnabled !== false
+                            ? t('settingsSession.sessionList.workspaceMachineSubtitlesEnabledSubtitle')
+                            : t('settingsSession.sessionList.workspaceMachineSubtitlesDisabledSubtitle')}
+                        rightElement={
+                            <Switch
+                                testID="settings-session-workspaceMachineSubtitles-toggle"
+                                value={workspaceMachineSubtitlesEnabled !== false}
+                                onValueChange={(next) => setWorkspaceMachineSubtitlesEnabled(Boolean(next))}
+                            />
+                        }
+                        showChevron={false}
+                        onPress={() => setWorkspaceMachineSubtitlesEnabled(workspaceMachineSubtitlesEnabled === false)}
+                    />
+                </SettingAnchor>
             </ItemGroup>
 
             <ItemGroup
                 title={t('settingsSession.rootGroups.activitySignals.title')}
                 footer={t('settingsSession.rootGroups.activitySignals.footer')}
             >
-                <Item
-                    testID="settings-session-workingStatusAnimatedText-item"
-                    title={t('settingsSession.sessionList.workingStatusAnimatedTextTitle')}
-                    subtitle={sessionListWorkingStatusAnimatedTextEnabled !== false
-                        ? t('settingsSession.sessionList.workingStatusAnimatedTextEnabledSubtitle')
-                        : t('settingsSession.sessionList.workingStatusAnimatedTextDisabledSubtitle')}
-                    icon={<Icon name="pulse" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={
-                        <Switch
-                            testID="settings-session-workingStatusAnimatedText-toggle"
-                            value={sessionListWorkingStatusAnimatedTextEnabled !== false}
-                            onValueChange={(next) => setSessionListWorkingStatusAnimatedTextEnabled(Boolean(next))}
-                        />
-                    }
-                    showChevron={false}
-                    onPress={() => setSessionListWorkingStatusAnimatedTextEnabled(sessionListWorkingStatusAnimatedTextEnabled === false)}
-                />
-                <DropdownMenu
-                    open={openSessionListAttentionPromotionModeMenu}
-                    onOpenChange={setOpenSessionListAttentionPromotionModeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={`attention:${normalizedSessionListAttentionPromotionMode}`}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.sessionList.attentionPromotionModeTitle'),
-                        subtitle: t('settingsSession.sessionList.attentionPromotionModeSubtitle'),
-                        icon: <Icon name="warning-circle" size={29} color={theme.colors.state.warning.foreground} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-attentionPromotionMode-trigger' },
-                    }}
-                    items={sessionListAttentionPromotionModeItems}
-                    onSelect={handleSessionListAttentionPromotionModeSelect}
-                />
-                <Item
-                    testID="settings-session-attentionStandingDefault-item"
-                    title={t('settingsSession.sessionList.attentionStandingDefaultTitle')}
-                    subtitle={sessionListAttentionStandingUnavailable
-                        ? t('settingsSession.sessionList.attentionStandingDefaultUnavailableSubtitle')
-                        : sessionListAttentionStandingDefault === true
-                            ? t('settingsSession.sessionList.attentionStandingDefaultEnabledSubtitle')
-                            : t('settingsSession.sessionList.attentionStandingDefaultDisabledSubtitle')}
-                    icon={<Icon name="bell" size={29} color={theme.colors.state.warning.foreground} />}
-                    rightElement={
-                        <Switch
-                            testID="settings-session-attentionStandingDefault-toggle"
-                            value={sessionListAttentionStandingDefault === true}
-                            onValueChange={(next) => setSessionListAttentionStandingDefault(Boolean(next))}
-                            disabled={sessionListAttentionStandingUnavailable}
-                        />
-                    }
-                    disabled={sessionListAttentionStandingUnavailable}
-                    showChevron={false}
-                    onPress={() => setSessionListAttentionStandingDefault(sessionListAttentionStandingDefault !== true)}
-                />
-                <DropdownMenu
-                    open={openSessionListWorkingPlacementModeMenu}
-                    onOpenChange={setOpenSessionListWorkingPlacementModeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={`working:${normalizedSessionListWorkingPlacementMode}`}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.sessionList.workingPlacementModeTitle'),
-                        subtitle: t('settingsSession.sessionList.workingPlacementModeSubtitle'),
-                        icon: <Icon name="play-circle" size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-workingPlacementMode-trigger' },
-                    }}
-                    items={sessionListWorkingPlacementModeItems}
-                    onSelect={handleSessionListWorkingPlacementModeSelect}
-                />
-                <DropdownMenu
-                    open={openWorkingIndicatorMenu}
-                    onOpenChange={setOpenWorkingIndicatorMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={workingIndicatorStyle}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.sessionList.workingIndicatorTitle'),
-                        subtitle: workingIndicatorStyle === 'pulse'
-                            ? t('settingsSession.sessionList.workingIndicatorPulseSelectedSubtitle')
-                            : t('settingsSession.sessionList.workingIndicatorSpinnerSelectedSubtitle'),
-                        icon: <Icon name={workingIndicatorStyle === 'pulse' ? 'radio-button' : 'arrows-clockwise'} size={29} color={theme.colors.accent.blue} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-workingIndicator-trigger' },
-                    }}
-                    items={workingIndicatorItems}
-                    onSelect={handleWorkingIndicatorSelect}
-                />
+                <SettingAnchor setting={SESSION_SETTINGS.settings.workingStatusAnimatedText}>
+                    <Item
+                        testID="settings-session-workingStatusAnimatedText-item"
+                        title={t(SESSION_SETTINGS.settings.workingStatusAnimatedText.titleKey)}
+                        subtitle={sessionListWorkingStatusAnimatedTextEnabled !== false
+                            ? t('settingsSession.sessionList.workingStatusAnimatedTextEnabledSubtitle')
+                            : t('settingsSession.sessionList.workingStatusAnimatedTextDisabledSubtitle')}
+                        rightElement={
+                            <Switch
+                                testID="settings-session-workingStatusAnimatedText-toggle"
+                                value={sessionListWorkingStatusAnimatedTextEnabled !== false}
+                                onValueChange={(next) => setSessionListWorkingStatusAnimatedTextEnabled(Boolean(next))}
+                            />
+                        }
+                        showChevron={false}
+                        onPress={() => setSessionListWorkingStatusAnimatedTextEnabled(sessionListWorkingStatusAnimatedTextEnabled === false)}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.attentionPromotion}>
+                    <DropdownMenu
+                        open={openSessionListAttentionPromotionModeMenu}
+                        onOpenChange={setOpenSessionListAttentionPromotionModeMenu}
+                        variant="selectable"
+                        search={false}
+                        selectedId={`attention:${normalizedSessionListAttentionPromotionMode}`}
+                        showCategoryTitles={false}
+                        matchTriggerWidth={true}
+                        connectToTrigger={true}
+                        rowKind="item"
+                        popoverBoundaryRef={popoverBoundaryRef}
+                        itemTrigger={{
+                            title: t(SESSION_SETTINGS.settings.attentionPromotion.titleKey),
+                            subtitle: t('settingsSession.sessionList.attentionPromotionModeSubtitle'),
+                            showSelectedSubtitle: false,
+                            itemProps: { testID: 'settings-session-attentionPromotionMode-trigger' },
+                        }}
+                        items={sessionListAttentionPromotionModeItems}
+                        onSelect={handleSessionListAttentionPromotionModeSelect}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.attentionStandingDefault}>
+                    <Item
+                        testID="settings-session-attentionStandingDefault-item"
+                        title={t(SESSION_SETTINGS.settings.attentionStandingDefault.titleKey)}
+                        subtitle={sessionListAttentionStandingUnavailable
+                            ? t('settingsSession.sessionList.attentionStandingDefaultUnavailableSubtitle')
+                            : sessionListAttentionStandingDefault === true
+                                ? t('settingsSession.sessionList.attentionStandingDefaultEnabledSubtitle')
+                                : t('settingsSession.sessionList.attentionStandingDefaultDisabledSubtitle')}
+                        rightElement={
+                            <Switch
+                                testID="settings-session-attentionStandingDefault-toggle"
+                                value={sessionListAttentionStandingDefault === true}
+                                onValueChange={(next) => setSessionListAttentionStandingDefault(Boolean(next))}
+                                disabled={sessionListAttentionStandingUnavailable}
+                            />
+                        }
+                        disabled={sessionListAttentionStandingUnavailable}
+                        showChevron={false}
+                        onPress={() => setSessionListAttentionStandingDefault(sessionListAttentionStandingDefault !== true)}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.workingPlacement}>
+                    <DropdownMenu
+                        open={openSessionListWorkingPlacementModeMenu}
+                        onOpenChange={setOpenSessionListWorkingPlacementModeMenu}
+                        variant="selectable"
+                        search={false}
+                        selectedId={`working:${normalizedSessionListWorkingPlacementMode}`}
+                        showCategoryTitles={false}
+                        matchTriggerWidth={true}
+                        connectToTrigger={true}
+                        rowKind="item"
+                        popoverBoundaryRef={popoverBoundaryRef}
+                        itemTrigger={{
+                            title: t(SESSION_SETTINGS.settings.workingPlacement.titleKey),
+                            subtitle: t('settingsSession.sessionList.workingPlacementModeSubtitle'),
+                            showSelectedSubtitle: false,
+                            itemProps: { testID: 'settings-session-workingPlacementMode-trigger' },
+                        }}
+                        items={sessionListWorkingPlacementModeItems}
+                        onSelect={handleSessionListWorkingPlacementModeSelect}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.workingIndicator}>
+                    <DropdownMenu
+                        open={openWorkingIndicatorMenu}
+                        onOpenChange={setOpenWorkingIndicatorMenu}
+                        variant="selectable"
+                        search={false}
+                        selectedId={workingIndicatorStyle}
+                        showCategoryTitles={false}
+                        matchTriggerWidth={true}
+                        connectToTrigger={true}
+                        rowKind="item"
+                        popoverBoundaryRef={popoverBoundaryRef}
+                        itemTrigger={{
+                            title: t(SESSION_SETTINGS.settings.workingIndicator.titleKey),
+                            subtitle: workingIndicatorStyle === 'pulse'
+                                ? t('settingsSession.sessionList.workingIndicatorPulseSelectedSubtitle')
+                                : t('settingsSession.sessionList.workingIndicatorSpinnerSelectedSubtitle'),
+                            showSelectedSubtitle: false,
+                            itemProps: { testID: 'settings-session-workingIndicator-trigger' },
+                        }}
+                        items={workingIndicatorItems}
+                        onSelect={handleWorkingIndicatorSelect}
+                    />
+                </SettingAnchor>
             </ItemGroup>
 
             <ItemGroup
                 title={t('settingsSession.rootGroups.mobileLayout.title')}
                 footer={t('settingsSession.rootGroups.mobileLayout.footer')}
             >
-                <Item
-                    title={t('settingsSession.mobileWorkspaceExperience.title')}
-                    subtitle={mobileWorkspaceExperience === 'classic'
-                        ? t('settingsSession.mobileWorkspaceExperience.options.classicSubtitle')
-                        : t('settingsSession.mobileWorkspaceExperience.options.cockpitSubtitle')}
-                    icon={<Icon name="device-mobile" size={29} color={theme.colors.accent.indigo} />}
-                    rightElement={
-                        <Switch
-                            testID="settings-session-mobileWorkspaceExperience-switch"
-                            value={mobileWorkspaceExperience !== 'classic'}
-                            onValueChange={(enabled) => setMobileWorkspaceExperience(enabled ? 'cockpit' : 'classic')}
-                        />
-                    }
-                    showChevron={false}
-                    onPress={() => setMobileWorkspaceExperience(mobileWorkspaceExperience === 'classic' ? 'cockpit' : 'classic')}
-                    testID="settings-session-mobileWorkspaceExperience-trigger"
-                />
+                <SettingAnchor setting={SESSION_SETTINGS.settings.mobileWorkspaceExperience}>
+                    <Item
+                        title={t(SESSION_SETTINGS.settings.mobileWorkspaceExperience.titleKey)}
+                        subtitle={mobileWorkspaceExperience === 'classic'
+                            ? t('settingsSession.mobileWorkspaceExperience.options.classicSubtitle')
+                            : t('settingsSession.mobileWorkspaceExperience.options.cockpitSubtitle')}
+                        rightElement={
+                            <Switch
+                                testID="settings-session-mobileWorkspaceExperience-switch"
+                                value={mobileWorkspaceExperience !== 'classic'}
+                                onValueChange={(enabled) => setMobileWorkspaceExperience(enabled ? 'cockpit' : 'classic')}
+                            />
+                        }
+                        showChevron={false}
+                        onPress={() => setMobileWorkspaceExperience(mobileWorkspaceExperience === 'classic' ? 'cockpit' : 'classic')}
+                        testID="settings-session-mobileWorkspaceExperience-trigger"
+                    />
+                </SettingAnchor>
+            </ItemGroup>
+
+            <ItemGroup title={t(SESSION_SETTINGS.sections.openTabs.titleKey)}>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.syncOpenTabs}>
+                    <Item title={t(SESSION_SETTINGS.settings.syncOpenTabs.titleKey)}
+                        subtitle={t('workspaceTabs.syncDescription')}
+                        rightElement={<Switch testID="settings-session-workspaceTabsSync-switch"
+                            value={workspaceTabsSyncEnabled !== false} onValueChange={setWorkspaceTabsSyncEnabled} />}
+                        showChevron={false} onPress={() => setWorkspaceTabsSyncEnabled(workspaceTabsSyncEnabled === false)}
+                        testID="settings-session-workspaceTabsSync-trigger" />
+                </SettingAnchor>
             </ItemGroup>
 
             <ItemGroup
                 title={t('settingsSession.rootGroups.agentPersonalization.title')}
                 footer={t('settingsSession.rootGroups.agentPersonalization.footer')}
             >
-                <DropdownMenu
-                    open={openTitleUpdatesModeMenu}
-                    onOpenChange={setOpenTitleUpdatesModeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedCodingPromptBehavior.sessionTitleUpdates}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.promptPersonalization.askAgentToRenameSessionsTitle'),
-                        subtitle: t(
-                            normalizedCodingPromptBehavior.sessionTitleUpdates === 'disabled'
-                                ? 'settingsSession.promptPersonalization.askAgentToRenameSessionsDisabledSubtitle'
-                                : normalizedCodingPromptBehavior.sessionTitleUpdates === 'initial'
-                                    ? 'settingsSession.promptPersonalization.askAgentToRenameSessionsInitialSelectedSubtitle'
-                                    : 'settingsSession.promptPersonalization.askAgentToRenameSessionsOngoingSelectedSubtitle',
-                        ),
-                        icon: <Icon name="text-aa" size={29} color={theme.colors.accent.indigo} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-session-title-updates-mode-trigger' },
-                    }}
-                    items={titleUpdatesModeItems}
-                    onSelect={handleSessionTitleUpdatesModeSelect}
-                />
-                <Item
-                    title={t('settingsSession.promptPersonalization.askAgentToSuggestReplyOptionsTitle')}
-                    subtitle={t(
-                        normalizedCodingPromptBehavior.responseOptions === 'agent'
-                            ? 'settingsSession.promptPersonalization.askAgentToSuggestReplyOptionsEnabledSubtitle'
-                            : 'settingsSession.promptPersonalization.askAgentToSuggestReplyOptionsDisabledSubtitle',
-                    )}
-                    icon={<Icon name="list" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={
-                        <Switch
-                            value={normalizedCodingPromptBehavior.responseOptions === 'agent'}
-                            onValueChange={(next) => setCodingPromptResponseOptionsEnabled(Boolean(next))}
-                        />
-                    }
-                    showChevron={false}
-                    onPress={() => setCodingPromptResponseOptionsEnabled(normalizedCodingPromptBehavior.responseOptions !== 'agent')}
-                />
+                <SettingAnchor setting={SESSION_SETTINGS.settings.renameSessions}>
+                    <DropdownMenu
+                        open={openTitleUpdatesModeMenu}
+                        onOpenChange={setOpenTitleUpdatesModeMenu}
+                        variant="selectable"
+                        search={false}
+                        selectedId={normalizedCodingPromptBehavior.sessionTitleUpdates}
+                        showCategoryTitles={false}
+                        matchTriggerWidth={true}
+                        connectToTrigger={true}
+                        rowKind="item"
+                        popoverBoundaryRef={popoverBoundaryRef}
+                        itemTrigger={{
+                            title: t(SESSION_SETTINGS.settings.renameSessions.titleKey),
+                            subtitle: t(
+                                normalizedCodingPromptBehavior.sessionTitleUpdates === 'disabled'
+                                    ? 'settingsSession.promptPersonalization.askAgentToRenameSessionsDisabledSubtitle'
+                                    : normalizedCodingPromptBehavior.sessionTitleUpdates === 'initial'
+                                        ? 'settingsSession.promptPersonalization.askAgentToRenameSessionsInitialSelectedSubtitle'
+                                        : 'settingsSession.promptPersonalization.askAgentToRenameSessionsOngoingSelectedSubtitle',
+                            ),
+                            showSelectedSubtitle: false,
+                            itemProps: { testID: 'settings-session-title-updates-mode-trigger' },
+                        }}
+                        items={titleUpdatesModeItems}
+                        onSelect={handleSessionTitleUpdatesModeSelect}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.suggestReplyOptions}>
+                    <Item
+                        title={t(SESSION_SETTINGS.settings.suggestReplyOptions.titleKey)}
+                        subtitle={t(
+                            normalizedCodingPromptBehavior.responseOptions === 'agent'
+                                ? 'settingsSession.promptPersonalization.askAgentToSuggestReplyOptionsEnabledSubtitle'
+                                : 'settingsSession.promptPersonalization.askAgentToSuggestReplyOptionsDisabledSubtitle',
+                        )}
+                        rightElement={
+                            <Switch
+                                value={normalizedCodingPromptBehavior.responseOptions === 'agent'}
+                                onValueChange={(next) => setCodingPromptResponseOptionsEnabled(Boolean(next))}
+                            />
+                        }
+                        showChevron={false}
+                        onPress={() => setCodingPromptResponseOptionsEnabled(normalizedCodingPromptBehavior.responseOptions !== 'agent')}
+                    />
+                </SettingAnchor>
             </ItemGroup>
 
+
+            <ItemGroup
+                title={t('settingsSession.detailedBehavior.title')}
+                footer={t('settingsSession.detailedBehavior.footer')}
+            >
+                <SettingAnchor setting={SESSION_SETTINGS.settings.composer}>
+                    <Item
+                        title={t(SESSION_SETTINGS.settings.composer.titleKey)}
+                        icon={<Icon name="paper-plane-tilt" />}
+                        subtitle={t('settingsSession.composer.entrySubtitle')}
+                        onPress={() => router.push('/(app)/settings/session/composer')}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.providerLimits}>
+                    <Item
+                        title={t(SESSION_SETTINGS.settings.providerLimits.titleKey)}
+                        icon={<Icon name="speedometer" />}
+                        subtitle={t('settingsSession.providerLimits.entrySubtitle')}
+                        onPress={() => router.push('/(app)/settings/session/provider-limits')}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.resume}>
+                    <Item
+                        title={t(SESSION_SETTINGS.settings.resume.titleKey)}
+                        icon={<Icon name="arrow-clockwise" />}
+                        subtitle={t('settingsSession.resume.entrySubtitle')}
+                        onPress={() => router.push('/(app)/settings/session/resume')}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SESSION_SETTINGS.settings.runtime}>
+                    <Item
+                        title={t(SESSION_SETTINGS.settings.runtime.titleKey)}
+                        icon={<Icon name="terminal" />}
+                        subtitle={t('settingsSession.runtime.entrySubtitle')}
+                        onPress={() => router.push('/(app)/settings/session/runtime')}
+                    />
+                </SettingAnchor>
+            </ItemGroup>
         </ItemList>
     );
 });
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

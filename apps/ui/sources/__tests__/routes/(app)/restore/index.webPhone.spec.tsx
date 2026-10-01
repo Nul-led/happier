@@ -140,6 +140,72 @@ describe('/restore (web phone)', () => {
         expect(restoreRouteIngressState.scannerProps?.entryIntent).toBe('add_home');
     });
 
+    it('frames a routed reverse-direction invite as approving the new device, not adding a Home', async () => {
+        vi.resetModules();
+        const pairing = await import('@/auth/pairing/pairingUrl');
+        const pairingLink = pairing.buildHomeQrInviteDeepLink({
+            invite: {
+                v: 2,
+                intent: 'home_device',
+                direction: 'requester_displays',
+                pairId: 'pair-route-reverse',
+                requesterPublicKeyBase64Url: encodeBase64(new Uint8Array(32).fill(8), 'base64url'),
+                home: {
+                    v: 1,
+                    homeServerIdentityId: 'srv_route_reverse',
+                    canonicalServerUrl: 'https://route-reverse.test',
+                    revision: 1,
+                    endpoints: [{ kind: 'https', url: 'https://route-reverse.test' }],
+                },
+                qrSecretBase64Url: encodeBase64(new Uint8Array(32).fill(6), 'base64url'),
+                issuedAtMs: Date.now(),
+                expiresAtMs: Date.now() + 60_000,
+            },
+        });
+        const restorePath = pairing.buildHomeQrInviteRestoreRoutePath(pairingLink, 'add_home');
+        const routeUrl = new URL(restorePath!, 'https://app.example.test');
+        restoreRouteIngressState.params = Object.fromEntries(routeUrl.searchParams.entries());
+        const { default: Screen } = await import('@/app/(app)/restore/index');
+
+        const screen = await renderScreen(<Screen />);
+
+        expect(restoreRouteIngressState.scannerProps?.initialPairingLink).toBe(pairingLink);
+        const chrome = screen.getTextContent();
+        expect(chrome).toContain('connect.approveNewDeviceTitle');
+        expect(chrome).toContain('connect.approveNewDeviceSubtitle');
+        expect(chrome).not.toContain('connect.linkNewDeviceSubtitle');
+        expect(chrome).not.toContain('setupOnboarding.addHomeTitle');
+        expect(chrome).not.toContain('setupOnboarding.addHomeSubtitle');
+        // Approving a device is not a step of the three-step Home setup.
+        expect(screen.findByTestId('restore-wizard-progress')).toBeNull();
+    });
+
+    it('follows the invite direction the embedded scanner reports for an in-place scan', async () => {
+        vi.stubGlobal('navigator', { maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' } as any);
+        restoreRouteIngressState.params = { entryIntent: 'add_home' };
+        vi.resetModules();
+        const { default: Screen } = await import('@/app/(app)/restore/index');
+
+        const screen = await renderScreen(<Screen />);
+        expect(screen.getTextContent()).toContain('setupOnboarding.addHomeTitle');
+        expect(screen.findByTestId('restore-wizard-progress')).not.toBeNull();
+        const reportDirection = restoreRouteIngressState.scannerProps?.onInviteDirectionChange;
+        expect(reportDirection).toBeInstanceOf(Function);
+
+        await act(async () => {
+            (reportDirection as (direction: string | null) => void)('requester_displays');
+        });
+        expect(screen.getTextContent()).toContain('connect.approveNewDeviceTitle');
+        expect(screen.getTextContent()).not.toContain('setupOnboarding.addHomeTitle');
+        expect(screen.findByTestId('restore-wizard-progress')).toBeNull();
+
+        await act(async () => {
+            (reportDirection as (direction: string | null) => void)(null);
+        });
+        expect(screen.getTextContent()).toContain('setupOnboarding.addHomeTitle');
+        expect(screen.getTextContent()).not.toContain('connect.approveNewDeviceTitle');
+    });
+
     it.each(['missing', 'malformed'] as const)(
         'refuses to consume a routed V2 link whose entry intent is %s',
         async (intentCase) => {

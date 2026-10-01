@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isPluginError } from '@happier-dev/plugin-sdk';
 import type { PluginClientApi } from '@happier-dev/plugin-sdk';
@@ -18,7 +18,7 @@ import {
     type PluginMachineExecutionOriginV1,
     type PluginProjectedActionV2,
 } from '@happier-dev/protocol';
-import { PluginUiArtifactsManifestEntryV1Schema } from '@happier-dev/protocol/plugins/ui';
+import { PluginUiArtifactsManifestEntryV2Schema } from '@happier-dev/protocol/plugins/ui';
 import type { PluginUiActionProjection, PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
 import { EMPTY_PLUGIN_UI_PROJECTION } from '@/sync/domains/plugins/ui/projection';
 import { PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY } from '@/sync/domains/plugins/ui/projectionUnion';
@@ -50,6 +50,23 @@ vi.mock('@/sync/domains/local/services/preview/platform', () => ({
     resolveLocalServicePreviewPlatform: () => clientExecutablePlatformState.platform,
 }));
 
+/** Declared Action schemas the daemon answers per Action; never projected. */
+const actionSchemasByQualifiedId = new Map<string, Readonly<{ inputSchema: object; outputSchema?: object }>>();
+
+beforeEach(() => {
+    actionSchemasByQualifiedId.clear();
+    resetMachineProjectionReadsForTests();
+    machineRpcWithServerScopeMock.mockImplementation(async (request: Readonly<{
+        method?: string;
+        payload?: Readonly<{ qualifiedActionId?: string }>;
+    }>) => {
+        if (request.method !== RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ) return undefined;
+        const schemas = actionSchemasByQualifiedId.get(request.payload?.qualifiedActionId ?? '');
+        return schemas ? { ok: true, ...schemas } : { ok: false, code: 'plugin_action_schemas_unavailable' };
+    });
+});
+
+import { resetMachineProjectionReadsForTests } from '@/sync/ops/machineContributionRegistryProjection';
 import type { CurrentUiContextResolvedCommand } from './CurrentUiContextProvider';
 import {
     bindCurrentUiContextVoiceToolPortToAdmission,
@@ -81,7 +98,6 @@ const ACTION_ORIGIN = Object.freeze({
 const CLIENT_ACTION_ID = Object.freeze({ pluginId: 'acme.current-ui', localId: 'retiring-client-action' });
 const CLIENT_ACTION_TARGET = Object.freeze({
     artifactId: 'current-ui-client-action-bundle',
-    modulePath: './client/currentUiAction',
     exportName: 'activate',
     platform: 'web' as const,
 });
@@ -102,20 +118,19 @@ const CLIENT_ACTION_HOST_ORIGIN = Object.freeze({
     phase: 'current' as const,
     executionOrigin: CLIENT_ACTION_EXECUTION_ORIGIN,
 });
-const CLIENT_ACTION_ARTIFACT_GRAPH = PluginUiArtifactsManifestEntryV1Schema.parse({
-    contributionId: CLIENT_ACTION_TARGET.artifactId,
+const CLIENT_ACTION_ARTIFACT_GRAPH = PluginUiArtifactsManifestEntryV2Schema.parse({
+    artifactId: CLIENT_ACTION_TARGET.artifactId,
     tier: 'reactNative',
-    platform: CLIENT_ACTION_TARGET.platform,
-    entry: 'react-native/current-ui-client-action/index.js',
+    entry: 'react-native/current-ui-client-action-bundle/entry.cjs.bundle',
     files: [{
-        relativePath: 'react-native/current-ui-client-action/index.js',
+        relativePath: 'react-native/current-ui-client-action-bundle/entry.cjs.bundle',
         digest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
         byteSize: 10,
     }],
     digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    builtWith: { bundler: 'vite', version: '7.0.0' },
-    hostUiApiVersion: '1.0.0',
-    compat: { react: '19.0.0', reactNative: '0.83.4' },
+    builtWith: { bundler: 'esbuild', version: '0.27.2' },
+    executable: { exports: [CLIENT_ACTION_TARGET.exportName] },
+    hostUiApiRange: '^1.0.0',
 });
 const CLIENT_ACTION_AUTHORIZATION = Object.freeze({
     generation: Object.freeze({
@@ -186,9 +201,19 @@ function createPublicAuthoringClientActionFixture(input: Readonly<{
     if (!declaration) {
         throw new Error(`public_authoring_client_action_missing:${input.localId}`);
     }
+    const {
+        inputSchema: declaredInputSchema,
+        outputSchema: declaredOutputSchema,
+        ...projectedDeclaration
+    } = declaration as Readonly<Record<string, unknown>>;
+    actionSchemasByQualifiedId.set(`${publicAuthoringManifest.id}/${input.localId}`, {
+        inputSchema: (declaredInputSchema as object | undefined) ?? {},
+        ...(declaredOutputSchema ? { outputSchema: declaredOutputSchema as object } : {}),
+    });
     const action = PluginProjectedActionV2Schema.parse({
-        ...declaration,
+        ...projectedDeclaration,
         pluginId: publicAuthoringManifest.id,
+        occurrenceId: `public-authoring-client-action-occurrence-${PUBLIC_AUTHORING_CLIENT_ACTION_GENERATION}`,
         serverIdentityId: PUBLIC_AUTHORING_CLIENT_ACTION_EXECUTION_ORIGIN.serverIdentityId,
         materializationRef: PUBLIC_AUTHORING_CLIENT_ACTION_EXECUTION_ORIGIN.materializationRef,
         available: true,
@@ -217,45 +242,24 @@ function createPublicAuthoringClientActionFixture(input: Readonly<{
     const cacheIdentity: PluginReactNativeBundleCacheIdentity = Object.freeze({
         pluginId: action.pluginId,
         contributionId: action.id,
+        artifactId: action.execution.client.artifactId,
         artifactDigest,
-        hostAppVersion: '2.0.0',
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
         platform: input.platform,
-        channel: 'internal',
-        nativeCapabilitiesDigest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
-        projectionGeneration: PUBLIC_AUTHORING_CLIENT_ACTION_GENERATION,
     });
     const artifactGraph = supportsPlatform
-        ? PluginUiArtifactsManifestEntryV1Schema.parse({
-            contributionId: action.execution.client.artifactId,
+        ? PluginUiArtifactsManifestEntryV2Schema.parse({
+            artifactId: action.execution.client.artifactId,
             tier: 'reactNative',
-            platform: input.platform,
-            entry: input.platform === 'web'
-                ? 'react-native-web/review-client-actions/activate.mjs'
-                : `react-native/review-client-actions/${input.platform}/activate.bundle`,
+            entry: 'react-native/review-client-actions/entry.cjs.bundle',
             files: [{
-                relativePath: input.platform === 'web'
-                    ? 'react-native-web/review-client-actions/activate.mjs'
-                    : `react-native/review-client-actions/${input.platform}/activate.bundle`,
+                relativePath: 'react-native/review-client-actions/entry.cjs.bundle',
                 digest: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
                 byteSize: 9,
             }],
             digest: artifactDigest,
-            builtWith: {
-                bundler: input.platform === 'web' ? 'vite' : 'repack',
-                version: input.platform === 'web' ? '7.0.0' : '5.2.5',
-            },
-            ...(input.platform === 'web' ? {} : {
-                repack: {
-                    containerName: 'examples_public_authoring_review_client_actions',
-                    modulePath: action.execution.client.modulePath,
-                    exportName: action.execution.client.exportName,
-                },
-            }),
-            hostUiApiVersion: '1.0.0',
-            compat: { react: '19.0.0', reactNative: '0.83.4' },
+            builtWith: { bundler: 'esbuild', version: '0.27.2' },
+            executable: { exports: [action.execution.client.exportName] },
+            hostUiApiRange: '^1.0.0',
         })
         : null;
     const projection = Object.freeze({
@@ -277,6 +281,7 @@ function createPublicAuthoringClientActionFixture(input: Readonly<{
             [bundleId]: Object.freeze({
                 id: bundleId,
                 pluginId: action.pluginId,
+                occurrenceId: action.occurrenceId,
                 contributionKind: 'reactNativeBundle' as const,
                 contributionId: action.id,
                 generatedOwnerKind: 'clientContribution' as const,
@@ -284,7 +289,7 @@ function createPublicAuthoringClientActionFixture(input: Readonly<{
                 runtime: Object.freeze({
                     decision: Object.freeze({ state: 'load' }),
                     loadPolicy: Object.freeze({ source: 'installedArtifact' }),
-                    cacheIdentity,
+                    cacheIdentity: Object.freeze({ artifactDigest: cacheIdentity.artifactDigest }),
                 }),
                 [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: PUBLIC_AUTHORING_CLIENT_ACTION_HOST_ORIGIN,
             }),
@@ -307,7 +312,7 @@ function createPublicAuthoringClientActionFixture(input: Readonly<{
         });
     }
     const backend: PluginReactNativeLoaderBackend = Object.freeze({
-        backendId: input.platform === 'web' ? 'reactNativeWebModule' : 'repackScriptManager',
+        backendId: 'commonJs',
         available: true,
         loadInstalledBundle: vi.fn(async () => (
             activatePublicAuthoringReviewClientActions as PluginReactNativeExecutableExport
@@ -316,11 +321,12 @@ function createPublicAuthoringClientActionFixture(input: Readonly<{
     const activation = executable
         ? Object.freeze({
             pluginId: executable.pluginId,
+            occurrenceId: executable.occurrenceId,
+            hostUiApiRange: executable.hostUiApiRange,
             ...(executable.pluginVersion === undefined ? {} : { pluginVersion: executable.pluginVersion }),
             contributes: executable.contributes,
             target: executable.target,
             executionOrigin: executable.executionOrigin,
-            projectionGeneration: executable.projectionGeneration,
             cache,
             identity: executable.cacheIdentity,
             moduleReference: executable.moduleReference,
@@ -342,15 +348,9 @@ function clientActionIdentity(): PluginReactNativeBundleCacheIdentity {
     return Object.freeze({
         pluginId: CLIENT_ACTION_ID.pluginId,
         contributionId: CLIENT_ACTION_ID.localId,
+        artifactId: CLIENT_ACTION_TARGET.artifactId,
         artifactDigest: CLIENT_ACTION_ARTIFACT_GRAPH.digest,
-        hostAppVersion: '2.0.0',
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
         platform: CLIENT_ACTION_TARGET.platform,
-        channel: 'internal',
-        nativeCapabilitiesDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        projectionGeneration: CLIENT_ACTION_GENERATION,
     });
 }
 
@@ -358,9 +358,11 @@ function createCurrentUiClientActionFixture(input: Readonly<{
     handler: PluginClientActionHandler;
     scopes?: PluginProjectedActionV2['scopes'];
 }>) {
+    actionSchemasByQualifiedId.set(`${CLIENT_ACTION_ID.pluginId}/${CLIENT_ACTION_ID.localId}`, { inputSchema: {} });
     const action = PluginProjectedActionV2Schema.parse({
         id: CLIENT_ACTION_ID.localId,
         pluginId: CLIENT_ACTION_ID.pluginId,
+        occurrenceId: `current-ui-client-action-occurrence-${CLIENT_ACTION_GENERATION}`,
         title: 'Retiring client action',
         scopes: input.scopes ?? ['global'],
         surfaces: ['voice'],
@@ -368,7 +370,6 @@ function createCurrentUiClientActionFixture(input: Readonly<{
             target: 'client',
             client: {
                 artifactId: CLIENT_ACTION_TARGET.artifactId,
-                modulePath: CLIENT_ACTION_TARGET.modulePath,
                 exportName: CLIENT_ACTION_TARGET.exportName,
             },
             platforms: [CLIENT_ACTION_TARGET.platform],
@@ -404,6 +405,7 @@ function createCurrentUiClientActionFixture(input: Readonly<{
             [bundleId]: Object.freeze({
                 id: bundleId,
                 pluginId: CLIENT_ACTION_ID.pluginId,
+                occurrenceId: action.occurrenceId,
                 contributionKind: 'reactNativeBundle' as const,
                 contributionId: CLIENT_ACTION_ID.localId,
                 generatedOwnerKind: 'clientContribution' as const,
@@ -411,7 +413,7 @@ function createCurrentUiClientActionFixture(input: Readonly<{
                 runtime: Object.freeze({
                     decision: Object.freeze({ state: 'load' }),
                     loadPolicy: Object.freeze({ source: 'installedArtifact' }),
-                    cacheIdentity: identity,
+                    cacheIdentity: Object.freeze({ artifactDigest: identity.artifactDigest }),
                 }),
                 [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: CLIENT_ACTION_HOST_ORIGIN,
             }),
@@ -435,17 +437,18 @@ function createCurrentUiClientActionFixture(input: Readonly<{
         api.actions.register(CLIENT_ACTION_ID.localId, input.handler);
     });
     const backend: PluginReactNativeLoaderBackend = Object.freeze({
-        backendId: 'reactNativeWebModule',
+        backendId: 'commonJs',
         available: true,
         loadInstalledBundle: vi.fn(async () => activate as PluginReactNativeExecutableExport),
     });
     const activation = Object.freeze({
         pluginId: executable.pluginId,
+        occurrenceId: executable.occurrenceId,
+        hostUiApiRange: executable.hostUiApiRange,
         ...(executable.pluginVersion === undefined ? {} : { pluginVersion: executable.pluginVersion }),
         contributes: executable.contributes,
         target: executable.target,
         executionOrigin: executable.executionOrigin,
-        projectionGeneration: executable.projectionGeneration,
         cache,
         identity: executable.cacheIdentity,
         moduleReference: executable.moduleReference,
@@ -484,6 +487,7 @@ function createDaemonActionProjection(input: Readonly<{
     const daemonAction: PluginProjectedActionV2 = {
         id: ACTION_ID.localId,
         pluginId: ACTION_ID.pluginId,
+        occurrenceId: 'acme-triage-occurrence-27',
         title: 'File ticket',
         scopes: ['global'],
         surfaces: ['voice'],
@@ -600,26 +604,27 @@ describe('current UI context Voice tool port', () => {
         expect(invokeAction).not.toHaveBeenCalled();
     });
 
-    it('derives exact Voice Action definitions from the latest current AppShell projection', () => {
+    it('derives exact Voice Action definitions from the latest current AppShell projection', async () => {
         let projection = createDaemonActionProjection();
         const current = projection.actionsById[`${ACTION_ID.pluginId}/${ACTION_ID.localId}`]!;
+        const inputSchema = {
+            type: 'object',
+            properties: {
+                priority: { type: 'string', enum: ['normal', 'urgent'] },
+            },
+            required: ['priority'],
+            additionalProperties: false,
+        } as const;
+        const outputSchema = {
+            type: 'object',
+            properties: { issueId: { type: 'string' } },
+            required: ['issueId'],
+            additionalProperties: false,
+        } as const;
+        actionSchemasByQualifiedId.set(`${ACTION_ID.pluginId}/${ACTION_ID.localId}`, { inputSchema, outputSchema });
         const voiceAction: PluginUiActionProjection = {
             ...current,
             description: 'Creates an issue in the current project.',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    priority: { type: 'string', enum: ['normal', 'urgent'] },
-                },
-                required: ['priority'],
-                additionalProperties: false,
-            },
-            outputSchema: {
-                type: 'object',
-                properties: { issueId: { type: 'string' } },
-                required: ['issueId'],
-                additionalProperties: false,
-            },
             inputHints: {
                 title: 'File ticket',
                 fields: [{
@@ -670,7 +675,6 @@ describe('current UI context Voice tool port', () => {
         });
 
         expect(port.listCurrentContributedActionDefinitions?.()).toEqual([{
-            kindVersion: 1,
             id: ACTION_DISCOVERY_ID,
             title: 'File ticket',
             description: 'Creates an issue in the current project.',
@@ -702,21 +706,25 @@ describe('current UI context Voice tool port', () => {
                     ],
                 }],
             },
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    priority: { type: 'string', enum: ['normal', 'urgent'] },
-                },
-                required: ['priority'],
-                additionalProperties: false,
-            },
-            outputSchema: {
-                type: 'object',
-                properties: { issueId: { type: 'string' } },
-                required: ['issueId'],
-                additionalProperties: false,
-            },
         }]);
+        // Schemas are not listed; they are read per Action from its machine.
+        await expect(port.readCurrentContributedActionSchemas?.(ACTION_DISCOVERY_ID)).resolves.toEqual({
+            inputSchema,
+            outputSchema,
+        });
+        await expect(port.readCurrentContributedActionSchemas?.(
+            formatQualifiedPluginActionId({ pluginId: ACTION_ID.pluginId, localId: 'ui-only' }),
+        )).resolves.toBeNull();
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(1);
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: ACTION_ORIGIN.machineId,
+            serverId: ACTION_ORIGIN.serverId,
+            method: RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ,
+            payload: expect.objectContaining({
+                qualifiedActionId: `${ACTION_ID.pluginId}/${ACTION_ID.localId}`,
+                expectedOccurrenceId: current.occurrenceId,
+            }),
+        }));
     });
 
     it('resolves the same localized Action title and input hints that UI presentation consumes', () => {
@@ -819,26 +827,6 @@ describe('current UI context Voice tool port', () => {
         }
     });
 
-    it('keeps an absent projected Action input schema unconstrained at the Voice boundary', () => {
-        const projection = createDaemonActionProjection();
-        const port = createCurrentUiContextVoiceToolPort({
-            reader: {
-                readCurrentUiContext: () => null,
-                resolveCurrentUiCommand: () => null,
-                subscribe: () => () => {},
-            },
-            readProjection: () => projection,
-            readNavigationBinding: () => null,
-        });
-
-        expect(port.listCurrentContributedActionDefinitions?.()).toEqual([
-            expect.objectContaining({
-                id: ACTION_DISCOVERY_ID,
-                inputSchema: {},
-            }),
-        ]);
-    });
-
     it('does not advertise a client Voice Action before its exact client registration commits', () => {
         const projection = createDaemonActionProjection();
         const current = projection.actionsById[`${ACTION_ID.pluginId}/${ACTION_ID.localId}`]!;
@@ -850,7 +838,6 @@ describe('current UI context Voice tool port', () => {
                 target: 'client',
                 client: {
                     artifactId: 'client-runtime',
-                    modulePath: './clientRuntime',
                     exportName: 'activate',
                 },
                 platforms: ['web'],
@@ -902,7 +889,6 @@ describe('current UI context Voice tool port', () => {
                         ),
                         invocationSurface: 'voice',
                         clientAction: {
-                            projectionGeneration: PUBLIC_AUTHORING_CLIENT_ACTION_GENERATION,
                             openSurface,
                         },
                         isCurrent: () => true,
@@ -947,7 +933,6 @@ describe('current UI context Voice tool port', () => {
                     ),
                     invocationSurface: 'voice',
                     clientAction: {
-                        projectionGeneration: PUBLIC_AUTHORING_CLIENT_ACTION_GENERATION,
                     },
                     isCurrent: () => true,
                 })).resolves.toEqual({
@@ -1176,7 +1161,7 @@ describe('current UI context Voice tool port', () => {
             serverId: 'server-actions',
             method: RPC_METHODS.DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE,
             payload: expect.objectContaining({
-                expectedGeneration: '27',
+                expectedContributorOccurrenceId: 'acme-triage-occurrence-27',
                 qualifiedActionId: 'acme.triage/file-ticket',
                 input: { title: 'private ticket title' },
                 executionSurface: 'voice',

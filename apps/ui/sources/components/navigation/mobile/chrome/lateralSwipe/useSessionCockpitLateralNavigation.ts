@@ -172,7 +172,7 @@ function buildTarget(
         ...(entry.serverId ? { serverId: entry.serverId } : null),
         agentId: view.agentId,
         machineId: view.machineId,
-        title: getSessionName({ id: entry.sessionId, metadata: view.metadata ?? null }),
+        title: getSessionName({ id: entry.sessionId, metadata: view.metadata ?? null }, entry.serverId),
         position,
         total: cursor.entries.length,
     };

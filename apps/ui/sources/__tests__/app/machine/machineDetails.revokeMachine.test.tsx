@@ -58,6 +58,8 @@ const {
 }));
 
 installMachineDetailsCommonModuleMocks({
+    // Parameterized copy keeps its params, so the machine a fact names is observable.
+    text: async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock(),
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         return createExpoRouterMock({
@@ -125,7 +127,6 @@ vi.mock('@/components/ui/pathBrowser/PathInputBrowseButton', () => ({
 vi.mock('@/components/ui/pathBrowser/openMachinePathBrowserModal', () => ({
     openMachinePathBrowserModal: vi.fn(async () => null),
 }));
-vi.mock('@/components/machines/DetectedClisList', () => ({ DetectedClisList: () => null }));
 vi.mock('@/components/ui/forms/Switch', () => ({ Switch: () => null }));
 vi.mock('@/components/ui/text/Text', () => ({
     Text: 'Text',
@@ -187,9 +188,8 @@ vi.mock('@/utils/errors/daemonUnavailableAlert', () => ({
     tryShowDaemonUnavailableAlertForRpcFailure: () => false,
 }));
 vi.mock('@/utils/sessions/machineUtils', () => ({ isMachineOnline: () => true }));
-vi.mock('@/utils/sessions/sessionUtils', () => ({ formatPathRelativeToHome: () => '', getSessionName: () => '', getSessionSubtitle: () => '' }));
+vi.mock('@/utils/sessions/sessionUtils', () => ({ formatOSPlatform: (platform?: string) => platform ?? '', formatPathRelativeToHome: () => '', getSessionName: () => '', getSessionSubtitle: () => '' }));
 vi.mock('@/utils/path/pathUtils', () => ({ resolveAbsolutePath: () => '' }));
-vi.mock('@/sync/domains/settings/terminalSettings', () => ({ resolveTerminalSpawnOptions: () => ({}) }));
 vi.mock('@/sync/domains/session/spawn/windowsRemoteSessionConsole', () => ({ resolveWindowsRemoteSessionConsoleFromMachineMetadata: () => 'visible' }));
 vi.mock('@/sync/domains/session/spawn/windowsRemoteSessionLaunchMode', () => ({
     readMachineWindowsRemoteSessionLaunchMode: () => undefined,
@@ -205,6 +205,19 @@ vi.mock('@/sync/domains/session/spawn/windowsRemoteSessionLaunchModeOptions', ()
 vi.mock('@/sync/ops/sessionMachineTarget', () => ({
     readMachineTargetForSession: () => null,
 }));
+
+type RenderedScreen = Awaited<ReturnType<typeof renderScreen>>;
+
+/** The page's closing destructive button (a quiet button row, not a row in a sheet). */
+function findRemoveMachineButton(screen: RenderedScreen) {
+    return screen.findAll((node) => node.props?.testID === 'machine-detail-remove' && typeof node.props?.onPress === 'function')[0]?.props;
+}
+
+/** A rare operation in the page header's `⋯` menu, by its test id. */
+function findHeaderMenuAction(screen: RenderedScreen, testID: string) {
+    const menus = screen.findAll((node) => node.props?.testID === 'machine-detail-menu' && Array.isArray(node.props?.actions));
+    return menus.flatMap((menu) => menu.props.actions as any[]).find((action) => action.testID === testID);
+}
 
 describe('MachineDetailScreen (revoke/forget machine)', () => {
     beforeEach(() => {
@@ -269,14 +282,15 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         promptSpy.mockResolvedValueOnce('theo-devbox');
         const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
 
-        await renderScreen(React.createElement(MachineDetailScreen));
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
 
-        const headerRight = stackOptionsState.current?.headerRight;
-        expect(headerRight).toBeTypeOf('function');
-        const renameButton = (headerRight as () => React.ReactElement<{ onPress: () => Promise<void> }>)();
+        // Rename is one of the header's `⋯` actions (entity-header anatomy: presence, then `⋯`).
+        expect(screen.findAll((node) => node.props?.testID === 'machine-detail-rename' && typeof node.props?.onPress === 'function')).toHaveLength(0);
+        const menu = screen.findAll((node) => node.props?.testID === 'machine-detail-menu' && typeof node.props?.onSelect === 'function')[0];
+        expect(menu).toBeTruthy();
 
         await act(async () => {
-            await renameButton.props.onPress();
+            await menu.props.onSelect('rename');
         });
 
         expect(machineUpdateMetadataSpy).toHaveBeenCalledWith(
@@ -292,11 +306,9 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
 
         const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
 
-        await renderScreen(React.createElement(MachineDetailScreen));
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
 
-        const removeItem = itemSpy.mock.calls
-            .map(([props]) => props)
-            .find((props) => props?.title === 'machine.actions.removeMachine');
+        const removeItem = findRemoveMachineButton(screen);
         expect(removeItem).toBeTruthy();
         expect(typeof removeItem.onPress).toBe('function');
 
@@ -334,10 +346,8 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         });
 
         const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
-        await renderScreen(React.createElement(MachineDetailScreen));
-        const removeItem = itemSpy.mock.calls
-            .map(([props]) => props)
-            .find((props) => props?.title === 'machine.actions.removeMachine');
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
+        const removeItem = findRemoveMachineButton(screen);
 
         await act(async () => {
             await removeItem.onPress();
@@ -350,10 +360,7 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         expect(refreshMachinesThrottledSpy).toHaveBeenCalled();
         expect(routerBackSpy).not.toHaveBeenCalled();
 
-        const retryItem = itemSpy.mock.calls
-            .map(([props]) => props)
-            .filter((props) => props?.title === 'machine.actions.removeMachine')
-            .at(-1);
+        const retryItem = findRemoveMachineButton(screen);
         expect(retryItem.disabled).toBe(false);
         await act(async () => {
             await retryItem.onPress();
@@ -399,13 +406,11 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         };
 
         const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
-        await renderScreen(React.createElement(MachineDetailScreen));
-        const retryItem = itemSpy.mock.calls
-            .map(([props]) => props)
-            .filter((props) => props?.title === 'machine.actions.removeMachine')
-            .at(-1);
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
+        const retryItem = findRemoveMachineButton(screen);
 
-        expect(retryItem.subtitle).toBe('settingsProviders.errors.machineCleanupPendingDescription');
+        // The consequence under the button explains that removal can be retried.
+        expect(screen.getTextContent()).toContain('settingsProviders.errors.machineCleanupPendingDescription');
         expect(retryItem.disabled).toBe(false);
         await act(async () => { await retryItem.onPress(); });
         expect(coordinatorSpy).toHaveBeenCalledOnce();
@@ -433,20 +438,14 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
 
         const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
 
-        await renderScreen(React.createElement(MachineDetailScreen));
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
 
-        const replacementItems = itemSpy.mock.calls
-            .map(([props]) => props)
-            .filter((props) => String(props?.testID ?? '').startsWith('machine-replacement-repair'));
-        expect([...new Set(replacementItems.map((item) => item.testID))]).toEqual(['machine-replacement-repair-open']);
-
-        const replacementItem = replacementItems[0];
+        expect(findHeaderMenuAction(screen, 'machine-replacement-repair-undo')).toBeUndefined();
+        const replacementItem = findHeaderMenuAction(screen, 'machine-replacement-repair-open');
         expect(replacementItem).toBeTruthy();
-        expect(replacementItem.detail).toBeUndefined();
-        expect(replacementItem.detailTestID).toBeUndefined();
 
         await act(async () => {
-            await replacementItem.onPress();
+            await replacementItem.onSelect();
         });
 
         expect(showSpy).toHaveBeenCalledTimes(1);
@@ -462,6 +461,9 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         });
         expect(showOptions?.chrome).not.toHaveProperty('layout');
         expect(showOptions?.props?.candidates).toHaveLength(5);
+        // Same-named candidates are told apart by the machine naming owner.
+        const labels = (showOptions?.props?.candidates as Array<{ label: string }>).map((candidate) => candidate.label);
+        expect(new Set(labels).size).toBe(5);
         expect(replaceSpy).not.toHaveBeenCalled();
     });
 
@@ -475,16 +477,13 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
 
         const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
 
-        await renderScreen(React.createElement(MachineDetailScreen));
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
 
-        const replacementItem = itemSpy.mock.calls
-            .map(([props]) => props)
-            .find((props) => props?.testID === 'machine-replacement-repair-open');
+        const replacementItem = findHeaderMenuAction(screen, 'machine-replacement-repair-open');
         expect(replacementItem).toBeTruthy();
-        expect(replacementItem.detail).toBeUndefined();
 
         await act(async () => {
-            await replacementItem.onPress();
+            await replacementItem.onSelect();
         });
 
         expect(showSpy.mock.calls[0]?.[0]?.props?.candidates).toEqual([
@@ -497,15 +496,13 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
 
         const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
 
-        await renderScreen(React.createElement(MachineDetailScreen));
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
 
-        const replacementItem = itemSpy.mock.calls
-            .map(([props]) => props)
-            .find((props) => props?.testID === 'machine-replacement-repair-open');
+        const replacementItem = findHeaderMenuAction(screen, 'machine-replacement-repair-open');
         expect(replacementItem).toBeTruthy();
 
         await act(async () => {
-            await replacementItem.onPress();
+            await replacementItem.onSelect();
             await showSpy.mock.calls[0]?.[0]?.props?.onSelectCandidate('machine-2', 'Replacement Machine');
         });
 
@@ -518,6 +515,23 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         expect(refreshMachinesThrottledSpy).toHaveBeenCalled();
     });
 
+    it('names an unnamed replacement as unnamed, never by its id', async () => {
+        machineState.machinesByServerId['server-a'] = machineState.machinesByServerId['server-a']!.map((machine) =>
+            machine.id === 'machine-2' ? { ...machine, metadata: { platform: 'darwin' } } : machine,
+        );
+        machineState.currentMachine = { ...machineState.currentMachine, replacedByMachineId: 'machine-2' };
+        machineState.machinesByServerId['server-a'] = machineState.machinesByServerId['server-a']!.map((machine) =>
+            machine.id === 'machine-1' ? machineState.currentMachine : machine,
+        );
+
+        const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
+
+        const text = screen.getTextContent();
+        expect(text).toContain('machineDetailPage.replacedByFact(machine=machine.unnamedMachine)');
+        expect(text).not.toContain('machine=machine-2');
+    });
+
     it('clears an existing explicit replacement relation', async () => {
         confirmSpy.mockResolvedValueOnce(true);
         machineState.currentMachine = {
@@ -527,15 +541,15 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
 
         const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
 
-        await renderScreen(React.createElement(MachineDetailScreen));
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
 
-        const undoItem = itemSpy.mock.calls
-            .map(([props]) => props)
-            .find((props) => props?.testID === 'machine-replacement-repair-undo');
+        // The replaced state is a header fact, and undoing it is a rare operation in `⋯`.
+        expect(screen.getTextContent()).toContain('machineDetailPage.replacedByFact');
+        const undoItem = findHeaderMenuAction(screen, 'machine-replacement-repair-undo');
         expect(undoItem).toBeTruthy();
 
         await act(async () => {
-            await undoItem.onPress();
+            await undoItem.onSelect();
         });
 
         expect(confirmSpy).toHaveBeenCalled();

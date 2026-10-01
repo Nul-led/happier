@@ -124,8 +124,8 @@ export function installRootLayoutRouteCommonModuleMocks(
         DesktopTrayRuntime: () => null,
     }));
 
-    vi.mock('@/desktop/tray/DesktopTrayDaemonLifecycleRuntime', () => ({
-        DesktopTrayDaemonLifecycleRuntime: () => null,
+    vi.mock('@/desktop/quit/DesktopQuitHandoffRuntime', () => ({
+        DesktopQuitHandoffRuntime: () => null,
     }));
 
     vi.mock('react-native-unistyles', async () => {

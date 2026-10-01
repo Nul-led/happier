@@ -54,6 +54,10 @@ vi.mock('@/hooks/session/useNavigateToSession', () => ({
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: (featureId: string) => featureId === 'pets.companion',
 }));
+// The same server feature seam, as the canonical decision the Workflows entry reads.
+vi.mock('@/hooks/server/useFeatureDecision', () => ({
+    useFeatureDecision: () => null,
+}));
 
 vi.mock('@/sync/store/settingsWriters', () => ({
     useApplySettings: () => applySettingsMock,

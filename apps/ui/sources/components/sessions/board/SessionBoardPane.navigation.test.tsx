@@ -51,7 +51,7 @@ vi.mock('./SessionBoardControllerProvider', () => ({
                 reachability: harness.reachability, canEdit: harness.canEdit,
             },
         },
-        controller: { noteDraft: null, hostedHtmlDraft: null, installedWidgetPickerOpen: false },
+        controller: { noteDraft: null, hostedHtmlDraft: null },
         pluginRuntime: null,
         callerHostedHtmlRuntime: null,
     }),

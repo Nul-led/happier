@@ -9,6 +9,7 @@ import { installSessionRouteCommonModuleMocks } from '../sessionRouteTestHelpers
 const detailsViewSpy = vi.fn((_props: unknown) => null);
 const routerReplaceSpy = vi.fn();
 const stackScreenSpy = vi.fn((_props: unknown) => null);
+let routeFocused = true;
 let routeParams: { id: string; discussionId: string } = {
     id: 'session-1',
     discussionId: 'discussion-1',
@@ -65,6 +66,12 @@ vi.mock('@/sync/domains/session/sessionRouteHydrationState', () => ({
     isSessionRouteHydrationMissing: (value: { kind: string }) => value.kind === 'missing',
 }));
 
+// Navigation focus is the platform boundary: a standalone route that is pushed
+// under another screen stays mounted but is no longer the visible surface.
+vi.mock('@react-navigation/native', () => ({
+    useIsFocused: () => routeFocused,
+}));
+
 vi.mock('@/components/sessions/conversations/SessionDiscussionDetailsView', () => ({
     SessionDiscussionDetailsView: (props: unknown) => detailsViewSpy(props),
 }));
@@ -80,6 +87,7 @@ describe('SessionDiscussionRouteScreen', () => {
         routerReplaceSpy.mockClear();
         stackScreenSpy.mockClear();
         routeParams = { id: 'session-1', discussionId: 'discussion-1' };
+        routeFocused = true;
     });
 
     it('mounts persisted discussion details against the exact Home resolved by hydration', async () => {
@@ -87,11 +95,22 @@ describe('SessionDiscussionRouteScreen', () => {
 
         expect(detailsViewSpy).toHaveBeenCalledWith(expect.objectContaining({
             active: true,
+            standaloneSurface: true,
             target: {
                 kind: 'discussion',
                 address: { serverId: 'home-hydrated', sessionId: 'session-1' },
                 discussionId: 'discussion-1',
             },
+        }));
+    });
+
+    it('is the visible Discussion surface only while the route is focused', async () => {
+        routeFocused = false;
+        await renderScreen(<SessionDiscussionRouteScreen kind="discussion" />);
+
+        expect(detailsViewSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+            active: false,
+            standaloneSurface: true,
         }));
     });
 });

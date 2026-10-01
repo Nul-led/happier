@@ -11,19 +11,10 @@ import {
 const routerBackSpy = vi.fn();
 const routerReplaceSpy = vi.fn();
 const routerPushSpy = vi.fn();
-const processAccountAuthUrlSpy = vi.fn(async (_url: string) => true);
 const processTerminalAuthUrlSpy = vi.fn(async (_url: string) => true);
 const promptSpy = vi.fn(async (..._args: unknown[]) => null as string | null);
 const alertAsyncSpy = vi.fn(async (..._args: unknown[]) => undefined);
-let lastAccountConnectOptions: any = null;
 let lastTerminalConnectOptions: any = null;
-
-vi.mock('@/hooks/auth/useConnectAccount', () => ({
-    useConnectAccount: (opts?: any) => {
-        lastAccountConnectOptions = opts ?? null;
-        return { processAuthUrl: processAccountAuthUrlSpy, isLoading: false };
-    },
-}));
 
 vi.mock('@/hooks/session/useConnectTerminal', () => ({
     useConnectTerminal: (opts?: any) => {
@@ -77,10 +68,8 @@ describe('/scan/account', () => {
         routerPushSpy.mockClear();
         promptSpy.mockClear();
         alertAsyncSpy.mockClear();
-        processAccountAuthUrlSpy.mockClear();
         processTerminalAuthUrlSpy.mockClear();
         lastScannerProps = null;
-        lastAccountConnectOptions = null;
         lastTerminalConnectOptions = null;
     });
 
@@ -103,19 +92,25 @@ describe('/scan/account', () => {
         expect(lastScannerProps?.permissionRequiredMessage).toBe('modals.cameraPermissionsRequiredToScanQr');
     });
 
-    it('processes scanned account link URLs', async () => {
+    it('answers a scanned legacy account link with the approval guidance and its show-QR recovery', async () => {
+        alertAsyncSpy.mockImplementationOnce(async (...args: unknown[]) => {
+            const buttons = args[2] as Array<{ text?: string; onPress?: () => void }>;
+            buttons.find((button) => button.text === 'connect.showQrInstead')?.onPress?.();
+        });
         const { default: Screen } = await import('@/app/(app)/scan/account');
 
         await renderScreen(<Screen />);
-
-        expect(typeof lastScannerProps?.onScan).toBe('function');
 
         await act(async () => {
             await lastScannerProps.onScan('happier:///account?abc123');
         });
 
-        expect(processAccountAuthUrlSpy).toHaveBeenCalledTimes(1);
-        expect(processAccountAuthUrlSpy).toHaveBeenCalledWith('happier:///account?abc123');
+        expect(alertAsyncSpy).toHaveBeenCalledWith(
+            'connect.restoreAccount',
+            'connect.legacyAccountQrUnavailable',
+            expect.arrayContaining([expect.objectContaining({ text: 'connect.showQrInstead' })]),
+        );
+        expect(routerReplaceSpy).toHaveBeenCalledWith('/settings/add-phone');
         expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
     });
 
@@ -138,7 +133,6 @@ describe('/scan/account', () => {
                 expect.objectContaining({ text: 'common.cancel', style: 'cancel' }),
             ],
         );
-        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
         expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
         expect(routerReplaceSpy).not.toHaveBeenCalled();
         expect(routerBackSpy).not.toHaveBeenCalled();
@@ -176,7 +170,6 @@ describe('/scan/account', () => {
         const route = String(routerPushSpy.mock.calls[0]?.[0] ?? '');
         expect(route).toMatch(/^\/restore\?pairingHandoff=[A-Za-z0-9_-]+&entryIntent=add_home$/u);
         expect(route).not.toContain(encodeURIComponent(inviteLink));
-        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
         expect(alertAsyncSpy).not.toHaveBeenCalled();
     });
 
@@ -194,7 +187,6 @@ describe('/scan/account', () => {
         expect(alertAsyncSpy).toHaveBeenCalledTimes(1);
         expect(alertAsyncSpy).toHaveBeenCalledWith('common.error', 'modals.invalidAuthUrl', [{ text: 'common.ok' }]);
         expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
-        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
     });
 
     it('opens the canonical full-screen pairing link form instead of a modal prompt', async () => {
@@ -217,7 +209,9 @@ describe('/scan/account', () => {
         expect(input?.props.accessibilityLabel).toBe('connect.pairingLinkFieldLabel');
         expect(screen.getTextContent()).toContain('connect.enterUrlManually');
         expect(screen.getTextContent()).toContain('connect.pairingLinkFieldLabel');
-        expect(screen.findByTestId('restore-pairing-link-submit').props.title).toBe('common.continue');
+        const submit = screen.findByTestId('restore-pairing-link-submit');
+        if (!submit) throw new Error('Expected the account link form submit button');
+        expect(submit.props.title).toBe('common.continue');
     });
 
     it('submits a pasted account link through the shared scan processor', async () => {
@@ -230,17 +224,23 @@ describe('/scan/account', () => {
             screen.changeTextByTestId('restore-pairing-link-input', '  happier:///account?manual  ');
         });
         await act(async () => {
-            await screen.findByTestId('restore-pairing-link-submit').props.action();
+            const submit = screen.findByTestId('restore-pairing-link-submit');
+            if (!submit) throw new Error('Expected the account link form submit button');
+            await submit.props.action();
         });
 
         expect(promptSpy).not.toHaveBeenCalled();
-        expect(processAccountAuthUrlSpy).toHaveBeenCalledTimes(1);
-        expect(processAccountAuthUrlSpy).toHaveBeenCalledWith('happier:///account?manual');
+        expect(alertAsyncSpy).toHaveBeenCalledTimes(1);
+        expect(alertAsyncSpy).toHaveBeenCalledWith(
+            'connect.restoreAccount',
+            'connect.legacyAccountQrUnavailable',
+            expect.any(Array),
+        );
         expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
     });
 
     it('keeps a rejected pasted draft with an inline accessible alert', async () => {
-        processAccountAuthUrlSpy.mockResolvedValueOnce(false);
+        // Dismissing the account-link guidance leaves the draft for correction.
         const { default: Screen } = await import('@/app/(app)/scan/account');
 
         const screen = await renderScreen(<Screen />);
@@ -250,7 +250,9 @@ describe('/scan/account', () => {
             screen.changeTextByTestId('restore-pairing-link-input', 'happier:///account?rejected');
         });
         await act(async () => {
-            await screen.findByTestId('restore-pairing-link-submit').props.action();
+            const submit = screen.findByTestId('restore-pairing-link-submit');
+            if (!submit) throw new Error('Expected the account link form submit button');
+            await submit.props.action();
         });
 
         const alert = screen.findHostByTestId('restore-pairing-link-error');
@@ -289,13 +291,14 @@ describe('/scan/account', () => {
             screen.changeTextByTestId('restore-pairing-link-input', inviteLink);
         });
         await act(async () => {
-            await screen.findByTestId('restore-pairing-link-submit').props.action();
+            const submit = screen.findByTestId('restore-pairing-link-submit');
+            if (!submit) throw new Error('Expected the account link form submit button');
+            await submit.props.action();
         });
 
         const route = String(routerPushSpy.mock.calls[0]?.[0] ?? '');
         expect(route).toMatch(/^\/restore\?pairingHandoff=[A-Za-z0-9_-]+&entryIntent=add_home$/u);
         expect(route).not.toContain(encodeURIComponent(inviteLink));
-        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
     });
 
     it('returns to the camera from the pairing link form without leaving the route', async () => {
@@ -324,19 +327,18 @@ describe('/scan/account', () => {
         expect(routerBackSpy).not.toHaveBeenCalled();
     });
 
-    it('uses safe fallback navigation after a successful account link when there is no back stack', async () => {
+    it('uses safe fallback navigation after a successful scan when there is no back stack', async () => {
         const { default: Screen } = await import('@/app/(app)/scan/account');
 
         await renderScreen(<Screen />);
 
-        expect(typeof lastAccountConnectOptions?.onSuccess).toBe('function');
+        expect(typeof lastTerminalConnectOptions?.onSuccess).toBe('function');
 
         await act(async () => {
-            await lastAccountConnectOptions.onSuccess();
+            await lastTerminalConnectOptions.onSuccess();
         });
 
         expect(routerReplaceSpy).toHaveBeenCalledWith('/');
         expect(routerBackSpy).not.toHaveBeenCalled();
-        expect(lastTerminalConnectOptions?.onSuccess).toBe(lastAccountConnectOptions?.onSuccess);
     });
 });

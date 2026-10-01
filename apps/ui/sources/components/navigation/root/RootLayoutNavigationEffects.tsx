@@ -1,10 +1,14 @@
-import { router, usePathname, useSegments } from 'expo-router';
+import { router, useGlobalSearchParams, usePathname, useSegments } from 'expo-router';
 import * as React from 'react';
 import { Platform, View } from 'react-native';
 import { useAuth } from '@/auth/context/AuthContext';
-import { getActiveServerUrl } from '@/sync/domains/server/serverProfiles';
-import { normalizeServerUrl, upsertActivateAndSwitchServer } from '@/sync/domains/server/activeServerSwitch';
-import { getPendingTerminalConnect } from '@/sync/domains/pending/pendingTerminalConnect';
+import { getActiveServerUrl, resolveUniqueServerProfileByUrl } from '@/sync/domains/server/serverProfiles';
+import { normalizeServerUrl, setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
+import { clearPendingTerminalConnect, getPendingTerminalConnect } from '@/sync/domains/pending/pendingTerminalConnect';
+import { connectHomeAtAddress } from '@/sync/ops/home/connectHomeAtAddress';
+import { confirmCanonicalHomeUrl, confirmInsecureHomeHttp, homeConnectFailureMessage } from '@/components/homes/add/homeConnectPresentation';
+import { Modal } from '@/modal';
+import { t } from '@/text';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { Text } from '@/components/ui/text/Text';
 import { buildTerminalConnectWebHref } from '@/utils/path/terminalConnectUrl';
@@ -31,12 +35,13 @@ export function RootLayoutNavigationEffects(): React.ReactElement | null {
     const refreshAuth = auth.refreshFromActiveServer;
     const segments = useSegments();
     const pathname = usePathname();
+    const { serverId: routerServerId } = useGlobalSearchParams<{ serverId?: string | string[] }>();
     const debugRouterEnabled = process.env.EXPO_PUBLIC_DEBUG === '1';
     const isDesktopOverlayWindow = isDesktopActivityOverlayWindowContext();
     const isDesktopShell = isDesktopHost();
     const activeServerAccountScope = useActiveServerAccountScope();
 
-    useWebInitialRouteReconcile({ routerPathname: pathname });
+    useWebInitialRouteReconcile({ routerPathname: pathname, routerServerId });
 
     React.useEffect(() => {
         if (!isDesktopShell) return;
@@ -106,16 +111,34 @@ export function RootLayoutNavigationEffects(): React.ReactElement | null {
                 pendingTerminalHandledRef.current = true;
                 fireAndForget((async () => {
                     try {
-                        await upsertActivateAndSwitchServer({
-                            serverUrl: pendingTerminalConnect.serverUrl,
-                            source: 'url',
+                        let profile = resolveUniqueServerProfileByUrl(pendingTerminalConnect.serverUrl);
+                        if (!profile) {
+                            const connected = await connectHomeAtAddress({
+                                serverUrl: pendingTerminalConnect.serverUrl,
+                                source: 'url',
+                                confirmInsecureHttp: confirmInsecureHomeHttp,
+                                confirmCanonicalUrl: confirmCanonicalHomeUrl,
+                            });
+                            if (connected.kind === 'declined') {
+                                clearPendingTerminalConnect();
+                                return;
+                            }
+                            if (connected.kind !== 'connected') {
+                                Modal.alert(t('common.error'), homeConnectFailureMessage(connected) ?? t('common.error'));
+                                return;
+                            }
+                            profile = connected.profile;
+                        }
+                        const switched = await setActiveServerAndSwitch({
+                            serverId: profile.id,
                             scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
                             refreshAuth,
                         });
-                    } catch {
-                        // keep navigation best-effort; terminal flow can still recover with explicit server param
+                        if (switched === 'blocked') return;
+                        router.replace(route);
+                    } catch (error) {
+                        Modal.alert(t('common.error'), error instanceof Error ? error.message : t('common.error'));
                     }
-                    router.replace(route);
                 })(), { tag: 'RootLayout.pendingTerminalConnect' });
                 return;
             }
@@ -132,7 +155,7 @@ export function RootLayoutNavigationEffects(): React.ReactElement | null {
         return (
             <View
                 testID="debug-router-pathname"
-                style={{ position: 'absolute', top: 0, left: 0, opacity: 0, pointerEvents: 'none' }}
+                style={{ position: 'absolute', top: 0, left: 0, width: 1, height: 1, overflow: 'hidden', opacity: 0, pointerEvents: 'none' }}
             >
                 <Text>{pathname}</Text>
             </View>

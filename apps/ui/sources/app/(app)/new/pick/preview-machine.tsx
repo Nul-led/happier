@@ -17,6 +17,7 @@ import { settingsDefaults } from '@/sync/domains/settings/settings';
 import { resolveSpawnServerRouteParam } from '@/components/sessions/new/navigation/spawnServerRouteParam';
 import { useNewSessionPickerRoutePresentation } from '@/components/sessions/new/navigation/newSessionContainedModalScreen';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export default React.memo(function PreviewMachinePickerScreen() {
     const { theme } = useUnistyles();
@@ -70,7 +71,7 @@ export default React.memo(function PreviewMachinePickerScreen() {
         <Pressable
             onPress={() => safeRouterBack({ router, navigation, fallbackHref: pickerFallbackHref })}
             hitSlop={10}
-            style={({ pressed }) => ({ padding: 2, opacity: pressed ? 0.7 : 1 })}
+            style={({ pressed }) => ({ padding: 2, opacity: pressed ? motionTokens.press.opacity : 1 })}
             accessibilityRole="button"
             accessibilityLabel={t('common.back')}
         >

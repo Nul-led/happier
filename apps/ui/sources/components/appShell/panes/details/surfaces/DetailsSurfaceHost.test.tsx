@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
+import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 import type { DetailsTabState } from '../workspace/detailsWorkspaceTypes';
 
 vi.mock('@/text', async () => {
@@ -107,14 +107,40 @@ describe('DetailsSurfaceHost', () => {
         );
 
         expect(screen.findByTestId('details-surface-fallback-missing')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('errors.fileNotFound');
+        expect(screen.getTextContent()).not.toContain('session.detailsPanel.unsupportedTab');
+    });
+
+    it('explains a policy-disabled details destination without exposing its code as primary copy', async () => {
+        const { DetailsSurfaceHost } = await import('./DetailsSurfaceHost');
+        const screen = await renderScreen(
+            <DetailsSurfaceHost
+                tab={tab}
+                scope={{ kind: 'session', sessionId: 'session-1' }}
+                region="details"
+                descriptor={{
+                    surfaceId: 'session:session-1:details:demo:1',
+                    resourceKey: 'demo:1',
+                    scope: { kind: 'session', sessionId: 'session-1' },
+                    region: 'details',
+                    status: 'disabled',
+                    disabledReason: 'details_destination_policy_unavailable',
+                }}
+                renderers={[]}
+            />,
+        );
+        expect(screen.getTextContent()).toContain('pluginRuntime.disabledByPolicy');
+        expect(screen.getTextContent()).not.toContain('details_destination_policy_unavailable');
     });
 
     it('contains renderer crashes in the host fallback boundary', async () => {
         const { DetailsSurfaceHost } = await import('./DetailsSurfaceHost');
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
+        let broken = true;
         const BrokenSurface = () => {
-            throw new Error('boom');
+            if (broken) throw new Error('boom');
+            return React.createElement('RecoveredSurface', { testID: 'recovered-details-surface' });
         };
 
         try {
@@ -142,6 +168,9 @@ describe('DetailsSurfaceHost', () => {
             );
 
             expect(screen.findByTestId('details-surface-fallback-renderer-error')).not.toBeNull();
+            broken = false;
+            await pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' }), 'retry details surface');
+            expect(screen.findByTestId('recovered-details-surface')).not.toBeNull();
         } finally {
             consoleError.mockRestore();
         }

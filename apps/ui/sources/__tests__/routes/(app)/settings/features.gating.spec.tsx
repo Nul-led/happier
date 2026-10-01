@@ -90,7 +90,6 @@ describe('FeaturesSettingsScreen gating', () => {
             if (key === 'agentInputHistoryScope') return createNoopMutable('perSession');
             if (key === 'hideInactiveSessions') return createNoopMutable(false);
             if (key === 'groupInactiveSessionsByProject') return createNoopMutable(false);
-            if (key === 'showEnvironmentBadge') return createNoopMutable(false);
             if (key === 'useEnhancedSessionWizard') return createNoopMutable(false);
             if (key === 'useMachinePickerSearch') return createNoopMutable(false);
             if (key === 'usePathPickerSearch') return createNoopMutable(false);
@@ -181,7 +180,7 @@ describe('FeaturesSettingsScreen gating', () => {
         expect(voiceAgentItem).toBeTruthy();
     });
 
-    it('does not expose a master Connected Accounts toggle and keeps the optional quotas toggle independent', async () => {
+    it('exposes neither a master Connected Accounts toggle nor a switch for connected-account usage', async () => {
         vi.resetModules();
         const setFeatureToggles = vi.fn();
 
@@ -193,7 +192,6 @@ describe('FeaturesSettingsScreen gating', () => {
             if (key === 'agentInputHistoryScope') return createNoopMutable('perSession');
             if (key === 'hideInactiveSessions') return createNoopMutable(false);
             if (key === 'groupInactiveSessionsByProject') return createNoopMutable(false);
-            if (key === 'showEnvironmentBadge') return createNoopMutable(false);
             if (key === 'useEnhancedSessionWizard') return createNoopMutable(false);
             if (key === 'useMachinePickerSearch') return createNoopMutable(false);
             if (key === 'usePathPickerSearch') return createNoopMutable(false);
@@ -204,10 +202,7 @@ describe('FeaturesSettingsScreen gating', () => {
 
         const screen = await renderSettingsView(React.createElement(FeaturesSettingsScreen));
         expect(screen.findRowByTitle('settingsFeatures.expConnectedServices')).toBeNull();
-        const quotasItem = screen.findRowByTitle('settingsFeatures.expConnectedServicesQuotas');
-        expect(quotasItem).toBeTruthy();
-        expect(quotasItem!.props.rightElement.props.disabled).toBe(false);
-        expect(quotasItem!.props.rightElement.props.value).toBe(true);
+        expect(screen.findRowByTitle('settingsFeatures.expConnectedServicesQuotas')).toBeNull();
     });
 
     it('shows stable terminal layout and renderer settings without enabling experiments', async () => {
@@ -221,7 +216,6 @@ describe('FeaturesSettingsScreen gating', () => {
             if (key === 'agentInputHistoryScope') return createNoopMutable('perSession');
             if (key === 'hideInactiveSessions') return createNoopMutable(false);
             if (key === 'groupInactiveSessionsByProject') return createNoopMutable(false);
-            if (key === 'showEnvironmentBadge') return createNoopMutable(false);
             if (key === 'useEnhancedSessionWizard') return createNoopMutable(false);
             if (key === 'useMachinePickerSearch') return createNoopMutable(false);
             if (key === 'usePathPickerSearch') return createNoopMutable(false);

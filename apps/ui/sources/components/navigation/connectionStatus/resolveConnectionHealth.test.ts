@@ -3,6 +3,33 @@ import { describe, expect, it } from 'vitest';
 import { resolveConnectionHealth } from './resolveConnectionHealth';
 
 describe('resolveConnectionHealth', () => {
+    it('keeps a failed Home read unhealthy despite a connected socket and retained online machines, then recovers', () => {
+        const retainedMachines = { machineCount: 2, onlineCount: 2, readyCount: 2 };
+        const connection = { endpointStatus: 'online' as const, socketStatus: 'connected' as const };
+
+        const failed = resolveConnectionHealth({
+            ...connection,
+            machineGroups: [{ ...retainedMachines, status: 'error' }],
+        });
+        expect(failed.kind).toBe('server_error');
+        expect(failed.machineCount).toBe(2);
+        expect(failed.onlineCount).toBe(2);
+
+        const recovered = resolveConnectionHealth({
+            ...connection,
+            machineGroups: [{ ...retainedMachines, status: 'idle' }],
+        });
+        expect(recovered.kind).toBe('healthy');
+    });
+
+    it('requires sign-in when the Home projection is signed out despite retained transport and machine facts', () => {
+        expect(resolveConnectionHealth({
+            endpointStatus: 'online',
+            socketStatus: 'connected',
+            machineGroups: [{ machineCount: 2, onlineCount: 2, status: 'signedOut' }],
+        }).kind).toBe('auth_required');
+    });
+
     it('treats endpoint shutting_down as server_unreachable even if the socket is connected', () => {
         const result = resolveConnectionHealth({
             endpointStatus: 'shutting_down',

@@ -10,11 +10,55 @@ import {
     type PluginUiSurfacePlacementProjection,
 } from '@/sync/domains/plugins/ui/projection';
 
+import { UniversalSearchRuntimeProvider } from '@/components/appShell/search/UniversalSearchRuntimeContext';
+import { createSessionScmPullRequestDetailsTab } from '@/components/sessions/panes/details/sessionDetailsTabBuilders';
+import { buildActiveDetailsRouteParams } from '@/components/sessions/panes/url/sessionPaneUrlState';
+
 import {
-    isCompactAppDestinationCurrent,
     resolveCompactAppDestinations,
+    resolveCurrentAppDestination,
+    resolveDestinationRefFromHref,
+    hrefForDestinationRef,
+    useActivateAppDestination,
     useCompactAppDestinations,
 } from './compactAppDestinationCatalog';
+
+describe('workspace route identity round trips', () => {
+    it('preserves nested dynamic and static route locations with canonical leaf params', () => {
+        const catalog = resolveCompactAppDestinations({ pages: [], builtins: {
+            externalSessions: false, inbox: true, workflows: true, friends: true,
+        } });
+        for (const href of ['/session/archived', '/session/recent', '/automations/edit?id=automation-a', '/automations/automation-a/runs/run-a',
+            '/workflows/edit?id=workflow-a', '/settings/plugins/acme.notes/general',
+            '/settings/agents/custom/custom-agent', '/inbox/approvals/request-a']) {
+            const target = resolveDestinationRefFromHref(catalog, href);
+            expect(target, href).not.toBeNull();
+            expect(hrefForDestinationRef(catalog, target!), href).toBe(href);
+        }
+        expect(resolveDestinationRefFromHref(catalog, '/settings/agents/custom/custom-agent')?.params.backendId).toBe('custom-agent');
+        expect(resolveDestinationRefFromHref(catalog, '/settings/plugins/acme.notes/general')?.params).toMatchObject({ pluginId: 'acme.notes', pageId: 'general' });
+        expect(resolveDestinationRefFromHref(catalog, '/session/archived')?.kind).toBe('sessions');
+        expect(resolveDestinationRefFromHref(catalog, '/session/recent')?.kind).toBe('sessions');
+    });
+});
+
+const activationBoundary = vi.hoisted(() => ({
+    pushed: [] as string[],
+    searchOpens: 0,
+}));
+
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({
+        pathname: '/',
+        router: { push: (href: unknown) => { activationBoundary.pushed.push(String(href)); } },
+    }).module;
+});
+
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock();
+});
 
 const compactCatalogProjectionState = vi.hoisted(() => ({
     value: {
@@ -25,6 +69,9 @@ const compactCatalogProjectionState = vi.hoisted(() => ({
 
 vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
     useAppShellPluginUiProjection: () => compactCatalogProjectionState.value,
+    // Localization is not under test here; the catalog falls back to the
+    // projected developer text when no resolver is supplied.
+    useProjectedPluginLocalizedTextResolver: () => undefined,
 }));
 
 const page = Object.freeze({
@@ -61,9 +108,11 @@ function createProjectedAppPage(): PluginUiSurfacePlacementProjection {
     return {
         id: 'surfacePlacement:acme.notes:notes',
         pluginId: 'acme.notes',
+        occurrenceId: 'acme-notes-occurrence',
         contributionKind: 'surfacePlacement',
         descriptorId: 'notes',
         binding: {
+            kind: 'destination',
             destination: { pluginId: 'acme.notes', localId: 'notes' },
             container: 'appPage',
             targetKind: 'app',
@@ -78,206 +127,371 @@ function createProjectedAppPage(): PluginUiSurfacePlacementProjection {
 }
 
 function CompactCatalogProbe() {
-    const destinations = useCompactAppDestinations({ browseExistingSessionsEnabled: false });
+    const destinations = useCompactAppDestinations();
     return React.createElement('CompactCatalogProbe', { destinations });
 }
 
+const ALL_BUILTINS = Object.freeze({
+    externalSessions: true,
+    inbox: true,
+    workflows: true,
+    friends: false,
+});
+const CORE_BUILTINS = Object.freeze({
+    externalSessions: false,
+    inbox: false,
+    workflows: false,
+    friends: false,
+});
+
+function pageWith(localId: string, extra: Partial<PluginAppPage> = {}): PluginAppPage {
+    return Object.freeze({
+        ...page,
+        id: `plugin:acme.${localId}:${localId}` as const,
+        pluginId: `acme.${localId}`,
+        descriptorId: localId,
+        localId,
+        label: localId,
+        routePath: `/plugins/acme.${localId}/${localId}`,
+        ...extra,
+    });
+}
+
+const ids = (destinations: readonly { id: string }[]) => destinations.map((destination) => destination.id);
+
 describe('resolveCompactAppDestinations', () => {
-    it('projects the built-in Browse Existing Sessions entry and an exact qualified app page through one catalog', () => {
-        expect(resolveCompactAppDestinations({
-            browseExistingSessionsEnabled: true,
-            pages: [page],
-        })).toEqual([
-            expect.objectContaining({
-                kind: 'builtin',
-                id: 'search',
-                routePath: '/search',
-                availability: 'available',
-            }),
-            expect.objectContaining({
-                kind: 'builtin',
-                id: 'browseExistingSessions',
-                routePath: '/external/browse',
-                availability: 'available',
-            }),
-            expect.objectContaining({
-                kind: 'plugin',
-                id: 'plugin:acme.notes:notes',
-                destination: { pluginId: 'acme.notes', localId: 'notes' },
-                routePath: '/plugins/acme.notes/notes',
-                availability: 'available',
-            }),
+    it('lists every built-in shell destination in the one catalog, each with its placement', () => {
+        const destinations = resolveCompactAppDestinations({ builtins: ALL_BUILTINS, pages: [] });
+        expect(destinations.map((destination) => [destination.id, destination.placement])).toEqual([
+            ['sessions', { kind: 'rail', region: 'app' }],
+            ['search', { kind: 'rail', region: 'app' }],
+            ['inbox', { kind: 'rail', region: 'app' }],
+            ['projects', { kind: 'rail', region: 'app' }],
+            // One Workflows destination (FIN 04 §3.1): there is no Automations row.
+            ['workflows', { kind: 'rail', region: 'app' }],
+            // Boards (INT §5.1): its own column listing the user's boards.
+            ['boards', { kind: 'rail', region: 'app' }],
+            ['browseExistingSessions', { kind: 'column', column: 'sessions' }],
+            ['plugins', { kind: 'rail', region: 'plugins' }],
+            ['settings', { kind: 'rail', region: 'account' }],
         ]);
+        expect(destinations.find((destination) => destination.id === 'search')).toMatchObject({ activation: 'overlay' });
+        expect(destinations.find((destination) => destination.id === 'sessions')).toMatchObject({ column: 'sessions', activation: 'navigate' });
+        expect(destinations.find((destination) => destination.id === 'workflows')).toMatchObject({ column: 'workflows', routePath: '/workflows' });
+        expect(destinations.find((destination) => destination.id === 'boards')).toMatchObject({ column: 'boards', routePath: '/boards' });
+        // Built-ins the viewer cannot open are not listed at all.
+        expect(ids(resolveCompactAppDestinations({ builtins: CORE_BUILTINS, pages: [] })))
+            .toEqual(['sessions', 'search', 'projects', 'boards', 'plugins', 'settings']);
+    });
+
+    it('places a plugin page on the rail or in a named column, and falls back to the rail for a column this host lacks', () => {
+        const destinations = resolveCompactAppDestinations({
+            builtins: CORE_BUILTINS,
+            pages: [
+                pageWith('rail'),
+                pageWith('prompts', { requestedPlacement: { kind: 'column', column: 'sessions' } }),
+                pageWith('later', { requestedPlacement: { kind: 'column', column: 'workflows' } }),
+            ],
+        });
+        const placements = Object.fromEntries(destinations.map((destination) => [destination.id, destination.placement]));
+        expect(placements['plugin:acme.rail:rail']).toEqual({ kind: 'rail', region: 'plugins' });
+        expect(placements['plugin:acme.prompts:prompts']).toEqual({ kind: 'column', column: 'sessions' });
+        expect(placements['plugin:acme.later:later']).toEqual({ kind: 'rail', region: 'plugins' });
     });
 
     it('retains an unavailable qualified page as its exact destination instead of substituting another launcher', () => {
-        const unavailable = Object.freeze({
-            ...page,
-            disabledReason: 'plugin_disabled',
+        const destinations = resolveCompactAppDestinations({
+            builtins: CORE_BUILTINS,
+            pages: [Object.freeze({ ...page, disabledReason: 'plugin_disabled' })],
         });
-
-        expect(resolveCompactAppDestinations({
-            browseExistingSessionsEnabled: false,
-            pages: [unavailable],
-        })).toEqual([
-            expect.objectContaining({ id: 'search' }),
-            expect.objectContaining({
-                kind: 'plugin',
-                id: 'plugin:acme.notes:notes',
-                destination: { pluginId: 'acme.notes', localId: 'notes' },
-                availability: 'unavailable',
-                unavailableReason: 'plugin_disabled',
-            }),
-        ]);
+        expect(destinations.find((destination) => destination.kind === 'plugin')).toMatchObject({
+            id: 'plugin:acme.notes:notes',
+            destination: { pluginId: 'acme.notes', localId: 'notes' },
+            availability: 'unavailable',
+            unavailableReason: 'plugin_disabled',
+        });
     });
 
-    it('projects an admitted App right-sidebar tab through the same ordinary App catalog', () => {
-        expect(resolveCompactAppDestinations({
-            browseExistingSessionsEnabled: false,
+    it('projects an admitted App right-sidebar tab through the same catalog', () => {
+        const destinations = resolveCompactAppDestinations({
+            builtins: CORE_BUILTINS,
             pages: [],
             rightSidebarTabs: [appSidebarTab],
-        })).toEqual([
-            expect.objectContaining({ id: 'search' }),
-            expect.objectContaining({
-                kind: 'plugin',
-                container: 'rightSidebarTab',
-                id: 'rightSidebarTab:plugin:acme.review:review-panel',
-                destination: { pluginId: 'acme.review', localId: 'review-panel' },
-                routePath: '/settings/plugins/panels?pluginId=acme.review&destinationId=review-panel',
-                availability: 'available',
-            }),
+        });
+        expect(destinations.find((destination) => destination.kind === 'plugin')).toMatchObject({
+            container: 'rightSidebarTab',
+            id: 'rightSidebarTab:plugin:acme.review:review-panel',
+            destination: { pluginId: 'acme.review', localId: 'review-panel' },
+            placement: { kind: 'rail', region: 'plugins' },
+            activation: 'rightSidebarTab',
+            availability: 'available',
+        });
+    });
+
+    it('lists one surface once when its renderer is both an App page and an App right-sidebar tab', () => {
+        const sharedRenderer = { pluginId: 'acme.review', localId: 'review-renderer' };
+        const reviewPage = Object.freeze({
+            ...page,
+            id: 'plugin:acme.review:review-page',
+            pluginId: 'acme.review',
+            descriptorId: 'review-page',
+            localId: 'review-page',
+            label: 'Review',
+            placement: {
+                binding: {
+                    destination: { pluginId: 'acme.review', localId: 'review-page' },
+                    renderer: sharedRenderer,
+                },
+            } as unknown as PluginAppPage['placement'],
+            routePath: '/plugins/acme.review/review-page',
+        } satisfies PluginAppPage);
+        const sameSurfaceTab = Object.freeze({
+            ...appSidebarTab,
+            placement: {
+                binding: {
+                    destination: { pluginId: 'acme.review', localId: 'review-panel' },
+                    renderer: sharedRenderer,
+                },
+            },
+        } as unknown as RightSidebarPluginTabDefinition);
+        const otherSurfaceTab = Object.freeze({
+            ...appSidebarTab,
+            id: 'plugin:acme.review:activity-panel',
+            label: 'Activity',
+            placement: {
+                binding: {
+                    destination: { pluginId: 'acme.review', localId: 'activity-panel' },
+                    renderer: { pluginId: 'acme.review', localId: 'activity-renderer' },
+                },
+            },
+        } as unknown as RightSidebarPluginTabDefinition);
+
+        const plugins = resolveCompactAppDestinations({
+            builtins: CORE_BUILTINS,
+            pages: [reviewPage],
+            rightSidebarTabs: [sameSurfaceTab, otherSurfaceTab],
+        }).filter((destination) => destination.kind === 'plugin');
+
+        expect(ids(plugins)).toEqual([
+            'plugin:acme.review:review-page',
+            'rightSidebarTab:plugin:acme.review:activity-panel',
         ]);
     });
 
-    it('matches compact selection by the exact host-issued route and qualified panel identity', () => {
+    it('applies user order within each placement group only, and hides without deleting the destination', () => {
+        const review = pageWith('review', { disabledReason: 'feature_disabled' });
+        const prompts = pageWith('prompts', { requestedPlacement: { kind: 'column', column: 'sessions' } });
         const destinations = resolveCompactAppDestinations({
-            browseExistingSessionsEnabled: false,
-            pages: [page],
-            rightSidebarTabs: [appSidebarTab],
-        });
-        const pageDestination = destinations.find((destination) => destination.id === page.id)!;
-        const panelDestination = destinations.find((destination) => destination.id === appSidebarTab.id)!;
-
-        expect(isCompactAppDestinationCurrent(pageDestination!, {
-            pathname: '/plugins/acme.notes/notes/history',
-            params: {},
-        })).toBe(true);
-        expect(isCompactAppDestinationCurrent(panelDestination!, {
-            pathname: '/settings/plugins/panels',
-            params: { pluginId: 'acme.review', destinationId: 'review-panel' },
-        })).toBe(true);
-        expect(isCompactAppDestinationCurrent(panelDestination!, {
-            pathname: '/settings/plugins/panels',
-            params: { pluginId: 'acme.review', destinationId: 'different-panel' },
-        })).toBe(false);
-    });
-});
-
-describe('compact App destination presentation policy', () => {
-    it('uses author presentation as a bounded default while retaining host-owned ordering', () => {
-        const sessionHint = Object.freeze({
-            ...page,
-            id: 'plugin:acme.review:review',
-            pluginId: 'acme.review',
-            descriptorId: 'review',
-            localId: 'review',
-            label: 'Review',
-            routePath: '/plugins/acme.review/review',
-            badge: { label: 'Preview', tone: 'accent' },
-            groupHint: 'sessions',
-            rankHint: -25,
-        }) as unknown as PluginAppPage;
-        const navigationHint = Object.freeze({
-            ...page,
-            id: 'plugin:acme.notes:notes',
-            badge: { label: 'New', tone: 'success' },
-            groupHint: 'navigation',
-            rankHint: 25,
-        }) as unknown as PluginAppPage;
-
-        const destinations = resolveCompactAppDestinations({
-            browseExistingSessionsEnabled: true,
-            pages: [navigationHint, sessionHint],
-        });
-
-        expect(destinations.map((destination) => ({
-            id: destination.id,
-            group: destination.group,
-            badge: destination.kind === 'plugin' ? destination.badge : undefined,
-        }))).toEqual([
-            { id: 'search', group: 'sessions', badge: undefined },
-            { id: 'browseExistingSessions', group: 'sessions', badge: undefined },
-            { id: 'plugin:acme.review:review', group: 'sessions', badge: { label: 'Preview', tone: 'accent' } },
-            { id: 'plugin:acme.notes:notes', group: 'plugins', badge: { label: 'New', tone: 'success' } },
-        ]);
-    });
-
-    it('applies user order and visibility without deleting the route-owned unavailable destination', () => {
-        const review = Object.freeze({
-            ...page,
-            id: 'plugin:acme.review:review',
-            pluginId: 'acme.review',
-            descriptorId: 'review',
-            localId: 'review',
-            label: 'Review',
-            routePath: '/plugins/acme.review/review',
-            disabledReason: 'feature_disabled',
-        }) as unknown as PluginAppPage;
-
-        const destinations = resolveCompactAppDestinations({
-            browseExistingSessionsEnabled: true,
-            pages: [page, review],
+            builtins: ALL_BUILTINS,
+            pages: [page, review, prompts],
             preferences: {
-                orderedDestinationIds: ['plugin:acme.notes:notes'],
+                // Saved before placements existed: a plugin page first, and Browse after a column entry.
+                orderedDestinationIds: ['plugin:acme.notes:notes', 'plugin:acme.prompts:prompts', 'browseExistingSessions', 'settings'],
                 hiddenDestinationIds: ['plugin:acme.review:review'],
             },
         });
 
-        expect(destinations.map((destination) => destination.id)).toEqual([
-            'plugin:acme.notes:notes',
-            'search',
-            'browseExistingSessions',
-            'plugin:acme.review:review',
+        // The notes page leads its own (plugins) group but never moves ahead of the app's destinations.
+        expect(ids(destinations)).toEqual([
+            'sessions', 'search', 'inbox', 'projects', 'workflows', 'boards',
+            'plugin:acme.prompts:prompts', 'browseExistingSessions',
+            'plugin:acme.notes:notes', 'plugins', 'plugin:acme.review:review',
+            'settings',
         ]);
-        expect(destinations.find((destination) => destination.id === 'plugin:acme.review:review'))
-            .toMatchObject({
-                visibility: 'hidden',
-                availability: 'unavailable',
-                unavailableReason: 'feature_disabled',
-            });
+        expect(destinations.find((destination) => destination.id === 'plugin:acme.review:review')).toMatchObject({
+            visibility: 'hidden',
+            availability: 'unavailable',
+        });
     });
 
-    it('keeps Search immediately above Browse when saved order reverses and splits the protected pair', () => {
-        const review = Object.freeze({
-            ...page,
-            id: 'plugin:acme.review:review',
-            pluginId: 'acme.review',
-            descriptorId: 'review',
-            localId: 'review',
-            label: 'Review',
-            routePath: '/plugins/acme.review/review',
-        }) as unknown as PluginAppPage;
-
+    it('keeps built-in anchors ahead of plugin peers in a group; a plugin rank orders only its peers', () => {
         const destinations = resolveCompactAppDestinations({
-            browseExistingSessionsEnabled: true,
-            pages: [page, review],
-            preferences: {
-                orderedDestinationIds: [
-                    'browseExistingSessions',
-                    'plugin:acme.review:review',
-                    'search',
-                    'plugin:acme.notes:notes',
-                ],
-                hiddenDestinationIds: [],
-            },
+            builtins: ALL_BUILTINS,
+            pages: [
+                pageWith('late', { rankHint: 5 }),
+                pageWith('eager', { rankHint: -100, order: -50 }),
+                pageWith('prompts', { requestedPlacement: { kind: 'column', column: 'sessions' }, rankHint: -100 }),
+            ],
         });
+        const plugins = destinations.filter((destination) => destination.placement.kind === 'rail' && destination.placement.region === 'plugins');
+        expect(ids(plugins)).toEqual(['plugins', 'plugin:acme.eager:eager', 'plugin:acme.late:late']);
+        const sessionsColumn = destinations.filter((destination) => destination.placement.kind === 'column');
+        expect(ids(sessionsColumn)).toEqual(['browseExistingSessions', 'plugin:acme.prompts:prompts']);
+    });
+});
 
-        expect(destinations.map((destination) => destination.id)).toEqual([
-            'search',
-            'browseExistingSessions',
-            'plugin:acme.review:review',
-            'plugin:acme.notes:notes',
+describe('catalog destination instances', () => {
+    const catalog = resolveCompactAppDestinations({ builtins: ALL_BUILTINS, pages: [page] });
+
+    it('round-trips distinct session, project, workflow, settings, and qualified plugin page identities', () => {
+        const hrefs = [
+            '/session/sess-a?serverId=home-a',
+            '/projects/workspace-1',
+            '/workflows/runs/run-1?invocationId=inv-1',
+            '/settings/providers/connection-1/models',
+            '/plugins/acme.notes/notes/folder/item',
+        ];
+        const refs = hrefs.map((href) => resolveDestinationRefFromHref(catalog, href));
+        expect(refs).toEqual([
+            { kind: 'session', params: { id: 'sess-a', serverId: 'home-a' } },
+            { kind: 'project', params: { workspaceRefId: 'workspace-1' } },
+            { kind: 'workflowRun', params: { runId: 'run-1', invocationId: 'inv-1' } },
+            { kind: 'settings', params: { pageId: 'providers/connection-1/models' } },
+            { kind: page.id, params: { pluginId: 'acme.notes', localId: 'notes', subPath: 'folder/item' } },
         ]);
+        expect(refs.map((ref) => ref && hrefForDestinationRef(catalog, ref))).toEqual(hrefs);
+    });
+
+    it('does not confuse sibling session servers or plugin page prefixes', () => {
+        expect(resolveDestinationRefFromHref(catalog, '/session/sess-a?serverId=home-b')).toEqual({
+            kind: 'session', params: { id: 'sess-a', serverId: 'home-b' },
+        });
+        expect(resolveDestinationRefFromHref(catalog, '/plugins/acme.notes/notes2')).toBeNull();
+    });
+
+    it('keeps session details and automation identities addressable as tabs', () => {
+        const details = '/session/sess-a/details?serverId=home-a&details=file&path=src%2Findex.ts';
+        const automation = '/automations/auto-1';
+        expect(resolveDestinationRefFromHref(catalog, details)).toEqual({
+            kind: 'sessionDetails',
+            params: { id: 'sess-a', serverId: 'home-a', details: 'file', path: 'src/index.ts' },
+        });
+        expect(hrefForDestinationRef(catalog, resolveDestinationRefFromHref(catalog, details)!)).toBe(details);
+        expect(resolveDestinationRefFromHref(catalog, automation)).toEqual({
+            kind: 'automation', params: { id: 'auto-1' },
+        });
+        expect(hrefForDestinationRef(catalog, resolveDestinationRefFromHref(catalog, automation)!)).toBe(automation);
+    });
+
+    it('addresses a new pull request as a session-scoped Details destination', () => {
+        const tab = createSessionScmPullRequestDetailsTab();
+        const detailsParams = buildActiveDetailsRouteParams([tab], tab.key);
+        const href = `/session/sess-a/details?serverId=home-a&${new URLSearchParams(detailsParams)}`;
+        const ref = resolveDestinationRefFromHref(catalog, href);
+        expect(ref).toEqual({
+            kind: 'sessionDetails',
+            params: { id: 'sess-a', serverId: 'home-a', details: 'scmPullRequest' },
+        });
+        expect(hrefForDestinationRef(catalog, ref!)).toBe(href);
+    });
+
+    it('rejects Details destinations that the existing Details owner cannot render', () => {
+        for (const href of [
+            '/session/sess-a/details?serverId=home-a&details=newPullRequest',
+            '/session/sess-a/details?details=file',
+            '/session/sess-a/details?details=file&path=..%2Fprivate',
+            '/session/sess-a/details?details=discussion',
+            '/session/sess-a/details/extra?details=scmPullRequest',
+        ]) {
+            expect(resolveDestinationRefFromHref(catalog, href), href).toBeNull();
+        }
+        expect(hrefForDestinationRef(catalog, {
+            kind: 'sessionDetails', params: { id: 'sess-a', details: 'newPullRequest' },
+        })).toBeNull();
+    });
+
+    it('preserves independent Details targets and Home addresses for one session', () => {
+        const hrefs = [
+            '/session/sess-a/details?serverId=home-a&details=file&path=src%2Fa.ts',
+            '/session/sess-a/details?serverId=home-a&details=file&path=src%2Fb.ts',
+            '/session/sess-a/details?serverId=home-b&details=file&path=src%2Fa.ts',
+            '/session/sess-a/details?serverId=home-a&details=board&boardItemId=item-1',
+            '/session/sess-a/details?serverId=home-a&details=terminal&terminalInstanceId=term-2',
+        ];
+        const refs = hrefs.map((href) => resolveDestinationRefFromHref(catalog, href));
+        expect(refs.every((ref) => ref?.kind === 'sessionDetails' && ref.params.id === 'sess-a')).toBe(true);
+        expect(new Set(refs.map((ref) => JSON.stringify(ref))).size).toBe(hrefs.length);
+        expect(refs.map((ref) => ref && hrefForDestinationRef(catalog, ref))).toEqual(hrefs);
+    });
+
+    it('keeps project subpages and workflow definitions distinct from their parent collections', () => {
+        const projectFiles = '/projects/workspace-1/files?worktreeId=tree-2';
+        const workflow = '/workflows/workflow-1';
+        expect(resolveDestinationRefFromHref(catalog, projectFiles)).toEqual({
+            kind: 'project',
+            params: { workspaceRefId: 'workspace-1', pageId: 'files', worktreeId: 'tree-2' },
+        });
+        expect(hrefForDestinationRef(catalog, resolveDestinationRefFromHref(catalog, projectFiles)!)).toBe(projectFiles);
+        expect(resolveDestinationRefFromHref(catalog, workflow)).toEqual({
+            kind: 'workflow', params: { id: 'workflow-1' },
+        });
+        // The destination's own pages are not workflow identities.
+        expect(resolveDestinationRefFromHref(catalog, '/workflows/settings')?.kind).not.toBe('workflow');
+        expect(resolveDestinationRefFromHref(catalog, '/workflows/runs')?.kind).not.toBe('workflow');
+        expect(hrefForDestinationRef(catalog, resolveDestinationRefFromHref(catalog, workflow)!)).toBe(workflow);
+    });
+
+    it('preserves an addressed setting when a page is opened from search', () => {
+        const href = '/settings/appearance?setting=theme#theme';
+        const ref = resolveDestinationRefFromHref(catalog, href);
+        expect(ref).toEqual({
+            kind: 'settings',
+            params: { pageId: 'appearance', setting: 'theme', anchor: 'theme' },
+        });
+        expect(hrefForDestinationRef(catalog, ref!)).toBe(href);
+    });
+});
+
+describe('resolveCurrentAppDestination', () => {
+    const catalog = resolveCompactAppDestinations({
+        builtins: ALL_BUILTINS,
+        pages: [page, pageWith('prompts', { requestedPlacement: { kind: 'column', column: 'sessions' } })],
+        rightSidebarTabs: [appSidebarTab],
+    });
+    const at = (pathname: string) => resolveCurrentAppDestination(catalog, pathname)?.id ?? null;
+
+    it('resolves claimed routes to their most specific destination and leaves unclaimed routes without one', () => {
+        expect(at('/')).toBe('sessions');
+        expect(at('/session/abc/files')).toBe('sessions');
+        expect(at('/runs')).toBeNull();
+        expect(at('/new/pick/server')).toBeNull();
+        expect(at('/workflows')).toBe('workflows');
+        expect(at('/workflows/wf-1')).toBe('workflows');
+        expect(at('/boards')).toBe('boards');
+        expect(at('/boards/board-1')).toBe('boards');
+        expect(at('/projects')).toBe('projects');
+        expect(at('/projects/ws-1/files')).toBe('projects');
+        expect(at('/inbox/approvals')).toBe('inbox');
+        // The Automation pages that remain open inside the one Workflows destination.
+        expect(at('/automations/a-1')).toBe('workflows');
+        expect(at('/search')).toBe('search');
+        expect(at('/external/browse')).toBe('browseExistingSessions');
+        expect(at('/settings/home/srv%201/people/acc')).toBe('settings');
+        expect(at('/settings/plugins/panels')).toBe('settings');
+        expect(at('/plugins/')).toBe('plugins');
+        expect(at('/plugins/listing')).toBe('plugins');
+        expect(at('/plugins/acme.tools')).toBe('plugins');
+        // A plugin page this viewer no longer has keeps its tombstone under Plugins, not Sessions.
+        expect(at('/plugins/acme.gone/page')).toBe('plugins');
+        expect(at('/plugins/acme.notes/notes')).toBe('plugin:acme.notes:notes');
+        expect(at('/plugins/acme.notes/notes/history/1')).toBe('plugin:acme.notes:notes');
+        expect(at('/plugins/acme.prompts/prompts')).toBe('plugin:acme.prompts:prompts');
+    });
+});
+
+describe('useActivateAppDestination', () => {
+    it('navigates, opens Search over the page, and activates plugin pages through one hook', async () => {
+        const catalog = resolveCompactAppDestinations({ builtins: ALL_BUILTINS, pages: [page] });
+        const byId = (id: string) => catalog.find((destination) => destination.id === id)!;
+        let activate: ReturnType<typeof useActivateAppDestination> | null = null;
+        function Probe() {
+            activate = useActivateAppDestination();
+            return null;
+        }
+        // The palette owns the Universal Search runtime; any consumer reaches it through this context.
+        await renderScreen(React.createElement(
+            UniversalSearchRuntimeProvider,
+            { value: { open: () => { activationBoundary.searchOpens += 1; }, buildCommands: () => [] } },
+            React.createElement(Probe),
+        ));
+
+        activate!(byId('workflows'));
+        activate!(byId('search'), { searchScope: undefined });
+        activate!(byId('plugin:acme.notes:notes'));
+
+        // A plugin page goes through its launch owner, which ends at the same router.
+        expect(activationBoundary.pushed).toEqual(['/workflows', '/plugins/acme.notes/notes']);
+        expect(activationBoundary.searchOpens).toBe(1);
     });
 });
 
@@ -297,14 +511,17 @@ describe('useCompactAppDestinations', () => {
         const screen = await renderScreen(React.createElement(CompactCatalogProbe));
         const probe = screen.tree.findByType('CompactCatalogProbe' as never);
 
-        expect(probe.props.destinations).toEqual([
-            expect.objectContaining({ id: 'search', routePath: '/search' }),
+        // Built-ins follow their own availability owners; the admitted page is listed regardless.
+        expect(probe.props.destinations).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'sessions', routePath: '/' }),
+            expect.objectContaining({ id: 'plugins', routePath: '/plugins' }),
             expect.objectContaining({
                 kind: 'plugin',
                 destination: { pluginId: 'acme.notes', localId: 'notes' },
                 routePath: '/plugins/acme.notes/notes',
                 availability: 'available',
             }),
-        ]);
+            expect.objectContaining({ id: 'settings', routePath: '/settings' }),
+        ]));
     });
 });

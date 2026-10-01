@@ -95,17 +95,31 @@ afterEach(() => {
 });
 
 describe('Appearance settings — Visual Effects section', () => {
+    it('keeps badge controls behind their disclosure and saves the existing preference after opening it', async () => {
+        shared.settingsState.tabBarFriendsBadgeEnabled = true;
+        const { default: Appearance } = await import('@/app/(app)/settings/appearance');
+        const screen = await renderSettingsView(<Appearance />);
+        const badgeRow = () => screen.findAllByProps({ title: 'tabs.friends' });
+
+        expect(badgeRow()).toHaveLength(0);
+        await screen.pressByTestIdAsync('settings-appearance-badges-toggle');
+        expect(badgeRow()).not.toHaveLength(0);
+        const toggle = badgeRow()[0]?.props.rightElement;
+        await act(async () => { toggle.props.onValueChange(false); });
+        expect(shared.settingsState.tabBarFriendsBadgeEnabled).toBe(false);
+    });
+
     it('renders the effects-level selector and persists a new level', async () => {
         const mod = await import('@/app/(app)/settings/appearance');
         const screen = await renderSettingsView(React.createElement(mod.default), {
             flushOptions: { cycles: 0 },
         });
 
-        const levelSelect = screen.findByProps({ selectedId: 'full' });
-        expect(levelSelect).toBeTruthy();
+        const levelSelect = screen.findByProps({ testIDPrefix: 'settings-appearance-visualEffectsLevel' });
+        expect(levelSelect.props.value).toBe('full');
 
         await act(async () => {
-            levelSelect.props.onSelect('minimal');
+            levelSelect.props.onChange('minimal');
         });
         expect(shared.settingsState.visualEffectsLevel).toBe('minimal');
     });
@@ -132,16 +146,16 @@ describe('Appearance settings — Visual Effects section', () => {
             flushOptions: { cycles: 0 },
         });
 
-        const contextSelect = screen.findByProps({ selectedId: 'gauge' });
-        expect(contextSelect).toBeTruthy();
+        const contextSelect = screen.findByProps({ testIDPrefix: 'settings-appearance-contextGaugeStyle' });
+        expect(contextSelect.props.value).toBe('gauge');
 
         await act(async () => {
-            contextSelect.props.onSelect('hidden');
+            contextSelect.props.onChange('hidden');
         });
         expect(shared.settingsState.contextGaugeStyle).toBe('hidden');
     });
 
-    it('folds the always-show-context-size toggle into the visual effects section', async () => {
+    it('renders the always-show-context-size toggle and persists changes', async () => {
         const mod = await import('@/app/(app)/settings/appearance');
         const screen = await renderSettingsView(React.createElement(mod.default), {
             flushOptions: { cycles: 0 },

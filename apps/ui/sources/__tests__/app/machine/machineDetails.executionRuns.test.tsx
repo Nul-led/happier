@@ -97,7 +97,6 @@ vi.mock('@/components/ui/pathBrowser/PathInputBrowseButton', () => ({
 vi.mock('@/components/ui/pathBrowser/openMachinePathBrowserModal', () => ({
     openMachinePathBrowserModal: vi.fn(async () => null),
 }));
-vi.mock('@/components/machines/DetectedClisList', () => ({ DetectedClisList: () => null }));
 vi.mock('@/components/ui/forms/Switch', () => ({
     Switch: (props: any) => React.createElement('Pressable', {
         testID: props.testID ?? 'switch',
@@ -140,7 +139,8 @@ vi.mock('@/hooks/ui/useMountedShouldContinue', () => ({
 }));
 vi.mock('@/hooks/server/useMachineCapabilitiesCache', () => ({ useMachineCapabilitiesCache: () => ({ state: { status: 'idle' }, refresh: vi.fn() }) }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '').trim() === String(right ?? '').trim(),
     getActiveServerId: () => activeServerIdRef.current,
 }));
@@ -168,10 +168,10 @@ vi.mock('@/utils/system/userInteractionDiagnostics', () => ({
         runRefreshDiagnosticActionSpy(context, action),
 }));
 
-vi.mock('@/utils/sessions/machineUtils', () => ({ isMachineOnline: () => true }));
-vi.mock('@/utils/sessions/sessionUtils', () => ({ formatPathRelativeToHome: () => '', getSessionName: () => '', getSessionSubtitle: () => '' }));
+const machineOnlineState = vi.hoisted(() => ({ value: true }));
+vi.mock('@/utils/sessions/machineUtils', () => ({ isMachineOnline: () => machineOnlineState.value }));
+vi.mock('@/utils/sessions/sessionUtils', () => ({ formatOSPlatform: (platform?: string) => platform ?? '', formatPathRelativeToHome: () => '', getSessionName: () => '', getSessionSubtitle: () => '' }));
 vi.mock('@/utils/path/pathUtils', () => ({ resolveAbsolutePath: () => '' }));
-vi.mock('@/sync/domains/settings/terminalSettings', () => ({ resolveTerminalSpawnOptions: () => ({}) }));
 vi.mock('@/sync/domains/session/spawn/windowsRemoteSessionConsole', () => ({ resolveWindowsRemoteSessionConsoleFromMachineMetadata: () => 'visible' }));
 vi.mock('@/sync/domains/session/spawn/windowsRemoteSessionLaunchMode', () => ({
     readMachineWindowsRemoteSessionLaunchMode: () => undefined,
@@ -238,6 +238,7 @@ describe('MachineDetailScreen (execution runs section)', () => {
         activeServerIdRef.current = 'server-a';
         routeParamsRef.current = { id: 'machine-1' };
         machineExecutionRunsListSpy.mockClear();
+        machineOnlineState.value = true;
         stopDaemonSpy.mockClear();
         routerPushSpy.mockClear();
         runRefreshDiagnosticActionSpy.mockClear();
@@ -255,6 +256,25 @@ describe('MachineDetailScreen (execution runs section)', () => {
 
         expect(machineExecutionRunsListSpy).toHaveBeenCalledWith('machine-1', { serverId: 'server-a' });
         expect(screen.findByTestId('item-group:runs.title')).toBeTruthy();
+    });
+
+    it('does not leave the runs section loading when the machine goes offline before they arrive', async () => {
+        machineExecutionRunsListSpy.mockImplementationOnce(() => new Promise(() => {}));
+        const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
+        const element = React.createElement(MachineDetailScreen);
+        const screen = await renderScreen(element);
+        await flushHookEffects();
+        expect(screen.findByTestId('item-group:runs.title')).toBeTruthy();
+
+        machineOnlineState.value = false;
+        await act(async () => screen.tree.update(React.createElement(MachineDetailScreen)));
+        await flushHookEffects();
+
+        const runsGroup = screen.findByTestId('item-group:runs.title');
+        const loadingInRuns = runsGroup
+            ? runsGroup.findAll((node) => node.props?.title === 'common.loading')
+            : [];
+        expect(loadingInRuns).toHaveLength(0);
     });
 
     it('wraps pull-to-refresh in refresh diagnostics', async () => {
@@ -461,7 +481,8 @@ describe('MachineDetailScreen (execution runs section)', () => {
         const screen = await renderScreen(React.createElement(MachineDetailScreen));
         await flushHookEffects();
 
-        await screen.pressByTestIdAsync('item:machine.stopDaemon');
+        // Stopping is an inline operation button on the "Stop daemon" row.
+        await screen.pressByTestIdAsync('item-right:machine.stopDaemon');
 
         const buttons = modalSpies.alert.mock.calls.at(-1)?.[2] as
             | Array<{ text: string; onPress?: () => Promise<void> | void }>

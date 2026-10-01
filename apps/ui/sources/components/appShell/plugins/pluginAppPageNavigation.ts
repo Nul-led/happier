@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { usePathname, useRouter } from 'expo-router';
+import { usePathname, useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import {
     normalizePluginUiSubPathV1,

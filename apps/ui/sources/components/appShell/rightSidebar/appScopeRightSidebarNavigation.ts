@@ -1,7 +1,9 @@
 import * as React from 'react';
 import { usePathname, useRouter } from 'expo-router';
+import type { PluginUiDestinationReferenceV1, PluginUiInstanceKeyV1 } from '@happier-dev/protocol/plugins/ui';
 
 import { useOptionalAppPaneContext } from '@/components/appShell/panes/AppPaneProvider';
+import { useDetailsPaneAvailable } from '@/components/appShell/panes/details/detailsPaneAvailability';
 import type { SelectedPaneDestinationV1 } from '@/components/appShell/panes/model/selectedPaneDestination';
 import type { PluginSurfaceOpenOutcome } from '@/components/plugins/surfaces/openPluginSurface';
 import {
@@ -10,55 +12,103 @@ import {
     type PluginSurfaceDestinationContainerHandler,
     type PluginSurfacePaneLaunchStore,
 } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
-import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
+import {
+    buildPluginPanelsRoute,
+    PLUGIN_PANELS_ROUTE,
+} from '@/components/settings/plugins/model/pluginsSurfaceRoutes';
+import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
+import { fireAndForget } from '@/utils/system/fireAndForget';
 
 /**
- * The one AppPane scope that owns the app-scope right sidebar's selection.
- *
- * Pane state lives in the app-lifetime `AppPaneProvider` reducer, so this scope
- * exists whether or not its route is mounted. That is what lets the navigation
- * owner below select a destination BEFORE the route is entered, instead of
- * requiring the destination's own screen to already be on screen.
+ * The one AppPane scope of the App's own pages (Plugins, plugin pages): their right sidebar lists the
+ * App panels. Pane state lives in the app-lifetime `AppPaneProvider` reducer, so a panel can be
+ * selected here before the page that shows it is entered.
  */
-export const APP_RIGHT_SIDEBAR_PANE_SCOPE_ID = 'settings:plugins:panels';
+export const APP_PANE_SCOPE_ID = 'app';
+
+export type OpenAppRightSidebarTabInput = Readonly<{
+    destination: PluginUiDestinationReferenceV1;
+    /** A multiple-instance panel's bounded instance key, when its opener supplied one. */
+    instanceKey?: PluginUiInstanceKeyV1;
+    /** The pane scope of the page on screen, or `null` when that page has no right sidebar. */
+    activeScopeId: string | null;
+    /** Side panes stand beside the page here (not a phone, panes not turned off). */
+    sidePanesAvailable: boolean;
+    pathname: string;
+    select: (scopeId: string, destination: SelectedPaneDestinationV1) => void;
+    navigate: (href: string) => void;
+}>;
 
 /**
- * The incumbent app-scope `rightSidebarTab` navigation owner.
- *
- * `app.rightSidebarTab` is an app-target destination, so its opener has to be
- * registered with the app-target binding for the SAME reason `appPage` and
- * `settingsPage` are: a plugin's first `openSurface` happens before any
- * particular route is mounted. Registering it from the sidebar leaf made the
- * first open fail precisely because the route that would install the resolver
- * had not been entered yet.
- *
- * It owns nothing new. It stages the already-admitted launch input into the
- * shared pane handoff scope, records the selection through the canonical
- * AppPane owner, and hands the route to the incumbent router. The sidebar leaf
- * stays presentation-only.
+ * Where an App panel (`rightSidebarTab × app`) opens: in the right sidebar of the page on screen —
+ * a Session's, a Project's or the App's, which all list App panels — without navigating. On a phone,
+ * or on a page with no right sidebar, it is its own page under Plugins.
+ */
+export function openAppRightSidebarTab(input: OpenAppRightSidebarTabInput): void {
+    const selected: SelectedPaneDestinationV1 = {
+        kind: 'plugin',
+        destination: input.destination,
+        ...(input.instanceKey === undefined ? {} : { instanceKey: input.instanceKey }),
+    };
+    if (input.sidePanesAvailable && input.activeScopeId !== null) {
+        input.select(input.activeScopeId, selected);
+        return;
+    }
+    input.select(APP_PANE_SCOPE_ID, selected);
+    if (input.pathname.replace(/\/+$/, '') !== PLUGIN_PANELS_ROUTE) {
+        input.navigate(buildPluginPanelsRoute(input.destination));
+    }
+}
+
+/** The live bindings of {@link openAppRightSidebarTab}: pane state, the device and the router. */
+export function useOpenAppRightSidebarTab(): (destination: PluginUiDestinationReferenceV1) => void {
+    const router = useRouter();
+    const pathname = usePathname();
+    const pane = useOptionalAppPaneContext();
+    const sidePanesAvailable = useDetailsPaneAvailable();
+    // Read at press time, so the callback stays stable across navigation and pane changes.
+    const latest = React.useRef({ router, pathname, pane, sidePanesAvailable });
+    latest.current = { router, pathname, pane, sidePanesAvailable };
+    return React.useCallback((destination) => {
+        const facts = latest.current;
+        const dispatch = facts.pane?.dispatch;
+        if (!dispatch) return;
+        openAppRightSidebarTab({
+            destination,
+            activeScopeId: facts.pane?.state.activeScopeId ?? null,
+            sidePanesAvailable: facts.sidePanesAvailable,
+            pathname: facts.pathname,
+            select: (scopeId, selected) => dispatch({ type: 'selectRightDestination', scopeId, destination: selected }),
+            navigate: (href) => {
+                const result = runGuardedNavigation(() => facts.router.push(href as never));
+                if (result !== true) fireAndForget(result, { tag: 'openAppRightSidebarTab' });
+            },
+        });
+    }, []);
+}
+
+/**
+ * The app-target `rightSidebarTab` navigation owner (a plugin's `openSurface` to an App panel). It is
+ * registered at app lifetime with the app-target binding, so a plugin's first open works before any
+ * particular page is mounted. It stages the admitted launch input into the shared pane handoff scope,
+ * then opens the panel where {@link openAppRightSidebarTab} says.
  */
 export function createAppScopeRightSidebarDestinationHandler(input: Readonly<{
     /** The app-lifetime pane handoff scope; absent means no bounded carrier. */
     store: PluginSurfacePaneLaunchStore | null;
-    /** The canonical AppPane selection writer; absent outside an AppPane host. */
-    selectDestination: ((destination: SelectedPaneDestinationV1) => void) | null;
-    pathname: string;
-    navigate: (routePath: string) => void;
+    /** Opens the panel; absent outside an AppPane host. */
+    open: ((destination: PluginUiDestinationReferenceV1, instanceKey?: PluginUiInstanceKeyV1) => void) | null;
 }>): PluginSurfaceDestinationContainerHandler {
     return (resolution): PluginSurfaceOpenOutcome => {
-        if (
-            resolution.placement.binding.container !== 'rightSidebarTab'
-            || !input.selectDestination
-        ) {
+        if (resolution.placement.binding.container !== 'rightSidebarTab' || !input.open) {
             return {
                 ok: false,
                 code: 'unavailable',
                 reason: 'plugin_surface_open_destination_owner_unavailable',
             };
         }
-        // Selection is durable pane state while launch input is not. Refuse the
-        // open rather than selecting a destination that would then render
-        // without the argument its caller supplied.
+        // Selection is durable pane state while launch input is not. Refuse the open rather than
+        // selecting a destination that would then render without the argument its caller supplied.
         if (!input.store || !stagePluginSurfacePaneLaunch({ store: input.store, resolution })) {
             return {
                 ok: false,
@@ -66,50 +116,31 @@ export function createAppScopeRightSidebarDestinationHandler(input: Readonly<{
                 reason: 'plugin_surface_open_origin_unavailable',
             };
         }
-        input.selectDestination({
-            kind: 'plugin',
-            destination: resolution.placement.binding.destination,
-            ...(resolution.request.instanceKey === undefined
-                ? {}
-                : { instanceKey: resolution.request.instanceKey }),
-        });
-        // Selection already moved, so a repeat open on the mounted route is
-        // idempotent and must not push a second history entry.
-        if (input.pathname !== SETTINGS_ROUTES.pluginPanels) {
-            input.navigate(SETTINGS_ROUTES.pluginPanels);
-        }
+        input.open(resolution.placement.binding.destination, resolution.request.instanceKey);
         return { ok: true };
     };
 }
 
-/**
- * The sole React adapter binding that owner to the live router and pane state.
- *
- * It reads the AppPane context OPTIONALLY: this owner is registered at app
- * lifetime, above any particular pane host, and a shell mounted without one
- * must report the container unavailable rather than throwing during render.
- */
+/** The sole React adapter binding that owner to the live pane state, device and router. */
 export function useAppScopeRightSidebarDestinationHandler(): PluginSurfaceDestinationContainerHandler {
     const router = useRouter();
     const pathname = usePathname();
     const paneContext = useOptionalAppPaneContext();
-    const paneLaunchScope = usePluginSurfacePaneLaunchScope();
-    const store = paneLaunchScope?.store ?? null;
-    const paneDispatch = paneContext?.dispatch ?? null;
-    const selectDestination = React.useMemo(() => (paneDispatch
-        ? (destination: SelectedPaneDestinationV1) => paneDispatch({
-            type: 'selectRightDestination',
-            scopeId: APP_RIGHT_SIDEBAR_PANE_SCOPE_ID,
+    const sidePanesAvailable = useDetailsPaneAvailable();
+    const store = usePluginSurfacePaneLaunchScope()?.store ?? null;
+    const dispatch = paneContext?.dispatch ?? null;
+    const activeScopeId = paneContext?.state.activeScopeId ?? null;
+    const open = React.useMemo(() => (dispatch
+        ? (destination: PluginUiDestinationReferenceV1, instanceKey?: PluginUiInstanceKeyV1) => openAppRightSidebarTab({
             destination,
+            ...(instanceKey === undefined ? {} : { instanceKey }),
+            activeScopeId,
+            sidePanesAvailable,
+            pathname,
+            select: (scopeId, selected) => dispatch({ type: 'selectRightDestination', scopeId, destination: selected }),
+            navigate: (href) => { router.push(href as Parameters<typeof router.push>[0]); },
         })
         : null
-    ), [paneDispatch]);
-    return React.useMemo(() => createAppScopeRightSidebarDestinationHandler({
-        store,
-        selectDestination,
-        pathname,
-        navigate: (routePath) => {
-            router.push(routePath as Parameters<typeof router.push>[0]);
-        },
-    }), [pathname, router, selectDestination, store]);
+    ), [activeScopeId, dispatch, pathname, router, sidePanesAvailable]);
+    return React.useMemo(() => createAppScopeRightSidebarDestinationHandler({ store, open }), [open, store]);
 }

@@ -2,6 +2,8 @@ import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { storage } from '@/sync/domains/state/storage';
 import type { BrowserLaunchpadRow } from '@/sync/domains/browser/targets';
 import { normalizePluginUiDestinationBindingV1 } from '@happier-dev/protocol/plugins/ui';
 import {
@@ -11,10 +13,34 @@ import {
 } from '@/sync/domains/plugins/ui/projection';
 import { createPluginDetailsDestinationTab } from '@/components/appShell/panes/details/surfaces/pluginDetailsDestination';
 import { installSessionDetailsPanelCommonModuleMocks } from './sessionDetailsPanelTestHelpers';
+import { createSessionCommitDetailsTab } from './details/sessionDetailsTabBuilders';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 installSessionDetailsPanelCommonModuleMocks();
+
+it('commit Back closes only its details tab', async () => {
+    const { createSessionDetailsSurfaceRenderers } = await import('./surfaces/sessionDetailsSurfaceRenderers');
+    const requestClose = vi.fn();
+    const closeTab = vi.fn();
+    const tab = createSessionCommitDetailsTab('abc123');
+    if (!tab) throw new Error('commit tab fixture missing');
+    const renderer = createSessionDetailsSurfaceRenderers({
+        sessionId: 's1', scopeId: 'session:s1', requestClose,
+        openFileTab: vi.fn(), getStartEditingFileHandler: () => vi.fn(),
+        sessionScreenTestIdsEnabled: false, closeDetailsTab: closeTab,
+    }).find((entry) => entry.id === 'session-commit');
+    const element = renderer?.render({
+        tab: { ...tab, isPinned: true, isPreview: false },
+        descriptor: { surfaceId: 'commit:abc123', resourceKey: 'commit:abc123', scope: { kind: 'session', sessionId: 's1' }, region: 'details', status: 'available' },
+        scope: { kind: 'session', sessionId: 's1' }, region: 'details', active: true,
+        callbacks: {},
+    });
+    if (!React.isValidElement<{ onBack?: () => void }>(element)) throw new Error('commit renderer missing');
+    element.props.onBack?.();
+    expect(closeTab).toHaveBeenCalledWith('commit:abc123');
+    expect(requestClose).not.toHaveBeenCalled();
+});
 
 const openDetailsTabSpy = vi.hoisted(() => vi.fn());
 const detailsSplitWorkspaceSpy = vi.hoisted(() => vi.fn((props: {
@@ -81,10 +107,6 @@ vi.mock('./SessionDetailsPanelDetailViews', () => ({
     SessionScmReviewDetailsViewForPanel: () => React.createElement('SessionScmReviewDetailsViewForPanel'),
     SessionScmStashDetailsViewForPanel: () => React.createElement('SessionScmStashDetailsViewForPanel'),
     SessionSubagentDetailsViewForPanel: () => React.createElement('SessionSubagentDetailsViewForPanel'),
-}));
-
-vi.mock('@/components/sessions/runs/launcher/SessionExecutionRunLauncherView', () => ({
-    SessionExecutionRunLauncherView: () => React.createElement('SessionExecutionRunLauncherView'),
 }));
 
 vi.mock('./useSessionDetailsPanelPluginRuntime', () => ({
@@ -349,6 +371,13 @@ describe('SessionDetailsPanel browser product mount', () => {
         };
         const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
 
+        const originalSessions = storage.getState().sessions;
+        storage.setState((state) => ({
+            ...state,
+            sessions: { ...state.sessions, s1: createSessionFixture({ id: 's1', serverId: 'server_1' }) },
+        }));
+        try {
+
         await renderScreen(
             <SessionDetailsPanel sessionId="s1" scopeId="session:s1" />,
         );
@@ -394,6 +423,9 @@ describe('SessionDetailsPanel browser product mount', () => {
         const browserHost = browserScreen.findByTestId('browser-view-details-surface');
 
         expect(browserHost?.props.productModels?.browserRecording?.state).toBeTruthy();
+        } finally {
+            storage.setState({ sessions: originalSessions });
+        }
     });
 
     it('forwards the exact caller-hosted HTML runtime into the Board details mount', async () => {

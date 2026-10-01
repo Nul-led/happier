@@ -2,13 +2,15 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { invokeTestInstanceHandler, renderScreen, standardCleanup } from '@/dev/testkit';
+import { invokeTestInstanceHandler, renderScreen, standardCleanup, createSessionFixture, createSessionMessagesFixture } from '@/dev/testkit';
+import { storage } from '@/sync/domains/state/storage';
 import { installNavigationCommonModuleMocks } from '@/components/ui/navigation/navigationTestHelpers';
-import type { Message } from '@/sync/domains/messages/messageTypes';
+import type { Message } from "@happier-dev/session-core/messages";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const persistedStorage = vi.hoisted(() => new Map<string, string>());
+vi.mock('expo-router', async () => (await import('@/dev/testkit/mocks/router')).createExpoRouterMock().module);
 
 vi.mock('react-native-mmkv', () => {
     class MMKV {
@@ -38,17 +40,14 @@ vi.mock('react-native-mmkv', () => {
 
 const transcriptState = vi.hoisted(() => ({
     ids: [] as string[],
-    messagesById: {} as Record<string, unknown>,
+    messagesById: {} as Record<string, Message>,
     isLoaded: true,
 }));
 
 installNavigationCommonModuleMocks({
-    typography: async () => ({
-        Typography: {
-            default: () => ({}),
-            tabular: () => ({}),
-        },
-    }),
+    // The real typography owner: the pane's states render the shared state composition, whose graph
+    // reads the full Typography module (weights, mono), not a two-function stub.
+    typography: async () => vi.importActual('@/constants/Typography'),
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
@@ -63,20 +62,17 @@ installNavigationCommonModuleMocks({
             ),
         });
     },
-    storage: async () => {
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleStub({
-            useForkedTranscriptSnapshot: () => null,
-            useSessionTranscriptIds: () => ({ ids: transcriptState.ids, isLoaded: transcriptState.isLoaded }),
-            useSessionMessagesById: () => transcriptState.messagesById,
-            useSessionMessages: () => ({ messages: [], isLoaded: transcriptState.isLoaded }),
-        });
-    },
+    storage: async (importOriginal) => importOriginal(),
 });
 
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
-vi.mock('@/sync/store/hooks', () => ({ useActiveServerAccountScope: () => null }));
-vi.mock('@/sync/sync', () => ({ sync: { prefetchForkedTranscriptContext: async () => undefined } }));
+vi.mock('@/sync/store/hooks', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/store/hooks')>(), useActiveServerAccountScope: () => null,
+}));
+vi.mock('@/sync/sync', () => ({ sync: {
+    prefetchForkedTranscriptContext: async () => undefined,
+    getSessionTailDiscontinuityOlderAvailability: () => undefined,
+} }));
 vi.mock('@/hooks/session/useUserMessageHistory', () => ({
     useUserMessageHistoryRemoteEntries: () => ({
         rows: [],
@@ -110,6 +106,12 @@ function seedTranscript() {
     transcriptState.ids = messages.map((message) => message.id);
     transcriptState.messagesById = Object.fromEntries(messages.map((message) => [message.id, message]));
     transcriptState.isLoaded = true;
+    storage.setState({
+        sessions: { 'session-1': createSessionFixture({ id: 'session-1' }) },
+        sessionMessages: { 'session-1': createSessionMessagesFixture({
+            messageIdsOldestFirst: transcriptState.ids, messagesById: transcriptState.messagesById, isLoaded: true,
+        }) },
+    });
 }
 
 async function flushDeferredJump() {
@@ -236,7 +238,7 @@ describe('SessionTranscriptNavigationPane', () => {
         expect(onEntryPress).toHaveBeenCalledTimes(1);
     });
 
-    it('exits through the close affordance and through Escape', async () => {
+    it('exits through Escape; the pane header owns the only close', async () => {
         const { SessionTranscriptNavigationPane } = await import('./SessionTranscriptNavigationPane');
         const onRequestClose = vi.fn();
         const screen = await renderScreen(
@@ -247,13 +249,12 @@ describe('SessionTranscriptNavigationPane', () => {
             />,
         );
 
-        await screen.pressByTestIdAsync('nav-close');
-        expect(onRequestClose).toHaveBeenCalledTimes(1);
+        expect(screen.findByTestId('nav-close')).toBeNull();
 
         invokeTestInstanceHandler(screen.findByTestId('nav-entry-list'), 'onKeyDown', {
             nativeEvent: { key: 'Escape' },
             preventDefault: () => {},
         });
-        expect(onRequestClose).toHaveBeenCalledTimes(2);
+        expect(onRequestClose).toHaveBeenCalledTimes(1);
     });
 });

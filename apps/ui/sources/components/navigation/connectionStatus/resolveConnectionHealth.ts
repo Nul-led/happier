@@ -1,4 +1,4 @@
-import { computeMachinesSummary } from '@/components/sessions/guidance/gettingStartedModel';
+import { computeMachinesSummary } from '@/components/sessions/guidance/computeMachinesSummary';
 
 import type {
     ConnectionHealth,
@@ -88,7 +88,7 @@ export function resolveConnectionHealth(params: Readonly<{
         };
     }
 
-    if (params.syncErrorKind === 'auth') {
+    if (params.syncErrorKind === 'auth' || params.machineGroups.some((group) => group.status === 'signedOut')) {
         return {
             kind: 'auth_required',
             machineCount: machines.machineCount,
@@ -98,7 +98,7 @@ export function resolveConnectionHealth(params: Readonly<{
         };
     }
 
-    if (params.hasSyncError || params.socketStatus === 'error') {
+    if (params.hasSyncError || params.socketStatus === 'error' || params.machineGroups.some((group) => group.status === 'error')) {
         return {
             kind: 'server_error',
             machineCount: machines.machineCount,

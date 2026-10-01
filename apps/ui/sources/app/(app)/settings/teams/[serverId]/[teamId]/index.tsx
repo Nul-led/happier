@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { TeamOverviewScreen } from '@/components/settings/teams/TeamOverviewScreen';
 import { firstRouteParam } from '@/components/settings/teams/teamRouteParams';
 
-export default function TeamOverviewRoute() {
+export function TeamOverviewRoute() {
     const params = useLocalSearchParams<{ serverId?: string | string[]; teamId?: string | string[] }>();
     return (
         <TeamOverviewScreen
@@ -13,3 +13,6 @@ export default function TeamOverviewRoute() {
         />
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { TeamOverviewRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={TeamOverviewRoute} />; }

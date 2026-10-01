@@ -8,11 +8,19 @@ import { selectSyncErrorForServer } from '@/sync/runtime/connectivity/syncErrorS
 import {
     useAllMachines,
     useMachineListByServerId,
+    useMachineListForServer,
     useMachineListStatusByServerId,
+    useMachineListStatusForServer,
     useEndpointConnectivity,
     useSocketStatus,
     useSyncError,
 } from '@/sync/domains/state/storage';
+import {
+    getAppliedActiveServerSnapshot,
+    isAppliedActiveServerRuntimeAvailable,
+    subscribeAppliedActiveServer,
+    subscribeAppliedActiveServerRuntimeAvailability,
+} from '@/sync/runtime/orchestration/connectionManager';
 import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 
@@ -144,23 +152,43 @@ export function useConnectionHealth() {
 
 /**
  * Active-Home-only health for always-mounted shell chrome. Unlike the
- * selection-wide hook above, this never subscribes to secondary-Home maps or
- * Home-view settings; expanded selectors own those subscriptions.
+ * selection-wide hook above, this does not derive health from staged focus or
+ * Home-view selection settings; it reads the applied Home's scoped projection.
  */
 export function useActiveHomeConnectionHealth() {
     const { theme } = useUnistyles();
     const socketStatus = useSocketStatus();
     const endpointConnectivity = useEndpointConnectivity();
     const syncError = useSyncError();
-    const activeMachines = useAllMachines();
-    const activeServerSnapshot = useActiveServerSnapshot();
+    const subscribeAppliedServer = React.useCallback(
+        (listener: () => void) => subscribeAppliedActiveServer(() => listener()),
+        [],
+    );
+    const appliedServerSnapshot = React.useSyncExternalStore(
+        subscribeAppliedServer,
+        getAppliedActiveServerSnapshot,
+        getAppliedActiveServerSnapshot,
+    );
+    const appliedServerId = appliedServerSnapshot.serverId;
+    const appliedMachines = useMachineListForServer(appliedServerId) ?? [];
+    const machineListStatus = useMachineListStatusForServer(appliedServerId);
+    const subscribeAppliedRuntime = React.useCallback(
+        (listener: () => void) => subscribeAppliedActiveServerRuntimeAvailability(() => listener()),
+        [],
+    );
+    const appliedServerRuntimeAvailable = React.useSyncExternalStore(
+        subscribeAppliedRuntime,
+        isAppliedActiveServerRuntimeAvailable,
+        isAppliedActiveServerRuntimeAvailable,
+    );
+    const isAppliedHomeTransitioning = !appliedServerRuntimeAvailable;
     const activeSyncError = React.useMemo(() => (
-        selectSyncErrorForServer(syncError, activeServerSnapshot.serverId)
-    ), [activeServerSnapshot.serverId, syncError]);
+        selectSyncErrorForServer(syncError, appliedServerId)
+    ), [appliedServerId, syncError]);
 
     const visibleMachines = React.useMemo(
-        () => activeMachines.filter((machine) => !machine.revokedAt),
-        [activeMachines],
+        () => appliedMachines.filter((machine) => !machine.revokedAt),
+        [appliedMachines],
     );
     const onlineMachines = React.useMemo(
         () => visibleMachines.filter((machine) => isMachineOnline(machine)),
@@ -179,21 +207,33 @@ export function useActiveHomeConnectionHealth() {
     }, [visibleMachines]);
 
     const health = React.useMemo(() => resolveConnectionHealth({
-        socketStatus: socketStatus.status,
-        endpointStatus: endpointConnectivity.status,
-        endpointReason: endpointConnectivity.reason,
+        // Socket and endpoint status are singleton transport projections. The
+        // connection manager's runtime-availability fact is the authority for
+        // whether they can be attributed to the applied Home.
+        socketStatus: isAppliedHomeTransitioning ? 'connecting' : socketStatus.status,
+        endpointStatus: isAppliedHomeTransitioning ? 'connecting' : endpointConnectivity.status,
+        endpointReason: isAppliedHomeTransitioning ? null : endpointConnectivity.reason,
         hasSyncError: Boolean(activeSyncError),
         syncErrorKind: activeSyncError?.kind,
         machineGroups: [{
-            machineCount: visibleMachines.length,
-            onlineCount: onlineMachines.length,
-            readyCount: onlineMachines.filter(isMachineReadyForConnectionHealth).length,
-            status: 'idle',
+            ...(machineListStatus === 'loading' || machineListStatus === 'signedOut'
+                ? {
+                    machineCount: null,
+                    onlineCount: null,
+                }
+                : {
+                    machineCount: visibleMachines.length,
+                    onlineCount: onlineMachines.length,
+                    readyCount: onlineMachines.filter(isMachineReadyForConnectionHealth).length,
+                }),
+            status: machineListStatus,
         }],
     }), [
         activeSyncError,
         endpointConnectivity.reason,
         endpointConnectivity.status,
+        isAppliedHomeTransitioning,
+        machineListStatus,
         onlineMachines,
         socketStatus.status,
         visibleMachines.length,
@@ -211,6 +251,6 @@ export function useActiveHomeConnectionHealth() {
         ...health,
         ...presentation,
         primaryMachineLabel,
-        endpointStatus: endpointConnectivity.status,
+        endpointStatus: isAppliedHomeTransitioning ? 'connecting' : endpointConnectivity.status,
     };
 }

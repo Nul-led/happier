@@ -8,8 +8,6 @@ import { PushNotificationPermissionPrimingRuntime } from '@/activity/notificatio
 import { DesktopActivityOverlayRuntime } from '@/activity/adapters/desktop/runtime/DesktopActivityOverlayRuntime';
 import { ReleaseNotesAutoShowMount } from '@/changelog/releaseNotes';
 import { OnboardingShowcaseAutoShowMount } from '@/onboarding/showcase';
-import { DesktopTrayRuntime } from '@/desktop/tray/DesktopTrayRuntime';
-import { DesktopTrayDaemonLifecycleRuntime } from '@/desktop/tray/DesktopTrayDaemonLifecycleRuntime';
 import { CompanionNoDragRegionProvider } from '@/components/companion/interaction/CompanionNoDragRegion';
 import { DesktopPetOverlayRuntimeMount } from '@/components/pets/runtime/DesktopPetOverlayRuntimeMount';
 import { PetAppShellCompanionMount } from '@/components/pets/runtime/PetAppShellCompanionMount';
@@ -21,6 +19,7 @@ import { resolveVerifiedLocalBrowserRecordingCaptureMachineId } from '@/sync/dom
 import { storage, useAllMachines } from '@/sync/domains/state/storage';
 import { CurrentSessionPresentationRuntime } from '@/components/sessions/presentation/CurrentSessionPresentationRuntime';
 import { ActionOperationRuntime } from '@/sync/domains/actionOperations/actionOperationRuntime';
+import { UpdateFactsBackgroundRuntime } from '@/updates/UpdateFactsBackgroundRuntime';
 
 type ActivitySurfacesRuntimeComponent = React.ComponentType;
 
@@ -94,6 +93,8 @@ export const AuthenticatedAppRuntimeMounts = React.memo(function AuthenticatedAp
             <ActivityLocalNotificationRuntime />
             <OnboardingShowcaseAutoShowMount />
             {props.isAuthenticated ? <ActionOperationRuntime /> : null}
+            {/* Keeps the Updates summary's coverage of agent CLIs and helpers (no timer of its own). */}
+            <UpdateFactsBackgroundRuntime enabled={props.isAuthenticated} />
             {props.isAuthenticated ? <PushNotificationPermissionPrimingRuntime /> : null}
             {props.isAuthenticated ? <CurrentSessionPresentationRuntime /> : null}
             <DesktopPetOverlayRuntimeMount />
@@ -110,13 +111,7 @@ export const AuthenticatedAppRuntimeMounts = React.memo(function AuthenticatedAp
             {props.isAuthenticated && props.isDesktopShell ? (
                 <DesktopBrowserRecordingReverseCaptureRuntimeMount />
             ) : null}
-            {props.isDesktopShell ? (
-                <>
-                    <DesktopTrayRuntime />
-                    <DesktopTrayDaemonLifecycleRuntime />
-                    <DesktopActivityOverlayRuntime />
-                </>
-            ) : null}
+            {props.isDesktopShell ? <DesktopActivityOverlayRuntime /> : null}
         </>
     );
 });

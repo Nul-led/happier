@@ -45,9 +45,16 @@ export function useProjectOverviewMode(params: Readonly<{
         const baselineSignature = overviewEntryDetailsSignatureRef.current;
         if (baselineSignature == null) return;
         if (baselineSignature === detailsSignature) return;
+        // Hiding the details pane while entering an overview is not a request
+        // to leave that overview. Keep its retained tabs as the new baseline so
+        // opening the same pinned tab again is visible as a fresh open intent.
+        if (params.detailsState?.isOpen !== true) {
+            overviewEntryDetailsSignatureRef.current = detailsSignature;
+            return;
+        }
         setOverviewExitRequested(true);
         params.onSetShowWorktrees?.(false);
-    }, [detailsSignature, params.onSetShowWorktrees, params.showWorktrees]);
+    }, [detailsSignature, params.detailsState?.isOpen, params.onSetShowWorktrees, params.showWorktrees]);
 
     return {
         forceOverviewMode: params.showWorktrees === true && !overviewExitRequested,

@@ -1,16 +1,18 @@
 import React from 'react';
 import { Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { UsagePanel } from '@/components/settings/usage/UsagePanel';
 import { buildUsageRouteParams, resolveUsagePanelInitialFilters } from '@/components/settings/usage/usageRouteParams';
 import { resolveFloatingTabBarBottomPadding } from '@/components/ui/navigation/floatingTabBarBottomInset';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { t } from '@/text';
 
 // Clears the floating bottom nav (its pill height above its own bottom padding)
 // so the usage footer is never overlapped on the full-page route (D-R2-10).
 const FLOATING_TAB_BAR_PILL_CLEARANCE = 64;
 
-export default function UsageSettingsScreen() {
+export function UsageSettingsScreen() {
     const params = useLocalSearchParams() as Record<string, string | string[] | undefined>;
     const router = useRouter();
     const insets = useSafeAreaInsets();
@@ -28,11 +30,17 @@ export default function UsageSettingsScreen() {
         router.setParams(buildUsageRouteParams(filters));
     }, [router]);
 
+    const pageHeader = React.useMemo(() => <SettingsPageHeader description={t('settings.usageSubtitle')} />, []);
+
     return (
         <UsagePanel
             initialFilters={initialFilters}
             onFiltersChange={handleFiltersChange}
             contentBottomInset={contentBottomInset}
+            pageHeader={pageHeader}
         />
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { UsageSettingsScreen as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={UsageSettingsScreen} />; }

@@ -38,12 +38,10 @@ vi.mock('@/constants/Typography', () => ({
     },
 }));
 
-vi.mock('@/components/workspaces/scm/states', () => ({
-    SourceControlUnavailableState: 'SourceControlUnavailableState',
-}));
-
+const badgeIndexState = vi.hoisted(() => ({ current: null as any }));
 vi.mock('@/components/workspaces/files/repositoryTree/useScmTreeBadgeIndex', () => ({
-    useScmTreeBadgeIndex: () => null,
+    // The web index arrives a tick after the snapshot; tests flip it to model that arrival.
+    useScmTreeBadgeIndex: () => badgeIndexState.current,
 }));
 
 const repositoryTreeBrowserState = vi.hoisted(() => ({
@@ -70,6 +68,10 @@ const latestFilesystemBrowserProps = vi.hoisted(() => ({
     current: null as any,
 }));
 
+vi.mock('@/components/ui/surfaces/SurfaceStateCard', () => ({
+    SurfaceStateCard: (props: any) => React.createElement('SurfaceStateCard', props),
+}));
+
 vi.mock('@/components/ui/filesystemBrowser/FilesystemBrowser', () => ({
     FilesystemBrowser: (props: any) => {
         latestFilesystemBrowserProps.current = props;
@@ -86,12 +88,17 @@ vi.mock('@/components/ui/filesystemBrowser/FilesystemBrowser', () => ({
 }));
 
 vi.mock('@/components/workspaces/files/repositoryTree/WebDropTargetView', () => ({
-    WebDropTargetView: (props: any) => React.createElement('View', { testID: props.testID }, props.children),
+    WebDropTargetView: (props: any) => React.createElement('WebDropTargetView', props, props.children),
 }));
 
 vi.mock('@/components/ui/filesystemBrowser/FilesystemBrowserRow', () => ({
     FilesystemBrowserRow: (props: any) => {
-        const content = React.createElement('FilesystemBrowserRow', { testID: props.testID, title: props.title });
+        const content = React.createElement('FilesystemBrowserRow', {
+            testID: props.testID,
+            title: props.title,
+            onPress: props.onPress,
+            onDoublePress: props.onDoublePress,
+        });
         if (typeof props.wrapContent === 'function') {
             return props.wrapContent({ node: props.node, content });
         }
@@ -125,6 +132,27 @@ describe('WorkspaceRepositoryTreeList', () => {
             { path: 'README.md', name: 'README.md', type: 'file', depth: 0 },
         ];
         latestFilesystemBrowserProps.current = null;
+    });
+
+    it('names a failed folder load and preserves its retry and diagnostic cause', async () => {
+        repositoryTreeBrowserState.rootError = 'RPC method not available';
+        repositoryTreeBrowserState.nodes = [];
+        const { WorkspaceRepositoryTreeList } = await import('./WorkspaceRepositoryTreeList');
+        const screen = await renderScreen(
+            <WorkspaceRepositoryTreeList
+                theme={theme}
+                scope={{ serverId: 'server', machineId: 'm1', rootPath: '/repo' }}
+                expandedPaths={[]}
+                onExpandedPathsChange={() => {}}
+                onOpenFile={() => {}}
+            />,
+        );
+
+        const state = screen.findByTestId('repository-tree-root-error');
+        expect(state?.props.title).toBe('files.pane.rootErrorTitleUnnamed');
+        expect(state?.props.reason).toBe('errors.daemonUnavailableBody');
+        expect(state?.props.diagnosticCode).toBe('RPC method not available');
+        expect(state?.props.action?.label).toBe('common.retry');
     });
 
     it('assigns one repository-tree row testID per shared workspace tree row on web', async () => {
@@ -209,5 +237,84 @@ describe('WorkspaceRepositoryTreeList', () => {
 
         expect(after?.renderRow).toBe(before?.renderRow);
         expect(after?.extraData).toBe(before?.extraData);
+    });
+
+    // Moved from the retired session-only RepositoryTreeList: the live tree owns drop targets and pinning.
+    const renderWithDrop = async (props: Record<string, unknown> = {}) => {
+        const { WorkspaceRepositoryTreeList } = await import('./WorkspaceRepositoryTreeList');
+        return renderScreen(
+            <WorkspaceRepositoryTreeList
+                theme={theme}
+                scope={{ serverId: 'server', machineId: 'm1', rootPath: '/repo' }}
+                expandedPaths={[]}
+                onExpandedPathsChange={() => {}}
+                onOpenFile={() => {}}
+                {...props}
+            />,
+        );
+    };
+    const dropTargetOf = (screen: Awaited<ReturnType<typeof renderWithDrop>>, path: string) =>
+        screen.findAll((node) => (node.type as any) === 'WebDropTargetView'
+            && node.findAll((child) => child.props?.testID === `repository-tree-row-${toTestIdSafeValue(path)}`).length > 0)[0];
+
+    it('routes a file row drag hover to its parent folder and marks a closed folder for auto-expand', async () => {
+        repositoryTreeBrowserState.nodes = [
+            { path: 'src', name: 'src', type: 'directory', depth: 0, isExpanded: false, isLoadingChildren: false },
+            { path: 'README.md', name: 'README.md', type: 'file', depth: 0, parentDirectoryPath: '' },
+        ];
+        const onWebDropTargetChange = vi.fn();
+        const screen = await renderWithDrop({ onWebDropTargetChange });
+
+        await act(async () => {
+            dropTargetOf(screen, 'README.md')?.props.onDragEnter({ dataTransfer: { types: ['Files'] }, stopPropagation: vi.fn() });
+        });
+        expect(onWebDropTargetChange).toHaveBeenLastCalledWith({ destinationDir: '', hoverPath: 'README.md', autoExpandDirectoryPath: null });
+
+        await act(async () => {
+            dropTargetOf(screen, 'src')?.props.onDragEnter({ dataTransfer: { types: ['Files'] }, stopPropagation: vi.fn() });
+        });
+        expect(onWebDropTargetChange).toHaveBeenLastCalledWith({ destinationDir: 'src', hoverPath: 'src', autoExpandDirectoryPath: 'src' });
+    });
+
+    it('opens a file on press and pins it on double press', async () => {
+        const onOpenFile = vi.fn();
+        const onOpenFilePinned = vi.fn();
+        const screen = await renderWithDrop({ onOpenFile, onOpenFilePinned });
+        const readme = screen.findAll((node) => (node.type as any) === 'FilesystemBrowserRow'
+            && node.props.testID === `repository-tree-row-${toTestIdSafeValue('README.md')}`)[0];
+        await act(async () => {
+            readme?.props.onPress();
+            readme?.props.onDoublePress();
+        });
+        expect(onOpenFile).toHaveBeenCalledWith('README.md');
+        expect(onOpenFilePinned).toHaveBeenCalledWith('README.md');
+    });
+
+    it('redraws mounted rows when the change badges arrive after the first render', async () => {
+        badgeIndexState.current = null;
+        const { WorkspaceRepositoryTreeList } = await import('./WorkspaceRepositoryTreeList');
+        function Wrapper() {
+            const [, bump] = React.useState(0);
+            return (
+                <>
+                    <WorkspaceRepositoryTreeList
+                        theme={theme}
+                        scope={{ serverId: 'server', machineId: 'm1', rootPath: '/repo' }}
+                        expandedPaths={[]}
+                        onExpandedPathsChange={() => {}}
+                        onOpenFile={() => {}}
+                    />
+                    {React.createElement('Pressable' as any, { testID: 'badges-arrive', onPress: () => bump((v) => v + 1) })}
+                </>
+            );
+        }
+        const screen = await renderScreen(<Wrapper />);
+        const before = latestFilesystemBrowserProps.current?.extraData;
+        badgeIndexState.current = { getFileBadge: () => null, getDirectoryBadge: () => null };
+        await act(async () => {
+            screen.pressByTestId('badges-arrive');
+        });
+        expect(latestFilesystemBrowserProps.current?.extraData).not.toBe(before);
+        badgeIndexState.current = null;
     });
 });

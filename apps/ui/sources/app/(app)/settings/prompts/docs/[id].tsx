@@ -1,10 +1,13 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { PromptDocEditorScreen } from '@/components/settings/prompts/docs/PromptDocEditorScreen';
 
-export default function EditPromptDocPage() {
+export function EditPromptDocPage() {
   const { id } = useLocalSearchParams<{ id: string }>();
   if (!id) return null;
   return <PromptDocEditorScreen artifactId={id} />;
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { EditPromptDocPage as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={EditPromptDocPage} />; }

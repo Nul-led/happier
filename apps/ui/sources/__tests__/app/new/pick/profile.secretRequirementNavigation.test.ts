@@ -308,6 +308,14 @@ describe('ProfilePickerScreen (native secret requirement)', () => {
                 spawnServerId: 'server-2',
             }),
         });
-        expect(routerMock.push.mock.calls[0]?.[0]?.params?.agentType).toBeUndefined();
+        const pushedRoute = routerMock.push.mock.calls[0]?.[0];
+        if (typeof pushedRoute !== 'object' || pushedRoute === null || !('params' in pushedRoute)) {
+            throw new Error('Expected secret requirement navigation to include route params');
+        }
+        const pushedParams = pushedRoute.params;
+        if (typeof pushedParams !== 'object' || pushedParams === null) {
+            throw new Error('Expected secret requirement navigation params to be an object');
+        }
+        expect('agentType' in pushedParams ? pushedParams.agentType : undefined).toBeUndefined();
     });
 });

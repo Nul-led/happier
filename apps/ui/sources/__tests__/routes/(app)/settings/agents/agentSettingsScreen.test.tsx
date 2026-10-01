@@ -2,7 +2,6 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildBackendTargetKey, type PluginProjectionV2 } from '@happier-dev/protocol';
-import type { CliAuthStatusData } from '@/sync/api/capabilities/capabilitiesProtocol';
 import type { ActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import { clearDaemonMergedProjectionCacheForTests } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
@@ -99,17 +98,6 @@ const machineCapabilitiesInvokeMock = vi.fn(async () => ({
 const applySettingsMock = vi.hoisted(() => vi.fn());
 const mutateAccountSettingsOnceMock = vi.hoisted(() => vi.fn());
 const tauriDesktopState = vi.hoisted(() => ({ value: true }));
-const cliDetectionState = {
-    available: { codex: false } as Record<string, boolean | null>,
-    login: { codex: null } as Record<string, boolean | null>,
-    authStatus: { codex: null } as Record<string, CliAuthStatusData | null>,
-    resolvedPath: { codex: null } as Record<string, string | null>,
-    resolutionSource: { codex: null } as Record<string, 'override' | 'system' | 'managed' | null>,
-    tmux: null,
-    isDetecting: false,
-    timestamp: 1,
-    refresh: vi.fn(),
-};
 const paneApi = {
     scopeId: 'settings:provider:codex',
     scopeState: null as any,
@@ -129,7 +117,6 @@ const paneApi = {
     closeDetailsTab: vi.fn(),
     setActiveDetailsTab: vi.fn(),
 };
-const useCLIDetectionMock = vi.fn();
 const useCapabilityInstallabilityMock = vi.fn();
 let machinesState = [
     { id: 'm1', metadata: { displayName: 'Machine One', host: 'm1', homeDir: '/Users/m1' } },
@@ -708,9 +695,6 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
     machineRpcWithServerScope: (...args: unknown[]) => machinePluginSessionHooksRpcMock(...args),
 }));
 
-vi.mock('@/hooks/auth/useCLIDetection', () => ({
-    useCLIDetection: (...args: any[]) => useCLIDetectionMock(...args),
-}));
 
 vi.mock('@/hooks/machine/useCapabilityInstallability', () => ({
     useCapabilityInstallability: (...args: any[]) => useCapabilityInstallabilityMock(...args),
@@ -942,14 +926,8 @@ vi.mock('@happier-dev/agents', async (importOriginal) => {
     };
 });
 
-vi.mock('@/components/settings/agents/AgentCliInstallItem', () => passThrough('AgentCliInstallItem'));
 
 vi.mock('@/components/ui/layout/BadgeGrid', () => passThrough('BadgeGrid'));
-
-vi.mock(
-    '@/components/settings/agents/authentication/AgentAuthenticationTerminalPane',
-    () => passThrough('AgentAuthenticationTerminalPane'),
-);
 
 vi.mock('@/components/appShell/panes/AppPaneScopeHost', () => ({
     AppPaneScopeHost: (props: any) => React.createElement('AppPaneScopeHost', props, props.main),
@@ -964,22 +942,6 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
     },
 }));
 
-vi.mock('@/components/settings/agents/authentication/useAgentAuthenticationState', () => ({
-    useAgentAuthenticationState: (params: any) => {
-        const agentId = params.agentId;
-        const authStatus = cliDetectionState.authStatus?.[agentId] ?? null;
-        return {
-            canLaunchLogin: true,
-            machineId: null,
-            machineHomeDir: null,
-            loginLaunch: agentId ? { initialCommand: `${agentId} login` } : null,
-            authStatus,
-            canCheckNow: true,
-            loginActionKind: authStatus?.state === 'logged_in' ? 'reauthenticate' : 'login',
-            docsUrl: null,
-        };
-    },
-}));
 
 async function renderPluginAgentSettingsScreen() {
     const Screen = (await import('@/app/(app)/settings/agents/[agentId]')).default;
@@ -1087,15 +1049,6 @@ describe('PluginAgentSettingsScreen', () => {
                 value: result.value,
             };
         });
-        cliDetectionState.available = { codex: false };
-        cliDetectionState.login = { codex: null };
-        cliDetectionState.authStatus = { codex: null };
-        cliDetectionState.resolvedPath = { codex: null };
-        cliDetectionState.resolutionSource = { codex: null };
-        cliDetectionState.tmux = null;
-        cliDetectionState.isDetecting = false;
-        cliDetectionState.timestamp = 1;
-        cliDetectionState.refresh = vi.fn();
         paneApi.scopeState = null;
         paneApi.openRight.mockReset();
         paneApi.closeRight.mockReset();
@@ -1146,8 +1099,6 @@ describe('PluginAgentSettingsScreen', () => {
         };
         serverIdentityByProfileId = { server1: 'server1' };
         activeServerSubscribers = new Set();
-        useCLIDetectionMock.mockReset();
-        useCLIDetectionMock.mockImplementation(() => cliDetectionState);
         useCapabilityInstallabilityMock.mockReset();
         useCapabilityInstallabilityMock.mockReturnValue({ kind: 'installable' });
         routerPushSpy.mockReset();
@@ -1227,9 +1178,6 @@ describe('PluginAgentSettingsScreen', () => {
 
         expect(screen.findByType('MachineAdministrationTargetSelector')).toBeTruthy();
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledWith('m2', expect.objectContaining({
-            serverId: 'server-selected',
-        }));
-        expect(useCLIDetectionMock).toHaveBeenLastCalledWith('m2', expect.objectContaining({
             serverId: 'server-selected',
         }));
         const installer = screen.findByType('AgentCliInstallItem');
@@ -1419,11 +1367,6 @@ describe('PluginAgentSettingsScreen', () => {
                 mergedProviderProjectionById: expect.objectContaining({
                     'acme.review.provider': expect.objectContaining({
                         title: 'Acme Review Provider',
-                    }),
-                }),
-                mergedBackendProjectionById: expect.objectContaining({
-                    'acme.review.backend': expect.objectContaining({
-                        title: 'Acme Review Backend',
                         catalogAgentId: 'claude',
                         iconAgentId: 'codex',
                     }),
@@ -1784,38 +1727,6 @@ describe('PluginAgentSettingsScreen', () => {
                 agentsById: {
                     codex: retiredCodexAgent,
                 },
-                contributionIntrospection: {
-                    version: 1,
-                    generation: projection.generation,
-                    contributions: [{
-                        contribution: {
-                            kind: 'localId',
-                            pluginId: 'happier.agent.codex',
-                            family: 'agents',
-                            qualifiedId: 'happier.agent.codex/agents/codex',
-                            localId: 'codex',
-                        },
-                        progression: {
-                            declared: true,
-                            normalized: true,
-                            merged: true,
-                        },
-                        registration: {
-                            requirement: 'notRequired',
-                            state: 'notRequired',
-                        },
-                        activation: {
-                            state: 'notRequired',
-                        },
-                        projection: {
-                            state: 'projected',
-                        },
-                        consumer: 'agent-catalog',
-                        platforms: ['cli'],
-                        diagnostics: [],
-                    }],
-                    diagnostics: [],
-                },
             },
         });
         machinePluginSessionHooksRpcMock.mockResolvedValue({
@@ -1887,7 +1798,6 @@ describe('PluginAgentSettingsScreen', () => {
         await flushHookEffects();
 
         expect(findAgentHeader(screen)?.props.title).toBe('Acme Review Provider');
-        useCLIDetectionMock.mockClear();
 
         let resolveReload!: (value: {
             supported: true;
@@ -1913,9 +1823,6 @@ describe('PluginAgentSettingsScreen', () => {
         expect(findAgentHeader(screen)).toBeUndefined();
         expect(loadingItems.some((node: any) => node.props?.title === 'common.loading')).toBe(true);
         expect(screen.getTextContent()).not.toContain('settingsAgents.notFoundTitle');
-        expect(useCLIDetectionMock).not.toHaveBeenCalledWith('m3', expect.objectContaining({
-            autoDetect: true,
-        }));
 
         await act(async () => {
             resolveReload({
@@ -1926,9 +1833,6 @@ describe('PluginAgentSettingsScreen', () => {
         await flushHookEffects();
 
         expect(findAgentHeader(screen)?.props.title).toBe('Acme Review Provider');
-        expect(useCLIDetectionMock).toHaveBeenCalledWith('m3', expect.objectContaining({
-            autoDetect: true,
-        }));
     });
 
     it('refetches daemon projection inputs for the selected machine instead of pinning the first machine', async () => {
@@ -2136,10 +2040,6 @@ describe('PluginAgentSettingsScreen', () => {
         });
 
         act(() => installer.props.onInstalled());
-        expect(cliDetectionState.refresh).toHaveBeenCalledWith({
-            bypassCache: true,
-            includeLoginStatusForAgentIds: ['codex'],
-        });
     });
 
     it('rejects a device-local profile id in the recovery handoff as non-portable selection authority', async () => {
@@ -2236,17 +2136,9 @@ describe('PluginAgentSettingsScreen', () => {
 
     it('uses provider capability ids for provider settings when the binary detect key differs', async () => {
         mockProviderId = 'antigravity';
-        cliDetectionState.available = { antigravity: false };
-        cliDetectionState.login = { antigravity: null };
-        cliDetectionState.authStatus = { antigravity: null };
-        cliDetectionState.resolvedPath = { antigravity: null };
-        cliDetectionState.resolutionSource = { antigravity: null };
 
         const screen = await renderPluginAgentSettingsScreen();
 
-        expect(useCLIDetectionMock).toHaveBeenLastCalledWith('m1', expect.objectContaining({
-            agentIds: ['antigravity'],
-        }));
         expect(useCapabilityInstallabilityMock).toHaveBeenLastCalledWith(expect.objectContaining({
             capabilityId: 'cli.antigravity',
         }));
@@ -2295,9 +2187,6 @@ describe('PluginAgentSettingsScreen', () => {
             machineId: 'm1',
         });
 
-        expect(useCLIDetectionMock).toHaveBeenLastCalledWith('m1', expect.objectContaining({
-            serverId: 'server1',
-        }));
         expect(useCapabilityInstallabilityMock).toHaveBeenLastCalledWith(expect.objectContaining({
             machineId: 'm1',
             serverId: 'server1',
@@ -2315,10 +2204,6 @@ describe('PluginAgentSettingsScreen', () => {
         });
         await flushHookEffects();
 
-        expect(useCLIDetectionMock).toHaveBeenLastCalledWith('m2', expect.objectContaining({
-            serverId: 'server1',
-            agentIds: ['codex'],
-        }));
         expect(useCapabilityInstallabilityMock).toHaveBeenLastCalledWith(expect.objectContaining({
             machineId: 'm2',
             serverId: 'server1',
@@ -2326,8 +2211,6 @@ describe('PluginAgentSettingsScreen', () => {
     });
 
     it('marks the installer row as managed-installed when the detected CLI resolves inside Happier tools', async () => {
-        cliDetectionState.available = { codex: true };
-        cliDetectionState.resolutionSource = { codex: 'managed' };
 
         const screen = await renderPluginAgentSettingsScreen();
         const installer = screen.findByType('AgentCliInstallItem' as any);
@@ -2338,11 +2221,6 @@ describe('PluginAgentSettingsScreen', () => {
     it('does not retarget Agent operations when the active server changes', async () => {
         const screen = await renderPluginAgentSettingsScreen();
 
-        expect(useCLIDetectionMock).toHaveBeenLastCalledWith('m1', expect.objectContaining({
-            autoDetect: true,
-            includeLoginStatus: true,
-            serverId: 'server1',
-        }));
         expect(useCapabilityInstallabilityMock).toHaveBeenLastCalledWith(expect.objectContaining({
             machineId: 'm1',
             capabilityId: 'cli.codex',
@@ -2365,11 +2243,6 @@ describe('PluginAgentSettingsScreen', () => {
             machineId: 'm1',
         });
 
-        expect(useCLIDetectionMock).toHaveBeenLastCalledWith('m1', expect.objectContaining({
-            autoDetect: true,
-            includeLoginStatus: true,
-            serverId: 'server1',
-        }));
         expect(useCapabilityInstallabilityMock).toHaveBeenLastCalledWith(expect.objectContaining({
             machineId: 'm1',
             capabilityId: 'cli.codex',
@@ -2513,18 +2386,6 @@ describe('PluginAgentSettingsScreen', () => {
     });
 
     it('renders an authentication section when local CLI auth details are available', async () => {
-        cliDetectionState.available = { codex: true };
-        cliDetectionState.login = { codex: true };
-        cliDetectionState.authStatus = {
-            codex: {
-                state: 'logged_in',
-                accountLabel: 'alice@example.com',
-                method: 'oauth_cli',
-                source: 'command',
-                checkedAt: 123,
-            },
-        };
-        cliDetectionState.timestamp = 123;
 
         const screen = await renderPluginAgentSettingsScreen();
         expect(screen.findByTestId('settings-provider-auth-status')).toBeTruthy();
@@ -2533,32 +2394,12 @@ describe('PluginAgentSettingsScreen', () => {
     });
 
     it('renders a login action when local auth is supported but logged out', async () => {
-        cliDetectionState.available = { codex: true };
-        cliDetectionState.login = { codex: false };
-        cliDetectionState.authStatus = {
-            codex: {
-                state: 'logged_out',
-                reason: 'missing_credentials',
-                checkedAt: 123,
-            },
-        };
-        cliDetectionState.timestamp = 123;
 
         const screen = await renderPluginAgentSettingsScreen();
         expect(findAccessoryByTestId(screen, 'settings-provider-auth-login')).toBeTruthy();
     });
 
     it('uses the shared pane scope host for the provider auth terminal', async () => {
-        cliDetectionState.available = { codex: true };
-        cliDetectionState.login = { codex: false };
-        cliDetectionState.authStatus = {
-            codex: {
-                state: 'logged_out',
-                reason: 'missing_credentials',
-                checkedAt: 123,
-            },
-        };
-        cliDetectionState.timestamp = 123;
 
         const screen = await renderPluginAgentSettingsScreen();
         const hostBefore = screen.findByType('AppPaneScopeHost' as any);
@@ -2589,16 +2430,6 @@ describe('PluginAgentSettingsScreen', () => {
     });
 
     it('refreshes provider auth detection when the auth terminal pane closes', async () => {
-        cliDetectionState.available = { codex: true };
-        cliDetectionState.login = { codex: false };
-        cliDetectionState.authStatus = {
-            codex: {
-                state: 'logged_out',
-                reason: 'missing_credentials',
-                checkedAt: 123,
-            },
-        };
-        cliDetectionState.timestamp = 123;
         paneApi.scopeState = {
             bottom: {
                 isOpen: true,
@@ -2617,23 +2448,9 @@ describe('PluginAgentSettingsScreen', () => {
         await flushHookEffects();
 
         expect(paneApi.closeBottom).toHaveBeenCalledTimes(1);
-        expect(cliDetectionState.refresh).toHaveBeenCalledWith({
-            bypassCache: true,
-            includeLoginStatusForAgentIds: ['codex'],
-        });
     });
 
     it('closes the auth terminal and refreshes provider auth detection when the auth terminal exits', async () => {
-        cliDetectionState.available = { codex: true };
-        cliDetectionState.login = { codex: false };
-        cliDetectionState.authStatus = {
-            codex: {
-                state: 'logged_out',
-                reason: 'missing_credentials',
-                checkedAt: 123,
-            },
-        };
-        cliDetectionState.timestamp = 123;
         paneApi.scopeState = {
             bottom: {
                 isOpen: true,
@@ -2652,10 +2469,6 @@ describe('PluginAgentSettingsScreen', () => {
         await flushHookEffects();
 
         expect(paneApi.closeBottom).toHaveBeenCalledTimes(1);
-        expect(cliDetectionState.refresh).toHaveBeenCalledWith({
-            bypassCache: true,
-            includeLoginStatusForAgentIds: ['codex'],
-        });
     });
 
     it('renders and updates the backend CLI source preference when a managed install exists', async () => {
@@ -2812,9 +2625,6 @@ describe('PluginAgentSettingsScreen', () => {
         await act(async () => {});
         await flushHookEffects();
 
-        expect(useCLIDetectionMock).toHaveBeenLastCalledWith('m1', expect.objectContaining({
-            agentIds: ['acme.review.provider'],
-        }));
         expect(screen.findByTestId('settings-provider-detected-cli')?.props.row.subtitle)
             .toBe('acme-review • machine.detectedCliUnknown');
         expect(screen.findByType('AgentCliInstallItem' as any).props.capabilityId)
@@ -2894,40 +2704,6 @@ describe('PluginAgentSettingsScreen', () => {
         )?.props.title).toBe('externalSessions.settingsIntegrationInventoryErrorTitle');
     });
 
-    it('uses projected native auth metadata to detect an external agent CLI', async () => {
-        mockProviderId = 'acme.native';
-        mockAgentCatalogProjection.mockReturnValue({
-            agentId: 'acme.native',
-            catalogAgentId: null,
-            iconAgentId: null,
-            title: 'Acme Native',
-            subtitle: 'acme.native',
-            iconName: 'terminal',
-            isBuiltIn: false,
-            backendTargetKey: null,
-            enabled: true,
-            cli: {
-                executable: { binaryName: 'acme', sourcePreference: 'system-first' },
-                install: { manual: { kind: 'none' } },
-                auth: {
-                    support: 'login_terminal',
-                    loginLaunches: [{ kind: 'primary', args: ['login'] }],
-                },
-            },
-            authPlugin: {
-                agentId: 'acme.native',
-                support: 'login_terminal',
-                buildLoginLaunch: () => ({ initialCommand: 'acme login' }),
-            },
-            backendEntry: null,
-        });
-
-        await renderPluginAgentSettingsScreen();
-
-        expect(useCLIDetectionMock).toHaveBeenLastCalledWith('m1', expect.objectContaining({
-            agentIds: ['acme.native'],
-        }));
-    });
 
     it('renders the not found screen without requiring pane context', async () => {
         mockProviderId = 'unknown';

@@ -15,8 +15,6 @@ const runtimeRenderCounts = vi.hoisted(() => ({
     localNotifications: 0,
     desktopActivityOverlay: 0,
     desktopPetOverlay: 0,
-    desktopTray: 0,
-    desktopTrayDaemon: 0,
     petCompanion: 0,
     onboardingShowcase: 0,
     releaseNotes: 0,
@@ -84,20 +82,6 @@ vi.mock('@/activity/adapters/desktop/runtime/DesktopActivityOverlayRuntime', () 
     DesktopActivityOverlayRuntime: () => {
         runtimeRenderCounts.desktopActivityOverlay += 1;
         return React.createElement('DesktopActivityOverlayRuntime');
-    },
-}));
-
-vi.mock('@/desktop/tray/DesktopTrayRuntime', () => ({
-    DesktopTrayRuntime: () => {
-        runtimeRenderCounts.desktopTray += 1;
-        return React.createElement('DesktopTrayRuntime');
-    },
-}));
-
-vi.mock('@/desktop/tray/DesktopTrayDaemonLifecycleRuntime', () => ({
-    DesktopTrayDaemonLifecycleRuntime: () => {
-        runtimeRenderCounts.desktopTrayDaemon += 1;
-        return React.createElement('DesktopTrayDaemonLifecycleRuntime');
     },
 }));
 
@@ -235,16 +219,12 @@ describe('AuthenticatedAppRuntimeMounts', () => {
         const screen = await renderScreen(
             <AuthenticatedAppRuntimeMounts isAuthenticated={true} isDesktopShell={false} />,
         );
-        expect(runtimeRenderCounts.desktopTray).toBe(0);
-        expect(runtimeRenderCounts.desktopTrayDaemon).toBe(0);
         expect(runtimeRenderCounts.desktopActivityOverlay).toBe(0);
 
         await screen.update(
             <AuthenticatedAppRuntimeMounts isAuthenticated={true} isDesktopShell={true} />,
         );
 
-        expect(runtimeRenderCounts.desktopTray).toBe(1);
-        expect(runtimeRenderCounts.desktopTrayDaemon).toBe(1);
         expect(runtimeRenderCounts.desktopActivityOverlay).toBe(1);
     });
 

@@ -3,6 +3,8 @@ import { join, relative } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { listSettingsRouteNames } from '@/components/settings/navigation/settingsRouteRegistry';
+
 const UI_SOURCES_ROOT = join(__dirname, '..', '..', '..');
 const APP_ROUTES_ROOT = join(UI_SOURCES_ROOT, 'app', '(app)');
 const SETTINGS_ROUTES_ROOT = join(APP_ROUTES_ROOT, 'settings');
@@ -30,6 +32,9 @@ const ALLOWED_SETTINGS_STACK_SCREEN_FILES = new Set([
     'app/(app)/settings/_layout.tsx',
     'components/settings/actions/ActionSettingsDetailView.tsx',
 ]);
+
+/** Chrome read from the registry: stack screen definitions, or the active route's registered title. */
+const REGISTRY_DRIVEN_CHROME_PATTERN = /\b(?:getSettingsStackScreenDefinitions|resolveSettingsRouteTitleKey)\(/;
 
 function walkFiles(root: string): string[] {
     return readdirSync(root)
@@ -85,7 +90,10 @@ describe('settings navigation architecture', () => {
         expect(routeNames).toContain('appearance/themes/import');
         expect(routeNames).toContain('appearance/themes/export');
 
-        const missingRoutes = routeNames.filter((routeName) => !registry.includes(`name: '${routeName}'`));
+        // Collections own nested navigators (`machines/[id]` is `{ name: '[id]', navigator: 'machines' }`),
+        // so the registry's own route list, prefixed by navigator, is what every route file must appear in.
+        const registeredRouteNames = new Set(listSettingsRouteNames());
+        const missingRoutes = routeNames.filter((routeName) => !registeredRouteNames.has(routeName));
         expect(missingRoutes).toEqual([]);
 
         expect(registry).toContain("name: 'appearance/themes'");
@@ -108,6 +116,9 @@ describe('settings navigation architecture', () => {
             }))
             .filter(({ relativePath }) => !ALLOWED_SETTINGS_STACK_SCREEN_FILES.has(relativePath))
             .filter(({ contents }) => /<Stack\.Screen\b/.test(contents))
+            // A nested navigator layout registers its screens (or follows the active route's title) from the
+            // settings route registry itself, so its chrome stays centralized.
+            .filter(({ contents }) => !REGISTRY_DRIVEN_CHROME_PATTERN.test(contents))
             .map(({ relativePath }) => relativePath)
             .sort();
 

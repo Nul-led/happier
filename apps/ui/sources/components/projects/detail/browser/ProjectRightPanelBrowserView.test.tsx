@@ -23,7 +23,7 @@ vi.mock('@/text', async () => {
 vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
 
 vi.mock('@/components/projects/detail/useWorkspaceRefById', () => ({
-    useWorkspaceRefById: () => ({ machineId: 'machine_1', serverId: 'server_1' }),
+    useWorkspaceRefById: () => ({ machineId: 'machine_1', serverId: 'server_1', rootPath: '/home/ana/lumen' }),
 }));
 
 vi.mock('@/components/plugins/projection/useScopedPluginUiProjection', () => ({

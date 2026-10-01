@@ -29,6 +29,8 @@ function makeChangedFilesData(overrides: Record<string, unknown> = {}) {
     };
 }
 
+const scmSnapshot = { repo: { isRepo: true, rootPath: '/tmp/repo' }, capabilities: {} } as const;
+
 const useChangedFilesDataSpy = vi.fn((_: unknown) => makeChangedFilesData());
 
 const useDerivedSessionChangeSetSpy = vi.fn((_: unknown) => ({
@@ -113,7 +115,9 @@ describe('SessionRightPanelGitCommitTabContent', () => {
         }));
     });
 
-    it('prefers latest-turn view when a canonical latest-turn change set is available', async () => {
+    // Session-tabs lab G1: the Git pane opens on All changes, grouped with this session's changes first;
+    // Latest turn stays one choice away in the view menu.
+    it('opens on All changes (grouped by session) even when a canonical latest-turn change set is available', async () => {
         useChangedFilesDataSpy.mockClear();
         useChangedFilesDataSpy.mockReturnValue(makeChangedFilesData({
             showTurnViewToggle: true,
@@ -148,7 +152,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     sessionId="s1"
                     serverId="home-a"
                     sessionPath="/tmp/repo"
-                    scmSnapshot={{ capabilities: {} } as any}
+                    scmSnapshot={scmSnapshot as any}
                     workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
@@ -188,7 +192,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
         }));
 
         expect(commitTabRenderSpy).toHaveBeenCalled();
-        expect(commitTabRenderSpy.mock.calls.at(-1)?.[0].changedFilesViewMode).toBe('turn');
+        expect(commitTabRenderSpy.mock.calls.at(-1)?.[0].changedFilesViewMode).toBe('repository');
     });
 
     it('falls back to repository view when provider changes cannot be displayed in a scoped view', async () => {
@@ -225,7 +229,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     theme={{}}
                     sessionId="s1"
                     sessionPath="/tmp/repo"
-                    scmSnapshot={{ capabilities: {} } as any}
+                    scmSnapshot={scmSnapshot as any}
                     workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
@@ -258,7 +262,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
         expect(commitTabRenderSpy.mock.calls.at(-1)?.[0].changedFilesViewMode).toBe('repository');
     });
 
-    it('adopts latest-turn view when turn evidence arrives after the first render until the user selects a mode', async () => {
+    it('stays on All changes when turn evidence arrives after the first render, and honours a chosen scope', async () => {
         let turnEvidenceAvailable = false;
         useChangedFilesDataSpy.mockClear();
         useChangedFilesDataSpy.mockImplementation(() => makeChangedFilesData(turnEvidenceAvailable
@@ -292,7 +296,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                         theme={{}}
                         sessionId="s1"
                         sessionPath="/tmp/repo"
-                        scmSnapshot={{ capabilities: {} } as any}
+                        scmSnapshot={scmSnapshot as any}
                         workspaceTouchedPaths={[]}
                         commitSelectionPaths={[]}
                         commitSelectionPatches={[]}
@@ -330,13 +334,13 @@ describe('SessionRightPanelGitCommitTabContent', () => {
             screen.tree.update(<View />);
         });
 
-        expect(commitTabRenderSpy.mock.calls.at(-1)?.[0].changedFilesViewMode).toBe('turn');
+        expect(commitTabRenderSpy.mock.calls.at(-1)?.[0].changedFilesViewMode).toBe('repository');
 
         await act(async () => {
-            commitTabRenderSpy.mock.calls.at(-1)?.[0].onChangedFilesViewMode('repository');
+            commitTabRenderSpy.mock.calls.at(-1)?.[0].onChangedFilesViewMode('turn');
         });
 
-        expect(commitTabRenderSpy.mock.calls.at(-1)?.[0].changedFilesViewMode).toBe('repository');
+        expect(commitTabRenderSpy.mock.calls.at(-1)?.[0].changedFilesViewMode).toBe('turn');
     });
 
     it('keeps repository view selected after the user explicitly switches away from a scoped view', async () => {
@@ -375,7 +379,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     theme={{}}
                     sessionId="s1"
                     sessionPath="/tmp/repo"
-                    scmSnapshot={{ capabilities: {} } as any}
+                    scmSnapshot={scmSnapshot as any}
                     workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
@@ -404,17 +408,20 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     openFileInDetailsPinned={vi.fn()}
                 />);
 
-        expect(commitTabRenderSpy.mock.calls.at(-1)?.[0].changedFilesViewMode).toBe('turn');
+        expect(commitTabRenderSpy.mock.calls.at(-1)?.[0].changedFilesViewMode).toBe('repository');
 
         await act(async () => {
-            commitTabRenderSpy.mock.calls.at(-1)?.[0].onChangedFilesViewMode('repository');
+            commitTabRenderSpy.mock.calls.at(-1)?.[0].onChangedFilesViewMode('turn');
         });
 
-        expect(commitTabRenderSpy.mock.calls.at(-1)?.[0].changedFilesViewMode).toBe('repository');
+        expect(commitTabRenderSpy.mock.calls.at(-1)?.[0].changedFilesViewMode).toBe('turn');
     });
 
-    it('reveals leading changed-file action buttons only after entering selection mode', async () => {
+    it('shows every row its commit checkbox as soon as commit selection is available (lab G1)', async () => {
         useChangedFilesDataSpy.mockClear();
+        useChangedFilesDataSpy.mockReturnValue(makeChangedFilesData({
+            allRepositoryChangedFiles: [{ fullPath: 'src/a.ts', fileName: 'a.ts', status: 'modified' }],
+        }));
         commitTabRenderSpy.mockClear();
         useDerivedSessionChangeSetSpy.mockReturnValue({
             turnChangeSets: [],
@@ -431,7 +438,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     theme={{}}
                     sessionId="s1"
                     sessionPath="/tmp/repo"
-                    scmSnapshot={{ capabilities: {} } as any}
+                    scmSnapshot={scmSnapshot as any}
                     workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
@@ -462,20 +469,9 @@ describe('SessionRightPanelGitCommitTabContent', () => {
 
         expect(commitTabRenderSpy).toHaveBeenCalled();
         const props = commitTabRenderSpy.mock.calls.at(-1)?.[0];
-        expect(props.commitSelectionAvailable).toBe(true);
-        // Opt-in: no per-file "+" until the user enters selection mode.
-        expect(props.renderFileActions({ fullPath: 'src/a.ts', fileName: 'a.ts' })).toBeNull();
-
-        await act(async () => {
-            props.onEnterSelectionMode();
-        });
-
-        const nextProps = commitTabRenderSpy.mock.calls.at(-1)?.[0];
-        expect(nextProps.selectionModeActive).toBe(true);
-        const action = nextProps.renderFileActions({
-            fullPath: 'src/a.ts',
-            fileName: 'a.ts',
-        });
+        // No opt-in step: the checkbox column is part of the row, like the lab's G1.
+        expect(props.selectionModeActive).toBe(true);
+        const action = props.renderFileActions({ fullPath: 'src/a.ts', fileName: 'a.ts' });
         expect(React.isValidElement(action)).toBe(true);
         expect((action as React.ReactElement).type).toHaveProperty('name', 'ScmCommitSelectionToggleButton');
     });
@@ -513,7 +509,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     theme={{}}
                     sessionId="s1"
                     sessionPath="/tmp/repo"
-                    scmSnapshot={{ capabilities: {} } as any}
+                    scmSnapshot={scmSnapshot as any}
                     workspaceTouchedPaths={[]}
                     commitSelectionPaths={['src/selected.ts']}
                     commitSelectionPatches={[]}
@@ -571,7 +567,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     theme={{}}
                     sessionId="s1"
                     sessionPath="/tmp/repo"
-                    scmSnapshot={{ capabilities: {} } as any}
+                    scmSnapshot={scmSnapshot as any}
                     workspaceTouchedPaths={[]}
                     commitSelectionPaths={['src/visible.ts', 'src/generated/']}
                     commitSelectionPatches={[]}
@@ -621,12 +617,18 @@ describe('SessionRightPanelGitCommitTabContent', () => {
             fileName: 'generated',
             status: 'modified',
         } as any;
+        const historicalTurnFile = {
+            fullPath: 'src/historical.ts',
+            fileName: 'historical.ts',
+            status: 'modified',
+        } as any;
         useChangedFilesDataSpy.mockClear();
         useChangedFilesDataSpy.mockReturnValue(makeChangedFilesData({
             showTurnViewToggle: true,
             allRepositoryChangedFiles: [turnFile, repositoryFile, hiddenTurnDirectory],
             turnAttributedFiles: [
                 { file: turnFile, confidence: 'high' },
+                { file: historicalTurnFile, confidence: 'high' },
                 { file: hiddenTurnDirectory, confidence: 'high' },
             ],
         }));
@@ -652,7 +654,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     theme={{}}
                     sessionId="s1"
                     sessionPath="/tmp/repo"
-                    scmSnapshot={{ capabilities: {} } as any}
+                    scmSnapshot={scmSnapshot as any}
                     workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
@@ -681,6 +683,9 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     openFileInDetailsPinned={vi.fn()}
                 />);
 
+        await act(async () => {
+            commitTabRenderSpy.mock.calls.at(-1)?.[0].onChangedFilesViewMode('turn');
+        });
         const props = commitTabRenderSpy.mock.calls.at(-1)?.[0];
         expect(props.changedFilesViewMode).toBe('turn');
 
@@ -708,7 +713,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
                     theme={{}}
                     sessionId="s1"
                     sessionPath="/tmp/repo"
-                    scmSnapshot={{ capabilities: {} } as any}
+                    scmSnapshot={scmSnapshot as any}
                     workspaceTouchedPaths={[]}
                     commitSelectionPaths={[]}
                     commitSelectionPatches={[]}
@@ -763,7 +768,7 @@ describe('SessionRightPanelGitCommitTabContent', () => {
             theme: {},
             sessionId: 's1',
             sessionPath: '/tmp/repo',
-            scmSnapshot: { capabilities: {} } as any,
+            scmSnapshot: scmSnapshot as any,
             workspaceTouchedPaths: [],
 
 
@@ -795,13 +800,13 @@ describe('SessionRightPanelGitCommitTabContent', () => {
         };
 
         const { tree } = await renderScreen(
-            <SessionRightPanelGitCommitTabContent {...baseProps} showBranchSummary={true} />,
+            <SessionRightPanelGitCommitTabContent {...baseProps} active={true} />,
         );
         const firstProps = commitTabRenderSpy.mock.calls.at(-1)?.[0];
         const firstCallCount = commitTabRenderSpy.mock.calls.length;
 
         await act(async () => {
-            tree.update(<SessionRightPanelGitCommitTabContent {...baseProps} showBranchSummary={false} />);
+            tree.update(<SessionRightPanelGitCommitTabContent {...baseProps} active={false} />);
         });
 
         const nextProps = commitTabRenderSpy.mock.calls.at(-1)?.[0];
@@ -809,4 +814,5 @@ describe('SessionRightPanelGitCommitTabContent', () => {
         expect(nextProps.onFilePress).toBe(firstProps.onFilePress);
         expect(nextProps.onFilePressPinned).toBe(firstProps.onFilePressPinned);
     });
+
 });

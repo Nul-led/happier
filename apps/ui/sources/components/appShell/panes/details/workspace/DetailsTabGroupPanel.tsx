@@ -1,11 +1,13 @@
 import * as React from 'react';
 import { Platform, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
-import { CenteredInfoTile } from '@/components/ui/lists/CenteredInfoTile';
+import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { PluginSurfaceFocusEligibilityProvider } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
-import { Text } from '@/components/ui/text/Text';
 import { useWebScrollLockBypass } from '@/components/ui/scroll/useWebScrollLockBypass';
+import { DIFF_SPLIT_MIN_WIDTH_PX, DiffPresentationWidthProvider, resolveDiffSplitFits } from '@/components/ui/code/diff/diffPresentationStyle';
+import { DETAILS_TAB_STRIP_METRICS } from '@/components/appShell/panes/details/header/detailsTabHeaderMetrics';
 import { t } from '@/text';
 import type { AppPaneScopeApi } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import type { DetailsTabState, DetailsWorkspaceGroupView } from './detailsWorkspaceTypes';
@@ -16,8 +18,7 @@ import {
     type DetailsTabPresentation,
     type DetailsTabStripTestIds,
 } from './DetailsTabStrip';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { Icon } from '@/components/ui/icons/Icon';
+import { DetailsTabChromeProvider, useDetailsTabUnsavedKeys } from './detailsTabChrome';
 
 type ScrollPropagationEvent = Readonly<{ stopPropagation?: () => void }>;
 
@@ -35,28 +36,18 @@ const stylesheet = StyleSheet.create((theme) => ({
         minHeight: 0,
         minWidth: 0,
     },
+    // The strip sits on the paper, on one hairline, with the pane's controls at its end (details
+    // lab 2, `dl-strip`): the tabs are the only chrome above the tab's own header.
     header: {
-        paddingHorizontal: 10,
-        paddingTop: 10,
-        paddingBottom: 8,
-        borderBottomWidth: Platform.select({ ios: 0.33, default: 1 }),
-        borderBottomColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
+        minHeight: DETAILS_TAB_STRIP_METRICS.heightPx,
+        paddingLeft: DETAILS_TAB_STRIP_METRICS.paddingStartPx,
+        paddingRight: DETAILS_TAB_STRIP_METRICS.paddingEndPx,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: theme.colors.border.subtle,
+        backgroundColor: theme.colors.surface.base,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 10,
-    },
-    loading: {
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 24,
-        gap: 10,
-    },
-    loadingText: {
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-        textAlign: 'center',
+        gap: DETAILS_TAB_STRIP_METRICS.tabGapPx,
     },
 }));
 
@@ -82,8 +73,14 @@ const DetailsTabSurface = React.memo((props: Readonly<{
             aria-labelledby={detailsTabNativeId(props.groupId, props.tabKey)}
             {...(Platform.OS === 'web' && !props.isActive ? { inert: true } : {})}
             pointerEvents={props.isActive ? 'auto' : 'none'}
+            // Every retained tab fills the group on its own layer; stacked as flex siblings they split
+            // the height, so the open tab got 1/N of the pane (its floating tray sat mid-pane).
             style={{
-                flex: 1,
+                position: 'absolute',
+                top: 0,
+                right: 0,
+                bottom: 0,
+                left: 0,
                 minHeight: 0,
                 minWidth: 0,
                 opacity: props.isActive ? 1 : 0,
@@ -130,7 +127,6 @@ export type DetailsTabGroupPanelProps = Readonly<{
 
 export const DetailsTabGroupPanel = React.memo((props: DetailsTabGroupPanelProps) => {
     const styles = stylesheet;
-    const { theme } = useUnistyles();
     const rootRef = React.useRef<View | null>(null);
     useWebScrollLockBypass({ rootRef, enabled: true });
 
@@ -147,19 +143,23 @@ export const DetailsTabGroupPanel = React.memo((props: DetailsTabGroupPanelProps
     const effectiveActiveKey = props.group.activeTabKey ?? activeTab?.key ?? null;
     const forceEmptyState = props.forceEmptyState === true;
 
-    const renderLoadingFallback = React.useCallback(() => (
-        <View style={styles.loading}>
-            <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-            <Text style={styles.loadingText}>{t('common.loading')}</Text>
-        </View>
-    ), [styles.loading, styles.loadingText, theme.colors.text.secondary]);
 
-    const headerPaddingTop = props.headerPaddingTop ?? 10;
+    const headerPaddingTop = props.headerPaddingTop ?? 0;
+    const { unsavedKeys, chromeFor } = useDetailsTabUnsavedKeys();
+    // Every diff drawn in this group applies the one split-width rule against the group's width. Only
+    // crossing the threshold is state: resizing the pane does not re-render its tabs per pixel.
+    const [splitFits, setSplitFits] = React.useState<boolean | null>(null);
+    const onGroupLayout = React.useCallback((event: Readonly<{ nativeEvent: Readonly<{ layout: Readonly<{ width: number }> }> }>) => {
+        const next = resolveDiffSplitFits(event.nativeEvent.layout.width);
+        if (next === null) return;
+        setSplitFits((current) => (current === next ? current : next));
+    }, []);
 
     return (
         <ViewWithWheel
             ref={rootRef}
             testID={props.testIds?.root}
+            onLayout={onGroupLayout}
             style={[styles.container, props.paddingTop ? { paddingTop: props.paddingTop } : null]}
             {...(Platform.OS === 'web'
                 ? { onWheel: stopScrollEventPropagationOnWeb, onTouchMove: stopScrollEventPropagationOnWeb }
@@ -173,6 +173,7 @@ export const DetailsTabGroupPanel = React.memo((props: DetailsTabGroupPanelProps
                         group={props.group}
                         resolveTabIconName={props.resolveTabIconName}
                         resolveTabPresentation={props.resolveTabPresentation}
+                        unsavedTabKeys={unsavedKeys}
                         testIds={props.testIds}
                     />
                 ) : (
@@ -182,25 +183,16 @@ export const DetailsTabGroupPanel = React.memo((props: DetailsTabGroupPanelProps
             </View>
             {forceEmptyState || props.group.tabs.length === 0 ? (
                 props.renderEmptyState ? props.renderEmptyState() : (
-                    <View style={{ flex: 1, minHeight: 0, minWidth: 0, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16 }}>
-                        <CenteredInfoTile
-                            titleTestID="pane-details-empty-state-title"
-                            descriptionTestID="pane-details-empty-state-description"
-                            icon={(
-                                <Icon
-                                    name="plus-circle"
-                                    size={44}
-                                    color={theme.colors.text.secondary}
-                                    style={{ marginBottom: 12 }}
-                                />
-                            )}
-                            title={t('session.detailsPanel.emptyTitle')}
-                            description={t('session.detailsPanel.emptyHint')}
-                            paddingHorizontal={0}
-                        />
-                    </View>
+                    <SurfaceStateCard
+                        testID="pane-details-empty-state"
+                        kind="empty"
+                        iconName="files"
+                        title={t('detailsSurface.chrome.emptyTitle')}
+                        reason={t('detailsSurface.chrome.emptyReason')}
+                    />
                 )
             ) : (
+                <DiffPresentationWidthProvider widthPx={splitFits === null ? null : splitFits ? DIFF_SPLIT_MIN_WIDTH_PX : 1}>
                 <View style={{ flex: 1, minHeight: 0, minWidth: 0, position: 'relative' }}>
                     {props.group.tabs.map((tab) => {
                         const isActive = effectiveActiveKey ? tab.key === effectiveActiveKey : false;
@@ -215,13 +207,16 @@ export const DetailsTabGroupPanel = React.memo((props: DetailsTabGroupPanelProps
                                 tabKey={tab.key}
                                 isActive={isActive}
                             >
-                                <React.Suspense fallback={renderLoadingFallback()}>
-                                    {props.renderTabContent(tab, { active: presented })}
-                                </React.Suspense>
+                                <DetailsTabChromeProvider value={chromeFor(tab.key)}>
+                                    <React.Suspense fallback={<PaneLoadingFallback />}>
+                                        {props.renderTabContent(tab, { active: presented })}
+                                    </React.Suspense>
+                                </DetailsTabChromeProvider>
                             </DetailsTabSurface>
                         );
                     })}
                 </View>
+                </DiffPresentationWidthProvider>
             )}
         </ViewWithWheel>
     );

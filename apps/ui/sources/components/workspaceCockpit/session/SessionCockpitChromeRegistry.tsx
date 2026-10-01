@@ -161,6 +161,7 @@ export function SessionCockpitChromeRegistryProvider(props: Readonly<{ children:
         setRegistration((currentRegistration) => {
             if (
                 currentRegistration?.sessionId === nextRegistration.sessionId
+                && currentRegistration.serverId === nextRegistration.serverId
                 && currentRegistration.activeSurface === nextRegistration.activeSurface
                 && currentRegistration.terminalTabAvailable === nextRegistration.terminalTabAvailable
                 && currentRegistration.openDetailsTabCount === nextRegistration.openDetailsTabCount
@@ -172,13 +173,16 @@ export function SessionCockpitChromeRegistryProvider(props: Readonly<{ children:
 
             return {
                 sessionId: nextRegistration.sessionId,
+                serverId: nextRegistration.serverId,
                 activeSurface: nextRegistration.activeSurface,
                 terminalTabAvailable: nextRegistration.terminalTabAvailable,
                 openDetailsTabCount: nextRegistration.openDetailsTabCount,
                 pluginPlacements: nextRegistration.pluginPlacements,
                 projectionGeneration: nextRegistration.projectionGeneration,
                 switchSurface: (surface) => {
-                    latestRegistrationRef.current?.switchSurface(surface);
+                    const latest = latestRegistrationRef.current;
+                    if (latest?.sessionId !== nextRegistration.sessionId || latest.serverId !== nextRegistration.serverId) return;
+                    latest.switchSurface(surface);
                 },
             };
         });

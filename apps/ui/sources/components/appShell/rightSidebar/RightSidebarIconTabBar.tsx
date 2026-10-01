@@ -1,34 +1,23 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { I18nManager, Platform, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { resolveHappierTabKeySelection } from '@happier-dev/plugin-ui/presentation';
 
-import { t } from '@/text';
+import { getRightSidebarTabLabel } from './rightSidebarTabRegistry';
 import type { RightSidebarTabDefinition } from './rightSidebarTabRegistry';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 
 const stylesheet = StyleSheet.create((theme) => ({
     tabList: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'center',
         gap: 6,
     },
-    tab: {
-        width: 44,
-        height: 44,
-        borderRadius: 8,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-    },
-    tabActive: {
-        backgroundColor: theme.colors.segmentedControl.activeBackground,
-        borderColor: theme.colors.border.strong,
-    },
-    tabDisabled: {
-        opacity: 0.45,
+    marker: {
+        position: 'absolute', left: 0, right: 0, bottom: -8,
+        height: 2, borderRadius: 1, backgroundColor: theme.colors.text.primary,
     },
 }));
 
@@ -41,18 +30,25 @@ export function RightSidebarIconTabBar<TTabId extends string>(props: Readonly<{
     const styles = stylesheet;
     const { theme } = useUnistyles();
     const testIDPrefix = props.testIDPrefix ?? 'right-sidebar-tab';
+    const controls = React.useRef(new Map<string, { focus: () => void }>());
+    const keyTabs = React.useMemo(() => props.tabs.map((tab) => ({ ...tab, disabled: Boolean(tab.disabledReason) })), [props.tabs]);
+    const activeIndex = props.tabs.findIndex((tab) => tab.id === props.activeTabId && !tab.disabledReason);
+    const focusIndex = activeIndex < 0 ? keyTabs.findIndex((tab) => !tab.disabled) : activeIndex;
 
     return (
-        <View
+        <ScrollView
+            horizontal
             accessibilityRole="tablist"
-            style={styles.tabList}
+            contentContainerStyle={styles.tabList}
+            showsHorizontalScrollIndicator={false}
+            style={{ flexGrow: 0 }}
         >
-            {props.tabs.map((tab) => {
+            {props.tabs.map((tab, index) => {
                 const active = tab.id === props.activeTabId;
-                const label = tab.owner === 'builtin' ? t(tab.labelKey) : tab.label;
+                const label = getRightSidebarTabLabel(tab);
                 const disabled = Boolean(tab.disabledReason);
                 return (
-                    <Pressable
+                    <IconButton
                         key={tab.id}
                         testID={`${testIDPrefix}:${tab.id}`}
                         onPress={() => {
@@ -60,25 +56,38 @@ export function RightSidebarIconTabBar<TTabId extends string>(props: Readonly<{
                                 props.onSelectTab(tab.id as TTabId);
                             }
                         }}
-                        style={[styles.tab, active ? styles.tabActive : null, disabled ? styles.tabDisabled : null]}
+                        variant="plain"
+                        size={resolveMinimumInteractiveTargetSize(Platform.OS)}
+                        selected={active}
+                        selectedBackground={false}
                         accessibilityRole="tab"
                         accessibilityLabel={label}
-                        accessibilityHint={label}
-                        accessibilityState={{ selected: active, disabled }}
-                        aria-selected={active}
+                        tooltip={label}
                         disabled={disabled}
-                    >
-                        <Icon
+                        tabIndex={index === focusIndex ? 0 : -1}
+                        controlRef={(control) => {
+                            if (control) controls.current.set(tab.id, control);
+                            else controls.current.delete(tab.id);
+                        }}
+                        onKeyDown={(key) => {
+                            const nextIndex = resolveHappierTabKeySelection({ tabs: keyTabs, currentIndex: index, key, rtl: I18nManager.isRTL });
+                            if (nextIndex === null || nextIndex < 0) return false;
+                            const next = props.tabs[nextIndex]!;
+                            props.onSelectTab(next.id as TTabId);
+                            controls.current.get(next.id)?.focus();
+                            return true;
+                        }}
+                        icon={<View pointerEvents="none"><Icon
                             name={tab.icon}
                             // A tab is the pane's primary control and the only thing naming it —
                             // there is no label underneath. At the list-row step it read as a hint
                             // rather than a switch, adrift in a 44pt target.
                             size={ICON_SIZE.md}
                             color={active ? theme.colors.text.primary : theme.colors.text.secondary}
-                        />
-                    </Pressable>
+                        />{active ? <View style={styles.marker} /> : null}</View>}
+                    />
                 );
             })}
-        </View>
+        </ScrollView>
     );
 }

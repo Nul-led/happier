@@ -1,6 +1,7 @@
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
 import * as React from 'react';
 import { Pressable, View } from 'react-native';
-import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {
@@ -17,6 +18,7 @@ import { t } from '@/text';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 function normalizeParam(value: unknown): string | null {
     if (typeof value === 'string' && value.trim().length > 0) return value.trim();
@@ -24,7 +26,7 @@ function normalizeParam(value: unknown): string | null {
     return null;
 }
 
-export default function SessionRunDetailsScreen() {
+export function SessionRunDetailsScreen() {
     const { theme } = useUnistyles();
     const router = useRouter();
     const navigation = useNavigation();
@@ -56,7 +58,7 @@ export default function SessionRunDetailsScreen() {
             }}
             testID="session-run-details-refresh"
             hitSlop={10}
-            style={({ pressed }) => ({ padding: 4, opacity: pressed ? 0.7 : 1 })}
+            style={({ pressed }) => ({ padding: 4, opacity: pressed ? motionTokens.press.opacity : 1 })}
         >
             <Icon name="arrow-clockwise" size={20} color={headerTint} />
         </Pressable>
@@ -73,7 +75,7 @@ export default function SessionRunDetailsScreen() {
             })}
             testID="session-run-details-back"
             hitSlop={10}
-            style={({ pressed }) => ({ padding: 4, opacity: pressed ? 0.7 : 1 })}
+            style={({ pressed }) => ({ padding: 4, opacity: pressed ? motionTokens.press.opacity : 1 })}
         >
             <Icon name="arrow-left" size={20} color={headerTint} />
         </Pressable>
@@ -81,10 +83,12 @@ export default function SessionRunDetailsScreen() {
 
     const screenOptions = React.useMemo(() => ({
         headerShown: true,
-        headerTitle: runId ? t('runs.runLabel', { runId }) : t('runs.title'),
+        // The Run's own header (its mark, title and status) leads the page; the navigation bar
+        // names where Back returns to, never the Run's id (agents lab RP1p).
+        headerTitle: t('session.subagents.panel.title'),
         headerLeft,
         headerRight,
-    }), [headerLeft, headerRight, runId]);
+    }), [headerLeft, headerRight]);
 
     return (
         <View style={{ flex: 1, backgroundColor: theme.colors.background?.canvas ?? theme.colors.surface.base }}>
@@ -106,3 +110,7 @@ export default function SessionRunDetailsScreen() {
         </View>
     );
 }
+
+export { SessionRunDetailsScreen as WorkspaceRouteBody };
+
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={SessionRunDetailsScreen} />; }

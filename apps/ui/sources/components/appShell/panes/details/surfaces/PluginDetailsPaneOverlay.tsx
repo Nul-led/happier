@@ -78,7 +78,7 @@ export const PluginDetailsPaneOverlay = React.memo((props: Readonly<{
     const openSurface = targetNavigationBinding?.openSurface ?? fallbackOpenSurface;
 
     if (selection.kind === 'unresolved') {
-        return <PaneLoadingFallback color="#888" paddingTop={0} showTypographyMetrics={false} />;
+        return <PaneLoadingFallback />;
     }
     if (selection.kind !== 'available') {
         return <PluginReactNativeUnavailable diagnostics={[

@@ -10,7 +10,7 @@ import {
 } from '@happier-dev/protocol';
 import type { PluginClientApi } from '@happier-dev/plugin-sdk';
 import {
-    PluginUiArtifactsManifestV1Schema,
+    PluginUiArtifactsManifestV2Schema,
     computePluginUiArtifactFileSetSha256DigestV1,
     computePluginUiArtifactSha256DigestV1,
     normalizePluginUiDestinationBindingV1,
@@ -25,6 +25,7 @@ import {
     useAppShellPluginUiProjection,
 } from './AppShellPluginUiProjection';
 import { selectPluginSurfacePlacementsForBinding } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
+import { readPluginUiContributionOrigin } from '@/sync/domains/plugins/ui/projectionUnion';
 import { useScopedPluginUiProjection } from '@/components/plugins/projection/useScopedPluginUiProjection';
 import {
     getQualifiedConnectedServiceRegistryEntry,
@@ -47,7 +48,10 @@ import type {
 import type {
     PluginReactNativeArtifactAvailability,
 } from '@/sync/domains/plugins/availability/reactNativeArtifactAvailability';
-import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import {
+    retireActiveServerAccountScopeLifetime,
+    type ActiveServerAccountScopeLifetime,
+} from '@/sync/domains/scope/activeServerAccountScope';
 import { storage as persistentStorage } from '@/sync/domains/state/storageStore';
 import type { PluginUiPageHeaderActionProjection } from '@/sync/domains/plugins/ui/projection';
 import type { Machine } from '@/sync/domains/state/storageTypes';
@@ -104,6 +108,12 @@ const appShellClientExecutableRuntimeState = vi.hoisted(() => ({
     loaderBackend: null as PluginReactNativeLoaderBackend | null,
     availability: null as Extract<PluginReactNativeArtifactAvailability, { kind: 'available' }> | null,
 }));
+type TestActiveServerAccountScopeLifetime = ActiveServerAccountScopeLifetime & Readonly<{
+    retireForTest(): void;
+}>;
+const activeAccountLifetimeState = vi.hoisted(() => ({
+    current: null as TestActiveServerAccountScopeLifetime | null,
+}));
 const storageState = vi.hoisted(() => ({
     machines: [] as Array<Record<string, unknown>>,
     voiceExecutionMachine: {
@@ -145,18 +155,32 @@ const projectionRefreshState = vi.hoisted(() => {
     };
 });
 
-vi.mock('@/sync/ops/machineContributionRegistryProjection', async (importOriginal) => {
+import { clearDaemonMergedProjectionCacheForTests } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import { resetMachineProjectionReadsForTests } from '@/sync/ops/machineContributionRegistryProjection';
+// The projection revision registry is dependency-free, and the machine RPC is
+// the genuine network boundary. Mocking these two (never the transport module
+// itself, which sits inside the app-wide sync import cycle) keeps the real
+// transport, the per-machine projection owner and the AppShell reader in play.
+vi.mock('@/sync/ops/machineContributionRegistryProjectionRevision', async (importOriginal) => {
     const { mergeModuleMock } = await import('@/dev/testkit/mocks/_shared');
-    return mergeModuleMock<MachineContributionRegistryProjectionModule>({
+    return mergeModuleMock<typeof import('@/sync/ops/machineContributionRegistryProjectionRevision')>({
         importOriginal,
         overrides: {
-            machineContributionRegistryProjectionDescribe: (...args) => projectionDescribeSpy(...args),
             getMachineContributionRegistryProjectionRevision: () => projectionRefreshState.getRevision(),
             subscribeMachineContributionRegistryProjectionInvalidation: (_scope, listener) => (
                 projectionRefreshState.subscribe(listener)
             ),
         },
     });
+});
+
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', async () => {
+    const { answerMachineProjectionDescribeAtRpcBoundary } = await import('@/dev/testkit/mocks/machineProjectionRpc');
+    return {
+        machineRpcWithServerScope: answerMachineProjectionDescribeAtRpcBoundary(
+            (machineId, options) => projectionDescribeSpy(machineId, options) as never,
+        ),
+    };
 });
 
 vi.mock('@/sync/domains/server/serverRuntime', async (importOriginal) => {
@@ -168,6 +192,15 @@ vi.mock('@/sync/domains/server/serverRuntime', async (importOriginal) => {
             subscribeActiveServer: () => () => {},
         },
     });
+});
+
+vi.mock('@/sync/domains/scope/activeServerAccountScope', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/scope/activeServerAccountScope')>();
+    return {
+        ...actual,
+        captureActiveServerAccountScopeLifetime: () => activeAccountLifetimeState.current,
+        retireActiveServerAccountScopeLifetime: () => activeAccountLifetimeState.current?.retireForTest(),
+    };
 });
 
 vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
@@ -345,6 +378,12 @@ afterEach(async () => {
     serverProfilesState.profiles = [];
     localServicePreviewPlatformState.platform = 'web';
     projectionRefreshState.reset();
+    // The one per-machine projection owner is module state shared by every
+    // reader; a case that left a describe pending must not strand the next.
+    clearDaemonMergedProjectionCacheForTests();
+    // This suite runs the real transport: a case that left a describe pending
+    // must not strand the next case's read on that dead in-flight request.
+    resetMachineProjectionReadsForTests();
     installConnectedAccountDescriptorProjection(createConnectedAccountDescriptorProjectionLoadingState('test-cleanup'));
 });
 
@@ -354,7 +393,6 @@ function projection(entriesById: Record<string, unknown>): PluginProjectionV2 {
         generation: 5,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -381,14 +419,11 @@ const APP_SCOPE_ARCHIVE_DIGEST = computePluginUiArtifactSha256DigestV1(
 
 type AppScopeArtifactFixture = Readonly<{
     contributionId: string;
+    artifactId: string;
     tier: 'reactNative';
     platform: 'web';
     artifactDigest: `sha256:${string}`;
-    compatibility: Readonly<{
-        hostUiApiVersion: string;
-        reactVersion: string;
-        reactNativeVersion: string;
-    }>;
+    hostUiApiRange: string;
 }>;
 
 function createLiveMachine(machineId: string): Machine {
@@ -451,7 +486,6 @@ function installSelectedAppScopePluginFixture(input: Readonly<{
             ...previous.settings,
             machineAdministrationSelectionsV1: {
                 v: 1,
-                targetsByKey: {},
                 pluginExecutionOriginsByPluginId: { [input.pluginId]: origin },
             },
         },
@@ -478,7 +512,7 @@ function installSelectedAppScopePluginFixture(input: Readonly<{
         sourceClass: 'registryPackage',
         portableRelease: true,
         archiveDigestSha256: APP_SCOPE_ARCHIVE_DIGEST,
-        uiArtifacts: artifacts.map(({ compatibility: _compatibility, ...artifact }) => artifact),
+        uiArtifacts: artifacts,
         enabled: true,
         trustState: 'trusted',
         observedAt: 1,
@@ -527,7 +561,6 @@ function installSelectedAppScopePluginFixture(input: Readonly<{
         snapshots: [{
             serverIdentityId: materialization.serverIdentityId,
             machineId: materialization.machineId,
-            revision: 1,
             materializations: [materialization],
         }],
     };
@@ -538,6 +571,7 @@ function installSelectedAppScopePluginFixture(input: Readonly<{
         },
         snapshot,
     });
+    installActiveAccountLifetime(APP_SCOPE_FIXTURE.accountId);
     return origin;
 }
 
@@ -595,6 +629,7 @@ function installActiveAccountScope(accountId: string): void {
         profile: { ...previous.profile, id: accountId },
         profileScope: { serverId: 'server-1', accountId },
     }, true);
+    installActiveAccountLifetime(accountId);
 }
 
 function requireConversationDeclaration(
@@ -640,6 +675,35 @@ function accountLifetimeFixture(input: Readonly<{
         isCurrent: input.isCurrent ?? (() => true),
         onRetire: () => ({ dispose() {} }),
     } as const;
+}
+
+function installActiveAccountLifetime(accountId: string): ActiveServerAccountScopeLifetime {
+    activeAccountLifetimeState.current?.retireForTest();
+    let retired = false;
+    const retirementListeners = new Set<() => void>();
+    let lifetime: TestActiveServerAccountScopeLifetime;
+    lifetime = Object.freeze({
+        scope: Object.freeze({ serverId: 'server-1', accountId }),
+        isCurrent: () => !retired && activeAccountLifetimeState.current === lifetime,
+        onRetire: (listener: () => void) => {
+            if (retired) {
+                listener();
+                return Object.freeze({ dispose() {} });
+            }
+            retirementListeners.add(listener);
+            return Object.freeze({ dispose: () => retirementListeners.delete(listener) });
+        },
+        retireForTest: () => {
+            if (retired) return;
+            retired = true;
+            if (activeAccountLifetimeState.current === lifetime) activeAccountLifetimeState.current = null;
+            const listeners = [...retirementListeners];
+            retirementListeners.clear();
+            for (const listener of listeners) listener();
+        },
+    });
+    activeAccountLifetimeState.current = lifetime;
+    return lifetime;
 }
 
 function createAvailableClientArtifactHandle() {
@@ -701,7 +765,6 @@ function pluginUiProjectionWithAppTab(input: Readonly<{
         generation: input.generation,
         installedPackagesById: {},
         agentsById: {},
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -716,6 +779,8 @@ function pluginUiProjectionWithAppTab(input: Readonly<{
                         pluginId: input.pluginId,
                         contributionKind: 'surfacePlacement',
                         descriptorId: localId,
+                        occurrenceId: input.origin?.materializationRef.materializationId
+                            ?? `${input.pluginId}:${localId}:occurrence`,
                         ...(input.origin ? {
                             serverIdentityId: input.origin.serverIdentityId,
                             materializationRef: input.origin.materializationRef,
@@ -767,11 +832,11 @@ function pluginUiProjectionWithClientAction(input: Readonly<{
                     target: 'client',
                     client: {
                         artifactId: 'client-action-runtime',
-                        modulePath: './clientActionRuntime',
                         exportName: 'activate',
                     },
                     platforms: ['web'],
                 },
+                occurrenceId: input.origin.materializationRef.materializationId,
                 serverIdentityId: input.origin.serverIdentityId,
                 materializationRef: input.origin.materializationRef,
             },
@@ -865,7 +930,6 @@ describe('AppShellPluginUiProjectionProvider', () => {
                     pluginId: 'acme.shared-runtime',
                     target: {
                         artifactId: 'shared-runtime',
-                        modulePath: './sharedRuntime',
                         exportName: 'activate',
                         platform: 'web',
                     },
@@ -877,7 +941,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
                             materializationId: 'materialization-1',
                         },
                     },
-                    projectionGeneration: 12,
+                    occurrenceId: 'acme-shared-runtime-occurrence-12',
                 },
                 result: {
                     ok: false,
@@ -895,7 +959,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
                 code: 'invalid_executable_export',
                 target: expect.objectContaining({ artifactId: 'shared-runtime' }),
                 executionOrigin: expect.objectContaining({ serverIdentityId: 'srv_shared_runtime' }),
-                projectionGeneration: 12,
+                occurrenceId: 'acme-shared-runtime-occurrence-12',
             })],
         });
         if (settlement.status === 'cancelled') throw new Error('unexpected cancellation');
@@ -1127,7 +1191,6 @@ describe('AppShellPluginUiProjectionProvider', () => {
                 generation: 5,
                 installedPackagesById: {},
                 agentsById: {},
-                backendsById: {},
                 actionsById: {},
                 toolsById: {},
                 commandsById: {},
@@ -1151,6 +1214,9 @@ describe('AppShellPluginUiProjectionProvider', () => {
         expect(projectionDescribeSpy).toHaveBeenCalledWith('machine-1', expect.objectContaining({
             serverId: 'server-1',
         }));
+        // UI, browser and Connected Account descriptors consume the same
+        // machine snapshot, rather than each opening a full describe request.
+        expect(projectionDescribeSpy).toHaveBeenCalledTimes(1);
         // The AppShell is an app-scope union. A raw machine projection does not
         // grant it authority to publish UI contributions: this fixture has no
         // Availability/Administration-selected contribution. The browser
@@ -1194,7 +1260,6 @@ describe('AppShellPluginUiProjectionProvider', () => {
                 generation: machineId === 'machine-b' ? 7 : 5,
                 installedPackagesById: {},
                 agentsById: {},
-                backendsById: {},
                 actionsById: {},
                 toolsById: {},
                 commandsById: {},
@@ -1257,7 +1322,6 @@ describe('AppShellPluginUiProjectionProvider', () => {
                 generation: 5,
                 installedPackagesById: {},
                 agentsById: {},
-                backendsById: {},
                 actionsById: {},
                 toolsById: {},
                 commandsById: {},
@@ -1300,50 +1364,40 @@ describe('AppShellPluginUiProjectionProvider', () => {
         const actionId = 'open-client-action';
         const actionArtifactId = 'client-action-runtime';
         const generation = 5;
-        const entryPath = 'react-native/client-action-runtime/index.js';
+        const entryPath = 'react-native/client-action-runtime/entry.cjs.bundle';
         const bytes = new TextEncoder().encode('// synthetic AppShell client Action executable');
         const entryDigest = computePluginUiArtifactSha256DigestV1(bytes);
         const artifactDigest = computePluginUiArtifactFileSetSha256DigestV1([{ relativePath: entryPath, bytes }]);
-        const artifactGraph = PluginUiArtifactsManifestV1Schema.parse({
-            version: 1,
+        const artifactGraph = PluginUiArtifactsManifestV2Schema.parse({
+            version: 2,
             entries: [{
-                contributionId: actionArtifactId,
+                artifactId: actionArtifactId,
                 tier: 'reactNative',
-                platform: 'web',
                 entry: entryPath,
                 files: [{ relativePath: entryPath, digest: entryDigest, byteSize: bytes.byteLength }],
                 digest: artifactDigest,
-                builtWith: { bundler: 'vite', version: '7.0.0' },
-                hostUiApiVersion: '1.0.0',
-                compat: { react: '19.0.0', reactNative: '0.83.4' },
+                builtWith: { bundler: 'esbuild', version: '0.27.2' },
+                executable: { exports: ['activate'] },
+                hostUiApiRange: '^1.0.0',
             }],
         }).entries[0]!;
         const cacheIdentity = Object.freeze({
             pluginId,
             contributionId: actionId,
+            artifactId: actionArtifactId,
             artifactDigest,
-            hostAppVersion: '2.0.0',
-            hostUiApiVersion: '1.0.0',
-            reactVersion: '19.0.0',
-            reactNativeVersion: '0.83.4',
             platform: 'web' as const,
-            channel: 'internal',
-            nativeCapabilitiesDigest: `sha256:${'c'.repeat(64)}`,
-            projectionGeneration: generation,
         });
         const origin = installSelectedAppScopePluginFixture({
             machineId: 'machine-a',
             pluginId,
             artifacts: [{
-                contributionId: actionArtifactId,
+                contributionId: actionId,
+                artifactId: actionArtifactId,
                 tier: 'reactNative',
                 platform: 'web',
                 artifactDigest,
-                compatibility: {
-                    hostUiApiVersion: '1.0.0',
-                    reactVersion: '19.0.0',
-                    reactNativeVersion: '0.83.4',
-                },
+                hostUiApiRange: '^1.0.0',
             }],
         });
         const baseProjection = pluginUiProjectionWithClientAction({
@@ -1383,6 +1437,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
                         [`reactNativeBundle:${pluginId}:${actionId}`]: {
                             id: `reactNativeBundle:${pluginId}:${actionId}`,
                             pluginId,
+                            occurrenceId: origin.materializationRef.materializationId,
                             serverIdentityId: origin.serverIdentityId,
                             materializationRef: origin.materializationRef,
                             contributionKind: 'reactNativeBundle',
@@ -1392,7 +1447,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
                             runtime: {
                                 decision: { state: 'load' },
                                 loadPolicy: { source: 'installedArtifact' },
-                                cacheIdentity,
+                                cacheIdentity: { artifactDigest: cacheIdentity.artifactDigest },
                             },
                         },
                     },
@@ -1414,7 +1469,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         const clientActionHeaderAuthority = Object.freeze({
             machineId: 'machine-a',
             serverId: 'server-1',
-            generation,
+            occurrenceId: baseClientAction.occurrenceId,
             accountLifetime: null,
             executionOrigin: origin,
         }) satisfies PluginSurfaceLaunchAuthority;
@@ -1451,7 +1506,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
             api.actions.register(actionId, async () => null);
         });
         const loaderBackend: PluginReactNativeLoaderBackend = Object.freeze({
-            backendId: 'reactNativeWebModule',
+            backendId: 'commonJs',
             available: true,
             loadInstalledBundle: vi.fn(async () => activate),
         });
@@ -1471,7 +1526,6 @@ describe('AppShellPluginUiProjectionProvider', () => {
                     generation: 5,
                     installedPackagesById: {},
                     agentsById: {},
-                    backendsById: {},
                     actionsById: {},
                     toolsById: {},
                     commandsById: {},
@@ -1511,11 +1565,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         );
         await vi.waitFor(() => {
             expect(clientArtifactAvailabilitySpy).toHaveBeenCalledWith(expect.objectContaining({
-                artifactOwnerKind: 'clientContribution',
-                clientContribution: {
-                    family: 'actions',
-                    action: { pluginId, localId: actionId },
-                },
+                daemon: expect.objectContaining({ machineId: origin.materializationRef.machineId }),
             }));
         });
         await vi.waitFor(() => {
@@ -1525,15 +1575,14 @@ describe('AppShellPluginUiProjectionProvider', () => {
         const registration = () => getPluginUiClientExecutableComposition(executableHost).read({
             family: 'actions',
             pluginId,
+            occurrenceId: baseClientAction.occurrenceId,
             localId: actionId,
             target: {
                 artifactId: actionArtifactId,
-                modulePath: './clientActionRuntime',
                 exportName: 'activate',
                 platform: 'web',
             },
             executionOrigin: origin,
-            projectionGeneration: generation,
         });
         const headerControl = () => screen.tree.findByProps({
             testID: 'plugin-app-page-header-action:run-client-action',
@@ -1583,7 +1632,6 @@ describe('AppShellPluginUiProjectionProvider', () => {
             }));
             expect(resolvePluginUiClientActionRegistration({
                 action: projectedAction!,
-                projectionGeneration: generation,
                 platform: 'web',
             })).not.toBeNull();
             expect(screen.tree.findByType('ProjectionProbe' as never).props.value).toEqual(
@@ -1645,7 +1693,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         projectionDescribeSpy.mockResolvedValue({
             supported: true,
             projection: {
-                v: 2, generation: 5, installedPackagesById: {}, agentsById: {}, backendsById: {},
+                v: 2, generation: 5, installedPackagesById: {}, agentsById: {},
                 actionsById: {}, toolsById: {}, commandsById: {}, resourcesById: {},
                 settingsById: {}, familiesById: {}, diagnostics: [],
             },
@@ -1691,7 +1739,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         projectionDescribeSpy.mockResolvedValue({
             supported: true,
             projection: {
-                v: 2, generation: 5, installedPackagesById: {}, agentsById: {}, backendsById: {},
+                v: 2, generation: 5, installedPackagesById: {}, agentsById: {},
                 actionsById: {}, toolsById: {}, commandsById: {}, resourcesById: {},
                 settingsById: {}, familiesById: {}, diagnostics: [],
             },
@@ -1723,7 +1771,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         projectionDescribeSpy.mockImplementation(async () => ({
             supported: true,
             projection: {
-                v: 2, generation: 5, installedPackagesById: {}, agentsById: {}, backendsById: {},
+                v: 2, generation: 5, installedPackagesById: {}, agentsById: {},
                 actionsById: {}, toolsById: {}, commandsById: {}, resourcesById: {},
                 settingsById: {}, familiesById: {}, diagnostics: [],
             },
@@ -1778,7 +1826,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         projectionDescribeSpy.mockResolvedValue({
             supported: true,
             projection: {
-                v: 2, generation: 5, installedPackagesById: {}, agentsById: {}, backendsById: {},
+                v: 2, generation: 5, installedPackagesById: {}, agentsById: {},
                 actionsById: {}, toolsById: {}, commandsById: {}, resourcesById: {},
                 settingsById: {}, familiesById: {}, diagnostics: [],
             },
@@ -1810,7 +1858,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         projectionDescribeSpy.mockResolvedValue({
             supported: true,
             projection: {
-                v: 2, generation: 5, installedPackagesById: {}, agentsById: {}, backendsById: {},
+                v: 2, generation: 5, installedPackagesById: {}, agentsById: {},
                 actionsById: {}, toolsById: {}, commandsById: {}, resourcesById: {},
                 settingsById: {}, familiesById: {}, diagnostics: [],
             },
@@ -1865,11 +1913,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
             pluginUiProjection: expect.objectContaining({ generation: 5 }),
             pluginBrowserProjection: expect.objectContaining({ generation: 5 }),
         }));
-        const currentnessRequestEpochs = () => projectionDescribeSpy.mock.calls
-            .map((call) => (call[1] as { requestEpoch?: unknown } | undefined)?.requestEpoch)
-            .filter((requestEpoch): requestEpoch is string => typeof requestEpoch === 'string');
-        const initialRequestEpoch = currentnessRequestEpochs().at(-1);
-        expect(typeof initialRequestEpoch).toBe('string');
+        const describesBeforeReconnect = projectionDescribeSpy.mock.calls.length;
 
         storageState.endpointConnectivity = { status: 'offline', lastConnectedAt: null };
         await screen.update(renderApp());
@@ -1883,10 +1927,13 @@ describe('AppShellPluginUiProjectionProvider', () => {
         const reDescription = createDeferred<SupportedMachineContributionRegistryProjectionDescribeResult>();
         projectionDescribeSpy.mockReturnValueOnce(reDescription.promise);
         storageState.endpointConnectivity = { status: 'online', lastConnectedAt: null };
+        // A socket reconnect advances every machine's projection revision
+        // (`publishMachineContributionRegistryProjectionReconnect`), which is
+        // what makes the one per-machine owner re-describe.
+        await act(async () => projectionRefreshState.publish());
         await screen.update(renderApp());
         await flushHookEffects({ cycles: 2 });
-        const reconnectRequestEpoch = currentnessRequestEpochs().at(-1);
-        expect(reconnectRequestEpoch).not.toBe(initialRequestEpoch);
+        expect(projectionDescribeSpy.mock.calls.length).toBeGreaterThan(describesBeforeReconnect);
 
         expect(readProjection()).toEqual(expect.objectContaining({
             interactionEnabled: false,
@@ -1919,7 +1966,6 @@ describe('AppShellPluginUiProjectionProvider', () => {
                 },
                 client: {
                     artifactId: 'voice-runtime-web',
-                    modulePath: './voiceRuntime',
                     exportName: 'activate',
                 },
             }],
@@ -1927,50 +1973,40 @@ describe('AppShellPluginUiProjectionProvider', () => {
         const pluginId = 'acme.app-shell-currentness';
         const providerId = `${pluginId}/${declaration.id}`;
         const generation = 12;
-        const entryPath = 'react-native/voice-runtime-web/index.js';
+        const entryPath = 'react-native/voice-runtime-web/entry.cjs.bundle';
         const bytes = new TextEncoder().encode('// synthetic app-shell Voice executable');
         const entryDigest = computePluginUiArtifactSha256DigestV1(bytes);
         const digest = computePluginUiArtifactFileSetSha256DigestV1([{ relativePath: entryPath, bytes }]);
-        const artifactGraph = PluginUiArtifactsManifestV1Schema.parse({
-            version: 1,
+        const artifactGraph = PluginUiArtifactsManifestV2Schema.parse({
+            version: 2,
             entries: [{
-                contributionId: declaration.client.artifactId,
+                artifactId: declaration.client.artifactId,
                 tier: 'reactNative',
-                platform: 'web',
                 entry: entryPath,
                 files: [{ relativePath: entryPath, digest: entryDigest, byteSize: bytes.byteLength }],
                 digest,
-                builtWith: { bundler: 'vite', version: '7.0.0' },
-                hostUiApiVersion: '1.0.0',
-                compat: { react: '19.0.0', reactNative: '0.83.4' },
+                builtWith: { bundler: 'esbuild', version: '0.27.2' },
+                executable: { exports: ['activate'] },
+                hostUiApiRange: '^1.0.0',
             }],
         }).entries[0]!;
         const identity = Object.freeze({
             pluginId,
             contributionId: declaration.id,
+            artifactId: declaration.client.artifactId,
             artifactDigest: digest,
-            hostAppVersion: '2.0.0',
-            hostUiApiVersion: '1.0.0',
-            reactVersion: '19.0.0',
-            reactNativeVersion: '0.83.4',
             platform: 'web' as const,
-            channel: 'internal',
-            nativeCapabilitiesDigest: `sha256:${'c'.repeat(64)}`,
-            projectionGeneration: generation,
         });
         const origin = installSelectedAppScopePluginFixture({
             machineId: 'machine-1',
             pluginId,
             artifacts: [{
-                contributionId: declaration.client.artifactId,
+                contributionId: declaration.id,
+                artifactId: declaration.client.artifactId,
                 tier: 'reactNative',
                 platform: 'web',
                 artifactDigest: digest,
-                compatibility: {
-                    hostUiApiVersion: '1.0.0',
-                    reactVersion: '19.0.0',
-                    reactNativeVersion: '0.83.4',
-                },
+                hostUiApiRange: '^1.0.0',
             }],
         });
         const rawProjection = PluginProjectionV2Schema.parse({
@@ -1978,7 +2014,6 @@ describe('AppShellPluginUiProjectionProvider', () => {
             generation,
             installedPackagesById: {},
             agentsById: {},
-            backendsById: {},
             actionsById: {},
             toolsById: {},
             commandsById: {},
@@ -1991,6 +2026,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
                         [providerId]: {
                             id: providerId,
                             pluginId,
+                            occurrenceId: origin.materializationRef.materializationId,
                             generation,
                             contributionKey: providerId,
                             definition: declaration,
@@ -2003,6 +2039,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
                         [`reactNativeBundle:${pluginId}:${declaration.id}`]: {
                             id: `reactNativeBundle:${pluginId}:${declaration.id}`,
                             pluginId,
+                            occurrenceId: origin.materializationRef.materializationId,
                             serverIdentityId: origin.serverIdentityId,
                             materializationRef: origin.materializationRef,
                             contributionKind: 'reactNativeBundle',
@@ -2011,7 +2048,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
                             runtime: {
                                 decision: { state: 'load' },
                                 loadPolicy: { source: 'installedArtifact' },
-                                cacheIdentity: identity,
+                                cacheIdentity: { artifactDigest: identity.artifactDigest },
                             },
                         },
                     },
@@ -2034,11 +2071,8 @@ describe('AppShellPluginUiProjectionProvider', () => {
             supported: true;
             projection: typeof rawProjection;
         }>> | null = null;
-        projectionDescribeSpy.mockImplementation((
-            _machineId: string,
-            options?: Readonly<{ requestEpoch?: unknown }>,
-        ) => (
-            typeof options?.requestEpoch === 'string' && reconnectDescription
+        projectionDescribeSpy.mockImplementation(() => (
+            reconnectDescription
                 ? reconnectDescription.promise
                 : Promise.resolve({ supported: true as const, projection: rawProjection })
         ));
@@ -2080,15 +2114,14 @@ describe('AppShellPluginUiProjectionProvider', () => {
                             serverIdentityId: origin.serverIdentityId,
                             materializationRef: origin.materializationRef,
                             artifactGraph: expect.objectContaining({
-                                contributionId: declaration.client.artifactId,
+                                artifactId: declaration.client.artifactId,
                                 tier: 'reactNative',
-                                platform: 'web',
                                 digest,
                             }),
                             runtime: expect.objectContaining({
                                 decision: { state: 'load' },
                                 loadPolicy: { source: 'installedArtifact' },
-                                cacheIdentity: identity,
+                                cacheIdentity: { artifactDigest: identity.artifactDigest },
                             }),
                         }),
                     }),
@@ -2106,6 +2139,8 @@ describe('AppShellPluginUiProjectionProvider', () => {
 
         reconnectDescription = createDeferred();
         storageState.endpointConnectivity = { status: 'online', lastConnectedAt: null };
+        // A socket reconnect advances the machine's projection revision.
+        await act(async () => projectionRefreshState.publish());
         await screen.update(renderApp());
         await flushHookEffects({ cycles: 3 });
         expect(pluginRuntimeSpies.activate).toHaveBeenCalledTimes(activationCountAfterOffline + 1);
@@ -2134,21 +2169,17 @@ describe('AppShellPluginUiProjectionProvider', () => {
         });
         const beforeDisconnect = createDeferred<SupportedMachineContributionRegistryProjectionDescribeResult>();
         const afterReconnect = createDeferred<SupportedMachineContributionRegistryProjectionDescribeResult>();
+        // Every reader of this machine shares the one per-machine owner, so
+        // each projection revision issues exactly one describe.
         let currentnessRequestCount = 0;
-        projectionDescribeSpy.mockImplementation((
-            _machineId: string,
-            options?: Readonly<{ requestEpoch?: unknown }>,
-        ) => {
-            if (typeof options?.requestEpoch !== 'string') {
-                return Promise.resolve({
-                    supported: true,
-                    projection: pluginUiProjectionWithAppTab({ generation: 5, pluginId, origin }),
-                });
-            }
+        projectionDescribeSpy.mockImplementation(() => {
             currentnessRequestCount += 1;
-            return currentnessRequestCount === 1
-                ? beforeDisconnect.promise
-                : afterReconnect.promise;
+            if (currentnessRequestCount === 1) return beforeDisconnect.promise;
+            if (currentnessRequestCount === 2) return afterReconnect.promise;
+            return Promise.resolve({
+                supported: true,
+                projection: pluginUiProjectionWithAppTab({ generation: 5, pluginId, origin }),
+            });
         });
 
         const { AppShellPluginUiProjectionProvider } = await import('./AppShellPluginUiProjection');
@@ -2177,6 +2208,8 @@ describe('AppShellPluginUiProjectionProvider', () => {
         }));
 
         storageState.endpointConnectivity = { status: 'online', lastConnectedAt: null };
+        // A socket reconnect advances the machine's projection revision.
+        await act(async () => projectionRefreshState.publish());
         await screen.update(renderApp());
         await flushHookEffects({ cycles: 2 });
         expect(currentnessRequestCount).toBe(2);
@@ -2317,7 +2350,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         expect(getProjectedEntry('acme.plugin.a')).toMatchObject({ supportsToken: true });
 
         failMachineB = true;
-        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        await act(async () => { projectionRefreshState.publish(); });
         await flushHookEffects({ cycles: 4 });
         expect(getConnectedServiceRegistrySnapshot()).toMatchObject({ status: 'stale', errorReason: 'partial_machine_failure' });
         expect(getProjectedEntry('acme.plugin.a')).toMatchObject({
@@ -2355,7 +2388,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         });
     });
 
-    it('keeps the scheduled union refresh on its own cadence while machine presence heartbeats replace machine records', async () => {
+    it('does not re-describe a current snapshot on presence heartbeats or the membership expiry cadence', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date('2026-07-13T00:00:00Z'));
         storageState.machines = [
@@ -2387,13 +2420,13 @@ describe('AppShellPluginUiProjectionProvider', () => {
         }
         expect(projectionDescribeSpy.mock.calls.length).toBe(describesAfterMount);
 
-        // The scheduled refresh still lands 30s after mount; heartbeats must not restart it.
+        // The retained timer checks membership, not the whole projection.
         await act(async () => { await vi.advanceTimersByTimeAsync(10_001); });
         await flushHookEffects({ cycles: 4 });
-        expect(projectionDescribeSpy.mock.calls.length).toBe(describesAfterMount + 1);
+        expect(projectionDescribeSpy.mock.calls.length).toBe(describesAfterMount);
     });
 
-    it('refreshes the global union so plugin disable or removal clears stale descriptors without a machine-list change', async () => {
+    it('refreshes Connected Account descriptors through registry invalidation without waiting for the membership timer', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date('2026-07-13T00:00:00Z'));
         storageState.machines = [
@@ -2418,7 +2451,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         expect(getProjectedEntry('acme.plugin.a')).toMatchObject({ supportsToken: true });
 
         includeDescriptor = false;
-        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        await act(async () => { projectionRefreshState.publish(); });
         await flushHookEffects({ cycles: 4 });
         expect(getProjectedEntry('acme.plugin.a')).toBeNull();
     });
@@ -2443,13 +2476,15 @@ describe('AppShellPluginUiProjectionProvider', () => {
         expect(getConnectedServiceRegistrySnapshot()).toMatchObject({ status: 'ready' });
 
         mode = 'failed';
-        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        await act(async () => { projectionRefreshState.publish(); });
         await flushHookEffects({ cycles: 4 });
         expect(getConnectedServiceRegistrySnapshot()).toMatchObject({ status: 'stale', errorReason: 'transport' });
         expect(getProjectedEntry('acme.plugin.a')?.projectedDescriptor).toEqual(expect.objectContaining({ pluginId: 'acme.plugin.a' }));
 
         mode = 'ready';
-        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        // The machine currentness owner retries a failed describe without a
+        // separate Connected Account polling request.
+        await act(async () => { await vi.advanceTimersByTimeAsync(250); });
         await flushHookEffects({ cycles: 4 });
         expect(getConnectedServiceRegistrySnapshot()).toMatchObject({ status: 'ready', errorReason: null });
         expect(getProjectedEntry('acme.plugin.a')).toMatchObject({ executable: true, supportsToken: true });
@@ -2475,13 +2510,13 @@ describe('AppShellPluginUiProjectionProvider', () => {
         await flushHookEffects({ cycles: 5 });
 
         mode = 'rejected';
-        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        await act(async () => { projectionRefreshState.publish(); });
         await flushHookEffects({ cycles: 4 });
         expect(getConnectedServiceRegistrySnapshot()).toMatchObject({ status: 'stale', errorReason: 'transport' });
         expect(getProjectedEntry('acme.plugin.a')?.projectedDescriptor).toBeTruthy();
 
         mode = 'unsupported';
-        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        await act(async () => { projectionRefreshState.publish(); });
         await flushHookEffects({ cycles: 4 });
         expect(getConnectedServiceRegistrySnapshot()).toMatchObject({ status: 'stale', errorReason: 'unsupported' });
         expect(getProjectedEntry('acme.plugin.a')?.projectedDescriptor).toBeTruthy();
@@ -2561,10 +2596,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         ];
         const accountB = createDeferred<SupportedMachineContributionRegistryProjectionDescribeResult>();
         let descriptorDescribes = 0;
-        projectionDescribeSpy.mockImplementation((_machineId, options) => {
-            if (options?.requestEpoch) {
-                return Promise.resolve({ supported: true, projection: projection({}) });
-            }
+        projectionDescribeSpy.mockImplementation(() => {
             descriptorDescribes += 1;
             return descriptorDescribes === 1
                 ? Promise.resolve({
@@ -2604,12 +2636,7 @@ describe('AppShellPluginUiProjectionProvider', () => {
         const accountA = createDeferred<SupportedMachineContributionRegistryProjectionDescribeResult>();
         const accountB = createDeferred<SupportedMachineContributionRegistryProjectionDescribeResult>();
         let descriptorDescribes = 0;
-        projectionDescribeSpy.mockImplementation((_machineId, options) => {
-            // App-shell plugin UI projection currentness shares this daemon
-            // boundary, but descriptor union reads are the behavior under test.
-            if (options?.requestEpoch) {
-                return Promise.resolve({ supported: true, projection: projection({}) });
-            }
+        projectionDescribeSpy.mockImplementation(() => {
             descriptorDescribes += 1;
             return descriptorDescribes === 1 ? accountA.promise : accountB.promise;
         });
@@ -2701,7 +2728,6 @@ describe('AppShellPluginUiProjectionProvider', () => {
                     generation: 9,
                     installedPackagesById: {},
                     agentsById: {},
-                    backendsById: {},
                     actionsById: {},
                     toolsById: {},
                     commandsById: {},
@@ -2720,16 +2746,11 @@ describe('AppShellPluginUiProjectionProvider', () => {
         );
         await flushHookEffects({ cycles: 6 });
 
-        // Both machines are described AS PROJECTION TARGETS — `requestEpoch` is
-        // stamped only by the plugin-UI currentness owner, so this cannot be
-        // satisfied by the connected-account union that describes every machine
-        // for its own reasons.
-        expect(projectionDescribeSpy).toHaveBeenCalledWith('machine-older', expect.objectContaining({
-            requestEpoch: expect.stringContaining('server-1:machine-older'),
-        }));
-        expect(projectionDescribeSpy).toHaveBeenCalledWith('machine-newer', expect.objectContaining({
-            requestEpoch: expect.stringContaining('server-1:machine-newer'),
-        }));
+        // Both machines are described on their routed server, once each: every
+        // reader of a machine shares the one per-machine projection owner.
+        expect(projectionDescribeSpy).toHaveBeenCalledWith('machine-older', { serverId: 'server-1' });
+        expect(projectionDescribeSpy).toHaveBeenCalledWith('machine-newer', { serverId: 'server-1' });
+        expect(projectionDescribeSpy.mock.calls.filter(([machineId]) => machineId === 'machine-older')).toHaveLength(1);
 
         // No Account Availability reader exists in this harness. F7 fails closed
         // rather than deriving a source from projection order or freshness.
@@ -2808,6 +2829,106 @@ describe('AppShellPluginUiProjectionProvider', () => {
 
         expect(screen.tree.findByType('ProjectionProbe' as never).props.value.pluginUiProjection)
             .toBe(projectionBeforeHeartbeat);
+    });
+
+    it('projects originless plugin UI from the selected Plugin Administration machine and follows A to B', async () => {
+        const machines = [createLiveMachine('machine-a'), createLiveMachine('machine-b')];
+        storageState.machines = machines as unknown as Array<Record<string, unknown>>;
+        const previous = persistentStorage.getState();
+        persistentStorage.setState({
+            isDataReady: true,
+            profile: { ...previous.profile, id: APP_SCOPE_FIXTURE.accountId },
+            profileScope: {
+                serverId: APP_SCOPE_FIXTURE.serverIdentityId,
+                accountId: APP_SCOPE_FIXTURE.accountId,
+            },
+            machines: Object.fromEntries(machines.map((machine) => [machine.id, machine])),
+            machineListByServerId: {
+                ...(previous.machineListByServerId ?? {}),
+                [APP_SCOPE_FIXTURE.serverId]: machines,
+                [APP_SCOPE_FIXTURE.serverIdentityId]: machines,
+            },
+            machineListStatusByServerId: {
+                ...(previous.machineListStatusByServerId ?? {}),
+                [APP_SCOPE_FIXTURE.serverId]: 'idle',
+                [APP_SCOPE_FIXTURE.serverIdentityId]: 'idle',
+            },
+            settings: {
+                ...previous.settings,
+                machineAdministrationTargetsLocalV1: {
+                    'plugins.home': {
+                        serverIdentityId: APP_SCOPE_FIXTURE.serverIdentityId,
+                        machineId: 'machine-a',
+                    },
+                },
+            },
+        });
+        serverProfilesState.profiles = [{
+            id: 'app-shell-fixture-profile',
+            name: 'AppShell fixture',
+            serverUrl: 'https://app-shell-fixture.example.test',
+            serverIdentityId: APP_SCOPE_FIXTURE.serverIdentityId,
+            legacyServerIds: [APP_SCOPE_FIXTURE.serverId],
+            createdAt: 1,
+            updatedAt: 1,
+            lastUsedAt: 1,
+            source: 'manual',
+        }];
+        serverProfilesState.generation += 1;
+        projectionDescribeSpy.mockImplementation(async (machineId: string) => ({
+            supported: true,
+            projection: pluginUiProjectionWithAppTab({
+                generation: machineId === 'machine-a' ? 3 : 4,
+                pluginId: 'happier.triage',
+                localId: machineId === 'machine-a' ? 'panel-a' : 'panel-b',
+            }),
+        }));
+        const renderApp = () => (
+            <AppShellPluginUiProjectionProvider><ProjectionProbe /></AppShellPluginUiProjectionProvider>
+        );
+        const { AppShellPluginUiProjectionProvider } = await import('./AppShellPluginUiProjection');
+        const screen = await renderScreen(renderApp());
+        await flushHookEffects({ cycles: 6 });
+
+        const readPlacements = () => {
+            const projection = screen.tree.findByType('ProjectionProbe' as never).props.value.pluginUiProjection;
+            return projection
+                ? selectPluginSurfacePlacementsForBinding(projection, {
+                    container: 'rightSidebarTab',
+                    targetKind: 'app',
+                })
+                : [];
+        };
+        expect(readPlacements().map((placement) => placement.descriptorId)).toEqual(['panel-a']);
+        expect(readPluginUiContributionOrigin(readPlacements()[0])).toMatchObject({
+            machineId: 'machine-a',
+            executionOrigin: null,
+        });
+
+        await act(async () => {
+            persistentStorage.setState((state) => ({
+                settings: {
+                    ...state.settings,
+                    machineAdministrationTargetsLocalV1: {
+                        ...state.settings.machineAdministrationTargetsLocalV1,
+                        'plugins.home': {
+                            serverIdentityId: APP_SCOPE_FIXTURE.serverIdentityId,
+                            machineId: 'machine-b',
+                        },
+                    },
+                },
+            }));
+        });
+        await screen.update(renderApp());
+        await flushHookEffects({ cycles: 6 });
+
+        expect(readPlacements().map((placement) => placement.descriptorId)).toEqual(['panel-b']);
+        expect(readPluginUiContributionOrigin(readPlacements()[0])).toMatchObject({
+            machineId: 'machine-b',
+            executionOrigin: null,
+        });
+
+        await screen.unmount();
     });
 
     it('clears account-scoped projected descriptors when the app-shell owner unmounts', async () => {

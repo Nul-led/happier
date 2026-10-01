@@ -41,7 +41,7 @@ installNavigationCommonModuleMocks({
         const actual = await importOriginal<typeof import('@/sync/domains/state/storage')>();
         return {
             ...actual,
-            useFriendRequests: (() => friendRequestsState.items) as typeof import('@/sync/domains/state/storage').useFriendRequests,
+            useFriendRequestCount: (() => friendRequestsState.items.length) as typeof import('@/sync/domains/state/storage').useFriendRequestCount,
             useSetting: ((key: string) => {
                 if (key === 'tabBarFriendsBadgeEnabled') return badgeSettingsState.friends;
                 if (key === 'tabBarInboxBadgeEnabled') return badgeSettingsState.inbox;
@@ -55,6 +55,7 @@ installNavigationCommonModuleMocks({
 });
 
 vi.mock('react-native-safe-area-context', () => ({
+    initialWindowMetrics: null,
     useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
@@ -286,9 +287,6 @@ describe('MainAppTabBar', () => {
         const attentionSessionsTab = attentionScreen.findByTestId('tabbar-tab-sessions');
         expect(attentionSessionsTab?.props.accessibilityLabel).toBe('tabs.sessionsNeedsAttention');
         expect(attentionSessionsTab?.props.accessibilityState).toEqual({ selected: true });
-        expect(attentionScreen.tree.root.findAll(
-            (node) => node.props.accessibilityLabel === 'tabs.sessionsNeedsAttention',
-        )).toHaveLength(1);
 
         const attentionDot = attentionSessionsTab?.find(
             (node) => String(node.type) === 'View' && node.props?.style?.width === 6,

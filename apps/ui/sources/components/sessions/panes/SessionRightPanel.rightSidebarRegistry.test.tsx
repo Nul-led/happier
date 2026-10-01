@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PluginMachineExecutionOriginV1 } from '@happier-dev/protocol';
 import { normalizePluginUiDestinationBindingV1 } from '@happier-dev/protocol/plugins/ui';
 
+import { selectPluginRightSidebarTabPlacements } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
 import { renderScreen } from '@/dev/testkit';
 import {
     createPluginSurfaceDestinationNavigationBinding,
@@ -112,6 +113,7 @@ vi.mock('@/components/ui/surfaces/hostedHtml/useSessionCallerHostedHtmlRuntime',
 
 vi.mock('@/utils/platform/responsive', () => ({
     useDeviceType: () => sessionRightPanelDeviceType.value,
+    useHeaderHeight: () => 56,
 }));
 
 vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
@@ -133,8 +135,8 @@ vi.mock('@/components/sessions/panes/git/SessionRightPanelGitView', () => ({
     SessionRightPanelGitView: () => React.createElement('GitView'),
 }));
 
-vi.mock('@/components/sessions/panes/agents/SessionRightPanelAgentsView', () => ({
-    SessionRightPanelAgentsView: () => React.createElement('AgentsView'),
+vi.mock('@/components/sessions/work/SessionWorkView', () => ({
+    SessionWorkView: () => React.createElement('AgentsView'),
 }));
 
 vi.mock('@/components/sessions/panes/terminal/SessionRightPanelTerminalView', () => ({
@@ -207,6 +209,7 @@ function createPluginProjection(input: Readonly<{
     const placement = {
         id: `surfacePlacement:${REVIEW_PLUGIN_ID}:review-panel`,
         pluginId: REVIEW_PLUGIN_ID,
+        occurrenceId: 'acme-review-occurrence',
         contributionKind: 'surfacePlacement',
         descriptorId: 'review-panel',
         binding,
@@ -354,6 +357,19 @@ describe('SessionRightPanel right-sidebar registry tabs', () => {
         expect(mountedBoardRuntimeState.calls.at(-1)).toEqual({ serverId: 'home-b', sessionId: 's1' });
     });
 
+    it('names the rail-selected tab in a header band when the host provides the action rail', async () => {
+        scopeState = { right: { isOpen: true, activeTabId: 'services', tabState: {} } };
+        const { PaneActionRailContext } = await import('@/components/appShell/panes/PaneActionRailContext');
+        const { t } = await import('@/text');
+        const screen = await renderScreen(
+            <PaneActionRailContext.Provider value={{ visible: true, contentWidthPx: 1000 }}>
+                <SessionRightPanel sessionId="s1" scopeId="session:s1" />
+            </PaneActionRailContext.Provider>,
+        );
+
+        expect(screen.findByTestId('session-rightpanel-header.title')?.props.children).toBe(t('localServices.inventory.title'));
+    });
+
     it('drops the Browser tab on desktop but keeps Services (D1)', async () => {
         scopeState = { right: { isOpen: true, activeTabId: 'services', tabState: {} } };
         const screen = await renderScreen(<SessionRightPanel sessionId="s1" scopeId="session:s1" />);
@@ -421,7 +437,7 @@ describe('SessionRightPanel right-sidebar registry tabs', () => {
 
     it('uses the Session target owner exactly once when the mounted panel joins its host binding', async () => {
         const projection = createPluginProjection();
-        const placement = projection.surfacePlacementsById[`surfacePlacement:${REVIEW_PLUGIN_ID}:review-panel`]!;
+        const placement = selectPluginRightSidebarTabPlacements(projection, 'session')[0]!;
         const shellRightSidebarOwner = vi.fn(async () => ({ ok: true as const }));
         const targetBinding = createPluginSurfaceDestinationNavigationBinding({
             placements: [placement],

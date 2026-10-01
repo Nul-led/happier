@@ -1,19 +1,44 @@
 import React from 'react';
 import renderer, { act } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSessionFixture, renderScreen } from '@/dev/testkit';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { serveActionHomes } from '@/dev/testkit/harness/actionHomesHttpHarness';
+import { waitForHomeGovernance } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { installNavigationShellCommonModuleMocks } from './navigationShellTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-type MarkReadCall = Readonly<{ sessionId: string; readState: string; serverId: string | null }>;
-
-const markRead = vi.hoisted(() => ({
-    calls: [] as MarkReadCall[],
-    deferred: [] as ((result: { success: boolean }) => void)[],
-    mode: 'immediate' as 'immediate' | 'deferred' | 'failure',
-}));
 const alerts = vi.hoisted(() => ({ titles: [] as string[] }));
+const routeParams = vi.hoisted(() => ({ item: undefined as string | string[] | undefined }));
+let harness: Awaited<ReturnType<typeof serveActionHomes>>;
+const readAnswers = new Map<string, { status?: number; body: unknown; respondAfter?: Promise<void> }>();
+let homeA = '';
+let homeB = '';
+const readStatePath = '/v2/sessions/session-x/read-state';
+
+function readRequests() {
+    return harness.requests.filter(({ path }) => path === readStatePath).map(({ home, body }) => ({
+        serverId: harness.homes[home].id,
+        input: body,
+    }));
+}
+
+function answerReadState(serverId: string, respondAfter?: Promise<void>) {
+    const viewer = unreadSession(serverId).viewer;
+    if (!viewer) throw new Error('Expected a private viewer fixture');
+    readAnswers.set(serverId, {
+        respondAfter,
+        body: {
+            success: true, state: 'read', lastViewedSessionSeq: 2, didChange: true,
+            viewer: {
+                ...viewer,
+                readState: { state: 'tracking', lastViewedSessionSeq: 2, unreadSince: null },
+                attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+            },
+        },
+    });
+}
 
 function unreadSession(serverId: string) {
     return createSessionFixture({
@@ -46,33 +71,11 @@ function unreadSession(serverId: string) {
     });
 }
 
-const storageState = {
-    profile: { id: 'me' },
-    settings: { workspacePathDisplayModeV1: 'name', workspaceRefsV1: [] },
-    sessionMessages: {},
-    // Only one Home can own the hydrated entry for a shared session id, so this
-    // fixture exercises the hydrated path and the list-renderable path at once.
-    get sessions() {
-        return { 'session-x': unreadSession('server-a') };
-    },
-    get sessionListRowsByServerId() {
-        return {
-            'server-a': { 'session-x': unreadSession('server-a') },
-            'server-b': { 'session-x': unreadSession('server-b') },
-        };
-    },
-    ordinarySessionListMembershipByServerId: {
-        'server-a': ['session-x'],
-        'server-b': ['session-x'],
-    },
-    sessionListIndexByServerId: {},
-    concurrentSessionListCacheByServerId: {},
-    isDataReady: true,
-    machines: {},
-    getProjectForSession: () => null,
-};
-
 installNavigationShellCommonModuleMocks({
+    router: async () => {
+        const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+        return createExpoRouterMock({ params: () => routeParams }).module;
+    },
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
@@ -97,67 +100,25 @@ installNavigationShellCommonModuleMocks({
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({ translate: (key) => key });
     },
-    storage: async () => {
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-        const storage = Object.assign(
-            (selector: (value: typeof storageState) => unknown) => selector(storageState),
-            { getState: () => storageState },
-        );
-        return createStorageModuleStub({
-            useArtifacts: () => [],
-            useFriendRequests: () => [],
-            useRequestedFriends: () => [],
-            useFeedItems: () => [],
-            useFeedLoaded: () => true,
-            useFriendsLoaded: () => true,
-            useAllSessions: () => [],
-            useAllSessionsForAttention: () => [],
-            useAllSessionListRenderables: () => [],
-            useAllSessionListRenderablesForAttention: () => [],
-            useAllSessionListAttentionRows: () => [],
-            storage,
-            getStorage: () => storage,
-        });
-    },
-});
-
-vi.mock('@/sync/domains/state/storageStore', () => {
-    const storage = Object.assign(
-        (selector: (value: typeof storageState) => unknown) => selector(storageState),
-        { getState: () => storageState },
-    );
-    return { storage, getStorage: () => storage };
-});
-
-vi.mock('@/sync/ops', async (importOriginal) => {
-    const { installSyncOpsModuleMock } = await import('@/dev/testkit/mocks/syncOps');
-    return installSyncOpsModuleMock({
-        sessionSetManualReadStateWithServerScope: (async (
-            sessionId: string,
-            readState: string,
-            options?: { serverId?: string | null },
-        ) => {
-            markRead.calls.push({ sessionId, readState, serverId: options?.serverId ?? null });
-            if (markRead.mode === 'failure') return { success: false, message: 'nope' };
-            if (markRead.mode === 'immediate') return { success: true };
-            return await new Promise<{ success: boolean }>((resolve) => {
-                markRead.deferred.push(resolve);
-            });
-        }) as never,
-    })(importOriginal as <T>() => Promise<T>);
+    // Exercise both the Inbox model and the Action executor with the real store.
+    storage: async (importOriginal) => importOriginal(),
 });
 
 vi.mock('expo-image', () => ({ Image: 'Image' }));
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons', Octicons: 'Octicons' }));
 vi.mock('@/track', () => ({ trackFriendsProfileView: vi.fn() }));
 vi.mock('@/components/ui/text/Text', () => ({ Text: 'Text' }));
-vi.mock('@/components/ui/icons/Icon', () => ({ Icon: 'Icon' }));
+vi.mock('@/components/ui/icons/Icon', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/components/ui/icons/Icon')>(),
+    Icon: 'Icon',
+}));
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({
     ActivitySpinner: 'ActivitySpinner',
     iconMatchedSpinnerSize: () => 'small',
 }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children, title }: any) => React.createElement('ItemGroup', { title }, children),
+    // Like the real section, the header's `action` slot renders beside the title.
+    ItemGroup: ({ children, title, action }: any) => React.createElement('ItemGroup', { title }, action, children),
 }));
 // Accessory slots must render: the per-row mark-read control lives in
 // `rightElement`, and a passthrough would leave it as an inert prop.
@@ -217,70 +178,163 @@ async function press(node: { props: { onPress?: () => void } }): Promise<void> {
     });
 }
 
+/** Finished sessions to read live under the Inbox's Updates view (lab `inbox-I1`). */
+async function renderUpdates(InboxView: React.ComponentType) {
+    const tree = (await renderScreen(<InboxView />)).tree;
+    const [updatesTab] = nodesByTestId(tree, 'inbox.view:updates');
+    await press(updatesTab);
+    return tree;
+}
+
 describe('InboxView mark as read', () => {
-    beforeEach(() => {
-        markRead.calls = [];
-        markRead.deferred = [];
-        markRead.mode = 'immediate';
+    beforeEach(async () => {
+        readAnswers.clear();
         alerts.titles = [];
+        routeParams.item = undefined;
+        harness = await serveActionHomes({
+            homes: [
+                { key: 'b', serverUrl: 'https://inbox-b.test', accountId: 'me' },
+                { key: 'a', serverUrl: 'https://inbox-a.test', accountId: 'me' },
+            ],
+            route: async ({ home, path }) => {
+                if (path !== readStatePath) return undefined;
+                const answer = readAnswers.get(harness.homes[home].id);
+                if (!answer) return undefined;
+                await answer.respondAfter;
+                return Response.json(answer.body, { status: answer.status ?? 200 });
+            },
+        });
+        homeB = harness.homes.b.id;
+        homeA = harness.homes.a.id;
+        answerReadState(homeA);
+        answerReadState(homeB);
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        storage.setState({
+            profileScope: { serverId: homeA, accountId: 'me' },
+            settingsScope: { serverId: homeA, accountId: 'me' },
+            sessions: { 'session-x': unreadSession(homeA) },
+            sessionMessages: {},
+            sessionListRowsByServerId: {
+                [homeA]: { 'session-x': unreadSession(homeA) },
+                [homeB]: { 'session-x': unreadSession(homeB) },
+            },
+            ordinarySessionListMembershipByServerId: { [homeA]: ['session-x'], [homeB]: ['session-x'] },
+            sessionListIndexByServerId: {},
+            concurrentSessionListCacheByServerId: {},
+            artifacts: {},
+            friends: {},
+            isDataReady: true,
+        });
     });
+
+    afterEach(() => harness?.dispose());
+
+    it('uses the route item as the only row focus and reopens Needs you when it changes', async () => {
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        const unread = unreadSession(homeA);
+        if (!unread.viewer) throw new Error('Expected a private viewer fixture');
+        const focused = createSessionFixture({
+            id: 'needs-focus', serverId: homeA, encryptionMode: 'plain',
+            viewer: {
+                ...unread.viewer,
+                readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null },
+                attention: { needsAttention: true, reasons: ['manual'], primary: 'manual', presentation: 'full' },
+            },
+        });
+        storage.setState((state) => ({
+            sessions: { ...state.sessions, [focused.id]: focused },
+            sessionListRowsByServerId: {
+                ...state.sessionListRowsByServerId,
+                [homeA]: { ...state.sessionListRowsByServerId[homeA], [focused.id]: focused },
+            },
+            ordinarySessionListMembershipByServerId: { [homeA]: ['session-x', focused.id], [homeB]: ['session-x'] },
+        }));
+        const { InboxPage } = await import('@/app/(app)/inbox/index');
+        const screen = await renderScreen(<InboxPage />);
+        await press(nodesByTestId(screen.tree, 'inbox.view:updates')[0]);
+        expect(nodesByTestId(screen.tree, 'inbox.session.needs-focus')).toHaveLength(0);
+
+        routeParams.item = ['session:needs-focus'];
+        await screen.update(<InboxPage />);
+        expect(nodesByTestId(screen.tree, 'inbox.session.needs-focus')[0]?.props.selected).toBe(true);
+        await press(nodesByTestId(screen.tree, 'inbox.view:updates')[0]);
+        await screen.update(<InboxPage />);
+        // A render with the same item preserves the person's chosen Updates tab.
+        expect(nodesByTestId(screen.tree, 'inbox.session.needs-focus')).toHaveLength(0);
+
+        routeParams.item = 'session:missing';
+        await screen.update(<InboxPage />);
+        expect(nodesByTestId(screen.tree, 'inbox.session.needs-focus')[0]?.props.selected).toBe(false);
+        routeParams.item = 'session: ';
+        await screen.update(<InboxPage />);
+        expect(nodesByTestId(screen.tree, 'inbox.session.needs-focus')[0]?.props.selected).toBe(false);
+    }, SLOW_RENDER_TIMEOUT_MS);
 
     it('acknowledges every ready-for-review Home at its own exact server-scoped address', async () => {
         const { InboxView } = await import('./InboxView');
-        const tree = (await renderScreen(<InboxView />)).tree;
+        const tree = await renderUpdates(InboxView);
 
-        expect(nodesByTestId(tree, 'inbox.ready_session.server-a.session-x')).toHaveLength(1);
-        expect(nodesByTestId(tree, 'inbox.ready_session.server-b.session-x')).toHaveLength(1);
+        expect(nodesByTestId(tree, `inbox.ready_session.${homeA}.session-x`)).toHaveLength(1);
+        expect(nodesByTestId(tree, `inbox.ready_session.${homeB}.session-x`)).toHaveLength(1);
 
-        const [markAll] = nodesByTestId(tree, 'inbox.mark_all_read');
+        const [markAll] = nodesByTestId(tree, 'inbox.ready.mark_all_read');
         expect(markAll).toBeDefined();
         await press(markAll);
 
-        expect(markRead.calls).toEqual(expect.arrayContaining([
-            { sessionId: 'session-x', readState: 'read', serverId: 'server-a' },
-            { sessionId: 'session-x', readState: 'read', serverId: 'server-b' },
+        await waitForHomeGovernance(() => expect(readRequests()).toHaveLength(2));
+        expect(readRequests()).toEqual(expect.arrayContaining([
+            { serverId: homeA, input: { state: 'read' } },
+            { serverId: homeB, input: { state: 'read' } },
         ]));
-        expect(markRead.calls).toHaveLength(2);
+        await waitForHomeGovernance(() => expect(nodesByTestId(tree, 'inbox.ready.mark_all_read')).toHaveLength(0));
+        expect(alerts.titles).toEqual([]);
     }, SLOW_RENDER_TIMEOUT_MS);
 
     it('keeps mark-all truthful and non-duplicating while one row is still settling', async () => {
-        markRead.mode = 'deferred';
+        let release: () => void = () => {};
+        const pending = new Promise<void>((resolve) => { release = resolve; });
+        answerReadState(homeA, pending);
+        answerReadState(homeB, pending);
         const { InboxView } = await import('./InboxView');
-        const tree = (await renderScreen(<InboxView />)).tree;
+        const tree = await renderUpdates(InboxView);
 
-        const [rowAction] = nodesByTestId(tree, 'inbox.ready_session.server-a.session-x.mark_read');
+        const [rowAction] = nodesByTestId(tree, `inbox.ready_session.${homeA}.session-x.mark_read`);
         await press(rowAction);
-        expect(markRead.calls).toEqual([
-            { sessionId: 'session-x', readState: 'read', serverId: 'server-a' },
-        ]);
+        await waitForHomeGovernance(() => expect(readRequests()).toEqual([
+            { serverId: homeA, input: { state: 'read' } },
+        ]));
 
         // One row in flight is not "the whole Inbox is being cleared": the header
         // action stays available and must only submit what is not already going.
-        const [markAll] = nodesByTestId(tree, 'inbox.mark_all_read');
+        const [markAll] = nodesByTestId(tree, 'inbox.ready.mark_all_read');
         expect(markAll.findAll((node) => String(node.type) === 'ActivitySpinner')).toHaveLength(0);
 
         await press(markAll);
-        expect(markRead.calls).toHaveLength(2);
-        expect(markRead.calls[1]).toEqual({
-            sessionId: 'session-x',
-            readState: 'read',
-            serverId: 'server-b',
-        });
-
-        await act(async () => {
-            for (const resolve of markRead.deferred) resolve({ success: true });
-            markRead.deferred = [];
-        });
+        await waitForHomeGovernance(() => expect(readRequests()).toHaveLength(2));
+        expect(readRequests()[1]).toEqual({ serverId: homeB, input: { state: 'read' } });
+        // A repeated press cannot re-submit either in-flight Home address.
+        await press(nodesByTestId(tree, 'inbox.ready.mark_all_read')[0]);
+        expect(readRequests()).toHaveLength(2);
+        await act(async () => { release(); });
+        await waitForHomeGovernance(() => expect(nodesByTestId(tree, 'inbox.ready.mark_all_read')).toHaveLength(0));
+        expect(alerts.titles).toEqual([]);
     }, SLOW_RENDER_TIMEOUT_MS);
 
     it('reports a failed acknowledgement instead of silently leaving the ready row pending', async () => {
-        markRead.mode = 'failure';
+        readAnswers.set(homeB, { status: 500, body: { error: 'unavailable' } });
         const { InboxView } = await import('./InboxView');
-        const tree = (await renderScreen(<InboxView />)).tree;
+        const tree = await renderUpdates(InboxView);
 
-        const [markAll] = nodesByTestId(tree, 'inbox.mark_all_read');
+        const [markAll] = nodesByTestId(tree, 'inbox.ready.mark_all_read');
         await press(markAll);
 
-        expect(alerts.titles).toEqual(['common.error']);
+        await waitForHomeGovernance(() => expect(alerts.titles).toEqual(['common.error']));
+        expect(nodesByTestId(tree, `inbox.ready_session.${homeB}.session-x`)).toHaveLength(1);
+        expect(nodesByTestId(tree, `inbox.ready_session.${homeA}.session-x`)).toHaveLength(0);
+        answerReadState(homeB);
+        await press(nodesByTestId(tree, 'inbox.ready.mark_all_read')[0]);
+        await waitForHomeGovernance(() => expect(nodesByTestId(tree, 'inbox.ready.mark_all_read')).toHaveLength(0));
+        expect(readRequests().map(({ serverId }) => serverId)).toEqual(expect.arrayContaining([homeA, homeB, homeB]));
+        expect(readRequests()).toHaveLength(3);
     }, SLOW_RENDER_TIMEOUT_MS);
 });

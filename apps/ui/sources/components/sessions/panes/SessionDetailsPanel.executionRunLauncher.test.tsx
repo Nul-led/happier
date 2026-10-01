@@ -96,15 +96,11 @@ vi.mock('@/components/appShell/panes/details/surfaces', () => ({
 
 const launcherViewSpy = vi.fn();
 
-vi.mock('@/components/sessions/runs/launcher/SessionExecutionRunLauncherView', () => ({
-    SessionExecutionRunLauncherView: (props: any) => {
-        launcherViewSpy(props);
-        return React.createElement('SessionExecutionRunLauncherView');
-    },
-}));
-
 vi.mock('@/components/sessions/runs/launcher/SessionInteractiveExecutionRunDraftView', () => ({
-    SessionInteractiveExecutionRunDraftView: () => React.createElement('SessionInteractiveExecutionRunDraftView'),
+    SessionInteractiveExecutionRunDraftView: (props: any) => {
+        launcherViewSpy(props);
+        return React.createElement('SessionInteractiveExecutionRunDraftView');
+    },
 }));
 
 vi.mock('@/components/sessions/runs/details/SessionExecutionRunDetailsView', () => ({
@@ -172,7 +168,7 @@ vi.mock('@/components/sessions/files/views/SessionFileDetailsView', () => ({
 describe('SessionDetailsPanel (execution run launcher resource)', () => {
     const getSessionDetailsPanel = async () => (await import('./SessionDetailsPanel')).SessionDetailsPanel;
 
-    it('renders SessionExecutionRunLauncherView for execution run launcher tabs', async () => {
+    it('opens a Review launcher tab as the composer-first start for that intent (no launcher form)', async () => {
         launcherViewSpy.mockClear();
 
         const SessionDetailsPanel = await getSessionDetailsPanel();
@@ -182,9 +178,7 @@ describe('SessionDetailsPanel (execution run launcher resource)', () => {
         expect(launcherViewSpy.mock.calls.at(-1)?.[0]).toMatchObject({
             sessionId: 's1',
             serverId: 'server-1',
-            scopeId: 'session:s1',
-            presentation: 'panel',
-            initialIntent: 'review',
+            intent: 'review',
         });
         expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
     });

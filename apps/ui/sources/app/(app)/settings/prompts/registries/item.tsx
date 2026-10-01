@@ -1,5 +1,5 @@
 import React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { PromptRegistryItemDetailsScreen } from '@/components/settings/prompts/registries/PromptRegistryItemDetailsScreen';
 import { useSettingMutable } from '@/sync/domains/state/storage';
@@ -8,7 +8,7 @@ function readParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? '';
 }
 
-export default React.memo(function PromptRegistryItemDetailsRoute() {
+export const WorkspaceRouteBody = React.memo(function PromptRegistryItemDetailsRoute() {
   const params = useLocalSearchParams<{
     sourceId?: string | string[];
     itemId?: string | string[];
@@ -29,3 +29,5 @@ export default React.memo(function PromptRegistryItemDetailsRoute() {
     />
   );
 });
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkspaceRouteBody} />; }

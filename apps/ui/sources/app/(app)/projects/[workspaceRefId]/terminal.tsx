@@ -1,11 +1,12 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useIsFocused } from '@react-navigation/native';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
+import { Stack, useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { ProjectDetailScreen } from '@/components/projects/ProjectDetailScreen';
 import { buildProjectPaneScopeId } from '@/components/projects/detail/projectPaneScope';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { useProjectRouteActions } from '@/components/projects/detail/useProjectRouteActions';
 import { useProjectRouteHeaderOptions } from '@/components/projects/detail/useProjectRouteHeaderOptions';
 import { ProjectWorktreeRecoveryToast } from '@/components/projects/detail/ProjectWorktreeRecoveryToast';
@@ -32,7 +33,7 @@ type ProjectTerminalRouteParams = {
     activeRootPath?: string | string[];
 };
 
-export default function ProjectTerminalScreenRoute() {
+export function ProjectTerminalScreenRoute() {
     const params = useLocalSearchParams<ProjectTerminalRouteParams>();
     const workspaceRefId = readProjectRouteStringParam(params.workspaceRefId) ?? '';
     const workspaceRef = useWorkspaceRefById(workspaceRefId);
@@ -59,7 +60,7 @@ function ResolvedProjectTerminalScreenRoute({
         workspaceExperienceToggleLabelKey,
         toggleWorkspaceExperience,
     } = useMobileWorkspaceExperienceState();
-    const scopeId = buildProjectPaneScopeId(workspaceRef.id);
+    const scopeId = useDestinationPaneScopeId(buildProjectPaneScopeId(workspaceRef.id));
     const pane = useAppPaneScope(scopeId);
     const detailsState = pane.scopeState?.details ?? null;
     const detailsSelection = React.useMemo(() => resolveFullscreenDetailsRouteSelection({
@@ -164,3 +165,6 @@ function ResolvedProjectTerminalScreenRoute({
         </View>
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { ProjectTerminalScreenRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={ProjectTerminalScreenRoute} />; }

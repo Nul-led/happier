@@ -1,9 +1,9 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { ProviderConnectionAuthoringScreen } from '@/components/settings/providers/ProviderConnectionAuthoringScreen';
 
-export default function NewProviderConnectionRoute() {
+export function NewProviderConnectionRoute() {
     const params = useLocalSearchParams<{
         contributionKey?: string | string[];
         candidateId?: string | string[];
@@ -22,3 +22,6 @@ export default function NewProviderConnectionRoute() {
         />
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { NewProviderConnectionRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={NewProviderConnectionRoute} />; }

@@ -1,13 +1,14 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useIsFocused } from '@react-navigation/native';
-import { Stack, useLocalSearchParams, useNavigation } from 'expo-router';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
+import { Stack, useLocalSearchParams, useNavigation } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { ProjectDetailScreen } from '@/components/projects/ProjectDetailScreen';
 import { buildProjectPaneScopeId } from '@/components/projects/detail/projectPaneScope';
+import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { ProjectRightPanel } from '@/components/projects/detail/ProjectRightPanel';
 import { useProjectRouteActions } from '@/components/projects/detail/useProjectRouteActions';
 import { useProjectRouteHeaderOptions } from '@/components/projects/detail/useProjectRouteHeaderOptions';
@@ -35,7 +36,7 @@ type ProjectGitRouteParams = {
     activeRootPath?: string | string[];
 };
 
-export default function ProjectGitScreenRoute() {
+export function ProjectGitScreenRoute() {
     const params = useLocalSearchParams<ProjectGitRouteParams>();
     const workspaceRefId = readProjectRouteStringParam(params.workspaceRefId) ?? '';
     const workspaceRef = useWorkspaceRefById(workspaceRefId);
@@ -67,7 +68,7 @@ function ResolvedProjectGitScreenRoute({
         toggleWorkspaceExperience,
     } = useMobileWorkspaceExperienceState();
 
-    const scopeId = buildProjectPaneScopeId(workspaceRef.id);
+    const scopeId = useDestinationPaneScopeId(buildProjectPaneScopeId(workspaceRef.id));
     const pane = useAppPaneScope(scopeId);
     const {
         resolvedActiveRootPath,
@@ -193,3 +194,6 @@ function ResolvedProjectGitScreenRoute({
         </View>
     );
 }
+import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
+export { ProjectGitScreenRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={ProjectGitScreenRoute} />; }

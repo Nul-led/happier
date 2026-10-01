@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import type { DesktopActivityOverlayWindowStatePayload } from '@/activity/adapters/desktop/runtime/desktopActivityOverlayBridge';
@@ -40,7 +40,10 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: undefined,
 }));
 
-vi.mock('react-native-svg', () => ({
+// Keeps the shell's icon glyphs missing (the case this route must survive) while the rest of the
+// test harness's SVG primitives stay available to the real settings row owners it now renders.
+vi.mock('react-native-svg', async (importOriginal) => ({
+    ...await importOriginal<Record<string, unknown>>(),
     default: undefined,
     Path: undefined,
 }));
@@ -88,16 +91,6 @@ vi.mock('@/activity/adapters/desktop/runtime/desktopActivityOverlayBridge', () =
     resetDesktopActivityOverlayPosition: () => resetDesktopActivityOverlayPositionMock(),
 }));
 
-vi.mock('@/components/settings/desktop/useDesktopAutostart', () => ({
-    useDesktopAutostart: () => ({
-        supported: true,
-        enabled: false,
-        loading: false,
-        error: null,
-        setEnabled: vi.fn(async () => {}),
-    }),
-}));
-
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
     const useLocalSetting = createUseLocalSettingMock({
@@ -126,6 +119,14 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
 });
 
 describe('/settings/desktop route', () => {
+    // The settings shell's cold module graph is large; load it once here so that one-time cost is
+    // not charged to the first test's own timeout (it timed out under load). The tests' own
+    // `await import` calls then reuse these modules.
+    beforeAll(async () => {
+        await import('@/app/(app)/settings/desktop');
+        await import('@/app/(app)/settings/_layout');
+    }, 300_000);
+
     beforeEach(() => {
         routeState.outlet = null;
         isRunningOnMacMock.mockReset();

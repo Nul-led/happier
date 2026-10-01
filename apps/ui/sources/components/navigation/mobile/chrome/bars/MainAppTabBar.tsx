@@ -12,7 +12,7 @@ import { useInboxHasContent } from '@/hooks/inbox/useInboxHasContent';
 import { useInboxAvailable } from '@/hooks/inbox/useInboxAvailable';
 import { useFriendsEnabled } from '@/hooks/server/useFriendsEnabled';
 import { useSessionsHaveAttention } from '@/hooks/session/useSessionsHaveAttention';
-import { useFriendRequests, useSetting } from '@/sync/domains/state/storage';
+import { useFriendRequestCount, useSetting } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { resolveTabBarTabs } from '@/components/ui/navigation/resolveTabBarTabs';
 import type { TabType } from '@/components/ui/navigation/tabTypes';
@@ -86,7 +86,7 @@ export const MainAppTabBar = React.memo((props: MainAppTabBarProps) => {
     const { theme } = useUnistyles();
     const insets = useChromeSafeAreaInsets();
     const friendsEnabled = useFriendsEnabled();
-    const friendRequests = useFriendRequests();
+    const friendRequestCount = useFriendRequestCount();
     const inboxEnabled = useInboxAvailable();
     const inboxHasContent = useInboxHasContent();
     const sessionsHaveAttention = useSessionsHaveAttention();
@@ -149,7 +149,7 @@ export const MainAppTabBar = React.memo((props: MainAppTabBarProps) => {
                                 paddingHorizontal: metrics.tabPaddingHorizontal,
                             }]}
                             onPress={() => props.onTabPress(tab.key)}
-                            hitSlop={8}
+                            hitSlop={{ top: 8, bottom: 8 }}
                             accessibilityRole="tab"
                             accessibilityLabel={accessibilityLabel}
                             accessibilityState={{ selected: isActive }}
@@ -163,8 +163,8 @@ export const MainAppTabBar = React.memo((props: MainAppTabBarProps) => {
                                     metrics.iconSize,
                                     isActive ? theme.colors.text.primary : theme.colors.text.secondary,
                                 )}
-                                {tab.key === 'friends' && friendsBadgeEnabled && friendRequests.length > 0 && (
-                                    <TabBadge variant="count" value={friendRequests.length} />
+                                {tab.key === 'friends' && friendsBadgeEnabled && friendRequestCount > 0 && (
+                                    <TabBadge variant="count" value={friendRequestCount} />
                                 )}
                                 {tab.key === 'sessions' && showSessionsAttentionBadge && (
                                     <TabBadge variant="dot" />

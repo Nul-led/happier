@@ -39,12 +39,6 @@ vi.mock('@/components/markdown/MarkdownView', () => ({
     MarkdownView: 'MarkdownView',
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
-
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 1000 },
     useLayoutMaxWidth: () => 1000,

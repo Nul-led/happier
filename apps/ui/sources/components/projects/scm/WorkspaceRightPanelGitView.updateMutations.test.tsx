@@ -2,8 +2,14 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
+import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 
 import { renderScreen } from '@/dev/testkit';
+
+// Unrelated external Markdown package; fail if this Git path ever invokes it.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: () => { throw new Error('Unexpected streaming Markdown in Git'); },
+}));
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -87,6 +93,7 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 }));
 
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/state/storage')>();
     const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
     const { createStorageStoreMock } = await import('@/dev/testkit/mocks/storage');
     return createPartialStorageModuleMock(importOriginal, {
@@ -94,6 +101,9 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
             beginWorkspaceScmOperation: beginWorkspaceScmOperationMock,
             finishWorkspaceScmOperation: finishWorkspaceScmOperationMock,
             appendWorkspaceScmOperation: appendWorkspaceScmOperationMock,
+            // Preserve the real progress owner added to the operation lock contract.
+            updateWorkspaceScmOperationProgress: (scope: WorkspaceScopeBase, operationId: string, progressText?: string) =>
+                actual.storage.getState().updateWorkspaceScmOperationProgress(scope, operationId, progressText),
         } as any),
         useSetting: () => null,
     });
@@ -116,16 +126,8 @@ vi.mock('@/components/workspaces/scm/WorkspaceScmSubTabsBar', () => ({
     WorkspaceScmSubTabsBar: (props: any) => React.createElement('WorkspaceScmSubTabsBar', props),
 }));
 
-vi.mock('@/components/workspaces/scm/WorkspaceScmUpdateTab', () => ({
-    WorkspaceScmUpdateTab: (props: any) => React.createElement('WorkspaceScmUpdateTab', props, props.children),
-}));
-
-vi.mock('@/components/workspaces/scm/WorkspaceScmHistoryTab', () => ({
-    WorkspaceScmHistoryTab: () => React.createElement('WorkspaceScmHistoryTab'),
-}));
-
 vi.mock('@/components/projects/scm/WorkspaceSourceControlView', () => ({
-    WorkspaceSourceControlView: () => React.createElement('WorkspaceSourceControlView'),
+    WorkspaceSourceControlView: (props: Readonly<{ listHeader?: React.ReactNode }>) => React.createElement('WorkspaceSourceControlView', null, props.listHeader),
 }));
 
 vi.mock('@/components/projects/scm/WorkspaceSourceControlBranchMenu', () => ({
@@ -277,9 +279,7 @@ describe('WorkspaceRightPanelGitView update mutations', () => {
             />,
         );
 
-        await act(async () => {
-            screen.findByType('WorkspaceScmSubTabsBar').props.onSelectSubTab('update');
-        });
+        await screen.pressByTestIdAsync('project-git-tools');
 
         const response = await capturedRemotesProps.onAddRemote({
             name: 'origin',
@@ -331,9 +331,7 @@ describe('WorkspaceRightPanelGitView update mutations', () => {
             />,
         );
 
-        await act(async () => {
-            screen.findByType('WorkspaceScmSubTabsBar').props.onSelectSubTab('update');
-        });
+        await screen.pressByTestIdAsync('project-git-tools');
         await capturedPublishProps.onDescribePublishTargets();
 
         expect(machineScmHostingRepositoryDescribePublishTargetsMock).toHaveBeenCalledWith('machine-1', {
@@ -353,9 +351,7 @@ describe('WorkspaceRightPanelGitView update mutations', () => {
             />,
         );
 
-        await act(async () => {
-            screen.findByType('WorkspaceScmSubTabsBar').props.onSelectSubTab('update');
-        });
+        await screen.pressByTestIdAsync('project-git-tools');
 
         await act(async () => {
             await capturedRemotesProps.onAddRemote({ name: 'origin', fetchUrl: 'git@example.com:repo.git' });

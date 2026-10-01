@@ -123,13 +123,6 @@ vi.mock('@/components/ui/layout/layout', () => ({
     useLayoutMaxWidthStyle: () => ({ maxWidth: 999 }),
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
-
 vi.mock('@/components/ui/text/Text', () => ({
     Text: 'Text',
     TextInput: 'TextInput',
@@ -385,7 +378,10 @@ describe('CommitScreen', () => {
         vi.mocked(sessionScmDiffCommit).mockRejectedValueOnce(new Error('network down'));
         const Screen = (await import('@/app/(app)/session/[id]/commit')).default;
         const screen = await renderCommitScreen(Screen);
-        expect(screen.findByTestId('scm-commit-details-error-message')?.props.children).toBe('network down');
+        // The transport message is a diagnostic behind the collapsed Details, never the headline.
+        expect(screen.findByTestId('scm-commit-details-error')).toBeTruthy();
+        expect(screen.findByTestId('scm-commit-details-error-diagnostic-network down')).toBeTruthy();
+        expect(screen.getTextContent()).not.toContain('network down');
     });
 
     it('shows a back button when commit diff fails to load', async () => {
@@ -397,9 +393,9 @@ describe('CommitScreen', () => {
 
         const Screen = (await import('@/app/(app)/session/[id]/commit')).default;
         const screen = await renderCommitScreen(Screen);
-        expect(screen.findByTestId('scm-commit-details-back')).toBeTruthy();
+        expect(screen.findByTestId('scm-commit-details-error-secondary-action')).toBeTruthy();
 
-        await screen.pressByTestIdAsync('scm-commit-details-back');
+        await screen.pressByTestIdAsync('scm-commit-details-error-secondary-action');
         expect(routerBack).toHaveBeenCalledTimes(1);
     });
 

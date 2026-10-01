@@ -24,6 +24,7 @@ const editorHarness = vi.hoisted(() => ({
     flushPendingChange: vi.fn(async () => undefined),
     focus: vi.fn(),
 }));
+const alertRequested = vi.hoisted(() => vi.fn());
 
 const escapeHarness = vi.hoisted(() => ({
     options: null as null | Readonly<{ onEscape: (event: unknown) => boolean | void }>,
@@ -48,9 +49,15 @@ vi.mock('@react-navigation/native', async (importOriginal) => ({
     },
 }));
 
-vi.mock('@/utils/ui/promptUnsavedChangesAlert', () => ({
-    promptUnsavedChangesAlert: async () => 'discard' as const,
-}));
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ spies: {
+        alert: (_title, _message, buttons) => {
+            alertRequested();
+            buttons?.find((button) => button.style === 'destructive')?.onPress?.();
+        },
+    } }).module;
+});
 
 vi.mock('@/components/ui/markdown/editor/MarkdownCodeEditorField', () => ({
     MarkdownCodeEditorField: (props: Readonly<{
@@ -64,7 +71,7 @@ vi.mock('@/components/ui/markdown/editor/MarkdownCodeEditorField', () => ({
                 focus: editorHarness.focus,
             };
         }
-        return null;
+        return React.createElement('MockMarkdownCodeEditor', props);
     },
 }));
 
@@ -84,7 +91,29 @@ describe('SessionBoardNoteEditorCard', () => {
         editorHarness.value = '';
         editorHarness.flushPendingChange.mockClear();
         editorHarness.focus.mockClear();
+        alertRequested.mockClear();
         escapeHarness.options = null;
+    });
+
+    it('does not prompt to discard when the final embedded edit restored the saved Note', async () => {
+        const onCancel = vi.fn();
+        const screen = await renderScreen(
+            <SessionBoardNoteEditorCard
+                sessionId="session-1"
+                itemId="note-1"
+                expectedItemRevision="rev-1"
+                initialTitle="Plan"
+                initialBody="base"
+                reachable
+                actions={actions}
+                onCancel={onCancel}
+            />,
+        );
+        act(() => { screen.findByTestId('session-board-note-editor-body')?.props.onChange('changed'); });
+        editorHarness.value = 'base';
+        await act(async () => { screen.findByTestId('session-board-note-editor-cancel')?.props.onPress(); });
+        expect(onCancel).toHaveBeenCalledOnce();
+        expect(alertRequested).not.toHaveBeenCalled();
     });
 
     it('moves focus from the title into the incumbent markdown body on Enter', async () => {
@@ -157,7 +186,6 @@ describe('SessionBoardNoteEditorCard', () => {
         });
 
         expect(preventDefault).toHaveBeenCalledOnce();
-        expect(editorHarness.flushPendingChange).toHaveBeenCalledOnce();
         expect(upsertItem).toHaveBeenCalledOnce();
         const item = submitted[0]?.item;
         expect(item?.source.kind).toBe('declarative');

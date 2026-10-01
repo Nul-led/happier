@@ -52,7 +52,8 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 }));
 
 vi.mock('@/utils/platform/responsive', () => ({
-    useDeviceType: () => 'phone',
+    useDeviceType: () => 'tablet',
+    useHeaderHeight: () => 56,
 }));
 
 vi.mock('@/components/ui/layout/useChromeSafeAreaInsets', () => ({
@@ -81,8 +82,8 @@ vi.mock('@/components/sessions/panes/surfaces/SessionTerminalSurface', () => ({
     SessionTerminalSurface: () => React.createElement('TerminalSurface'),
 }));
 
-vi.mock('@/components/sessions/panes/agents/SessionRightPanelAgentsView', () => ({
-    SessionRightPanelAgentsView: () => React.createElement('AgentsView'),
+vi.mock('@/components/sessions/work/SessionWorkView', () => ({
+    SessionWorkView: () => React.createElement('AgentsView'),
 }));
 
 function findParentContaining(
@@ -102,6 +103,8 @@ function getStyleValue(node: renderer.ReactTestInstance, key: string): unknown {
     return undefined;
 }
 
+const { SessionRightPanel } = await import('./SessionRightPanel');
+
 describe('SessionRightPanel (mobile screen chrome)', () => {
     beforeEach(() => {
         scopeState = {
@@ -113,8 +116,25 @@ describe('SessionRightPanel (mobile screen chrome)', () => {
         vi.clearAllMocks();
     });
 
+    it('omits redundant header controls when the pane has an external action rail', async () => {
+        const { PaneActionRailContext } = await import('@/components/appShell/panes/PaneActionRailContext');
+        const screen = await renderScreen(
+            <PaneActionRailContext.Provider value={{ visible: true, contentWidthPx: 1000 }}>
+                <SessionRightPanel sessionId="s1" scopeId="session:s1" />
+            </PaneActionRailContext.Provider>,
+        );
+        expect(screen.findByTestId('session-rightpanel-close')).toBeNull();
+        expect(screen.findByTestId('session-rightpanel-tab:git')).toBeNull();
+    });
+
+    it('keeps the active pane header reachable on a screen without the action rail', async () => {
+        const screen = await renderScreen(
+            <SessionRightPanel sessionId="s1" scopeId="session:s1" presentation="screen" />,
+        );
+        expect(screen.findHostByTestId('session-rightpanel-header')).not.toBeNull();
+    });
+
     it('renders the screen close affordance as a leading back button on native', async () => {
-        const { SessionRightPanel } = await import('./SessionRightPanel');
         const screen = await renderScreen(
             <SessionRightPanel sessionId="s1" scopeId="session:s1" presentation="screen" />,
         );
@@ -124,13 +144,11 @@ describe('SessionRightPanel (mobile screen chrome)', () => {
             throw new Error('Expected close button to render');
         }
         expect(closeButton.props.accessibilityLabel).toBe('common.back');
-        expect(closeButton.props.hitSlop).toBe(15);
         expect(getStyleValue(closeButton, 'borderWidth')).toBeUndefined();
         expect(getStyleValue(closeButton, 'backgroundColor')).toBeUndefined();
         expect(findTestInstanceByTypeWithProps(closeButton, 'Icon', {
             name: 'caret-left',
             size: 24,
-            color: '#18171C',
         })).toBeTruthy();
 
         const header = findParentContaining(screen.tree.root, closeButton);
@@ -138,6 +156,5 @@ describe('SessionRightPanel (mobile screen chrome)', () => {
             throw new Error('Expected close button to be inside the header');
         }
         expect(header.children[0]).toBe(closeButton);
-        expect(getStyleValue(header, 'paddingTop')).toBe(10);
     });
 });

@@ -479,21 +479,21 @@ describe('buildUniversalSearchSections', () => {
         }
     });
 
-    it('keeps commands as the leading static sections built by the canonical command adapter', () => {
-        const sections = buildUniversalSearchSections(input({
-            query: '',
-            commands: [
-                {
-                    id: 'new-session',
-                    emptyQuerySuggested: true,
-                    title: 'New Session',
-                    category: 'Sessions',
-                    action: () => {},
-                },
-            ],
-        }));
-        expect(sections[0]?.kind).toBe('static');
-        expect(sections[0] && 'options' in sections[0] ? sections[0].options[0]?.id : null)
-            .toBe('command:new-session');
+    it('orders groups by what the user reaches for: recents first when empty, then commands, settings and sessions for a query', () => {
+        const commands = [{
+            id: 'new-session',
+            emptyQuerySuggested: true,
+            title: 'New session',
+            category: 'Actions',
+            action: () => {},
+        }];
+        const sessions = [sessionEntity('s1', 1)];
+        const searchSettingsPages = () => [{ id: 'appearance', route: '/settings/appearance', title: 'New session defaults' }];
+
+        const empty = buildUniversalSearchSections(input({ commands, sessions, searchSettingsPages }));
+        expect(empty.map((section) => section.id)).toEqual(['sessions', 'commands:0']);
+
+        const typed = buildUniversalSearchSections(input({ query: 'new', commands, sessions, searchSettingsPages }));
+        expect(typed.map((section) => section.id)).toEqual(['commands:0', 'settings', 'sessions']);
     });
 });
