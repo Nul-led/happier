@@ -19,7 +19,10 @@ const openSpy = vi.fn();
 const attachCustomKeyEventHandlerSpy = vi.fn();
 const onDataSpy = vi.fn();
 const disposeSpy = vi.fn();
-const registerOscHandlerSpy = vi.fn(() => ({ dispose: vi.fn() }));
+const registerOscHandlerSpy = vi.fn<(
+    id: number,
+    callback: (data: string) => boolean,
+) => Readonly<{ dispose: () => void }>>(() => ({ dispose: vi.fn() }));
 const registerDcsHandlerSpy = vi.fn(() => ({ dispose: vi.fn() }));
 let webLinksHandler: ((event: MouseEvent, uri: string) => void) | null = null;
 let renderServiceRendererValue: unknown = {};
@@ -370,7 +373,9 @@ describe('XtermTerminalView.web', () => {
         expect(registerOscHandlerSpy).toHaveBeenCalledWith(52, expect.any(Function));
         expect(registerOscHandlerSpy).toHaveBeenCalledWith(1337, expect.any(Function));
         expect(registerDcsHandlerSpy).toHaveBeenCalledWith({ final: 'q' }, expect.any(Function));
-        expect(registerOscHandlerSpy.mock.calls.find(([id]) => id === 52)?.[1]('clipboard')).toBe(true);
+        const clipboardHandler = registerOscHandlerSpy.mock.calls.find(([id]) => id === 52)?.[1];
+        expect(clipboardHandler).toBeTypeOf('function');
+        expect(clipboardHandler?.('clipboard')).toBe(true);
     });
 
     it('routes xterm committed input through the canonical IME boundary', async () => {
