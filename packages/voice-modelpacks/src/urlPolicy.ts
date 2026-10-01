@@ -1,5 +1,6 @@
 import {
   classifyProviderHostnameSyntax,
+  isLoopbackHostname,
   normalizeProviderEndpointUrlSyntax,
   parseProviderIpAddress,
 } from '@happier-dev/protocol';
@@ -44,13 +45,6 @@ function normalizeHost(host: string): string {
   return host.trim().toLowerCase();
 }
 
-function isLoopbackHost(host: string): boolean {
-  const normalized = normalizeHost(host).replace(/^\[|\]$/g, '');
-  const literal = parseProviderIpAddress(normalized);
-  return literal?.locality === 'loopback'
-    || (!literal && classifyProviderHostnameSyntax(normalized) === 'loopback');
-}
-
 export function assertModelPackResolvedAddressesAllowed(
   addresses: readonly string[],
   policy: Pick<ModelPackUrlPolicy, 'requireResolvedAddresses' | 'allowInsecureLoopback'> & Readonly<{
@@ -62,7 +56,7 @@ export function assertModelPackResolvedAddressesAllowed(
   }
   const requestedLoopback = policy.allowInsecureLoopback === true
     && typeof policy.requestUrl === 'string'
-    && isLoopbackHost(assertModelPackUrlAllowed(policy.requestUrl, policy).hostname);
+    && isLoopbackHostname(assertModelPackUrlAllowed(policy.requestUrl, policy).hostname);
   for (const address of addresses) {
     const parsed = parseProviderIpAddress(address);
     if (!parsed) {
@@ -98,7 +92,7 @@ export function assertModelPackUrlAllowed(rawUrl: string, policy: ModelPackUrlPo
     throw new ModelPackUrlPolicyError('model_pack_url_invalid');
   }
 
-  const loopbackOk = policy.allowInsecureLoopback === true && isLoopbackHost(url.hostname);
+  const loopbackOk = policy.allowInsecureLoopback === true && isLoopbackHostname(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopbackOk)) {
     throw new ModelPackUrlPolicyError('model_pack_url_insecure_scheme');
   }

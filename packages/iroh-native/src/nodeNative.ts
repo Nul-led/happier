@@ -20,6 +20,7 @@ import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isLoopbackHostname } from '@happier-dev/protocol';
 
 import { classifyIrohNativeErrorCode, IrohError } from './errors.js';
 export { MACHINE_ALPN, MACHINE_HTTP_LOCAL_CAPABILITY_HEADER } from './descriptor.js';
@@ -293,9 +294,12 @@ function requireLoopbackHttpOrigin(value: unknown): string {
   const origin = requireString(value, 'runtimeOrigin');
   try {
     const parsed = new URL(origin);
-    const loopback =
-      parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '[::1]';
-    if (parsed.protocol === 'http:' && loopback && parsed.pathname === '/' && parsed.search === '') {
+    if (
+      parsed.protocol === 'http:'
+      && isLoopbackHostname(parsed.hostname)
+      && parsed.pathname === '/'
+      && parsed.search === ''
+    ) {
       return origin;
     }
   } catch {

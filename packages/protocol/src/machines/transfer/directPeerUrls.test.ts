@@ -22,6 +22,11 @@ describe('direct peer URL normalization', () => {
     })).toBe(true);
     expect(mod.isSafeDirectTransferEndpointCandidate({
       kind: 'http',
+      url: 'http://worker.localhost:46001/machine-transfers/direct/transfer-1',
+      expiresAt: 1,
+    })).toBe(false);
+    expect(mod.isSafeDirectTransferEndpointCandidate({
+      kind: 'http',
       url: 'http://127.42.0.9:46001/machine-transfers/direct/transfer-1',
       expiresAt: 1,
     })).toBe(true);

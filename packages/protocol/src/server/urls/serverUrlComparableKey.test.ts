@@ -41,6 +41,7 @@ describe('canonicalizeServerUrlForIdentity', () => {
     const canonicalize = readComparableKeyFunction('canonicalizeServerUrlForIdentity');
 
     expect(canonicalize('http://127.0.0.1:3012/path')).toBe('http://localhost:3012');
+    expect(canonicalize('http://127.0.0.2:3012/path')).toBe('http://localhost:3012');
     expect(canonicalize('http://localhost:3012')).toBe('http://localhost:3012');
     expect(canonicalize('http://[::1]:3012/path')).toBe('http://localhost:3012');
     expect(canonicalize('http://qa-stack.localhost.:3012/path')).toBe('http://localhost:3012');

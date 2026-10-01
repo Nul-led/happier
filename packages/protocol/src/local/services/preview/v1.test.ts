@@ -106,6 +106,20 @@ describe('local service preview v1 protocol', () => {
     expect(result?.success).toBe(false);
   });
 
+  it('uses the canonical literal-loopback parser and normalizes equivalent IPv4 forms', async () => {
+    const mod = await loadPreviewModule();
+    const result = mod?.LocalServicePreviewTargetV1Schema.safeParse({
+      host: '2130706433',
+      port: 5173,
+      scheme: 'http',
+    });
+
+    expect(result).toEqual({
+      success: true,
+      data: { host: '127.0.0.1', port: 5173, scheme: 'http' },
+    });
+  });
+
   it('defines a stable daemon snapshot for registered preview resources', async () => {
     const mod = await loadPreviewModule();
 

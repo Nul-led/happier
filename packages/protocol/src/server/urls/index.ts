@@ -1,4 +1,5 @@
 export {
+  isLiteralLoopbackHostname,
   isLoopbackHostname,
   normalizeHostnameForLoopbackCheck,
 } from './loopbackHostname.js';

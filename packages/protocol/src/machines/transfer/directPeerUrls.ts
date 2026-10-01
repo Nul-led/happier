@@ -2,20 +2,10 @@ import {
   TransferEndpointCandidateSchema,
   type TransferEndpointCandidate,
 } from './transferStream.js';
+import { isLiteralLoopbackHostname } from '../../server/urls/loopbackHostname.js';
 
 export const DIRECT_TRANSFER_SESSION_EXPIRES_AT_HEADER =
   'x-happier-transfer-session-expires-at' as const;
-
-function isLoopbackDirectTransferHostname(hostname: string): boolean {
-  const normalized = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
-  if (normalized === 'localhost' || normalized === '::1') {
-    return true;
-  }
-  const ipv4Parts = normalized.split('.');
-  return ipv4Parts.length === 4
-    && ipv4Parts[0] === '127'
-    && ipv4Parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
-}
 
 export function isSafeDirectTransferEndpointCandidate(
   candidate: unknown,
@@ -36,7 +26,7 @@ export function isSafeDirectTransferEndpointCandidate(
   if (parsedCandidate.data.kind === 'https') {
     return parsedUrl.protocol === 'https:';
   }
-  return parsedUrl.protocol === 'http:' && isLoopbackDirectTransferHostname(parsedUrl.hostname);
+  return parsedUrl.protocol === 'http:' && isLiteralLoopbackHostname(parsedUrl.hostname);
 }
 
 function normalizeAbsoluteHttpUrl(rawUrl: string): URL {

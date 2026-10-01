@@ -1,3 +1,5 @@
+import { isLoopbackHostname } from './loopbackHostname.js';
+
 const SERVER_URL_PROTOCOL_PATTERN = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
 
 export const SERVER_URL_COMPARABLE_KEY_ERROR_CODE = 'invalid_server_url' as const;
@@ -12,19 +14,9 @@ export class ServerUrlComparableKeyError extends Error {
 }
 
 function normalizeLoopbackHost(rawHost: string): string {
-  const host = String(rawHost ?? '').trim().toLowerCase().replace(/\.$/, '');
-
-  if (
-    host === 'localhost'
-    || host === '127.0.0.1'
-    || host === '::1'
-    || host === '[::1]'
-    || host.endsWith('.localhost')
-  ) {
-    return 'localhost';
-  }
-
-  return host;
+  return isLoopbackHostname(rawHost)
+    ? 'localhost'
+    : String(rawHost ?? '').trim().toLowerCase().replace(/\.$/u, '');
 }
 
 function resolveComparablePort(protocol: string, explicitPort: string): string {

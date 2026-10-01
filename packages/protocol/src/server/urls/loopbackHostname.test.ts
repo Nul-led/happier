@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isLoopbackHostname } from './loopbackHostname.js';
+import { isLiteralLoopbackHostname, isLoopbackHostname } from './loopbackHostname.js';
 
 describe('isLoopbackHostname', () => {
   it('recognises an IPv6 literal with the brackets URL parsing leaves on', () => {
@@ -8,6 +8,10 @@ describe('isLoopbackHostname', () => {
     // string to '::1' is the miss that ships silently.
     expect(isLoopbackHostname('[::1]')).toBe(true);
     expect(isLoopbackHostname('::1')).toBe(true);
+    expect(isLoopbackHostname('0:0:0:0:0:0:0:1')).toBe(true);
+    expect(isLoopbackHostname('0000:0000:0000:0000:0000:0000:0000:0001')).toBe(true);
+    expect(isLoopbackHostname('::1%lo0')).toBe(true);
+    expect(isLoopbackHostname('[::1]%lo0')).toBe(false);
   });
 
   it('recognises dotted and browser-normalized IPv4-mapped IPv6 loopback literals', () => {
@@ -22,6 +26,10 @@ describe('isLoopbackHostname', () => {
     expect(isLoopbackHostname('127.0.0.1')).toBe(true);
     expect(isLoopbackHostname('127.0.0.2')).toBe(true);
     expect(isLoopbackHostname('127.255.255.254')).toBe(true);
+    expect(isLoopbackHostname('2130706433')).toBe(true);
+    expect(isLoopbackHostname('0177.0.0.1')).toBe(true);
+    expect(isLoopbackHostname('2147483649')).toBe(false);
+    expect(isLoopbackHostname('0300.0.0.1')).toBe(false);
   });
 
   it('recognises localhost and the reserved .localhost TLD', () => {
@@ -51,6 +59,26 @@ describe('isLoopbackHostname', () => {
     expect(isLoopbackHostname('')).toBe(false);
     expect(isLoopbackHostname('127.0.0.999')).toBe(false);
     expect(isLoopbackHostname('127.0.0')).toBe(false);
+    expect(isLoopbackHostname('::ffff:127.0.0.1.1')).toBe(false);
+    expect(isLoopbackHostname('%5B::1%5D')).toBe(false);
+    expect(isLoopbackHostname('localhost%lo0')).toBe(false);
     expect(isLoopbackHostname('notlocalhost')).toBe(false);
+  });
+});
+
+describe('isLiteralLoopbackHostname', () => {
+  it('accepts literal IPv4, IPv6 and browser-normalized integer loopback addresses', () => {
+    expect(isLiteralLoopbackHostname('127.0.0.1')).toBe(true);
+    expect(isLiteralLoopbackHostname('127.255.255.254')).toBe(true);
+    expect(isLiteralLoopbackHostname('[::1]')).toBe(true);
+    expect(isLiteralLoopbackHostname('::ffff:127.0.0.1')).toBe(true);
+    expect(isLiteralLoopbackHostname('2130706433')).toBe(true);
+  });
+
+  it('accepts exact localhost but rejects names beneath the reserved localhost namespace', () => {
+    expect(isLiteralLoopbackHostname('localhost')).toBe(true);
+    expect(isLiteralLoopbackHostname('LocalHost.')).toBe(true);
+    expect(isLiteralLoopbackHostname('worker.localhost')).toBe(false);
+    expect(isLiteralLoopbackHostname('nested.worker.localhost')).toBe(false);
   });
 });

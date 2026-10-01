@@ -53,8 +53,25 @@ function isIpv4MappedIpv6LoopbackAddress(host: string): boolean {
   return (Number.parseInt(words[0]!, 16) >>> 8) === 127;
 }
 
+function normalizeIpLiteral(host: string): string {
+  const isIpv4Candidate = /^\d+$/u.test(host)
+    || /^(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+)){3}$/iu.test(host);
+  const isIpv6Candidate = host.includes(':') && /^[0-9a-f:.]+$/iu.test(host);
+  if (!isIpv4Candidate && !isIpv6Candidate) return host;
+
+  try {
+    const parsed = new URL(`http://${isIpv6Candidate ? `[${host}]` : host}/`);
+    return stripBrackets(parsed.hostname);
+  } catch {
+    return host;
+  }
+}
+
 export function normalizeHostnameForLoopbackCheck(hostname: string): string {
-  return stripBrackets(String(hostname ?? '').trim().toLowerCase()).replace(/\.$/u, '');
+  const host = stripBrackets(String(hostname ?? '').trim().toLowerCase())
+    .replace(/\.$/u, '');
+  const withoutIpv6Zone = host.includes(':') ? host.split('%', 1)[0] ?? '' : host;
+  return normalizeIpLiteral(withoutIpv6Zone);
 }
 
 export function isLoopbackHostname(hostname: string): boolean {
@@ -62,5 +79,18 @@ export function isLoopbackHostname(hostname: string): boolean {
   if (!host) return false;
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
   if (host === '::1') return true;
+  return isIpv4LoopbackAddress(host) || isIpv4MappedIpv6LoopbackAddress(host);
+}
+
+/**
+ * Is this hostname a literal loopback address or the exact `localhost` name?
+ *
+ * Use this narrower form for security boundaries that must not accept another
+ * name from the reserved `.localhost` namespace.
+ */
+export function isLiteralLoopbackHostname(hostname: string): boolean {
+  const host = normalizeHostnameForLoopbackCheck(hostname);
+  if (!host) return false;
+  if (host === 'localhost' || host === '::1') return true;
   return isIpv4LoopbackAddress(host) || isIpv4MappedIpv6LoopbackAddress(host);
 }

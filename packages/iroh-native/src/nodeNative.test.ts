@@ -203,6 +203,33 @@ describe('typed operations over the C ABI JSON envelope', () => {
     });
   });
 
+  it('accepts a native lease on any literal IPv4 loopback address', async () => {
+    const addon = createFakeAddon((operation) =>
+      operation === 'ensureHomeTunnel'
+        ? JSON.stringify({
+            ok: true,
+            result: {
+              tunnelId: 't-loopback',
+              homeServerIdentityId: 'srv_home',
+              homeEndpointId: 'ep',
+              runtimeOrigin: 'http://127.0.0.2:41023/',
+              carrier: 'iroh',
+              observedPath: 'direct',
+              startedAtMs: 1234,
+              endpointHandle: 'c-1',
+            },
+          })
+        : JSON.stringify({ ok: true, result: null }),
+    );
+    const module = createIrohNodeNativeModule(addon);
+
+    await expect(module.ensureHomeTunnel({
+      endpointHandle: 'c-1',
+      homeServerIdentityId: 'srv_home',
+      endpointId: 'ep',
+    })).resolves.toMatchObject({ runtimeOrigin: 'http://127.0.0.2:41023/' });
+  });
+
   it('fails closed on a non-loopback runtime origin', async () => {
     const addon = createFakeAddon((operation) =>
       operation === 'ensureHomeTunnel'
