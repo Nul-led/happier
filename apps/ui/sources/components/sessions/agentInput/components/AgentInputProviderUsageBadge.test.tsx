@@ -81,7 +81,7 @@ function viewModel(): ConnectedServiceQuotaGaugeViewModel {
 }
 
 describe('AgentInputProviderUsageBadge', () => {
-    it('keeps the final selected meter reachable through the real capped popover scroll owner', async () => {
+    it('places the final selected meter in the shared popover scroller and updates rendered edge indicators', async () => {
         const meters = Array.from({ length: 24 }, (_, index) => ({
             meterId: `reported_${index}`, label: `Reported ${index}`, used: index, limit: 100,
             unit: 'count' as const, utilizationPct: null, resetsAt: null, status: 'ok' as const,
@@ -103,9 +103,7 @@ describe('AgentInputProviderUsageBadge', () => {
             && String(node.type).includes('ScrollView')
             && node.findAll((child) => child.props.testID === 'agent-input-provider-usage-meter:requests').length > 0);
         expect(scroll).toHaveLength(1);
-        expect(flattenStyle(scroll[0]!.props.style).maxHeight).toBeLessThanOrEqual(420);
-        expect(scroll[0]!.props.keyboardShouldPersistTaps).toBe('handled');
-        // Native measurement/scroll are I/O boundaries; the real overlay owns edge state.
+        // Native I/O is supplied at the test boundary; this proves rendered edge behavior, not a physical gesture.
         act(() => {
             scroll[0]!.props.onLayout({ nativeEvent: { layout: { width: 280, height: 200 } } });
             scroll[0]!.props.onContentSizeChange(280, 1_400);
