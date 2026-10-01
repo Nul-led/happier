@@ -35,11 +35,13 @@ const DISCORD_BRAND_ASSET_PROVENANCE = {
   source: {
     publisher: 'Discord',
     document: 'Discord Corebook',
-    asset: 'favicon',
+    // The Blurple symbol on transparent: derived from the favicon (sha256 a371c453…6537) by
+    // dropping its square backing and cropping to the symbol, because a mark never sits on a tile.
+    asset: 'favicon symbol, Blurple on transparent',
     url: 'https://discord.com/branding',
   },
   termsUrl: 'https://discord.com/branding',
-  sha256: 'a371c453efbecaaae71b91181008c94d543f550ab9fe1884c1b238d59dc06537',
+  sha256: '718f3f8ec40c540f4084629f4f824749207c71ebabbd55af06b44abe765dcd37',
 } as const;
 
 const BRAND_ASSET_ARCHIVE_PATH = 'assets/brand.png';
@@ -128,6 +130,8 @@ describe('Discord Channels manifest', () => {
     expect(asset.readUInt32BE(16)).toBe(288);
     expect(asset.readUInt32BE(20)).toBe(288);
     expect(asset.byteLength).toBeLessThanOrEqual(256 * 1024);
+    // RGBA, so the symbol stands on its own without a coloured square behind it.
+    expect(asset[25]).toBe(6);
     expect(createHash('sha256').update(asset).digest('hex')).toBe(DISCORD_BRAND_ASSET_PROVENANCE.sha256);
 
     const packedAsset = await readPackedDiscordBrandAsset();
