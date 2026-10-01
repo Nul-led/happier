@@ -4,6 +4,18 @@ import type { PublicActionId, PublicActionInputById } from '../actions/generated
 import { HappierActionError } from '../errors.js';
 import type { ActionExecutionOptions } from '../types.js';
 
+type PublicActionInputParser = Readonly<{
+  safeParse(value: unknown):
+    | Readonly<{ success: true; data: unknown }>
+    | Readonly<{ success: false; error: Readonly<{
+        issues: readonly Readonly<{ path: readonly PropertyKey[]; code: string }>[];
+      }> }>;
+}>;
+
+// This dynamic lookup consumes the parser contract, not the union of every
+// Action's Zod internals. The public generic below preserves caller correlation.
+const PUBLIC_ACTION_INPUT_PARSERS: Readonly<Record<PublicActionId, PublicActionInputParser>> = PUBLIC_ACTION_INPUT_SCHEMAS;
+
 /**
  * Physical routing and cancellation for a fluent handle's internal
  * correspondence lookup. A caller's request identity stays with the one Action
@@ -32,7 +44,7 @@ export function bindPublicActionInput<K extends PublicActionId>(
   input: PublicActionInputById[K],
   requestId?: string,
 ): PublicActionInputById[K] {
-  const parsed = PUBLIC_ACTION_INPUT_SCHEMAS[actionId].safeParse(input);
+  const parsed = PUBLIC_ACTION_INPUT_PARSERS[actionId].safeParse(input);
   // The action id selects the matching schema above, but TypeScript cannot
   // retain that correlation across the generated Action-map union.
   if (parsed.success) return parsed.data as PublicActionInputById[K];
