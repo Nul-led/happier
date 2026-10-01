@@ -206,7 +206,7 @@ function connectedResult(tokens: CodexTokens) {
           providerIdentity: { accountId: tokens.providerAccountId },
         }
       : {}),
-    displayName: tokens.providerAccountId || 'Codex',
+    displayName: tokens.providerAccountId || 'ChatGPT',
     scopes: CODEX_SCOPES,
   };
 }
@@ -229,7 +229,7 @@ async function readHealth(
   if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= Date.now()) {
     return {
       status: 'expired',
-      displayName: 'Codex',
+      displayName: 'ChatGPT',
       scopes: CODEX_SCOPES,
       diagnostic: diagnostic(
         'openai_codex_access_token_expired',
@@ -240,7 +240,7 @@ async function readHealth(
   const providerAccountId = await readCredential(credentials, PROVIDER_ACCOUNT_ID_KEY, options);
   return {
     status: 'connected',
-    displayName: providerAccountId || 'Codex',
+    displayName: providerAccountId || 'ChatGPT',
     scopes: CODEX_SCOPES,
   };
 }

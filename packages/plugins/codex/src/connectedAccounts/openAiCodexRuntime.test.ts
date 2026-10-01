@@ -691,7 +691,7 @@ describe('OpenAI Codex Connected Account', () => {
 
     expect(connected).toEqual({
       status: 'connected',
-      displayName: 'Codex',
+      displayName: 'ChatGPT',
       scopes: ['openid', 'profile', 'email', 'offline_access'],
     });
     expect(attempted.values.get('providerAccountId')).toBe('');
